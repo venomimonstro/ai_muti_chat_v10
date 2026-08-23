@@ -7,6 +7,23 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: aiworkspace
+          POSTGRES_USER: aiworkspace
+          POSTGRES_PASSWORD: aiworkspace
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aiworkspace"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://aiworkspace:aiworkspace@127.0.0.1:5432/aiworkspace
+      DJANGO_SECRET_KEY: ci-only-secret
     defaults:
       run:
         working-directory: backend
@@ -37,4 +54,3 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
-

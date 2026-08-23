@@ -59,3 +59,34 @@ class BalanceReservation(models.Model):
     idempotency_key = models.CharField(max_length=160, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     settled_at = models.DateTimeField(null=True)
+
+
+class PriceVersion(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    model_slug = models.SlugField(db_index=True)
+    input_rub_per_million = models.DecimalField(max_digits=14, decimal_places=4)
+    output_rub_per_million = models.DecimalField(max_digits=14, decimal_places=4)
+    markup_percent = models.DecimalField(max_digits=7, decimal_places=2, default=100)
+    active = models.BooleanField(default=True)
+    effective_from = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.pk and PriceVersion.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Price versions immutable; create a new version")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Price versions cannot be deleted")
+
+
+class RequestCost(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    generation_id = models.UUIDField(unique=True)
+    price_version = models.ForeignKey(PriceVersion, on_delete=models.PROTECT)
+    estimated_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    provider_cost_rub = models.DecimalField(max_digits=14, decimal_places=4, null=True)
+    charged_rub = models.DecimalField(max_digits=14, decimal_places=4, null=True)
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
