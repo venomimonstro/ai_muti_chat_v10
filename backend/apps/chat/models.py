@@ -11,6 +11,13 @@ class Conversation(models.Model):
     )
     title = models.CharField(max_length=200, default="Новый чат")
     selected_model = models.CharField(max_length=100, default="echo-v1")
+    project = models.ForeignKey(
+        "projects.Project",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="conversations",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

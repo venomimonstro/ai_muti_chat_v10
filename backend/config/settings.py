@@ -23,6 +23,8 @@ INSTALLED_APPS = [
     "apps.billing",
     "apps.payments",
     "apps.chat",
+    "apps.projects",
+    "apps.files",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -83,6 +85,7 @@ TIME_ZONE = "Europe/Moscow"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
+MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CORS_ALLOWED_ORIGINS = [
     x for x in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",") if x
@@ -100,6 +103,13 @@ AI_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "12
 AI_PROVIDER_MAX_ATTEMPTS = int(os.getenv("AI_PROVIDER_MAX_ATTEMPTS", "2"))
 AI_CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("AI_CIRCUIT_FAILURE_THRESHOLD", "3"))
 AI_CIRCUIT_COOLDOWN_SECONDS = int(os.getenv("AI_CIRCUIT_COOLDOWN_SECONDS", "60"))
+FILE_MAX_UPLOAD_BYTES = int(os.getenv("FILE_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+FILE_MAX_UNCOMPRESSED_BYTES = int(os.getenv("FILE_MAX_UNCOMPRESSED_BYTES", str(100 * 1024 * 1024)))
+FILE_MAX_ARCHIVE_ENTRIES = int(os.getenv("FILE_MAX_ARCHIVE_ENTRIES", "1000"))
+FILE_MAX_COMPRESSION_RATIO = int(os.getenv("FILE_MAX_COMPRESSION_RATIO", "100"))
+FILE_MAX_EXTRACTED_CHARS = int(os.getenv("FILE_MAX_EXTRACTED_CHARS", "2000000"))
+FILE_CHUNK_CHARS = int(os.getenv("FILE_CHUNK_CHARS", "4000"))
+FILE_CHUNK_OVERLAP_CHARS = int(os.getenv("FILE_CHUNK_OVERLAP_CHARS", "200"))
 PAYMENTS_ENABLED = os.getenv("PAYMENTS_ENABLED", "false").lower() == "true"
 PAYMENTS_LIVE_ENABLED = os.getenv("PAYMENTS_LIVE_ENABLED", "false").lower() == "true"
 PAYMENT_RETURN_URL = os.getenv(

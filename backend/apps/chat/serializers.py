@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
+from apps.projects.access import accessible_projects
 
 from .models import Conversation, Message
 
@@ -17,7 +18,15 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ("id", "title", "selected_model", "created_at", "updated_at", "messages")
+        fields = (
+            "id",
+            "title",
+            "selected_model",
+            "project",
+            "created_at",
+            "updated_at",
+            "messages",
+        )
         read_only_fields = ("id", "created_at", "updated_at", "messages")
 
     def validate_selected_model(self, value):
@@ -27,6 +36,16 @@ class ConversationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Модель не найдена") from exc
         if not provider_available(model.provider):
             raise serializers.ValidationError("Модель временно недоступна")
+        return value
+
+    def validate_project(self, value):
+        if value is None:
+            return None
+        user = self.context["request"].user
+        if not accessible_projects(user, write=True).filter(pk=value.pk).exists():
+            raise serializers.ValidationError("Проект не найден или недоступен")
+        if value.archived_at:
+            raise serializers.ValidationError("Проект находится в архиве")
         return value
 
 

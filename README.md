@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершён backend-контур Sprint 0–9.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершён backend-контур Sprint 0–10.
 
 ## Что уже заложено
 
@@ -15,6 +15,9 @@
 - capabilities, ручной выбор модели и API версионированных цен;
 - retries до первого токена, fallback-цепочки и circuit breaker;
 - provider health snapshots, incident correlation и emergency kill switch;
+- проекты с ACL, архивом и версионируемыми инструкциями;
+- изолированные загрузки файлов, безопасная проверка MIME/magic и extraction statuses;
+- извлечение и chunking для TXT/MD/CSV/DOCX/XLSX, vision-assets и честный partial для PDF;
 - сохранение partial output во время генерации;
 - versioned pricing и фактическая стоимость по provider usage;
 - immutable ledger, reservation → settlement → release;
@@ -64,4 +67,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 10 — проекты и базовая работа с файлами.
+Следующий этап: Sprint 11 — UX hardening и полноценные пользовательские состояния.

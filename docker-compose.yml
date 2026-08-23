@@ -25,6 +25,7 @@ services:
     command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     volumes:
       - ./backend:/app
+      - media_data:/app/media
     ports:
       - "8000:8000"
     depends_on:
@@ -39,6 +40,7 @@ services:
     command: celery -A config worker -l INFO
     volumes:
       - ./backend:/app
+      - media_data:/app/media
     depends_on:
       - backend
       - redis
@@ -58,4 +60,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
-
+  media_data:
