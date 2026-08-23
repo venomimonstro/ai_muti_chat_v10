@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершён backend-контур Sprint 0–6.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершён backend-контур Sprint 0–7.
 
 ## Что уже заложено
 
@@ -14,6 +14,9 @@
 - сохранение partial output во время генерации;
 - versioned pricing и фактическая стоимость по provider usage;
 - immutable ledger, reservation → settlement → release;
+- раздельные paid/promo-бакеты кошелька и возвраты только из paid-баланса;
+- идемпотентный lifecycle платежей и возвратов YooKassa;
+- webhook с обязательной серверной перепроверкой статуса, суммы и metadata;
 - запрет отрицательного доступного баланса;
 - базовый Next.js интерфейс чата;
 - Docker Compose: PostgreSQL, Redis, backend, worker, frontend;
@@ -57,4 +60,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 7 — платёжный lifecycle и идемпотентные webhook без подключения боевых платежей до юридической проверки.
+Следующий этап: Sprint 8–9 — укрепление prelaunch-контура, наблюдаемость, лимиты и эксплуатационные сценарии.

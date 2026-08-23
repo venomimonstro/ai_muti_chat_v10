@@ -9,13 +9,26 @@ from .models import BalanceReservation, LedgerEntry, Wallet
 MONEY_ZERO = Decimal("0.0000")
 
 
-def _entry(wallet, kind, amount, available_delta, reserved_delta, source_type, source_id, key):
+def _entry(
+    wallet,
+    kind,
+    amount,
+    available_delta,
+    reserved_delta,
+    paid_delta,
+    promo_delta,
+    source_type,
+    source_id,
+    key,
+):
     return LedgerEntry.objects.create(
         wallet=wallet,
         kind=kind,
         amount_rub=amount,
         available_delta_rub=available_delta,
         reserved_delta_rub=reserved_delta,
+        paid_delta_rub=paid_delta,
+        promo_delta_rub=promo_delta,
         available_after_rub=wallet.available_rub,
         reserved_after_rub=wallet.reserved_rub,
         source_type=source_type,
@@ -25,7 +38,7 @@ def _entry(wallet, kind, amount, available_delta, reserved_delta, source_type, s
 
 
 @transaction.atomic
-def credit(user, amount: Decimal, source_type: str, source_id: str):
+def credit(user, amount: Decimal, source_type: str, source_id: str, *, bucket="paid"):
     if amount <= 0:
         raise ValidationError("Credit must be positive")
     wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
@@ -34,9 +47,26 @@ def credit(user, amount: Decimal, source_type: str, source_id: str):
     if existing:
         return existing
     wallet.available_rub += amount
-    wallet.save(update_fields=["available_rub", "updated_at"])
+    if bucket == "paid":
+        wallet.paid_rub += amount
+        paid_delta, promo_delta = amount, MONEY_ZERO
+    elif bucket == "promo":
+        wallet.promo_rub += amount
+        paid_delta, promo_delta = MONEY_ZERO, amount
+    else:
+        raise ValidationError("Unknown wallet bucket")
+    wallet.save(update_fields=["available_rub", "paid_rub", "promo_rub", "updated_at"])
     return _entry(
-        wallet, LedgerEntry.Kind.CREDIT, amount, amount, MONEY_ZERO, source_type, source_id, key
+        wallet,
+        LedgerEntry.Kind.CREDIT,
+        amount,
+        amount,
+        MONEY_ZERO,
+        paid_delta,
+        promo_delta,
+        source_type,
+        source_id,
+        key,
     )
 
 
@@ -50,11 +80,23 @@ def reserve(user, amount: Decimal, key: str):
     wallet = Wallet.objects.select_for_update().get(user=user)
     if wallet.available_rub < amount:
         raise ValidationError("Недостаточно средств")
+    promo_amount = min(wallet.promo_rub, amount)
+    paid_amount = amount - promo_amount
+    if wallet.paid_rub < paid_amount:
+        raise ValidationError("Wallet bucket invariant violated")
     wallet.available_rub -= amount
     wallet.reserved_rub += amount
-    wallet.save(update_fields=["available_rub", "reserved_rub", "updated_at"])
+    wallet.promo_rub -= promo_amount
+    wallet.paid_rub -= paid_amount
+    wallet.save(
+        update_fields=["available_rub", "reserved_rub", "paid_rub", "promo_rub", "updated_at"]
+    )
     reservation = BalanceReservation.objects.create(
-        wallet=wallet, amount_rub=amount, idempotency_key=key
+        wallet=wallet,
+        amount_rub=amount,
+        paid_amount_rub=paid_amount,
+        promo_amount_rub=promo_amount,
+        idempotency_key=key,
     )
     _entry(
         wallet,
@@ -62,6 +104,8 @@ def reserve(user, amount: Decimal, key: str):
         amount,
         -amount,
         amount,
+        -paid_amount,
+        -promo_amount,
         "generation",
         reservation.id,
         f"reserve:{key}",
@@ -82,11 +126,19 @@ def settle(reservation_id, actual: Decimal):
         raise ValidationError("Actual cost must be within reserved amount")
     wallet = Wallet.objects.select_for_update().get(pk=reservation.wallet_id)
     release_amount = reservation.amount_rub - actual
+    promo_consumed = min(reservation.promo_amount_rub, actual)
+    paid_consumed = actual - promo_consumed
+    promo_release = reservation.promo_amount_rub - promo_consumed
+    paid_release = reservation.paid_amount_rub - paid_consumed
     wallet.reserved_rub -= reservation.amount_rub
     wallet.available_rub += release_amount
+    wallet.promo_rub += promo_release
+    wallet.paid_rub += paid_release
     if wallet.reserved_rub < MONEY_ZERO:
         raise ValidationError("Reserved balance invariant violated")
-    wallet.save(update_fields=["available_rub", "reserved_rub", "updated_at"])
+    wallet.save(
+        update_fields=["available_rub", "reserved_rub", "paid_rub", "promo_rub", "updated_at"]
+    )
     if actual:
         _entry(
             wallet,
@@ -94,6 +146,8 @@ def settle(reservation_id, actual: Decimal):
             actual,
             MONEY_ZERO,
             -actual,
+            MONEY_ZERO,
+            MONEY_ZERO,
             "generation",
             reservation.id,
             f"settle:{reservation.id}",
@@ -105,6 +159,8 @@ def settle(reservation_id, actual: Decimal):
             release_amount,
             release_amount,
             -release_amount,
+            paid_release,
+            promo_release,
             "generation",
             reservation.id,
             f"release:{reservation.id}",
@@ -128,13 +184,19 @@ def release(reservation_id):
     wallet = Wallet.objects.select_for_update().get(pk=reservation.wallet_id)
     wallet.reserved_rub -= reservation.amount_rub
     wallet.available_rub += reservation.amount_rub
-    wallet.save(update_fields=["available_rub", "reserved_rub", "updated_at"])
+    wallet.paid_rub += reservation.paid_amount_rub
+    wallet.promo_rub += reservation.promo_amount_rub
+    wallet.save(
+        update_fields=["available_rub", "reserved_rub", "paid_rub", "promo_rub", "updated_at"]
+    )
     _entry(
         wallet,
         LedgerEntry.Kind.RELEASE,
         reservation.amount_rub,
         reservation.amount_rub,
         -reservation.amount_rub,
+        reservation.paid_amount_rub,
+        reservation.promo_amount_rub,
         "generation",
         reservation.id,
         f"failure-release:{reservation.id}",
@@ -151,3 +213,38 @@ def reconstruct(wallet):
     available = sum((entry.available_delta_rub for entry in entries), MONEY_ZERO)
     reserved = sum((entry.reserved_delta_rub for entry in entries), MONEY_ZERO)
     return available, reserved
+
+
+def reconstruct_buckets(wallet):
+    entries = wallet.entries.order_by("created_at", "id")
+    paid = sum((entry.paid_delta_rub for entry in entries), MONEY_ZERO)
+    promo = sum((entry.promo_delta_rub for entry in entries), MONEY_ZERO)
+    return paid, promo
+
+
+@transaction.atomic
+def debit_paid(user, amount: Decimal, source_type: str, source_id: str):
+    if amount <= 0:
+        raise ValidationError("Debit must be positive")
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    key = f"refund:{source_type}:{source_id}"
+    existing = LedgerEntry.objects.filter(idempotency_key=key).first()
+    if existing:
+        return existing
+    if wallet.paid_rub < amount or wallet.available_rub < amount:
+        raise ValidationError("Недостаточно неиспользованного платного баланса для возврата")
+    wallet.paid_rub -= amount
+    wallet.available_rub -= amount
+    wallet.save(update_fields=["paid_rub", "available_rub", "updated_at"])
+    return _entry(
+        wallet,
+        LedgerEntry.Kind.REFUND,
+        amount,
+        -amount,
+        MONEY_ZERO,
+        -amount,
+        MONEY_ZERO,
+        source_type,
+        source_id,
+        key,
+    )

@@ -18,7 +18,13 @@ class RegisterView(APIView):
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        credit(user, Decimal(settings.SIGNUP_PROMO_RUB), "signup_promo", f"signup:{user.id}")
+        credit(
+            user,
+            Decimal(settings.SIGNUP_PROMO_RUB),
+            "signup_promo",
+            f"signup:{user.id}",
+            bucket="promo",
+        )
         login(request, user)
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 

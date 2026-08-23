@@ -10,6 +10,8 @@ class WalletView(APIView):
             {
                 "available_rub": wallet.available_rub,
                 "reserved_rub": wallet.reserved_rub,
+                "paid_rub": wallet.paid_rub,
+                "promo_rub": wallet.promo_rub,
                 "entries": [
                     {
                         "id": e.id,
@@ -17,6 +19,8 @@ class WalletView(APIView):
                         "amount_rub": e.amount_rub,
                         "available_delta_rub": e.available_delta_rub,
                         "reserved_delta_rub": e.reserved_delta_rub,
+                        "paid_delta_rub": e.paid_delta_rub,
+                        "promo_delta_rub": e.promo_delta_rub,
                         "created_at": e.created_at,
                     }
                     for e in entries

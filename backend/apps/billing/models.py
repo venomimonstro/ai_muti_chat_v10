@@ -12,6 +12,8 @@ class Wallet(models.Model):
     )
     available_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     reserved_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    paid_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    promo_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
 
@@ -21,6 +23,7 @@ class LedgerEntry(models.Model):
         RESERVE = "reserve", "Резерв"
         RELEASE = "release", "Освобождение"
         DEBIT = "debit", "Списание"
+        REFUND = "refund", "Возврат пополнения"
         ADJUSTMENT = "adjustment", "Корректировка"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -29,6 +32,8 @@ class LedgerEntry(models.Model):
     amount_rub = models.DecimalField(max_digits=14, decimal_places=4)
     available_delta_rub = models.DecimalField(max_digits=14, decimal_places=4)
     reserved_delta_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    paid_delta_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    promo_delta_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     available_after_rub = models.DecimalField(max_digits=14, decimal_places=4)
     reserved_after_rub = models.DecimalField(max_digits=14, decimal_places=4)
     source_type = models.CharField(max_length=64)
@@ -54,6 +59,8 @@ class BalanceReservation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     wallet = models.ForeignKey(Wallet, on_delete=models.PROTECT, related_name="reservations")
     amount_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    paid_amount_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    promo_amount_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     actual_rub = models.DecimalField(max_digits=14, decimal_places=4, null=True)
     state = models.CharField(max_length=16, choices=State.choices, default=State.ACTIVE)
     idempotency_key = models.CharField(max_length=160, unique=True)

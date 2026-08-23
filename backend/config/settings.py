@@ -21,6 +21,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.ai_registry",
     "apps.billing",
+    "apps.payments",
     "apps.chat",
 ]
 MIDDLEWARE = [
@@ -96,3 +97,15 @@ CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 SIGNUP_PROMO_RUB = os.getenv("SIGNUP_PROMO_RUB", "25.00")
 AI_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "120"))
+PAYMENTS_ENABLED = os.getenv("PAYMENTS_ENABLED", "false").lower() == "true"
+PAYMENTS_LIVE_ENABLED = os.getenv("PAYMENTS_LIVE_ENABLED", "false").lower() == "true"
+PAYMENT_RETURN_URL = os.getenv(
+    "PAYMENT_RETURN_URL", "http://localhost:3000/settings/billing/return"
+)
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
+YOOKASSA_API_BASE_URL = os.getenv("YOOKASSA_API_BASE_URL", "https://api.yookassa.ru/v3")
+PAYMENTS_FISCALIZATION_MODE = os.getenv("PAYMENTS_FISCALIZATION_MODE", "disabled")
+PAYMENTS_VAT_CODE = int(os.getenv("PAYMENTS_VAT_CODE", "1"))
+PAYMENT_MIN_RUB = os.getenv("PAYMENT_MIN_RUB", "100.00")
+PAYMENT_MAX_RUB = os.getenv("PAYMENT_MAX_RUB", "100000.00")
