@@ -1,16 +1,19 @@
 import json
+import time
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.models import AIModel
+from apps.ai_registry.reliability import candidate_models, record_failure, record_success
 from apps.billing.models import RequestCost
 from apps.billing.pricing import active_price, calculate, conservative_token_budget
 from apps.billing.services import release, reserve, settle
 
-from .models import Conversation, Generation, Message
+from .models import Conversation, Generation, GenerationAttempt, Message
 
 MAX_OUTPUT_TOKENS = 1024
 FLUSH_CHARS = 400
@@ -51,23 +54,32 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
         )
 
     try:
-        model = AIModel.objects.select_related("provider").get(
-            slug=generation.model, enabled=True, provider__enabled=True
+        primary = AIModel.objects.select_related("provider", "fallback_model").get(
+            slug=generation.model, enabled=True
         )
-        price = active_price(model.slug)
+        candidates = candidate_models(primary)
+        if not candidates:
+            raise ValidationError("Выбранная модель временно недоступна")
         history = [
             {"role": item.role, "content": item.content}
             for item in conversation.messages.exclude(id=assistant_message.id)
         ]
         input_budget, output_budget = conservative_token_budget(history, MAX_OUTPUT_TOKENS)
-        _, estimated = calculate(price, input_budget, output_budget)
+        priced = [(model, active_price(model.slug)) for model in candidates]
+        estimates = [calculate(price, input_budget, output_budget)[1] for _, price in priced]
+        estimated = max(estimates)
         reservation = reserve(user, estimated, f"generation:{generation.id}")
         RequestCost.objects.create(
-            generation_id=generation.id, price_version=price, estimated_rub=estimated
+            generation_id=generation.id,
+            price_version=priced[0][1],
+            estimated_rub=estimated,
         )
         generation.reservation_id = reservation.id
+        generation.route_price_snapshot = {
+            model.slug: str(price.id) for model, price in priced
+        }
         generation.state = Generation.State.RUNNING
-        generation.save(update_fields=["reservation_id", "state"])
+        generation.save(update_fields=["reservation_id", "route_price_snapshot", "state"])
     except Exception:
         generation.state = Generation.State.FAILED
         generation.error_code = "preflight_failed"
@@ -75,6 +87,18 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
         generation.save(update_fields=["state", "error_code", "completed_at"])
         raise
     return generation, True
+
+
+def _finish_attempt(attempt, *, state, started, error=None):
+    attempt.state = state
+    attempt.latency_ms = int((time.monotonic() - started) * 1000)
+    attempt.finished_at = timezone.now()
+    fields = ["state", "latency_ms", "finished_at"]
+    if error:
+        attempt.error_code = error.code
+        attempt.retryable = error.retryable
+        fields += ["error_code", "retryable"]
+    attempt.save(update_fields=fields)
 
 
 def run(generation, *, adapter=None):
@@ -86,35 +110,96 @@ def run(generation, *, adapter=None):
         yield sse("error", {"code": generation.error_code or "generation_not_runnable"})
         return
 
-    model = AIModel.objects.select_related("provider").get(slug=generation.model)
-    adapter = adapter or adapter_for(model)
+    primary = AIModel.objects.select_related("provider", "fallback_model").get(
+        slug=generation.model
+    )
+    candidates = [primary] if adapter else candidate_models(primary)
     history = [
         {"role": item.role, "content": item.content}
         for item in generation.user_message.conversation.messages.exclude(id=assistant.id)
     ]
-    buffer = ""
     full_text = assistant.content
+    sequence = generation.attempts.count()
     completed = None
+    selected_model = None
+    last_error = ProviderError("No healthy provider", code="provider_unavailable")
+
+    yield sse(
+        "generation",
+        {"id": generation.id, "state": "streaming", "correlation_id": generation.correlation_id},
+    )
     try:
-        yield sse("generation", {"id": generation.id, "state": "streaming"})
-        for event in adapter.stream(
-            model=model.upstream_model,
-            messages=history,
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-        ):
-            if event.kind == "delta":
-                buffer += event.text_delta
-                full_text += event.text_delta
-                yield sse("delta", {"text": event.text_delta})
-                if len(buffer) >= FLUSH_CHARS:
-                    assistant.content = full_text
-                    assistant.status = Message.Status.STREAMING
-                    assistant.save(update_fields=["content", "status"])
-                    buffer = ""
-            else:
-                completed = event
-        if completed is None:
-            raise ProviderError("Stream ended without usage")
+        for model in candidates:
+            request_cost = RequestCost.objects.get(generation_id=generation.id)
+            price_id = generation.route_price_snapshot.get(model.slug)
+            if not price_id:
+                raise ValidationError("Missing route price snapshot")
+            request_cost.price_version_id = price_id
+            request_cost.save(update_fields=["price_version"])
+            max_attempts = 1 if adapter else settings.AI_PROVIDER_MAX_ATTEMPTS
+            for retry_index in range(max_attempts):
+                sequence += 1
+                attempt = GenerationAttempt.objects.create(
+                    generation=generation,
+                    provider=model.provider,
+                    model_slug=model.slug,
+                    sequence=sequence,
+                )
+                started = time.monotonic()
+                emitted = False
+                attempt_completed = None
+                try:
+                    provider_adapter = adapter or adapter_for(model)
+                    for event in provider_adapter.stream(
+                        model=model.upstream_model,
+                        messages=history,
+                        max_output_tokens=MAX_OUTPUT_TOKENS,
+                    ):
+                        if event.kind == "delta":
+                            emitted = True
+                            full_text += event.text_delta
+                            yield sse("delta", {"text": event.text_delta})
+                            if len(full_text) - len(assistant.content) >= FLUSH_CHARS:
+                                assistant.content = full_text
+                                assistant.status = Message.Status.STREAMING
+                                assistant.save(update_fields=["content", "status"])
+                        else:
+                            attempt_completed = event
+                    if attempt_completed is None:
+                        raise ProviderError(
+                            "Stream ended without usage", code="invalid_stream", retryable=True
+                        )
+                    latency = int((time.monotonic() - started) * 1000)
+                    _finish_attempt(
+                        attempt, state=GenerationAttempt.State.COMPLETED, started=started
+                    )
+                    record_success(model.provider, latency)
+                    completed = attempt_completed
+                    selected_model = model
+                    break
+                except ProviderError as exc:
+                    last_error = exc
+                    _finish_attempt(
+                        attempt,
+                        state=GenerationAttempt.State.FAILED,
+                        started=started,
+                        error=exc,
+                    )
+                    record_failure(model.provider, exc)
+                    if emitted:
+                        raise
+                    if exc.retryable and retry_index + 1 < max_attempts:
+                        yield sse("recovery", {"action": "retry", "provider": model.provider.slug})
+                        continue
+                    break
+            if selected_model:
+                break
+            if model != candidates[-1]:
+                yield sse("recovery", {"action": "fallback", "from_model": model.slug})
+
+        if selected_model is None or completed is None:
+            raise last_error
+
         assistant.content = full_text
         assistant.status = Message.Status.COMPLETED
         assistant.save(update_fields=["content", "status"])
@@ -142,6 +227,8 @@ def run(generation, *, adapter=None):
         generation.input_tokens = completed.input_tokens
         generation.output_tokens = completed.output_tokens
         generation.actual_cost_rub = charge
+        generation.routed_model = selected_model.slug
+        generation.provider_slug = selected_model.provider.slug
         generation.completed_at = timezone.now()
         generation.save(
             update_fields=[
@@ -150,6 +237,8 @@ def run(generation, *, adapter=None):
                 "input_tokens",
                 "output_tokens",
                 "actual_cost_rub",
+                "routed_model",
+                "provider_slug",
                 "completed_at",
             ]
         )
@@ -160,6 +249,8 @@ def run(generation, *, adapter=None):
                 "cost_rub": charge,
                 "input_tokens": completed.input_tokens,
                 "output_tokens": completed.output_tokens,
+                "model": selected_model.slug,
+                "provider": selected_model.provider.slug,
             },
         )
     except Exception as exc:
@@ -169,8 +260,16 @@ def run(generation, *, adapter=None):
         assistant.save(update_fields=["content", "status"])
         generation.state = Generation.State.FAILED
         generation.error_code = (
-            "provider_error" if isinstance(exc, ProviderError) else "cost_or_internal_error"
+            exc.code if isinstance(exc, ProviderError) else "cost_or_internal_error"
         )
         generation.completed_at = timezone.now()
         generation.save(update_fields=["state", "error_code", "completed_at"])
-        yield sse("error", {"code": generation.error_code, "partial": bool(full_text)})
+        yield sse(
+            "error",
+            {
+                "code": generation.error_code,
+                "partial": bool(full_text),
+                "message": "Провайдер временно недоступен. Запрос сохранён, деньги не списаны.",
+                "correlation_id": generation.correlation_id,
+            },
+        )

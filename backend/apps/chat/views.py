@@ -30,12 +30,15 @@ class ConversationViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": "Idempotency-Key обязателен"}, status=status.HTTP_400_BAD_REQUEST
             )
-        generation = generate_reply(
-            user=request.user,
-            conversation=self.get_object(),
-            idempotency_key=key,
-            **serializer.validated_data,
-        )
+        try:
+            generation = generate_reply(
+                user=request.user,
+                conversation=self.get_object(),
+                idempotency_key=key,
+                **serializer.validated_data,
+            )
+        except (ValidationError, AIModel.DoesNotExist) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
             {
                 "generation_id": generation.id,

@@ -73,5 +73,39 @@ class Generation(models.Model):
     output_tokens = models.PositiveIntegerField(default=0)
     actual_cost_rub = models.DecimalField(max_digits=14, decimal_places=4, null=True)
     error_code = models.CharField(max_length=80, blank=True)
+    routed_model = models.CharField(max_length=100, blank=True)
+    provider_slug = models.CharField(max_length=100, blank=True)
+    correlation_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
+    route_price_snapshot = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True)
+
+
+class GenerationAttempt(models.Model):
+    class State(models.TextChoices):
+        RUNNING = "running", "Выполняется"
+        COMPLETED = "completed", "Готово"
+        FAILED = "failed", "Ошибка"
+        SKIPPED = "skipped", "Пропущено"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    generation = models.ForeignKey(Generation, on_delete=models.CASCADE, related_name="attempts")
+    provider = models.ForeignKey(
+        "ai_registry.Provider", on_delete=models.PROTECT, related_name="generation_attempts"
+    )
+    model_slug = models.CharField(max_length=100)
+    sequence = models.PositiveIntegerField()
+    state = models.CharField(max_length=16, choices=State.choices, default=State.RUNNING)
+    error_code = models.CharField(max_length=80, blank=True)
+    retryable = models.BooleanField(default=False)
+    latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["sequence"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["generation", "sequence"], name="unique_generation_attempt_sequence"
+            )
+        ]

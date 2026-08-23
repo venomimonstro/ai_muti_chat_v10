@@ -30,6 +30,23 @@ class ImpossibleUsageAdapter:
         )
 
 
+class ImmediateFailureAdapter:
+    def stream(self, **_kwargs):
+        raise ProviderError("down", code="upstream_down", retryable=True)
+        yield
+
+
+class SuccessfulFallbackAdapter:
+    def stream(self, **_kwargs):
+        yield ProviderStreamEvent(kind="delta", text_delta="резервный ответ")
+        yield ProviderStreamEvent(
+            kind="completed",
+            provider_request_id="fallback-ok",
+            input_tokens=4,
+            output_tokens=3,
+        )
+
+
 @pytest.fixture
 def stream_context():
     user = User.objects.create_user(
@@ -136,3 +153,57 @@ def test_usage_above_reserved_maximum_is_not_debited(stream_context):
     assert user.wallet.available_rub == Decimal("10.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
     assert "event: error" in events
+
+
+@pytest.mark.django_db(transaction=True)
+def test_retry_then_fallback_records_attempts(monkeypatch, settings):
+    settings.AI_PROVIDER_MAX_ATTEMPTS = 2
+    user = User.objects.create_user(
+        username="fallback", email="fallback@example.com", password="password123"
+    )
+    credit(user, Decimal("10"), "test", "fallback")
+    primary_provider = Provider.objects.create(slug="primary", name="Primary")
+    fallback_provider = Provider.objects.create(slug="fallback", name="Fallback")
+    fallback_model = AIModel.objects.create(
+        provider=fallback_provider,
+        slug="fallback-v1",
+        display_name="Fallback",
+        upstream_model="fallback-v1",
+    )
+    primary_model = AIModel.objects.create(
+        provider=primary_provider,
+        slug="primary-v1",
+        display_name="Primary",
+        upstream_model="primary-v1",
+        fallback_model=fallback_model,
+    )
+    for model in (primary_model, fallback_model):
+        PriceVersion.objects.create(
+            model_slug=model.slug,
+            input_rub_per_million=Decimal("10"),
+            output_rub_per_million=Decimal("20"),
+            markup_percent=Decimal("100"),
+            effective_from=timezone.now(),
+        )
+    conversation = Conversation.objects.create(owner=user, selected_model=primary_model.slug)
+    generation, _ = prepare(
+        user=user,
+        conversation=conversation,
+        content="Fallback",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="stream:fallback",
+    )
+    monkeypatch.setattr(
+        "apps.chat.streaming.adapter_for",
+        lambda model: ImmediateFailureAdapter()
+        if model.slug == primary_model.slug
+        else SuccessfulFallbackAdapter(),
+    )
+    events = "".join(run(generation))
+    generation.refresh_from_db()
+    assert generation.state == Generation.State.COMPLETED
+    assert generation.routed_model == fallback_model.slug
+    assert generation.provider_slug == fallback_provider.slug
+    assert generation.attempts.count() == 3
+    assert '"action": "retry"' in events
+    assert '"action": "fallback"' in events

@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -19,7 +20,17 @@ class ProviderResult:
 
 
 class ProviderError(Exception):
-    pass
+    def __init__(self, message: str, *, code: str = "provider_error", retryable: bool = True):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+@dataclass(frozen=True)
+class AdapterHealth:
+    healthy: bool
+    latency_ms: int
+    error_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,10 @@ class ProviderAdapter(Protocol):
     def stream(
         self, *, model: str, messages: list[dict], max_output_tokens: int
     ) -> Iterator[ProviderStreamEvent]: ...
+
+    def health_check(self) -> AdapterHealth: ...
+
+    def capabilities(self) -> set[str]: ...
 
 
 class EchoProviderAdapter:
@@ -67,8 +82,41 @@ class EchoProviderAdapter:
             output_tokens=result.output_tokens,
         )
 
+    def health_check(self):
+        return AdapterHealth(healthy=True, latency_ms=0)
 
-class OpenAIResponsesAdapter:
+    def capabilities(self):
+        return {"text", "streaming"}
+
+
+class HTTPAdapter:
+    def _health_get(self, *, url: str, headers: dict) -> AdapterHealth:
+        started = time.monotonic()
+        try:
+            response = httpx.get(url, headers=headers, timeout=min(settings.AI_PROVIDER_TIMEOUT_SECONDS, 10))
+            response.raise_for_status()
+            return AdapterHealth(True, int((time.monotonic() - started) * 1000))
+        except httpx.HTTPError as exc:
+            return AdapterHealth(
+                False,
+                int((time.monotonic() - started) * 1000),
+                _http_error(exc).code,
+            )
+
+
+def _http_error(exc: httpx.HTTPError) -> ProviderError:
+    response = getattr(exc, "response", None)
+    status = response.status_code if response is not None else None
+    if status == 429:
+        return ProviderError("Provider rate limit", code="rate_limited", retryable=True)
+    if status is not None and 400 <= status < 500:
+        return ProviderError("Provider rejected request", code=f"http_{status}", retryable=False)
+    if isinstance(exc, httpx.TimeoutException):
+        return ProviderError("Provider timeout", code="timeout", retryable=True)
+    return ProviderError("Provider request failed", code=f"http_{status or 'network'}", retryable=True)
+
+
+class OpenAIResponsesAdapter(HTTPAdapter):
     """Server-side adapter for typed SSE events from the Responses API."""
 
     def __init__(self, *, api_key: str, base_url: str = "https://api.openai.com/v1"):
@@ -123,8 +171,10 @@ class OpenAIResponsesAdapter:
                         )
                     elif event_type in {"error", "response.failed"}:
                         raise ProviderError(event.get("message") or "Provider stream failed")
-        except (httpx.HTTPError, json.JSONDecodeError) as exc:
-            raise ProviderError("Provider request failed") from exc
+        except httpx.HTTPError as exc:
+            raise _http_error(exc) from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Invalid provider stream", code="invalid_stream") from exc
 
     def generate(self, *, model: str, messages: list[dict], max_output_tokens: int):
         text = ""
@@ -145,6 +195,186 @@ class OpenAIResponsesAdapter:
             provider_request_id=completed.provider_request_id,
         )
 
+    def health_check(self):
+        return self._health_get(
+            url=f"{self.base_url}/models", headers={"Authorization": f"Bearer {self.api_key}"}
+        )
+
+    def capabilities(self):
+        return {"text", "streaming", "vision", "tools"}
+
+
+class AnthropicMessagesAdapter(HTTPAdapter):
+    def __init__(self, *, api_key: str, base_url: str = "https://api.anthropic.com/v1"):
+        if not api_key:
+            raise ProviderError(
+                "Provider credential is not configured", code="credential_missing", retryable=False
+            )
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+
+    @property
+    def headers(self):
+        return {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+
+    def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        system = "\n\n".join(item["content"] for item in messages if item["role"] == "system")
+        payload = {
+            "model": model,
+            "messages": [item for item in messages if item["role"] in {"user", "assistant"}],
+            "max_tokens": max_output_tokens,
+            "stream": True,
+        }
+        if system:
+            payload["system"] = system
+        request_id = ""
+        input_tokens = 0
+        output_tokens = 0
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}/messages",
+                headers=self.headers,
+                json=payload,
+                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    event = json.loads(line[5:].strip())
+                    event_type = event.get("type")
+                    if event_type == "message_start":
+                        envelope = event.get("message") or {}
+                        request_id = envelope.get("id", "")
+                        input_tokens = (envelope.get("usage") or {}).get("input_tokens", 0)
+                    elif event_type == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            yield ProviderStreamEvent(kind="delta", text_delta=delta.get("text", ""))
+                    elif event_type == "message_delta":
+                        output_tokens = (event.get("usage") or {}).get(
+                            "output_tokens", output_tokens
+                        )
+                    elif event_type == "error":
+                        error = event.get("error") or {}
+                        raise ProviderError(
+                            "Provider stream failed",
+                            code=error.get("type", "provider_error"),
+                            retryable=error.get("type") != "invalid_request_error",
+                        )
+                    elif event_type == "message_stop":
+                        yield ProviderStreamEvent(
+                            kind="completed",
+                            provider_request_id=request_id,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                        )
+        except httpx.HTTPError as exc:
+            raise _http_error(exc) from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Invalid provider stream", code="invalid_stream") from exc
+
+    def generate(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        return _collect(self, model=model, messages=messages, max_output_tokens=max_output_tokens)
+
+    def health_check(self):
+        return self._health_get(url=f"{self.base_url}/models", headers=self.headers)
+
+    def capabilities(self):
+        return {"text", "streaming", "vision", "tools"}
+
+
+class DeepSeekChatAdapter(HTTPAdapter):
+    def __init__(self, *, api_key: str, base_url: str = "https://api.deepseek.com"):
+        if not api_key:
+            raise ProviderError(
+                "Provider credential is not configured", code="credential_missing", retryable=False
+            )
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+
+    @property
+    def headers(self):
+        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+    def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_output_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        request_id = ""
+        usage = {}
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=payload,
+                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    event = json.loads(data)
+                    request_id = event.get("id", request_id)
+                    usage = event.get("usage") or usage
+                    choices = event.get("choices") or []
+                    if choices:
+                        text = (choices[0].get("delta") or {}).get("content") or ""
+                        if text:
+                            yield ProviderStreamEvent(kind="delta", text_delta=text)
+                yield ProviderStreamEvent(
+                    kind="completed",
+                    provider_request_id=request_id,
+                    input_tokens=usage.get("prompt_tokens", 0),
+                    output_tokens=usage.get("completion_tokens", 0),
+                )
+        except httpx.HTTPError as exc:
+            raise _http_error(exc) from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Invalid provider stream", code="invalid_stream") from exc
+
+    def generate(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        return _collect(self, model=model, messages=messages, max_output_tokens=max_output_tokens)
+
+    def health_check(self):
+        return self._health_get(url=f"{self.base_url}/models", headers=self.headers)
+
+    def capabilities(self):
+        return {"text", "streaming"}
+
+
+def _collect(adapter, *, model: str, messages: list[dict], max_output_tokens: int):
+    text = ""
+    completed = None
+    for event in adapter.stream(
+        model=model, messages=messages, max_output_tokens=max_output_tokens
+    ):
+        if event.kind == "delta":
+            text += event.text_delta
+        else:
+            completed = event
+    if completed is None:
+        raise ProviderError("Provider stream ended without completion event", code="invalid_stream")
+    return ProviderResult(
+        text=text,
+        input_tokens=completed.input_tokens,
+        output_tokens=completed.output_tokens,
+        provider_request_id=completed.provider_request_id,
+    )
+
 
 def adapter_for(model: AIModel):
     provider = model.provider
@@ -156,4 +386,18 @@ def adapter_for(model: AIModel):
             base_url=provider.api_base_url
             or os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1"),
         )
-    raise ProviderError(f"Unsupported adapter: {provider.adapter_type}")
+    if provider.adapter_type == Provider.AdapterType.ANTHROPIC_MESSAGES:
+        return AnthropicMessagesAdapter(
+            api_key=os.getenv(provider.credential_env or "ANTHROPIC_API_KEY", ""),
+            base_url=provider.api_base_url
+            or os.getenv("ANTHROPIC_API_BASE_URL", "https://api.anthropic.com/v1"),
+        )
+    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT:
+        return DeepSeekChatAdapter(
+            api_key=os.getenv(provider.credential_env or "DEEPSEEK_API_KEY", ""),
+            base_url=provider.api_base_url
+            or os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
+        )
+    raise ProviderError(
+        f"Unsupported adapter: {provider.adapter_type}", code="unsupported_adapter", retryable=False
+    )

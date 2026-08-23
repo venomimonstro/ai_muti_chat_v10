@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершён backend-контур Sprint 0–7.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершён backend-контур Sprint 0–9.
 
 ## Что уже заложено
 
@@ -11,6 +11,10 @@
 - идемпотентная отправка по `Idempotency-Key`;
 - независимый `ProviderAdapter` и тестовый `EchoProviderAdapter`;
 - реальный OpenAI Responses API adapter и серверный SSE streaming;
+- Anthropic Messages и DeepSeek Chat adapters с единым контрактом;
+- capabilities, ручной выбор модели и API версионированных цен;
+- retries до первого токена, fallback-цепочки и circuit breaker;
+- provider health snapshots, incident correlation и emergency kill switch;
 - сохранение partial output во время генерации;
 - versioned pricing и фактическая стоимость по provider usage;
 - immutable ledger, reservation → settlement → release;
@@ -60,4 +64,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 8–9 — укрепление prelaunch-контура, наблюдаемость, лимиты и эксплуатационные сценарии.
+Следующий этап: Sprint 10 — проекты и базовая работа с файлами.
