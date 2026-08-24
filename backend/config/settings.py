@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "apps.files",
     "apps.workspace_search",
     "apps.memory_store",
+    "apps.evals",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -127,6 +128,11 @@ SMART_CONTEXT_FILE_CHUNK_LIMIT = int(os.getenv("SMART_CONTEXT_FILE_CHUNK_LIMIT",
 SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT = int(os.getenv("SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT", "200"))
 SMART_CONTEXT_MIN_RELEVANCE = float(os.getenv("SMART_CONTEXT_MIN_RELEVANCE", "0.08"))
 SMART_CONTEXT_SUMMARY_CHARS = int(os.getenv("SMART_CONTEXT_SUMMARY_CHARS", "6000"))
+EVAL_MIN_AVERAGE_SCORE = float(os.getenv("EVAL_MIN_AVERAGE_SCORE", "0.70"))
+EVAL_MAX_HALLUCINATION_RATE = float(os.getenv("EVAL_MAX_HALLUCINATION_RATE", "0.05"))
+EVAL_MAX_ERROR_RATE = float(os.getenv("EVAL_MAX_ERROR_RATE", "0.02"))
+EVAL_MAX_REGRESSION = float(os.getenv("EVAL_MAX_REGRESSION", "0.05"))
+EVAL_MAX_OUTPUT_TOKENS = int(os.getenv("EVAL_MAX_OUTPUT_TOKENS", "1024"))
 PAYMENTS_ENABLED = os.getenv("PAYMENTS_ENABLED", "false").lower() == "true"
 PAYMENTS_LIVE_ENABLED = os.getenv("PAYMENTS_LIVE_ENABLED", "false").lower() == "true"
 PAYMENT_RETURN_URL = os.getenv(

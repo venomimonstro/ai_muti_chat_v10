@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–14.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–15.
 
 ## Что уже заложено
 
@@ -43,6 +43,10 @@
 - релевантный retrieval памяти, старых сообщений и изолированных file chunks;
 - rolling summary без удаления исходной истории и immutable Context Snapshot;
 - дедупликация источников и подробный Context Inspector для каждого ответа;
+- русскоязычный Eval Harness с полной taxonomy из 15 классов задач;
+- versioned eval datasets, deterministic rubric judge и model scorecards;
+- сбор качества, галлюцинаций, latency, токенов и provider cost;
+- regression gates и запрет promotion модели при падении качества;
 - Docker Compose: PostgreSQL, Redis, backend, worker, frontend;
 - CI: backend lint/tests и frontend lint/build;
 - ADR и implementation brief для текущего этапа.
@@ -84,4 +88,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 15 — Eval Harness с русскоязычными golden-наборами, judge-процедурой и regression gates.
+Следующий этап: Sprint 16 — AUTO Router с классификацией задач, режимами Эконом/Баланс/Максимум и explainability.

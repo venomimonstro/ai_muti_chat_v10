@@ -1,0 +1,128 @@
+{
+  "dataset_version": "ru-core-v1",
+  "language": "ru",
+  "cases": [
+    {
+      "slug": "qa-boiling-water",
+      "taxonomy": "qa",
+      "title": "Температура кипения воды",
+      "prompt": "При какой температуре кипит чистая вода при нормальном атмосферном давлении? Ответь одним предложением.",
+      "rubric": {"required_phrases": ["100", "нормальном атмосферном давлении"], "forbidden_phrases": ["90 градус"], "max_chars": 180},
+      "tags": ["facts", "concise"]
+    },
+    {
+      "slug": "copywriting-seo-offer",
+      "taxonomy": "copywriting",
+      "title": "Короткий оффер SEO-аудита",
+      "prompt": "Напиши короткий оффер услуги SEO-аудита для владельца интернет-магазина. Не более 280 знаков, без обещаний гарантированного ТОП-1.",
+      "rubric": {"required_phrases": ["SEO-аудит"], "required_any": ["продаж", "заявк", "трафик"], "forbidden_phrases": ["гарантируем ТОП-1", "гарантия ТОП-1"], "max_chars": 280},
+      "tags": ["marketing", "constraints"]
+    },
+    {
+      "slug": "editing-commercial-russian",
+      "taxonomy": "editing",
+      "title": "Исправление коммерческого текста",
+      "prompt": "Исправь ошибки, не меняя смысл: «Наша компания предлогает комплексные решения, которые поможет увеличить продажи и привлекут новых клиента». Верни только исправленное предложение.",
+      "rubric": {"required_phrases": ["Наша компания предлагает комплексные решения", "помогут увеличить продажи", "привлечь новых клиентов"], "forbidden_phrases": ["предлогает"], "max_chars": 180},
+      "tags": ["grammar"]
+    },
+    {
+      "slug": "seo-meta-structure",
+      "taxonomy": "seo",
+      "title": "SEO-метаданные страницы",
+      "prompt": "Подготовь Title, H1 и Description для страницы услуги «Настройка Яндекс Директ» в Москве. Каждый элемент выведи с новой строки.",
+      "rubric": {"required_phrases": ["Яндекс Директ", "Москва"], "required_sections": ["Title", "H1", "Description"], "max_chars": 500},
+      "tags": ["search", "structure"]
+    },
+    {
+      "slug": "marketing-funnel-diagnosis",
+      "taxonomy": "marketing",
+      "title": "Диагностика рекламной воронки",
+      "prompt": "У интернет-магазина 10 000 переходов, 100 заказов и рекламные расходы 300 000 рублей. Назови конверсию и предложи три проверяемые гипотезы роста. Не выдумывай данные о марже.",
+      "rubric": {"required_phrases": ["1%", "гипотез"], "required_any": ["карточ", "корзин", "оффер", "аудитор"], "forbidden_phrases": ["маржа составляет"], "required_sections": ["1.", "2.", "3."], "max_chars": 1200},
+      "tags": ["analytics", "math"]
+    },
+    {
+      "slug": "coding-stable-deduplicate",
+      "taxonomy": "coding",
+      "title": "Python: стабильная дедупликация",
+      "prompt": "Напиши функцию Python deduplicate(items), которая удаляет дубликаты строк без изменения порядка. Верни только код.",
+      "rubric": {"required_phrases": ["def deduplicate", "return"], "forbidden_phrases": ["return list(set(items))"], "russian_required": false, "max_chars": 700},
+      "tags": ["python", "correctness"]
+    },
+    {
+      "slug": "debugging-mutable-default",
+      "taxonomy": "debugging",
+      "title": "Python: изменяемый аргумент по умолчанию",
+      "prompt": "Найди и исправь ошибку в Python: def add(item, items=[]): items.append(item); return items. Кратко объясни причину.",
+      "rubric": {"required_phrases": ["items=None", "изменяем"], "required_any": ["новый список", "items = []"], "max_chars": 700},
+      "tags": ["python", "bug"]
+    },
+    {
+      "slug": "spreadsheets-sum-formula",
+      "taxonomy": "spreadsheets",
+      "title": "Формула суммы диапазона",
+      "prompt": "Дай только формулу Excel для суммы ячеек B2:B10.",
+      "rubric": {"exact_answer": "=SUM(B2:B10)", "russian_required": false, "max_chars": 20},
+      "min_score": "0.900",
+      "tags": ["excel", "exact"]
+    },
+    {
+      "slug": "long-document-policy",
+      "taxonomy": "long_documents",
+      "title": "Поиск решения в документе",
+      "prompt": "Из внутреннего регламента: заявки P1 обрабатываются за 4 часа; заявки P2 - за 12 часов; заявки P3 - за 3 рабочих дня. Исключение: платёжные инциденты всегда P1. Какой срок у платёжного инцидента? Ответь кратко.",
+      "rubric": {"required_phrases": ["4 часа", "P1"], "forbidden_phrases": ["12 часов", "3 рабочих дня"], "max_chars": 180},
+      "tags": ["context", "policy"]
+    },
+    {
+      "slug": "extraction-order-json",
+      "taxonomy": "extraction",
+      "title": "Извлечение заказа в JSON",
+      "prompt": "Извлеки в JSON без пояснений: «Анна заказала 3 красных стула с доставкой в Казань». Поля: customer, quantity, item, color, city.",
+      "rubric": {"required_phrases": ["\"customer\"", "Анна", "\"quantity\"", "3", "стул", "красн", "Казань"], "russian_required": false, "max_chars": 300},
+      "tags": ["json", "facts"]
+    },
+    {
+      "slug": "reasoning-boxes",
+      "taxonomy": "reasoning",
+      "title": "Арифметическая задача",
+      "prompt": "В трёх коробках по 6 карандашей. Один карандаш потеряли. Сколько осталось? Ответь только числом.",
+      "rubric": {"exact_answer": "17", "russian_required": false, "max_chars": 4},
+      "min_score": "0.950",
+      "tags": ["arithmetic", "exact"]
+    },
+    {
+      "slug": "research-verification-plan",
+      "taxonomy": "research",
+      "title": "План проверки рыночного факта",
+      "prompt": "Опиши, как проверить актуальную долю рынка сервиса, если точная цифра не дана. Не придумывай значение. Дай 3 шага.",
+      "rubric": {"required_phrases": ["источник", "дат"], "required_any": ["официаль", "отчёт", "исследован"], "forbidden_phrases": ["доля рынка составляет"], "required_sections": ["1.", "2.", "3."], "max_chars": 800},
+      "tags": ["freshness", "sources"]
+    },
+    {
+      "slug": "structuring-support-ticket",
+      "taxonomy": "structuring",
+      "title": "Структура обращения в поддержку",
+      "prompt": "Структурируй сообщение «после оплаты деньги списались, а баланс не пополнился, заказ 42» в четыре поля: проблема, идентификатор, влияние, следующий шаг.",
+      "rubric": {"required_phrases": ["42", "баланс", "оплат"], "required_sections": ["Проблема", "Идентификатор", "Влияние", "Следующий шаг"], "max_chars": 700},
+      "tags": ["support", "format"]
+    },
+    {
+      "slug": "translation-en-ru",
+      "taxonomy": "translation",
+      "title": "Перевод интерфейсного текста",
+      "prompt": "Переведи на естественный русский язык: «Your changes have been saved. You can safely close this window.» Верни только перевод.",
+      "rubric": {"required_phrases": ["изменения сохранены", "закрыть это окно"], "max_chars": 180},
+      "tags": ["ui", "natural-language"]
+    },
+    {
+      "slug": "russian-style-no-bureaucracy",
+      "taxonomy": "russian_style",
+      "title": "Простой русский стиль",
+      "prompt": "Перепиши понятно и по-человечески: «В целях осуществления оптимизации процесса обработки входящих обращений нами было принято решение о внедрении обновлённого регламента». Не используй канцелярит и длинное тире.",
+      "rubric": {"required_phrases": ["решили", "обращен", "регламент"], "forbidden_phrases": ["в целях осуществления", "нами было принято решение", "—"], "max_chars": 220},
+      "tags": ["style", "plain-language"]
+    }
+  ]
+}
