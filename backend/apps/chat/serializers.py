@@ -4,13 +4,33 @@ from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
 from apps.projects.access import accessible_projects
 
-from .models import Conversation, Message
+from .models import Conversation, ConversationDraft, Message
 
 
 class MessageSerializer(serializers.ModelSerializer):
+    generation = serializers.SerializerMethodField()
+
     class Meta:
         model = Message
-        fields = ("id", "role", "content", "status", "created_at")
+        fields = ("id", "role", "content", "status", "generation", "created_at")
+
+    def get_generation(self, obj):
+        try:
+            generation = obj.generation_response
+        except Message.generation_response.RelatedObjectDoesNotExist:
+            return None
+        return {
+            "id": generation.id,
+            "state": generation.state,
+            "model": generation.routed_model or generation.model,
+            "provider": generation.provider_slug,
+            "cost_rub": generation.actual_cost_rub,
+            "input_tokens": generation.input_tokens,
+            "output_tokens": generation.output_tokens,
+            "error_code": generation.error_code,
+            "correlation_id": generation.correlation_id,
+            "completed_at": generation.completed_at,
+        }
 
 
 class ConversationSerializer(serializers.ModelSerializer):
@@ -52,3 +72,10 @@ class ConversationSerializer(serializers.ModelSerializer):
 class SendMessageSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=100_000)
     client_message_id = serializers.UUIDField()
+
+
+class ConversationDraftSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ConversationDraft
+        fields = ("content", "version", "updated_at")
+        read_only_fields = ("version", "updated_at")

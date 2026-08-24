@@ -56,6 +56,16 @@ class Message(models.Model):
         ]
 
 
+class ConversationDraft(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.OneToOneField(
+        Conversation, on_delete=models.CASCADE, related_name="draft"
+    )
+    content = models.TextField(blank=True)
+    version = models.PositiveIntegerField(default=1)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class Generation(models.Model):
     class State(models.TextChoices):
         QUEUED = "queued", "В очереди"

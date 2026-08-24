@@ -47,6 +47,18 @@ class SuccessfulFallbackAdapter:
         )
 
 
+class LongRunningAdapter:
+    def stream(self, **_kwargs):
+        yield ProviderStreamEvent(kind="delta", text_delta="начало ответа")
+        yield ProviderStreamEvent(kind="delta", text_delta=" продолжение")
+        yield ProviderStreamEvent(
+            kind="completed",
+            provider_request_id="too-late",
+            input_tokens=4,
+            output_tokens=3,
+        )
+
+
 @pytest.fixture
 def stream_context():
     user = User.objects.create_user(
@@ -133,6 +145,33 @@ def test_partial_provider_failure_releases_full_reserve(stream_context):
     assert user.wallet.available_rub == Decimal("10.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
     assert "event: error" in events
+
+
+@pytest.mark.django_db(transaction=True)
+def test_client_disconnect_cancels_generation_and_releases_reserve(stream_context):
+    user, conversation = stream_context
+    generation, _ = prepare(
+        user=user,
+        conversation=conversation,
+        content="Остановить ответ",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="stream:cancel",
+    )
+
+    stream = run(generation, adapter=LongRunningAdapter())
+    assert "event: generation" in next(stream)
+    assert "event: delta" in next(stream)
+    stream.close()
+
+    generation.refresh_from_db()
+    generation.assistant_message.refresh_from_db()
+    user.wallet.refresh_from_db()
+    assert generation.state == Generation.State.CANCELLED
+    assert generation.error_code == "client_cancelled"
+    assert generation.assistant_message.status == Message.Status.PARTIAL
+    assert generation.assistant_message.content == "начало ответа"
+    assert user.wallet.available_rub == Decimal("10.0000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
 
 
 @pytest.mark.django_db(transaction=True)

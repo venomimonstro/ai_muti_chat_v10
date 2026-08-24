@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "apps.chat",
     "apps.projects",
     "apps.files",
+    "apps.workspace_search",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

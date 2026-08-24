@@ -4,6 +4,8 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from apps.accounts.services import enforce_spend_limits, notify_low_balance
+
 from .models import BalanceReservation, LedgerEntry, Wallet
 
 MONEY_ZERO = Decimal("0.0000")
@@ -78,6 +80,7 @@ def reserve(user, amount: Decimal, key: str):
     if existing:
         return existing
     wallet = Wallet.objects.select_for_update().get(user=user)
+    enforce_spend_limits(wallet, amount)
     if wallet.available_rub < amount:
         raise ValidationError("Недостаточно средств")
     promo_amount = min(wallet.promo_rub, amount)
@@ -169,6 +172,7 @@ def settle(reservation_id, actual: Decimal):
     reservation.state = BalanceReservation.State.SETTLED
     reservation.settled_at = timezone.now()
     reservation.save(update_fields=["actual_rub", "state", "settled_at"])
+    notify_low_balance(wallet)
     return reservation
 
 

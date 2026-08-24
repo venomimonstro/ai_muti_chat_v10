@@ -81,3 +81,30 @@ def test_duplicate_send_does_not_duplicate_messages_or_charge():
     user.wallet.refresh_from_db()
     assert user.wallet.available_rub < Decimal("10.0000")
     assert user.wallet.available_rub > Decimal("9.9000")
+
+
+@pytest.mark.django_db
+def test_conversation_draft_sync_and_isolation():
+    user = User.objects.create_user(
+        username="draft", email="draft@example.com", password="password123"
+    )
+    outsider = User.objects.create_user(
+        username="draft-other", email="draft-other@example.com", password="password123"
+    )
+    conversation = Conversation.objects.create(owner=user)
+    from rest_framework.test import APIClient
+
+    client = APIClient()
+    client.force_authenticate(user)
+    saved = client.put(
+        f"/api/v1/conversations/{conversation.id}/draft/",
+        {"content": "Черновик между устройствами"},
+        format="json",
+    )
+    assert saved.status_code == 200
+    assert saved.data["version"] == 1
+    assert client.get(f"/api/v1/conversations/{conversation.id}/draft/").data["content"] == (
+        "Черновик между устройствами"
+    )
+    client.force_authenticate(outsider)
+    assert client.get(f"/api/v1/conversations/{conversation.id}/draft/").status_code == 404

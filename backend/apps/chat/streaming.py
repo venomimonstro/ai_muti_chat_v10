@@ -75,9 +75,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             estimated_rub=estimated,
         )
         generation.reservation_id = reservation.id
-        generation.route_price_snapshot = {
-            model.slug: str(price.id) for model, price in priced
-        }
+        generation.route_price_snapshot = {model.slug: str(price.id) for model, price in priced}
         generation.state = Generation.State.RUNNING
         generation.save(update_fields=["reservation_id", "route_price_snapshot", "state"])
     except Exception:
@@ -253,6 +251,16 @@ def run(generation, *, adapter=None):
                 "provider": selected_model.provider.slug,
             },
         )
+    except GeneratorExit:
+        release(generation.reservation_id)
+        assistant.content = full_text
+        assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
+        assistant.save(update_fields=["content", "status"])
+        generation.state = Generation.State.CANCELLED
+        generation.error_code = "client_cancelled"
+        generation.completed_at = timezone.now()
+        generation.save(update_fields=["state", "error_code", "completed_at"])
+        return
     except Exception as exc:
         release(generation.reservation_id)
         assistant.content = full_text
