@@ -13,13 +13,12 @@ from apps.billing.models import RequestCost
 from apps.billing.pricing import active_price, calculate, conservative_token_budget
 from apps.billing.services import release, reserve, settle
 from apps.memory_store.services import (
-    build_memory_context,
     extract_memory_candidates,
-    memory_message_from_snapshot,
     process_explicit_command,
     record_memory_usage,
 )
 
+from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message
 
 MAX_OUTPUT_TOKENS = 1024
@@ -70,24 +69,10 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             user=user, conversation=conversation, source_message=user_message
         )
     )
-    memory_context, memory_items = (
-        ("", []) if suppress_memory else build_memory_context(user, conversation)
-    )
-    generation.context_snapshot = {
+    memory_metadata = {
         "memory_action": memory_action,
-        "memory_items": [
-            {
-                "id": str(item.id),
-                "scope": item.scope,
-                "memory_type": item.memory_type,
-                "content": item.content,
-            }
-            for item in memory_items
-        ],
         "memory_candidates": [str(candidate.id) for candidate in memory_candidates],
     }
-    generation.save(update_fields=["context_snapshot"])
-    record_memory_usage(generation, memory_items)
 
     try:
         primary = AIModel.objects.select_related("provider", "fallback_model").get(
@@ -96,13 +81,32 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
         candidates = candidate_models(primary)
         if not candidates:
             raise ValidationError("Выбранная модель временно недоступна")
-        history = [
-            {"role": item.role, "content": item.content}
-            for item in conversation.messages.exclude(id=assistant_message.id)
+        narrowest = min(candidates, key=lambda item: item.context_window)
+        snapshot, memory_items = assemble_context(
+            user=user,
+            conversation=conversation,
+            assistant_message=assistant_message,
+            model=narrowest,
+            output_tokens=MAX_OUTPUT_TOKENS,
+            include_memory=not suppress_memory,
+        )
+        snapshot.update(memory_metadata)
+        snapshot["memory_items"] = [
+            {
+                "id": str(item.id),
+                "scope": item.scope,
+                "memory_type": item.memory_type,
+                "content": item.content,
+            }
+            for item in memory_items
         ]
-        if memory_context:
-            history.insert(0, {"role": "system", "content": memory_context})
-        input_budget, output_budget = conservative_token_budget(history, MAX_OUTPUT_TOKENS)
+        generation.context_snapshot = snapshot
+        generation.save(update_fields=["context_snapshot"])
+        record_memory_usage(generation, memory_items)
+        history = snapshot["provider_messages"]
+        input_budget, output_budget = conservative_token_budget(
+            history, snapshot["budget"]["output_reserved"]
+        )
         priced = [(model, active_price(model.slug)) for model in candidates]
         estimates = [calculate(price, input_budget, output_budget)[1] for _, price in priced]
         estimated = max(estimates)
@@ -150,13 +154,9 @@ def run(generation, *, adapter=None):
         slug=generation.model
     )
     candidates = [primary] if adapter else candidate_models(primary)
-    history = [
-        {"role": item.role, "content": item.content}
-        for item in generation.user_message.conversation.messages.exclude(id=assistant.id)
+    history = generation.context_snapshot.get("provider_messages") or [
+        {"role": generation.user_message.role, "content": generation.user_message.content}
     ]
-    memory_context = memory_message_from_snapshot(generation.context_snapshot)
-    if memory_context:
-        history.insert(0, {"role": "system", "content": memory_context})
     full_text = assistant.content
     sequence = generation.attempts.count()
     completed = None
@@ -291,6 +291,7 @@ def run(generation, *, adapter=None):
                 "completed_at",
             ]
         )
+        refresh_rolling_summary(generation.user_message.conversation)
         yield sse(
             "completed",
             {

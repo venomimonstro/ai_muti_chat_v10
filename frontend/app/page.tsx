@@ -2,7 +2,7 @@
 
 import {FormEvent, KeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {ApiError, api, ensureCsrf, streamMessage} from "../lib/api";
-import type {AIModel, ChatMessage, Conversation, FileAsset, MemoryCandidate, MemoryItem, Notification, Preference, Project, SearchResult, User, Wallet} from "../lib/types";
+import type {AIModel, ChatMessage, Conversation, FileAsset, GenerationMeta, MemoryCandidate, MemoryItem, Notification, Preference, Project, SearchResult, User, Wallet} from "../lib/types";
 import {Icon} from "./components/icons";
 
 type Panel = "search" | "projects" | "files" | "memory" | "wallet" | "notifications" | "settings" | "support" | "cost" | null;
@@ -284,7 +284,7 @@ export default function Home() {
     {panel === "notifications" && <NotificationsPanel items={notifications} onChange={setNotifications} onClose={() => setPanel(null)}/>} 
     {panel === "settings" && preferences && user && <SettingsPanel user={user} preferences={preferences} onChange={(value) => {setPreferences(value); if (!value.auto_memory_enabled) setMemoryCandidates([]);}} onLogout={() => {setUser(null); setBoot("guest");}} onClose={() => setPanel(null)}/>} 
     {panel === "support" && <SupportPanel onClose={() => setPanel(null)}/>} 
-    {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl><h3>Использованная память</h3><div className="contextList">{costMessage.generation.context.memories.length === 0 ? <p className="muted">В этот запрос память не добавлялась.</p> : costMessage.generation.context.memories.map((item) => <article key={item.id}><small>{item.scope} · {item.memory_type}</small><p>{item.content}</p></article>)}</div></Drawer>}
+    {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl><ContextInspector context={costMessage.generation.context}/></Drawer>}
     <button className="supportFloat" onClick={() => setPanel("support")} aria-label="Написать в поддержку"><Icon name="support"/></button>
   </main>;
 }
@@ -369,6 +369,16 @@ function SupportPanel({onClose}: {onClose: () => void}) {
   const [sent, setSent] = useState(false); const [error, setError] = useState("");
   const submit = async (event: FormEvent<HTMLFormElement>) => {event.preventDefault(); const data = new FormData(event.currentTarget); try {await api("/auth/support/", {method: "POST", body: JSON.stringify({subject: data.get("subject"), message: data.get("message")})}); setSent(true);} catch (reason) {setError(reason instanceof Error ? reason.message : "Не удалось отправить обращение");}};
   return <Drawer title="Поддержка" onClose={onClose}>{sent ? <div className="successState"><div>✓</div><h3>Обращение отправлено</h3><p>Мы сохранили запрос и его технический контекст.</p><Button onClick={onClose}>Готово</Button></div> : <form className="stack" onSubmit={submit}><p className="muted">Опишите проблему без паролей, ключей и платёжных секретов.</p><label>Тема<input name="subject" maxLength={160} required/></label><label>Что произошло<textarea name="message" rows={7} required/></label>{error && <div className="alert error">{error}</div>}<Button className="primary">Отправить обращение</Button></form>}</Drawer>;
+}
+
+function ContextInspector({context}: {context: GenerationMeta["context"]}) {
+  const budget = context.budget ?? {};
+  const components = context.components ?? [];
+  const labels: Record<string, string> = {system_policy: "Системная политика", project_instruction: "Инструкция проекта", recent_message: "Недавнее сообщение", rolling_summary: "Rolling summary", memory: "Память", old_message: "Старое сообщение", file_chunk: "Фрагмент файла"};
+  const used = budget.input_tokens ?? 0;
+  const limit = budget.input_limit ?? 0;
+  const fill = limit ? Math.min(100, Math.round(used / limit * 100)) : 0;
+  return <section className="contextInspector"><header><div><h3>Context Snapshot</h3><small>{context.sha256 ? `#${context.sha256.slice(0, 10)}` : "Старый формат snapshot"}</small></div><b>{used.toLocaleString("ru")} / {limit.toLocaleString("ru")}</b></header>{limit > 0 && <div className="budgetBar" title={`Использовано ${fill}%`}><i style={{width: `${fill}%`}}/></div>}<div className="budgetMeta"><span>Резерв ответа: {(budget.output_reserved ?? 0).toLocaleString("ru")}</span><span>Свободно: {(budget.remaining ?? 0).toLocaleString("ru")}</span></div><div className="contextList">{components.length === 0 ? <p className="muted">Детализация недоступна для этого ответа.</p> : components.map((item, index) => <article key={`${item.source_id}-${index}`}><small>{labels[item.kind] ?? item.kind} · {item.tokens} токенов{item.truncated ? " · сокращено" : ""}</small><b>{item.label}</b><p>{item.content}</p></article>)}</div>{(context.dropped_or_deduplicated ?? 0) > 0 && <p className="contextDropped">Не включено или удалено дубликатов: {context.dropped_or_deduplicated}</p>}</section>;
 }
 
 function Empty({icon, title, text}: {icon: "search" | "folder" | "file" | "bell" | "memory"; title: string; text: string}) {

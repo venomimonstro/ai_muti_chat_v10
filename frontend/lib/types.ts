@@ -20,6 +20,25 @@ export type GenerationMeta = {
   context: {
     memories: Array<{id: string; scope: string; memory_type: string; content: string}>;
     memory_action: {action: string; message: string} | null;
+    version: number | null;
+    sha256: string;
+    budget: {
+      context_window?: number;
+      input_limit?: number;
+      input_tokens?: number;
+      output_reserved?: number;
+      remaining?: number;
+    };
+    components: Array<{
+      kind: string;
+      source_id: string;
+      label: string;
+      content: string;
+      tokens: number;
+      score: number;
+      truncated: boolean;
+    }>;
+    dropped_or_deduplicated: number;
   };
 };
 

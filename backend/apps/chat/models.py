@@ -67,6 +67,24 @@ class ConversationDraft(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class ConversationSummary(models.Model):
+    """Derived, replaceable summary. Messages remain the source of truth."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.OneToOneField(
+        Conversation, on_delete=models.CASCADE, related_name="rolling_summary"
+    )
+    content = models.TextField(blank=True)
+    through_message = models.ForeignKey(
+        Message, null=True, blank=True, on_delete=models.SET_NULL, related_name="summary_checkpoints"
+    )
+    source_message_count = models.PositiveIntegerField(default=0)
+    token_estimate = models.PositiveIntegerField(default=0)
+    version = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class Generation(models.Model):
     class State(models.TextChoices):
         QUEUED = "queued", "В очереди"

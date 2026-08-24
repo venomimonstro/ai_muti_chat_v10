@@ -33,6 +33,13 @@ class MessageSerializer(serializers.ModelSerializer):
             "context": {
                 "memories": generation.context_snapshot.get("memory_items", []),
                 "memory_action": generation.context_snapshot.get("memory_action"),
+                "version": generation.context_snapshot.get("version"),
+                "sha256": generation.context_snapshot.get("sha256", ""),
+                "budget": generation.context_snapshot.get("budget", {}),
+                "components": generation.context_snapshot.get("components", []),
+                "dropped_or_deduplicated": generation.context_snapshot.get(
+                    "dropped_or_deduplicated", 0
+                ),
             },
         }
 
