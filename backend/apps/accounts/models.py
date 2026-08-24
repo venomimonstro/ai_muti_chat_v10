@@ -36,6 +36,7 @@ class UserPreference(models.Model):
     product_notifications = models.BooleanField(default=True)
     billing_notifications = models.BooleanField(default=True)
     compact_sidebar = models.BooleanField(default=False)
+    memory_enabled = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
 
 

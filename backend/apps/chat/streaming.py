@@ -12,6 +12,12 @@ from apps.ai_registry.reliability import candidate_models, record_failure, recor
 from apps.billing.models import RequestCost
 from apps.billing.pricing import active_price, calculate, conservative_token_budget
 from apps.billing.services import release, reserve, settle
+from apps.memory_store.services import (
+    build_memory_context,
+    memory_message_from_snapshot,
+    process_explicit_command,
+    record_memory_usage,
+)
 
 from .models import Conversation, Generation, GenerationAttempt, Message
 
@@ -53,6 +59,27 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             idempotency_key=idempotency_key,
         )
 
+    memory_action, suppress_memory = process_explicit_command(
+        user=user, conversation=conversation, source_message=user_message
+    )
+    memory_context, memory_items = (
+        ("", []) if suppress_memory else build_memory_context(user, conversation)
+    )
+    generation.context_snapshot = {
+        "memory_action": memory_action,
+        "memory_items": [
+            {
+                "id": str(item.id),
+                "scope": item.scope,
+                "memory_type": item.memory_type,
+                "content": item.content,
+            }
+            for item in memory_items
+        ],
+    }
+    generation.save(update_fields=["context_snapshot"])
+    record_memory_usage(generation, memory_items)
+
     try:
         primary = AIModel.objects.select_related("provider", "fallback_model").get(
             slug=generation.model, enabled=True
@@ -64,6 +91,8 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             {"role": item.role, "content": item.content}
             for item in conversation.messages.exclude(id=assistant_message.id)
         ]
+        if memory_context:
+            history.insert(0, {"role": "system", "content": memory_context})
         input_budget, output_budget = conservative_token_budget(history, MAX_OUTPUT_TOKENS)
         priced = [(model, active_price(model.slug)) for model in candidates]
         estimates = [calculate(price, input_budget, output_budget)[1] for _, price in priced]
@@ -116,6 +145,9 @@ def run(generation, *, adapter=None):
         {"role": item.role, "content": item.content}
         for item in generation.user_message.conversation.messages.exclude(id=assistant.id)
     ]
+    memory_context = memory_message_from_snapshot(generation.context_snapshot)
+    if memory_context:
+        history.insert(0, {"role": "system", "content": memory_context})
     full_text = assistant.content
     sequence = generation.attempts.count()
     completed = None
@@ -126,6 +158,8 @@ def run(generation, *, adapter=None):
         "generation",
         {"id": generation.id, "state": "streaming", "correlation_id": generation.correlation_id},
     )
+    if generation.context_snapshot.get("memory_action"):
+        yield sse("memory", generation.context_snapshot["memory_action"])
     try:
         for model in candidates:
             request_cost = RequestCost.objects.get(generation_id=generation.id)

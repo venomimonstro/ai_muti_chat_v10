@@ -30,6 +30,10 @@ class MessageSerializer(serializers.ModelSerializer):
             "error_code": generation.error_code,
             "correlation_id": generation.correlation_id,
             "completed_at": generation.completed_at,
+            "context": {
+                "memories": generation.context_snapshot.get("memory_items", []),
+                "memory_action": generation.context_snapshot.get("memory_action"),
+            },
         }
 
 
@@ -43,6 +47,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "title",
             "selected_model",
             "project",
+            "memory_enabled",
             "created_at",
             "updated_at",
             "messages",

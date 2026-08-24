@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "apps.projects",
     "apps.files",
     "apps.workspace_search",
+    "apps.memory_store",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

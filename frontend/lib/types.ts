@@ -17,6 +17,10 @@ export type GenerationMeta = {
   error_code: string;
   correlation_id: string;
   completed_at: string | null;
+  context: {
+    memories: Array<{id: string; scope: string; memory_type: string; content: string}>;
+    memory_action: {action: string; message: string} | null;
+  };
 };
 
 export type ChatMessage = {
@@ -33,6 +37,7 @@ export type Conversation = {
   title: string;
   selected_model: string;
   project: string | null;
+  memory_enabled: boolean;
   created_at: string;
   updated_at: string;
   messages: ChatMessage[];
@@ -107,6 +112,24 @@ export type Preference = {
   product_notifications: boolean;
   billing_notifications: boolean;
   compact_sidebar: boolean;
+  memory_enabled: boolean;
+  updated_at: string;
+};
+
+export type MemoryItem = {
+  id: string;
+  project: string | null;
+  conversation: string | null;
+  scope: "global" | "project" | "conversation";
+  memory_type: "fact" | "preference" | "instruction" | "decision";
+  content: string;
+  importance_score: string;
+  confidence_score: string;
+  source_kind: string;
+  status: "active" | "archived" | "superseded" | "deleted";
+  pinned: boolean;
+  enabled: boolean;
+  created_at: string;
   updated_at: string;
 };
 

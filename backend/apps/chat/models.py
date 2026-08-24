@@ -18,6 +18,7 @@ class Conversation(models.Model):
         blank=True,
         related_name="conversations",
     )
+    memory_enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -94,6 +95,7 @@ class Generation(models.Model):
     provider_slug = models.CharField(max_length=100, blank=True)
     correlation_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
     route_price_snapshot = models.JSONField(default=dict, blank=True)
+    context_snapshot = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True)
 

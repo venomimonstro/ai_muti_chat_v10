@@ -43,6 +43,7 @@ class UserPreferenceSerializer(serializers.ModelSerializer):
             "product_notifications",
             "billing_notifications",
             "compact_sidebar",
+            "memory_enabled",
             "updated_at",
         )
         read_only_fields = ("updated_at",)
