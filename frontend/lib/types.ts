@@ -113,6 +113,9 @@ export type Preference = {
   billing_notifications: boolean;
   compact_sidebar: boolean;
   memory_enabled: boolean;
+  auto_memory_enabled: boolean;
+  auto_memory_default_scope: "global" | "project" | "conversation";
+  auto_memory_available: boolean;
   updated_at: string;
 };
 
@@ -125,12 +128,35 @@ export type MemoryItem = {
   content: string;
   importance_score: string;
   confidence_score: string;
+  trust_level: string;
   source_kind: string;
   status: "active" | "archived" | "superseded" | "deleted";
   pinned: boolean;
   enabled: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type MemoryCandidate = {
+  id: string;
+  project: string | null;
+  conversation: string;
+  source_message: string;
+  suggested_scope: "global" | "project" | "conversation";
+  memory_type: "fact" | "preference" | "instruction" | "decision";
+  content: string;
+  subject_key: string;
+  confidence_score: string;
+  trust_level: string;
+  source_kind: string;
+  extraction_version: string;
+  reason: string;
+  status: "pending" | "conflict" | "duplicate" | "accepted" | "rejected" | "dismissed";
+  duplicate_content: string | null;
+  conflict_content: string | null;
+  accepted_item: string | null;
+  created_at: string;
+  reviewed_at: string | null;
 };
 
 export type SearchResult = {

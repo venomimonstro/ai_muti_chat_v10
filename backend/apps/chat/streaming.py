@@ -14,6 +14,7 @@ from apps.billing.pricing import active_price, calculate, conservative_token_bud
 from apps.billing.services import release, reserve, settle
 from apps.memory_store.services import (
     build_memory_context,
+    extract_memory_candidates,
     memory_message_from_snapshot,
     process_explicit_command,
     record_memory_usage,
@@ -62,6 +63,13 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
     memory_action, suppress_memory = process_explicit_command(
         user=user, conversation=conversation, source_message=user_message
     )
+    memory_candidates = (
+        []
+        if memory_action or suppress_memory
+        else extract_memory_candidates(
+            user=user, conversation=conversation, source_message=user_message
+        )
+    )
     memory_context, memory_items = (
         ("", []) if suppress_memory else build_memory_context(user, conversation)
     )
@@ -76,6 +84,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             }
             for item in memory_items
         ],
+        "memory_candidates": [str(candidate.id) for candidate in memory_candidates],
     }
     generation.save(update_fields=["context_snapshot"])
     record_memory_usage(generation, memory_items)
@@ -160,6 +169,14 @@ def run(generation, *, adapter=None):
     )
     if generation.context_snapshot.get("memory_action"):
         yield sse("memory", generation.context_snapshot["memory_action"])
+    if generation.context_snapshot.get("memory_candidates"):
+        yield sse(
+            "memory_candidates",
+            {
+                "count": len(generation.context_snapshot["memory_candidates"]),
+                "message": "Найдены предложения для памяти",
+            },
+        )
     try:
         for model in candidates:
             request_cost = RequestCost.objects.get(generation_id=generation.id)

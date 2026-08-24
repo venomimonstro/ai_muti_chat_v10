@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 
 from apps.billing.services import credit
+from apps.memory_store.models import MemoryCandidate
 
 from .models import Notification, SupportRequest, UserPreference
 from .serializers import (
@@ -82,11 +83,19 @@ class PreferenceView(APIView):
         return Response(UserPreferenceSerializer(self.get_object(request)).data)
 
     def patch(self, request):
-        serializer = UserPreferenceSerializer(
-            self.get_object(request), data=request.data, partial=True
-        )
+        preference = self.get_object(request)
+        candidates_were_enabled = preference.auto_memory_enabled and preference.memory_enabled
+        serializer = UserPreferenceSerializer(preference, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        candidates_are_enabled = (
+            serializer.instance.auto_memory_enabled and serializer.instance.memory_enabled
+        )
+        if candidates_were_enabled and not candidates_are_enabled:
+            MemoryCandidate.objects.filter(
+                owner=request.user,
+                status__in=[MemoryCandidate.Status.PENDING, MemoryCandidate.Status.CONFLICT],
+            ).update(status=MemoryCandidate.Status.DISMISSED, reviewed_at=timezone.now())
         return Response(serializer.data)
 
 

@@ -23,6 +23,11 @@ class User(AbstractUser):
 
 
 class UserPreference(models.Model):
+    class AutoMemoryScope(models.TextChoices):
+        GLOBAL = "global", "Все чаты"
+        PROJECT = "project", "Проект"
+        CONVERSATION = "conversation", "Только чат"
+
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="preferences"
     )
@@ -37,6 +42,12 @@ class UserPreference(models.Model):
     billing_notifications = models.BooleanField(default=True)
     compact_sidebar = models.BooleanField(default=False)
     memory_enabled = models.BooleanField(default=True)
+    auto_memory_enabled = models.BooleanField(default=False)
+    auto_memory_default_scope = models.CharField(
+        max_length=20,
+        choices=AutoMemoryScope.choices,
+        default=AutoMemoryScope.CONVERSATION,
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
 

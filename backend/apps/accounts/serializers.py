@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 
@@ -34,6 +35,8 @@ class LoginSerializer(serializers.Serializer):
 
 
 class UserPreferenceSerializer(serializers.ModelSerializer):
+    auto_memory_available = serializers.SerializerMethodField()
+
     class Meta:
         model = UserPreference
         fields = (
@@ -44,11 +47,21 @@ class UserPreferenceSerializer(serializers.ModelSerializer):
             "billing_notifications",
             "compact_sidebar",
             "memory_enabled",
+            "auto_memory_enabled",
+            "auto_memory_default_scope",
+            "auto_memory_available",
             "updated_at",
         )
-        read_only_fields = ("updated_at",)
+        read_only_fields = ("auto_memory_available", "updated_at")
+
+    def get_auto_memory_available(self, _obj):
+        return settings.AUTO_MEMORY_ENABLED
 
     def validate(self, attrs):
+        if attrs.get("auto_memory_enabled") and not settings.AUTO_MEMORY_ENABLED:
+            raise serializers.ValidationError(
+                {"auto_memory_enabled": "Автоматические предложения памяти выключены"}
+            )
         for field in ("daily_spend_limit_rub", "monthly_spend_limit_rub"):
             value = attrs.get(field)
             if value is not None and value <= 0:

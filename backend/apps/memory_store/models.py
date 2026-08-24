@@ -47,6 +47,7 @@ class MemoryItem(models.Model):
     memory_type = models.CharField(max_length=20, choices=Type.choices, default=Type.FACT)
     content = models.TextField(max_length=4000)
     normalized_content = models.TextField(max_length=4000)
+    subject_key = models.CharField(max_length=160, blank=True)
     importance_score = models.DecimalField(
         max_digits=3,
         decimal_places=2,
@@ -54,6 +55,12 @@ class MemoryItem(models.Model):
         validators=[MinValueValidator(0), MaxValueValidator(1)],
     )
     confidence_score = models.DecimalField(
+        max_digits=3,
+        decimal_places=2,
+        default="1.00",
+        validators=[MinValueValidator(0), MaxValueValidator(1)],
+    )
+    trust_level = models.DecimalField(
         max_digits=3,
         decimal_places=2,
         default="1.00",
@@ -135,5 +142,86 @@ class GenerationMemoryUsage(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["generation", "position"], name="unique_generation_memory_position"
+            )
+        ]
+
+
+class MemoryCandidate(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Ожидает подтверждения"
+        CONFLICT = "conflict", "Есть конфликт"
+        DUPLICATE = "duplicate", "Дубликат"
+        ACCEPTED = "accepted", "Принято"
+        REJECTED = "rejected", "Отклонено"
+        DISMISSED = "dismissed", "Скрыто"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memory_candidates"
+    )
+    project = models.ForeignKey(
+        "projects.Project",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="memory_candidates",
+    )
+    conversation = models.ForeignKey(
+        "chat.Conversation", on_delete=models.CASCADE, related_name="memory_candidates"
+    )
+    source_message = models.ForeignKey(
+        "chat.Message", on_delete=models.CASCADE, related_name="memory_candidates"
+    )
+    suggested_scope = models.CharField(max_length=20, choices=MemoryItem.Scope.choices)
+    memory_type = models.CharField(max_length=20, choices=MemoryItem.Type.choices)
+    content = models.TextField(max_length=1000)
+    normalized_content = models.TextField(max_length=1000)
+    subject_key = models.CharField(max_length=160)
+    confidence_score = models.DecimalField(
+        max_digits=3,
+        decimal_places=2,
+        validators=[MinValueValidator(0), MaxValueValidator(1)],
+    )
+    trust_level = models.DecimalField(
+        max_digits=3,
+        decimal_places=2,
+        default="1.00",
+        validators=[MinValueValidator(0), MaxValueValidator(1)],
+    )
+    source_kind = models.CharField(max_length=24, default="direct_user")
+    extraction_version = models.CharField(max_length=32, default="rules-v1")
+    reason = models.CharField(max_length=240)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    duplicate_of = models.ForeignKey(
+        MemoryItem,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="duplicate_candidates",
+    )
+    conflicts_with = models.ForeignKey(
+        MemoryItem,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="conflicting_candidates",
+    )
+    accepted_item = models.OneToOneField(
+        MemoryItem,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="accepted_candidate",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["owner", "status", "created_at"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_message", "subject_key"],
+                name="unique_memory_candidate_subject_per_message",
             )
         ]

@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–12.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–13.
 
 ## Что уже заложено
 
@@ -36,6 +36,9 @@
 - ручные команды «Запомни», «Не запоминай» и «Забудь» без скрытого автосбора;
 - редактирование, архив, закрепление и отключение памяти;
 - неизменяемый snapshot памяти и Context Inspector для каждого ответа;
+- auto-memory candidates за серверным feature flag и пользовательским opt-in;
+- локальное извлечение только из прямых сообщений пользователя без дополнительных AI-затрат;
+- trust/confidence, фильтрация секретов, дедупликация и подтверждаемая замена конфликтов;
 - Docker Compose: PostgreSQL, Redis, backend, worker, frontend;
 - CI: backend lint/tests и frontend lint/build;
 - ADR и implementation brief для текущего этапа.
@@ -77,4 +80,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 13 — автоматические кандидаты памяти за feature flag с защитой от конфликтов и poisoning.
+Следующий этап: Sprint 14 — Smart Context с rolling summary, retrieval и строгими token budgets.

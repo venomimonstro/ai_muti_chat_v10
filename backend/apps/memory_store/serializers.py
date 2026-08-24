@@ -2,8 +2,8 @@ from rest_framework import serializers
 
 from apps.projects.access import accessible_projects
 
-from .models import MemoryItem, MemoryRevision
-from .services import create_revision, normalize_content
+from .models import MemoryCandidate, MemoryItem, MemoryRevision
+from .services import create_revision, normalize_content, subject_key_for_content
 
 
 class MemoryRevisionSerializer(serializers.ModelSerializer):
@@ -26,6 +26,7 @@ class MemoryItemSerializer(serializers.ModelSerializer):
             "content",
             "importance_score",
             "confidence_score",
+            "trust_level",
             "source_kind",
             "source_message",
             "valid_from",
@@ -40,6 +41,7 @@ class MemoryItemSerializer(serializers.ModelSerializer):
         read_only_fields = (
             "id",
             "confidence_score",
+            "trust_level",
             "source_kind",
             "source_message",
             "created_at",
@@ -76,6 +78,7 @@ class MemoryItemSerializer(serializers.ModelSerializer):
         item = MemoryItem.objects.create(
             owner=self.context["request"].user,
             normalized_content=normalize_content(validated_data["content"]),
+            subject_key=subject_key_for_content(validated_data["content"]),
             source_kind="user_manual",
             **validated_data,
         )
@@ -86,7 +89,43 @@ class MemoryItemSerializer(serializers.ModelSerializer):
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.normalized_content = normalize_content(instance.content)
+        instance.subject_key = subject_key_for_content(instance.content)
         instance.full_clean()
         instance.save()
         create_revision(instance, self.context["request"].user)
         return instance
+
+
+class MemoryCandidateSerializer(serializers.ModelSerializer):
+    duplicate_content = serializers.CharField(source="duplicate_of.content", read_only=True)
+    conflict_content = serializers.CharField(source="conflicts_with.content", read_only=True)
+
+    class Meta:
+        model = MemoryCandidate
+        fields = (
+            "id",
+            "project",
+            "conversation",
+            "source_message",
+            "suggested_scope",
+            "memory_type",
+            "content",
+            "subject_key",
+            "confidence_score",
+            "trust_level",
+            "source_kind",
+            "extraction_version",
+            "reason",
+            "status",
+            "duplicate_content",
+            "conflict_content",
+            "accepted_item",
+            "created_at",
+            "reviewed_at",
+        )
+        read_only_fields = fields
+
+
+class AcceptCandidateSerializer(serializers.Serializer):
+    content = serializers.CharField(max_length=1000, required=False)
+    scope = serializers.ChoiceField(choices=MemoryItem.Scope.choices, required=False)
