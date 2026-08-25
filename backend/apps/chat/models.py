@@ -2,6 +2,7 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from pgvector.django import VectorField
 
 
 class Conversation(models.Model):
@@ -51,6 +52,10 @@ class Message(models.Model):
     )
     role = models.CharField(max_length=16, choices=Role.choices)
     content = models.TextField(blank=True)
+    content_sha256 = models.CharField(max_length=64, blank=True, db_index=True)
+    embedding = VectorField(dimensions=384, null=True, blank=True)
+    embedding_model = models.CharField(max_length=80, blank=True)
+    indexed_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.SAVED)
     client_message_id = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -64,6 +69,7 @@ class Message(models.Model):
                 name="unique_client_message_per_conversation",
             )
         ]
+        indexes = [models.Index(fields=["role", "created_at"], name="message_role_created_idx")]
 
 
 class ConversationDraft(models.Model):
@@ -85,7 +91,11 @@ class ConversationSummary(models.Model):
     )
     content = models.TextField(blank=True)
     through_message = models.ForeignKey(
-        Message, null=True, blank=True, on_delete=models.SET_NULL, related_name="summary_checkpoints"
+        Message,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="summary_checkpoints",
     )
     source_message_count = models.PositiveIntegerField(default=0)
     token_estimate = models.PositiveIntegerField(default=0)

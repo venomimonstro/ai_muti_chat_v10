@@ -83,6 +83,7 @@ export default function Home() {
   const [panel, setPanel] = useState<Panel>(null);
   const [costMessage, setCostMessage] = useState<ChatMessage | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -123,6 +124,14 @@ export default function Home() {
   });
   useEffect(() => { threadRef.current?.scrollTo({top: threadRef.current.scrollHeight, behavior: "smooth"}); }, [active?.messages, sending]);
   useEffect(() => {
+    if (!focusMessageId || active?.id !== activeId) return;
+    const timer = window.setTimeout(() => {
+      document.getElementById(`message-${focusMessageId}`)?.scrollIntoView({behavior: "smooth", block: "center"});
+    }, 80);
+    const clear = window.setTimeout(() => setFocusMessageId(null), 2400);
+    return () => {window.clearTimeout(timer); window.clearTimeout(clear);};
+  }, [active?.id, activeId, focusMessageId]);
+  useEffect(() => {
     if (!activeId || boot !== "ready") return;
     const localKey = `draft:${activeId}`;
     let cancelled = false;
@@ -155,7 +164,7 @@ export default function Home() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось создать чат"); }
   };
 
-  const chooseConversation = (id: string) => { setActiveId(id); setSidebarOpen(false); setPanel(null); setError(""); };
+  const chooseConversation = (id: string, messageId?: string) => { setActiveId(id); setFocusMessageId(messageId ?? null); setSidebarOpen(false); setPanel(null); setError(""); };
 
   const send = async () => {
     const prompt = value.trim(); if (!prompt || sending) return;
@@ -256,7 +265,7 @@ export default function Home() {
         {!active || active.messages.length === 0 ? <section className="emptyChat"><div className="spark"><Icon name="spark" size={30}/></div><p className="eyebrow">AI WORKSPACE</p><h1>Чем займёмся?</h1><p>Выберите задачу или начните с собственного вопроса.</p><div className="suggestions">
           {["Составь маркетинговую стратегию", "Проанализируй документ", "Помоги написать код", "Сравни варианты решения"].map((text) => <button key={text} onClick={() => setValue(text)}>{text}<span>↗</span></button>)}
         </div></section> : <div className="messageList">
-          {active.messages.map((message) => <article key={message.id} className={`message ${message.role} ${message.status}`}>
+          {active.messages.map((message) => <article id={`message-${message.id}`} key={message.id} className={`message ${message.role} ${message.status} ${focusMessageId === message.id ? "searchFocus" : ""}`}>
             <div className="messageAvatar">{message.role === "user" ? user?.username.slice(0, 1).toUpperCase() : <Icon name="spark" size={17}/>}</div>
             <div className="messageBody"><div className="messageHead"><b>{message.role === "user" ? "Вы" : "AI Workspace"}</b><time>{dateLabel(message.created_at)}</time>{message.status === "partial" && <span className="statusPill warning">Ответ прервался</span>}{message.status === "failed" && <span className="statusPill danger">Ошибка</span>}</div>
               <div className="messageText">{message.content || (message.status === "streaming" ? <span className="typing"><i/><i/><i/></span> : "Ответ не получен")}</div>
@@ -278,7 +287,7 @@ export default function Home() {
       </div>
     </section>
 
-    {panel === "search" && <SearchPanel conversations={conversations} onChoose={chooseConversation} onClose={() => setPanel(null)}/>} 
+    {panel === "search" && <SearchPanel projects={projects} onChoose={chooseConversation} onClose={() => setPanel(null)}/>} 
     {panel === "projects" && <ProjectsPanel projects={projects} onChange={setProjects} onClose={() => setPanel(null)}/>} 
     {panel === "files" && <FilesPanel files={files} projects={projects} onChange={setFiles} onClose={() => setPanel(null)}/>} 
     {panel === "memory" && <MemoryPanel items={memories} candidates={memoryCandidates} projects={projects} conversations={conversations} onChange={setMemories} onCandidatesChange={setMemoryCandidates} onClose={() => setPanel(null)}/>} 
@@ -291,10 +300,36 @@ export default function Home() {
   </main>;
 }
 
-function SearchPanel({onClose, onChoose}: {conversations: Conversation[]; onClose: () => void; onChoose: (id: string) => void}) {
-  const [query, setQuery] = useState(""); const [results, setResults] = useState<SearchResult[]>([]); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  useEffect(() => { if (query.trim().length < 2) return; const timer = setTimeout(async () => {setBusy(true); setError(""); try {const data = await api<{results: SearchResult[]}>(`/search/?q=${encodeURIComponent(query.trim())}`); setResults(data.results);} catch (reason) {setError(reason instanceof Error ? reason.message : "Ошибка поиска");} finally {setBusy(false);}}, 300); return () => clearTimeout(timer); }, [query]);
-  return <Drawer title="Поиск по рабочему пространству" onClose={onClose}><div className="searchField"><Icon name="search"/><input autoFocus value={query} onChange={(event) => {setQuery(event.target.value); if (event.target.value.trim().length < 2) setResults([]);}} placeholder="Чаты, сообщения, проекты и файлы" aria-label="Поисковый запрос"/>{busy && <div className="miniLoader"/>}</div>{error && <div className="alert error">{error}</div>}<div className="resultList">{query.length < 2 && <Empty icon="search" title="Введите минимум два символа" text="Поиск работает только в доступных вам данных."/>}{query.length >= 2 && !busy && results.length === 0 && <Empty icon="search" title="Ничего не найдено" text="Попробуйте другой запрос."/>}{query.length >= 2 && results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => {if (item.type === "conversation" || item.type === "message") onChoose(item.conversation_id ?? item.id); onClose();}}><span className="resultIcon"><Icon name={item.type === "project" ? "folder" : item.type === "file" ? "file" : "chat"}/></span><span><b>{item.title}</b><small>{item.excerpt}</small></span><em>{item.type}</em></button>)}</div></Drawer>;
+function SearchPanel({projects, onClose, onChoose}: {projects: Project[]; onClose: () => void; onChoose: (id: string, messageId?: string) => void}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [scope, setScope] = useState("all");
+  const [project, setProject] = useState("");
+  const [role, setRole] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (query.trim().length < 2) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setBusy(true); setError("");
+      const params = new URLSearchParams({q: query.trim()});
+      if (scope !== "all") params.set("type", scope);
+      if (project) params.set("project", project);
+      if (role) {params.set("role", role); params.set("type", "message");}
+      try {
+        const data = await api<{results: SearchResult[]}>(`/search/?${params}`);
+        if (!cancelled) setResults(data.results);
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Ошибка поиска");
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    }, 300);
+    return () => {cancelled = true; clearTimeout(timer);};
+  }, [query, scope, project, role]);
+  const typeLabel = (item: SearchResult) => item.type === "message" ? (item.match === "semantic" ? "По смыслу" : item.match === "hybrid" ? "Точное + смысл" : "Совпадение") : item.type === "conversation" ? "Чат" : item.type === "project" ? "Проект" : "Файл";
+  return <Drawer title="Поиск по рабочему пространству" onClose={onClose}><div className="searchField"><Icon name="search"/><input autoFocus value={query} onChange={(event) => {setQuery(event.target.value); if (event.target.value.trim().length < 2) setResults([]);}} placeholder="Найдите решение, факт или обсуждение" aria-label="Поисковый запрос"/>{busy && <div className="miniLoader"/>}</div><div className="searchFilters"><select value={scope} onChange={(event) => {setScope(event.target.value); if (event.target.value !== "message") setRole("");}} aria-label="Тип результата"><option value="all">Везде</option><option value="message">Сообщения</option><option value="conversation">Чаты</option><option value="project">Проекты</option><option value="file">Файлы</option></select><select value={project} onChange={(event) => setProject(event.target.value)} aria-label="Проект"><option value="">Все проекты</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select value={role} onChange={(event) => {setRole(event.target.value); if (event.target.value) setScope("message");}} aria-label="Автор сообщения"><option value="">Все авторы</option><option value="user">Я</option><option value="assistant">AI</option></select></div>{error && <div className="alert error">{error}</div>}<div className="resultList">{query.length < 2 && <Empty icon="search" title="Введите минимум два символа" text="Поиск работает только в доступных вам данных."/>}{query.length >= 2 && !busy && results.length === 0 && <Empty icon="search" title="Ничего не найдено" text="Попробуйте другую формулировку или снимите фильтры."/>}{query.length >= 2 && results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => {if (item.type === "conversation" || item.type === "message") onChoose(item.conversation_id ?? item.id, item.navigation.message_id); else onClose();}}><span className="resultIcon"><Icon name={item.type === "project" ? "folder" : item.type === "file" ? "file" : "chat"}/></span><span><b>{item.title}</b><small>{item.excerpt}</small></span><em>{typeLabel(item)}</em></button>)}</div></Drawer>;
 }
 
 function ProjectsPanel({projects, onChange, onClose}: {projects: Project[]; onChange: (items: Project[]) => void; onClose: () => void}) {

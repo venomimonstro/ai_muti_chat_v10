@@ -235,4 +235,16 @@ export type SearchResult = {
   project_id?: string;
   title: string;
   excerpt: string;
+  role?: "user" | "assistant" | "system";
+  created_at: string;
+  score: number;
+  match: "keyword" | "semantic" | "hybrid";
+  navigation: {
+    conversation_id?: string;
+    message_id?: string;
+    project_id?: string;
+    file_id?: string;
+    anchor?: string;
+  };
+  signals?: {lexical: number; semantic: number};
 };

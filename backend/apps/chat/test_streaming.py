@@ -100,6 +100,11 @@ def test_stream_settles_actual_usage_and_persists_response(stream_context):
     assert created is True
     assert generation.state == Generation.State.COMPLETED
     assert generation.assistant_message.status == Message.Status.COMPLETED
+    generation.user_message.refresh_from_db()
+    assert len(generation.user_message.embedding) == 384
+    assert len(generation.assistant_message.embedding) == 384
+    assert generation.user_message.embedding_model == "local-history-hash-v1"
+    assert generation.assistant_message.content_sha256
     assert "event: delta" in events
     assert "event: completed" in events
     assert cost.charged_rub == generation.actual_cost_rub

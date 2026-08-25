@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 
 from django.conf import settings
@@ -31,16 +32,25 @@ from apps.memory_store.services import (
     process_explicit_command,
     record_memory_usage,
 )
+from apps.workspace_search.embeddings import index_message
 
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 
 MAX_OUTPUT_TOKENS = 1024
 FLUSH_CHARS = 400
+logger = logging.getLogger(__name__)
 
 
 def sse(event: str, data: dict):
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+def _index_history(message):
+    try:
+        index_message(message)
+    except Exception:
+        logger.exception("History indexing failed for message_id=%s", message.id)
 
 
 def prepare(*, user, conversation, content, client_message_id, idempotency_key):
@@ -72,6 +82,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             model=locked.selected_model,
             idempotency_key=idempotency_key,
         )
+    _index_history(user_message)
 
     memory_action, suppress_memory = process_explicit_command(
         user=user, conversation=conversation, source_message=user_message
@@ -126,9 +137,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             "task_taxonomy": decision.task_taxonomy,
             "selected_model": route.selected.slug,
             "model_version": (
-                route.selected.current_version.version
-                if route.selected.current_version
-                else None
+                route.selected.current_version.version if route.selected.current_version else None
             ),
             "exact_api_id": route.selected.upstream_model,
             "explanation": decision.explanation,
@@ -225,9 +234,7 @@ def run(generation, *, adapter=None):
         yield sse("error", {"code": generation.error_code or "generation_not_runnable"})
         return
 
-    primary = AIModel.objects.select_related(
-        "provider", "fallback_model", "current_version"
-    ).get(
+    primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(
         slug=generation.model
     )
     if adapter:
@@ -311,9 +318,7 @@ def run(generation, *, adapter=None):
                 request_cost.price_version_id = route_price["price_version_id"]
                 request_cost.fx_snapshot_id = route_price["fx_snapshot_id"]
                 request_cost.pricing_snapshot = route_price["pricing_snapshot"]
-                request_cost.expected_provider_cost_rub = route_price[
-                    "expected_provider_cost_rub"
-                ]
+                request_cost.expected_provider_cost_rub = route_price["expected_provider_cost_rub"]
                 request_cost.model_version_id_snapshot = route_price["model_version_id"]
                 fields = [
                     "price_version",
@@ -449,6 +454,7 @@ def run(generation, *, adapter=None):
                 "completed_at",
             ]
         )
+        _index_history(assistant)
         refresh_rolling_summary(generation.user_message.conversation)
         yield sse(
             "completed",
@@ -471,6 +477,7 @@ def run(generation, *, adapter=None):
         assistant.content = full_text
         assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
         assistant.save(update_fields=["content", "status"])
+        _index_history(assistant)
         generation.state = Generation.State.CANCELLED
         generation.error_code = "client_cancelled"
         generation.completed_at = timezone.now()
@@ -481,6 +488,7 @@ def run(generation, *, adapter=None):
         assistant.content = full_text
         assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
         assistant.save(update_fields=["content", "status"])
+        _index_history(assistant)
         generation.state = Generation.State.FAILED
         generation.error_code = (
             exc.code if isinstance(exc, ProviderError) else "cost_or_internal_error"

@@ -1,23 +1,14 @@
-from django.db.models import Q
+from uuid import UUID
+
+from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.chat.models import Conversation, Message
-from apps.files.models import FileAsset
+from apps.chat.models import Conversation
 from apps.projects.access import accessible_projects
 
-
-def excerpt(value, query, radius=90):
-    normalized = value.replace("\n", " ").strip()
-    position = normalized.casefold().find(query.casefold())
-    if position < 0:
-        return normalized[: radius * 2]
-    start = max(position - radius, 0)
-    end = min(position + len(query) + radius, len(normalized))
-    prefix = "…" if start else ""
-    suffix = "…" if end < len(normalized) else ""
-    return f"{prefix}{normalized[start:end]}{suffix}"
+from .search import VALID_ROLES, VALID_TYPES, SearchFilters, search_workspace
 
 
 class WorkspaceSearchView(APIView):
@@ -25,61 +16,67 @@ class WorkspaceSearchView(APIView):
         query = request.query_params.get("q", "").strip()
         if len(query) < 2 or len(query) > 200:
             raise ValidationError({"q": "Введите от 2 до 200 символов"})
-        projects = accessible_projects(request.user)
-        conversations = Conversation.objects.filter(owner=request.user)
-        results = []
-        for conversation in conversations.filter(title__icontains=query)[:8]:
-            results.append(
-                {
-                    "type": "conversation",
-                    "id": conversation.id,
-                    "title": conversation.title,
-                    "excerpt": conversation.title,
-                }
-            )
-        messages = (
-            Message.objects.filter(conversation__owner=request.user, content__icontains=query)
-            .select_related("conversation")
-            .order_by("-created_at")[:8]
+        requested_types = {
+            item.strip() for item in request.query_params.get("type", "").split(",") if item.strip()
+        }
+        types = requested_types or VALID_TYPES
+        if not types <= VALID_TYPES:
+            raise ValidationError({"type": "Неизвестный тип результата"})
+        role = request.query_params.get("role") or None
+        if role and role not in VALID_ROLES:
+            raise ValidationError({"role": "Неизвестная роль сообщения"})
+        project_id = request.query_params.get("project") or None
+        try:
+            if project_id:
+                UUID(project_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"project": "Некорректный идентификатор проекта"}) from exc
+        if project_id and not accessible_projects(request.user).filter(pk=project_id).exists():
+            raise ValidationError({"project": "Проект не найден или недоступен"})
+        conversation_id = request.query_params.get("conversation") or None
+        try:
+            if conversation_id:
+                UUID(conversation_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"conversation": "Некорректный идентификатор чата"}) from exc
+        if (
+            conversation_id
+            and not Conversation.objects.filter(pk=conversation_id, owner=request.user).exists()
+        ):
+            raise ValidationError({"conversation": "Чат не найден или недоступен"})
+        date_from = parse_date(request.query_params.get("date_from", ""))
+        date_to = parse_date(request.query_params.get("date_to", ""))
+        if request.query_params.get("date_from") and date_from is None:
+            raise ValidationError({"date_from": "Используйте формат YYYY-MM-DD"})
+        if request.query_params.get("date_to") and date_to is None:
+            raise ValidationError({"date_to": "Используйте формат YYYY-MM-DD"})
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError({"date_to": "Дата окончания раньше даты начала"})
+        try:
+            limit = max(1, min(int(request.query_params.get("limit", 24)), 50))
+        except ValueError as exc:
+            raise ValidationError({"limit": "Ожидается целое число"}) from exc
+        filters = SearchFilters(
+            types=frozenset(types),
+            project_id=project_id,
+            conversation_id=conversation_id,
+            role=role,
+            date_from=date_from,
+            date_to=date_to,
         )
-        for message in messages:
-            results.append(
-                {
-                    "type": "message",
-                    "id": message.id,
-                    "conversation_id": message.conversation_id,
-                    "title": message.conversation.title,
-                    "excerpt": excerpt(message.content, query),
-                }
-            )
-        for project in projects.filter(Q(name__icontains=query) | Q(description__icontains=query))[
-            :8
-        ]:
-            results.append(
-                {
-                    "type": "project",
-                    "id": project.id,
-                    "title": project.name,
-                    "excerpt": excerpt(project.description or project.name, query),
-                }
-            )
-        files = (
-            FileAsset.objects.filter(
-                Q(owner=request.user) | Q(project__in=projects),
-                original_name__icontains=query,
-                deleted_at__isnull=True,
-            )
-            .distinct()
-            .order_by("-created_at")[:8]
+        return Response(
+            {
+                "query": query,
+                "filters": {
+                    "type": sorted(types),
+                    "project": project_id,
+                    "conversation": conversation_id,
+                    "role": role,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+                "results": search_workspace(
+                    user=request.user, query=query, filters=filters, limit=limit
+                ),
+            }
         )
-        for asset in files:
-            results.append(
-                {
-                    "type": "file",
-                    "id": asset.id,
-                    "project_id": asset.project_id,
-                    "title": asset.original_name,
-                    "excerpt": asset.get_status_display(),
-                }
-            )
-        return Response({"query": query, "results": results[:24]})
