@@ -2,10 +2,10 @@
 
 import {FormEvent, KeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {ApiError, api, ensureCsrf, streamMessage} from "../lib/api";
-import type {AIModel, ChatMessage, Conversation, FileAsset, GenerationMeta, MemoryCandidate, MemoryItem, Notification, Preference, Project, SearchResult, User, Wallet} from "../lib/types";
+import type {AIModel, ChatMessage, CompareRun, Conversation, FileAsset, GenerationMeta, MemoryCandidate, MemoryItem, Notification, Preference, Project, SearchResult, User, Wallet} from "../lib/types";
 import {Icon} from "./components/icons";
 
-type Panel = "search" | "projects" | "files" | "memory" | "wallet" | "notifications" | "settings" | "support" | "cost" | null;
+type Panel = "search" | "projects" | "files" | "memory" | "wallet" | "notifications" | "settings" | "support" | "cost" | "compare" | null;
 
 const money = (value: string | number | null | undefined) => `${Number(value ?? 0).toFixed(2).replace(".", ",")} ₽`;
 const dateLabel = (value: string) => new Intl.DateTimeFormat("ru", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(value));
@@ -82,6 +82,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [panel, setPanel] = useState<Panel>(null);
   const [costMessage, setCostMessage] = useState<ChatMessage | null>(null);
+  const [compareSource, setCompareSource] = useState<ChatMessage | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -176,9 +177,9 @@ export default function Home() {
       conversation = latest[0]; setConversations(latest); setActiveId(conversation?.id ?? null);
     }
     if (!conversation) return;
-    const userMessage: ChatMessage = {id: `local-user-${crypto.randomUUID()}`, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
+    const userMessage: ChatMessage = {id: `local-user-${crypto.randomUUID()}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
     const assistantId = `local-ai-${crypto.randomUUID()}`;
-    const assistantMessage: ChatMessage = {id: assistantId, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
+    const assistantMessage: ChatMessage = {id: assistantId, branch: conversation.active_branch, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
     replaceConversation({...conversation, messages: [...conversation.messages, userMessage, assistantMessage]});
     setValue(""); localStorage.removeItem(`draft:${conversation.id}`); setSending(true);
     const controller = new AbortController(); abortRef.current = controller;
@@ -207,6 +208,11 @@ export default function Home() {
     if (!active) return;
     try { replaceConversation(await api<Conversation>(`/conversations/${active.id}/`, {method: "PATCH", body: JSON.stringify(changes)})); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось изменить чат"); }
+  };
+  const activateBranch = async (branchId: string) => {
+    if (!active) return;
+    try {replaceConversation(await api<Conversation>(`/conversations/${active.id}/branches/${branchId}/activate/`, {method: "POST", body: "{}"}));}
+    catch (reason) {setError(reason instanceof Error ? reason.message : "Не удалось открыть ветку");}
   };
 
   const estimatedCost = useMemo(() => {
@@ -255,6 +261,7 @@ export default function Home() {
           <label className="selectWrap projectSelect"><span className="srOnly">Проект</span><select value={active?.project ?? ""} disabled={!active || sending} onChange={(event) => updateConversation({project: event.target.value || null})}>
             <option value="">Без проекта</option>{projects.filter((project) => !project.archived_at && project.role !== "viewer").map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
           </select></label>
+          {active && active.branches.length > 1 && <label className="selectWrap branchSelect"><span className="srOnly">Ветка</span><select value={active.active_branch ?? ""} onChange={(event) => activateBranch(event.target.value)}>{active.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.title}</option>)}</select></label>}
         </div>
         <div className="systemStatus"><span/> Системы работают</div>
         {active && <button className={`memoryToggle ${active.memory_enabled ? "active" : ""}`} onClick={() => updateConversation({memory_enabled: !active.memory_enabled})} title={active.memory_enabled ? "Отключить память для чата" : "Включить память для чата"}><Icon name="memory" size={17}/><span>{active.memory_enabled ? "Память" : "Без памяти"}</span></button>}
@@ -265,11 +272,11 @@ export default function Home() {
         {!active || active.messages.length === 0 ? <section className="emptyChat"><div className="spark"><Icon name="spark" size={30}/></div><p className="eyebrow">AI WORKSPACE</p><h1>Чем займёмся?</h1><p>Выберите задачу или начните с собственного вопроса.</p><div className="suggestions">
           {["Составь маркетинговую стратегию", "Проанализируй документ", "Помоги написать код", "Сравни варианты решения"].map((text) => <button key={text} onClick={() => setValue(text)}>{text}<span>↗</span></button>)}
         </div></section> : <div className="messageList">
-          {active.messages.map((message) => <article id={`message-${message.id}`} key={message.id} className={`message ${message.role} ${message.status} ${focusMessageId === message.id ? "searchFocus" : ""}`}>
+          {active.messages.map((message, messageIndex) => <article id={`message-${message.id}`} key={message.id} className={`message ${message.role} ${message.status} ${focusMessageId === message.id ? "searchFocus" : ""}`}>
             <div className="messageAvatar">{message.role === "user" ? user?.username.slice(0, 1).toUpperCase() : <Icon name="spark" size={17}/>}</div>
             <div className="messageBody"><div className="messageHead"><b>{message.role === "user" ? "Вы" : "AI Workspace"}</b><time>{dateLabel(message.created_at)}</time>{message.status === "partial" && <span className="statusPill warning">Ответ прервался</span>}{message.status === "failed" && <span className="statusPill danger">Ошибка</span>}</div>
               <div className="messageText">{message.content || (message.status === "streaming" ? <span className="typing"><i/><i/><i/></span> : "Ответ не получен")}</div>
-              {message.role === "assistant" && message.content && <div className="messageActions"><button onClick={() => navigator.clipboard.writeText(message.content)}><Icon name="copy" size={16}/>Копировать</button>{message.generation && <button onClick={() => {setCostMessage(message); setPanel("cost");}}>{money(message.generation.cost_rub)} · {message.generation.model}</button>}</div>}
+              {message.role === "assistant" && message.content && <div className="messageActions"><button onClick={() => navigator.clipboard.writeText(message.content)}><Icon name="copy" size={16}/>Копировать</button><button onClick={() => {const source = active.messages.slice(0, messageIndex).reverse().find((item) => item.role === "user"); if (source) {setCompareSource(source); setPanel("compare");}}}>Сравнить</button>{message.generation && <button onClick={() => {setCostMessage(message); setPanel("cost");}}>{money(message.generation.cost_rub)} · {message.generation.model}</button>}</div>}
             </div>
           </article>)}
         </div>}
@@ -296,8 +303,50 @@ export default function Home() {
     {panel === "settings" && preferences && user && <SettingsPanel user={user} preferences={preferences} onChange={(value) => {setPreferences(value); if (!value.auto_memory_enabled) setMemoryCandidates([]);}} onLogout={() => {setUser(null); setBoot("guest");}} onClose={() => setPanel(null)}/>} 
     {panel === "support" && <SupportPanel onClose={() => setPanel(null)}/>} 
     {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl><ContextInspector context={costMessage.generation.context}/></Drawer>}
+    {panel === "compare" && active && compareSource && <ComparePanel conversation={active} source={compareSource} models={models} onConversation={replaceConversation} onClose={() => setPanel(null)}/>} 
     <button className="supportFloat" onClick={() => setPanel("support")} aria-label="Написать в поддержку"><Icon name="support"/></button>
   </main>;
+}
+
+function ComparePanel({conversation, source, models, onConversation, onClose}: {conversation: Conversation; source: ChatMessage; models: AIModel[]; onConversation: (value: Conversation) => void; onClose: () => void}) {
+  const eligible = models.filter((model) => model.available && model.capabilities.includes("text"));
+  const [selected, setSelected] = useState<string[]>(eligible.slice(0, 2).map((model) => model.slug));
+  const [preview, setPreview] = useState<{expected_min_rub: string; expected_max_rub: string; confirmation_required: boolean} | null>(null);
+  const [result, setResult] = useState<CompareRun | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (selected.length < 2) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const data = await api<{expected_min_rub: string; expected_max_rub: string; confirmation_required: boolean}>(`/conversations/${conversation.id}/compare/preview/`, {method: "POST", body: JSON.stringify({prompt: source.content, source_message: source.id, models: selected})});
+        if (!cancelled) {setPreview(data); setError("");}
+      } catch (reason) {if (!cancelled) setError(reason instanceof Error ? reason.message : "Не удалось рассчитать стоимость");}
+    }, 250);
+    return () => {cancelled = true; window.clearTimeout(timer);};
+  }, [conversation.id, source.content, source.id, selected]);
+  const toggle = (slug: string) => setSelected((items) => items.includes(slug) ? items.filter((item) => item !== slug) : items.length < 4 ? [...items, slug] : items);
+  const run = async () => {
+    if (selected.length < 2) return;
+    setBusy(true); setError("");
+    try {setResult(await api<CompareRun>(`/conversations/${conversation.id}/compare/`, {method: "POST", headers: {"Idempotency-Key": `web-compare:${crypto.randomUUID()}`}, body: JSON.stringify({prompt: source.content, source_message: source.id, models: selected, confirm_cost: true})}));}
+    catch (reason) {setError(reason instanceof Error ? reason.message : "Сравнение не выполнено");}
+    finally {setBusy(false);}
+  };
+  const synthesize = async () => {
+    if (!result) return;
+    setBusy(true); setError("");
+    try {setResult(await api<CompareRun>(`/conversations/${conversation.id}/compare/${result.id}/synthesize/`, {method: "POST", body: JSON.stringify({model: selected[0], confirm_cost: true})}));}
+    catch (reason) {setError(reason instanceof Error ? reason.message : "Синтез не выполнен");}
+    finally {setBusy(false);}
+  };
+  const branch = async (variantId: string) => {
+    setBusy(true); setError("");
+    try {onConversation(await api<Conversation>(`/conversations/${conversation.id}/compare/${result!.id}/variants/${variantId}/branch/`, {method: "POST", body: "{}"})); onClose();}
+    catch (reason) {setError(reason instanceof Error ? reason.message : "Ветка не создана"); setBusy(false);}
+  };
+  return <Drawer title="Сравнить модели" onClose={onClose}><div className="comparePrompt"><small>Один запрос для всех моделей</small><p>{source.content}</p></div>{!result && <><div className="compareModels">{eligible.map((model) => <label key={model.slug} className={selected.includes(model.slug) ? "selected" : ""}><input type="checkbox" checked={selected.includes(model.slug)} onChange={() => toggle(model.slug)}/><span><b>{model.display_name}</b><small>{model.provider}</small></span></label>)}</div>{preview && selected.length >= 2 && <div className="compareCost"><span>Ожидаемая стоимость</span><b>{money(preview.expected_min_rub)} - {money(preview.expected_max_rub)}</b><small>Верхний лимит резервируется до запуска, списание - по факту.</small></div>}<Button className="primary wide" disabled={busy || selected.length < 2} onClick={run}>{busy ? "Модели отвечают параллельно…" : `Запустить ${selected.length} модели`}</Button></>}{error && <div className="alert error">{error}</div>}{result && <><div className="compareSummary"><span>{result.state === "completed" ? "Сравнение готово" : "Готово частично"}</span><b>Списано {money(result.actual_cost_rub)}</b></div><div className="compareResults">{result.variants.map((variant) => <article key={variant.id} className={variant.state}><header><div><b>{variant.model_name}</b><small>{variant.provider} · {money(variant.actual_cost_rub)}</small></div>{variant.state === "completed" && <button disabled={busy} onClick={() => branch(variant.id)}>Продолжить веткой</button>}</header><p>{variant.output || "Ответ не получен"}</p></article>)}</div>{result.synthesis_output ? <article className="synthesisResult"><header><b>Итоговый ответ</b><small>{money(result.synthesis_cost_rub)}</small></header><p>{result.synthesis_output}</p></article> : <Button className="primary wide" disabled={busy || result.variants.filter((item) => item.state === "completed").length < 2} onClick={synthesize}>{busy ? "Формируем итог…" : "Сформировать лучший итог"}</Button>}</>}</Drawer>;
 }
 
 function SearchPanel({projects, onClose, onChoose}: {projects: Project[]; onClose: () => void; onChoose: (id: string, messageId?: string) => void}) {

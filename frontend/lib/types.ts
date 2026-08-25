@@ -91,6 +91,7 @@ export type GenerationMeta = {
 
 export type ChatMessage = {
   id: string;
+  branch: string | null;
   role: "user" | "assistant" | "system";
   content: string;
   status: "saved" | "streaming" | "completed" | "partial" | "failed";
@@ -105,9 +106,48 @@ export type Conversation = {
   routing_mode: "manual" | "economy" | "balanced" | "maximum";
   project: string | null;
   memory_enabled: boolean;
+  active_branch: string | null;
+  branches: Array<{
+    id: string;
+    parent: string | null;
+    forked_from: string | null;
+    title: string;
+    created_at: string;
+  }>;
   created_at: string;
   updated_at: string;
   messages: ChatMessage[];
+};
+
+export type CompareRun = {
+  id: string;
+  conversation_id: string;
+  branch_id: string | null;
+  source_message_id: string | null;
+  prompt: string;
+  state: "previewed" | "running" | "completed" | "partial" | "failed";
+  models: string[];
+  expected_min_rub: string;
+  expected_max_rub: string;
+  actual_cost_rub: string;
+  synthesis_model: string;
+  synthesis_output: string;
+  synthesis_cost_rub: string;
+  variants: Array<{
+    id: string;
+    model: string;
+    model_name: string;
+    provider: string;
+    state: "queued" | "running" | "completed" | "failed";
+    output: string;
+    expected_min_rub: string;
+    expected_max_rub: string;
+    actual_cost_rub: string;
+    input_tokens: number;
+    output_tokens: number;
+    latency_ms: number | null;
+    error_code: string;
+  }>;
 };
 
 export type AIModel = {

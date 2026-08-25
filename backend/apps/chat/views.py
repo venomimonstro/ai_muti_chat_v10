@@ -4,11 +4,20 @@ from django.db.models import Prefetch
 from django.http import StreamingHttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as APIValidationError
 from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel
 
-from .models import Conversation, ConversationDraft, Message
+from .branches import ensure_active_branch, fork_branch, visible_messages
+from .compare import (
+    branch_from_variant,
+    compare_preview,
+    run_compare,
+    serialize_compare,
+    synthesize_compare,
+)
+from .models import CompareVariant, Conversation, ConversationDraft, Message
 from .serializers import (
     ConversationDraftSerializer,
     ConversationSerializer,
@@ -22,12 +31,175 @@ class ConversationViewSet(viewsets.ModelViewSet):
     serializer_class = ConversationSerializer
 
     def get_queryset(self):
-        return Conversation.objects.filter(owner=self.request.user).prefetch_related(
-            Prefetch("messages", queryset=Message.objects.select_related("generation_response"))
+        return (
+            Conversation.objects.filter(owner=self.request.user)
+            .select_related("active_branch")
+            .prefetch_related(
+                "branches",
+                Prefetch(
+                    "messages", queryset=Message.objects.select_related("generation_response")
+                ),
+            )
         )
 
     def perform_create(self, serializer):
-        serializer.save(owner=self.request.user)
+        conversation = serializer.save(owner=self.request.user)
+        ensure_active_branch(conversation, self.request.user)
+
+    @action(detail=True, methods=["get", "post"])
+    def branches(self, request, pk=None):
+        conversation = self.get_object()
+        if request.method == "POST":
+            source = (
+                visible_messages(conversation).filter(pk=request.data.get("source_message")).first()
+            )
+            if source is None:
+                raise APIValidationError({"source_message": "Сообщение не найдено"})
+            try:
+                fork_branch(
+                    conversation=conversation,
+                    user=request.user,
+                    source_message=source,
+                    title=request.data.get("title") or "Альтернативная ветка",
+                )
+            except ValueError as exc:
+                raise APIValidationError({"source_message": str(exc)}) from exc
+        conversation.refresh_from_db()
+        return Response(ConversationSerializer(conversation).data)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"branches/(?P<branch_id>[^/.]+)/activate",
+    )
+    def activate_branch(self, request, pk=None, branch_id=None):
+        conversation = self.get_object()
+        branch = conversation.branches.filter(pk=branch_id).first()
+        if branch is None:
+            raise APIValidationError({"branch": "Ветка не найдена"})
+        conversation.active_branch = branch
+        conversation.save(update_fields=["active_branch", "updated_at"])
+        return Response(ConversationSerializer(conversation).data)
+
+    def _compare_payload(self, request, conversation):
+        prompt = str(request.data.get("prompt", "")).strip()
+        model_slugs = request.data.get("models") or []
+        if not prompt:
+            raise APIValidationError({"prompt": "Запрос обязателен"})
+        if not isinstance(model_slugs, list):
+            raise APIValidationError({"models": "Ожидается список моделей"})
+        source = None
+        if request.data.get("source_message"):
+            source = (
+                visible_messages(conversation).filter(pk=request.data["source_message"]).first()
+            )
+            if source is None:
+                raise APIValidationError({"source_message": "Сообщение не найдено"})
+        return prompt, model_slugs, source
+
+    @action(detail=True, methods=["post"], url_path="compare/preview")
+    def compare_cost_preview(self, request, pk=None):
+        conversation = self.get_object()
+        prompt, model_slugs, _source = self._compare_payload(request, conversation)
+        try:
+            preview = compare_preview(prompt=prompt, model_slugs=model_slugs)
+        except ValidationError as exc:
+            raise APIValidationError({"detail": exc.messages}) from exc
+        return Response(
+            {
+                "expected_min_rub": str(preview["expected_min_rub"]),
+                "expected_max_rub": str(preview["expected_max_rub"]),
+                "confirmation_required": preview["confirmation_required"],
+                "confirmation_threshold_rub": str(preview["confirmation_threshold_rub"]),
+                "models": [
+                    {
+                        "model": row["model"].slug,
+                        "display_name": row["model"].display_name,
+                        "expected_min_rub": str(row["minimum"].user_charge_rub),
+                        "expected_max_rub": str(row["maximum"].user_charge_rub),
+                    }
+                    for row in preview["models"]
+                ],
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="compare")
+    def compare_models(self, request, pk=None):
+        conversation = self.get_object()
+        key = request.headers.get("Idempotency-Key", "")
+        if not key or len(key) > 160:
+            raise APIValidationError({"detail": "Корректный Idempotency-Key обязателен"})
+        prompt, model_slugs, source = self._compare_payload(request, conversation)
+        try:
+            run = run_compare(
+                user=request.user,
+                conversation=conversation,
+                prompt=prompt,
+                model_slugs=model_slugs,
+                idempotency_key=key,
+                source_message=source,
+                confirmed=request.data.get("confirm_cost") is True,
+            )
+        except ValidationError as exc:
+            raise APIValidationError({"detail": exc.messages}) from exc
+        return Response(serialize_compare(run))
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"compare/(?P<compare_id>[^/.]+)",
+    )
+    def compare_detail(self, request, pk=None, compare_id=None):
+        run = self.get_object().compare_runs.filter(pk=compare_id).first()
+        if run is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        return Response(serialize_compare(run))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"compare/(?P<compare_id>[^/.]+)/synthesize",
+    )
+    def compare_synthesis(self, request, pk=None, compare_id=None):
+        run = self.get_object().compare_runs.filter(pk=compare_id).first()
+        if run is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        try:
+            synthesize_compare(
+                user=request.user,
+                compare_run=run,
+                model_slug=request.data.get("model") or run.model_slugs[0],
+                confirmed=request.data.get("confirm_cost") is True,
+            )
+        except ValidationError as exc:
+            raise APIValidationError({"detail": exc.messages}) from exc
+        return Response(serialize_compare(run))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"compare/(?P<compare_id>[^/.]+)/variants/(?P<variant_id>[^/.]+)/branch",
+    )
+    def compare_branch(self, request, pk=None, compare_id=None, variant_id=None):
+        conversation = self.get_object()
+        variant = CompareVariant.objects.filter(
+            pk=variant_id,
+            compare_run_id=compare_id,
+            compare_run__conversation=conversation,
+            state=CompareVariant.State.COMPLETED,
+        ).first()
+        if variant is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        try:
+            branch_from_variant(
+                user=request.user,
+                variant=variant,
+                title=request.data.get("title") or f"{variant.model.display_name}: вариант",
+            )
+        except ValidationError as exc:
+            raise APIValidationError({"detail": exc.messages}) from exc
+        conversation.refresh_from_db()
+        return Response(ConversationSerializer(conversation).data)
 
     @action(detail=True, methods=["get", "put", "delete"])
     def draft(self, request, pk=None):

@@ -11,6 +11,7 @@ from apps.files.rag import retrieve_project_chunks
 from apps.memory_store.services import eligible_memories
 from apps.projects.models import ProjectInstruction
 
+from .branches import visible_messages
 from .models import ConversationSummary
 
 SYSTEM_POLICY = (
@@ -125,7 +126,9 @@ class ContextBuilder:
 def _recent_entries(conversation, assistant_message):
     limit = max(1, settings.SMART_CONTEXT_RECENT_TURNS) * 2 + 1
     messages = list(
-        conversation.messages.exclude(id=assistant_message.id).order_by("-created_at")[:limit]
+        visible_messages(conversation)
+        .exclude(id=assistant_message.id)
+        .order_by("-created_at")[:limit]
     )
     messages.reverse()
     return [
@@ -165,7 +168,7 @@ def _memory_entries(user, conversation, query):
 def _old_message_entries(conversation, query, recent_ids):
     query_terms = _terms(query)
     ranked = []
-    queryset = conversation.messages.exclude(id__in=recent_ids).exclude(content="")
+    queryset = visible_messages(conversation).exclude(id__in=recent_ids).exclude(content="")
     for item in queryset.order_by("-created_at")[: settings.SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT]:
         score = _relevance(item.content, query_terms)
         if score >= settings.SMART_CONTEXT_MIN_RELEVANCE:
@@ -282,6 +285,12 @@ def assemble_context(
         summary = conversation.rolling_summary
     except ConversationSummary.DoesNotExist:
         summary = None
+    if (
+        summary
+        and summary.through_message_id
+        and not visible_messages(conversation).filter(pk=summary.through_message_id).exists()
+    ):
+        summary = None
     if summary and summary.content:
         builder.add(
             Entry(
@@ -348,7 +357,7 @@ def assemble_context(
 
 def refresh_rolling_summary(conversation):
     keep = max(1, settings.SMART_CONTEXT_RECENT_TURNS) * 2
-    messages = list(conversation.messages.exclude(content="").order_by("created_at"))
+    messages = list(visible_messages(conversation).exclude(content="").order_by("created_at"))
     old = messages[:-keep] if len(messages) > keep else []
     if not old:
         return None

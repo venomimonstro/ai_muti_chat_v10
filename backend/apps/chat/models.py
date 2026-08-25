@@ -29,8 +29,39 @@ class Conversation(models.Model):
         related_name="conversations",
     )
     memory_enabled = models.BooleanField(default=True)
+    active_branch = models.ForeignKey(
+        "chat.ConversationBranch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="active_conversations",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class ConversationBranch(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, related_name="branches"
+    )
+    parent = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="children"
+    )
+    forked_from = models.ForeignKey(
+        "chat.Message",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="forked_branches",
+    )
+    title = models.CharField(max_length=160, default="Основная ветка")
+    inherited_message_ids = models.JSONField(default=list, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
 
 
 class Message(models.Model):
@@ -49,6 +80,13 @@ class Message(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, related_name="messages"
+    )
+    branch = models.ForeignKey(
+        ConversationBranch,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="messages",
     )
     role = models.CharField(max_length=16, choices=Role.choices)
     content = models.TextField(blank=True)
@@ -135,6 +173,81 @@ class Generation(models.Model):
     context_snapshot = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True)
+
+
+class CompareRun(models.Model):
+    class State(models.TextChoices):
+        PREVIEWED = "previewed", "Ожидает подтверждения"
+        RUNNING = "running", "Выполняется"
+        COMPLETED = "completed", "Готово"
+        PARTIAL = "partial", "Частично"
+        FAILED = "failed", "Ошибка"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, related_name="compare_runs"
+    )
+    branch = models.ForeignKey(
+        ConversationBranch, on_delete=models.SET_NULL, null=True, related_name="compare_runs"
+    )
+    source_message = models.ForeignKey(
+        Message, on_delete=models.SET_NULL, null=True, blank=True, related_name="compare_runs"
+    )
+    prompt = models.TextField()
+    idempotency_key = models.CharField(max_length=160, unique=True)
+    state = models.CharField(max_length=16, choices=State.choices, default=State.PREVIEWED)
+    model_slugs = models.JSONField(default=list)
+    expected_min_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    expected_max_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    actual_cost_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    reservation_id = models.UUIDField(null=True, blank=True)
+    synthesis_model_slug = models.CharField(max_length=100, blank=True)
+    synthesis_output = models.TextField(blank=True)
+    synthesis_cost_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    synthesis_reservation_id = models.UUIDField(null=True, blank=True)
+    synthesis_pricing_snapshot = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class CompareVariant(models.Model):
+    class State(models.TextChoices):
+        QUEUED = "queued", "В очереди"
+        RUNNING = "running", "Выполняется"
+        COMPLETED = "completed", "Готово"
+        FAILED = "failed", "Ошибка"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    compare_run = models.ForeignKey(CompareRun, on_delete=models.CASCADE, related_name="variants")
+    model = models.ForeignKey(
+        "ai_registry.AIModel", on_delete=models.PROTECT, related_name="compare_variants"
+    )
+    position = models.PositiveSmallIntegerField()
+    state = models.CharField(max_length=16, choices=State.choices, default=State.QUEUED)
+    output = models.TextField(blank=True)
+    provider_request_id = models.CharField(max_length=200, blank=True)
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    expected_min_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    expected_max_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    actual_cost_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    provider_cost_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    pricing_snapshot = models.JSONField(default=dict)
+    error_code = models.CharField(max_length=80, blank=True)
+    latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["position"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["compare_run", "model"], name="unique_compare_run_model"
+            )
+        ]
 
 
 class GenerationAttempt(models.Model):

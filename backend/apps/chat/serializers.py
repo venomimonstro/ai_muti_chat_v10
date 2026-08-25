@@ -4,6 +4,7 @@ from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
 from apps.projects.access import accessible_projects
 
+from .branches import visible_messages
 from .models import Conversation, ConversationDraft, Message
 
 
@@ -12,7 +13,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ("id", "role", "content", "status", "generation", "created_at")
+        fields = ("id", "branch", "role", "content", "status", "generation", "created_at")
 
     def get_generation(self, obj):
         try:
@@ -49,7 +50,8 @@ class MessageSerializer(serializers.ModelSerializer):
 
 
 class ConversationSerializer(serializers.ModelSerializer):
-    messages = MessageSerializer(many=True, read_only=True)
+    messages = serializers.SerializerMethodField()
+    branches = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -60,11 +62,35 @@ class ConversationSerializer(serializers.ModelSerializer):
             "routing_mode",
             "project",
             "memory_enabled",
+            "active_branch",
+            "branches",
             "created_at",
             "updated_at",
             "messages",
         )
-        read_only_fields = ("id", "created_at", "updated_at", "messages")
+        read_only_fields = (
+            "id",
+            "active_branch",
+            "branches",
+            "created_at",
+            "updated_at",
+            "messages",
+        )
+
+    def get_messages(self, obj):
+        return MessageSerializer(visible_messages(obj).order_by("created_at"), many=True).data
+
+    def get_branches(self, obj):
+        return [
+            {
+                "id": str(branch.id),
+                "parent": str(branch.parent_id) if branch.parent_id else None,
+                "forked_from": str(branch.forked_from_id) if branch.forked_from_id else None,
+                "title": branch.title,
+                "created_at": branch.created_at,
+            }
+            for branch in obj.branches.all()
+        ]
 
     def validate_selected_model(self, value):
         try:

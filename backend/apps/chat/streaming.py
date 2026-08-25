@@ -34,6 +34,7 @@ from apps.memory_store.services import (
 )
 from apps.workspace_search.embeddings import index_message
 
+from .branches import ensure_active_branch
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 
@@ -66,15 +67,20 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
 
     with transaction.atomic():
         locked = Conversation.objects.select_for_update().get(pk=conversation.pk, owner=user)
+        branch = ensure_active_branch(locked, user)
         user_message = Message.objects.create(
             conversation=locked,
+            branch=branch,
             role=Message.Role.USER,
             content=content,
             client_message_id=client_message_id,
             status=Message.Status.SAVED,
         )
         assistant_message = Message.objects.create(
-            conversation=locked, role=Message.Role.ASSISTANT, status=Message.Status.SAVED
+            conversation=locked,
+            branch=branch,
+            role=Message.Role.ASSISTANT,
+            status=Message.Status.SAVED,
         )
         generation = Generation.objects.create(
             user_message=user_message,
