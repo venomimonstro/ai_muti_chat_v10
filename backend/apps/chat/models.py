@@ -5,12 +5,21 @@ from django.db import models
 
 
 class Conversation(models.Model):
+    class RoutingMode(models.TextChoices):
+        MANUAL = "manual", "Вручную"
+        ECONOMY = "economy", "Эконом"
+        BALANCED = "balanced", "Баланс"
+        MAXIMUM = "maximum", "Максимум"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="conversations"
     )
     title = models.CharField(max_length=200, default="Новый чат")
     selected_model = models.CharField(max_length=100, default="echo-v1")
+    routing_mode = models.CharField(
+        max_length=16, choices=RoutingMode.choices, default=RoutingMode.MANUAL
+    )
     project = models.ForeignKey(
         "projects.Project",
         on_delete=models.SET_NULL,
@@ -146,3 +155,27 @@ class GenerationAttempt(models.Model):
                 fields=["generation", "sequence"], name="unique_generation_attempt_sequence"
             )
         ]
+
+
+class RoutingDecision(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    generation = models.OneToOneField(
+        Generation, on_delete=models.CASCADE, related_name="routing_decision"
+    )
+    policy = models.ForeignKey(
+        "ai_registry.RoutingPolicyVersion", on_delete=models.PROTECT, related_name="decisions"
+    )
+    mode = models.CharField(max_length=16, choices=Conversation.RoutingMode.choices)
+    task_taxonomy = models.CharField(max_length=32)
+    classification_confidence = models.DecimalField(max_digits=5, decimal_places=4)
+    required_capabilities = models.JSONField(default=list)
+    signals = models.JSONField(default=dict)
+    selected_model = models.ForeignKey(
+        "ai_registry.AIModel", on_delete=models.PROTECT, related_name="routing_selections"
+    )
+    candidate_snapshot = models.JSONField(default=list)
+    explanation = models.TextField()
+    estimated_input_tokens = models.PositiveIntegerField()
+    estimated_output_tokens = models.PositiveIntegerField()
+    estimated_cost_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    created_at = models.DateTimeField(auto_now_add=True)

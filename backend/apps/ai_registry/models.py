@@ -88,3 +88,22 @@ class ReliabilityIncident(models.Model):
 
     class Meta:
         ordering = ["-opened_at"]
+
+
+class RoutingPolicyVersion(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    version = models.SlugField(max_length=80, unique=True)
+    active = models.BooleanField(default=False)
+    mode_weights = models.JSONField(default=dict)
+    thresholds = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["active"],
+                condition=models.Q(active=True),
+                name="unique_active_routing_policy",
+            )
+        ]

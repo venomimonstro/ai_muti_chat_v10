@@ -8,7 +8,13 @@ from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.models import AIModel
-from apps.ai_registry.reliability import candidate_models, record_failure, record_success
+from apps.ai_registry.reliability import (
+    candidate_models,
+    provider_available,
+    record_failure,
+    record_success,
+)
+from apps.ai_registry.router import select_route
 from apps.billing.models import RequestCost
 from apps.billing.pricing import active_price, calculate, conservative_token_budget
 from apps.billing.services import release, reserve, settle
@@ -19,7 +25,7 @@ from apps.memory_store.services import (
 )
 
 from .context import assemble_context, refresh_rolling_summary
-from .models import Conversation, Generation, GenerationAttempt, Message
+from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 
 MAX_OUTPUT_TOKENS = 1024
 FLUSH_CHARS = 400
@@ -75,10 +81,25 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
     }
 
     try:
-        primary = AIModel.objects.select_related("provider", "fallback_model").get(
-            slug=generation.model, enabled=True
+        route = select_route(conversation=locked, content=content)
+        generation.model = route.selected.slug
+        generation.save(update_fields=["model"])
+        decision = RoutingDecision.objects.create(
+            generation=generation,
+            policy=route.policy,
+            mode=conversation.routing_mode,
+            task_taxonomy=route.classification.taxonomy,
+            classification_confidence=route.classification.confidence,
+            required_capabilities=route.classification.required_capabilities,
+            signals=route.classification.signals,
+            selected_model=route.selected,
+            candidate_snapshot=route.candidates,
+            explanation=route.explanation,
+            estimated_input_tokens=route.estimated_input_tokens,
+            estimated_output_tokens=route.estimated_output_tokens,
+            estimated_cost_rub=route.estimated_cost_rub,
         )
-        candidates = candidate_models(primary)
+        candidates = route.ordered_models
         if not candidates:
             raise ValidationError("Выбранная модель временно недоступна")
         narrowest = min(candidates, key=lambda item: item.context_window)
@@ -91,6 +112,18 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             include_memory=not suppress_memory,
         )
         snapshot.update(memory_metadata)
+        snapshot["routing"] = {
+            "decision_id": str(decision.id),
+            "mode": decision.mode,
+            "task_taxonomy": decision.task_taxonomy,
+            "selected_model": route.selected.slug,
+            "explanation": decision.explanation,
+            "policy_version": route.policy.version,
+            "classification_confidence": float(decision.classification_confidence),
+            "required_capabilities": decision.required_capabilities,
+            "estimated_cost_rub": str(decision.estimated_cost_rub),
+            "candidates": decision.candidate_snapshot,
+        }
         snapshot["memory_items"] = [
             {
                 "id": str(item.id),
@@ -153,7 +186,32 @@ def run(generation, *, adapter=None):
     primary = AIModel.objects.select_related("provider", "fallback_model").get(
         slug=generation.model
     )
-    candidates = [primary] if adapter else candidate_models(primary)
+    if adapter:
+        candidates = [primary]
+    else:
+        try:
+            snapshot = generation.routing_decision.candidate_snapshot
+            ranked = sorted(
+                (
+                    item
+                    for item in snapshot
+                    if item.get("status") == "eligible" and item.get("fallback_allowed", True)
+                ),
+                key=lambda item: item.get("rank", 9999),
+            )
+            models = {
+                item.slug: item
+                for item in AIModel.objects.filter(
+                    slug__in=[item["model"] for item in ranked], enabled=True
+                ).select_related("provider", "fallback_model")
+            }
+            candidates = [
+                models[item["model"]]
+                for item in ranked
+                if item["model"] in models and provider_available(models[item["model"]].provider)
+            ]
+        except RoutingDecision.DoesNotExist:
+            candidates = candidate_models(primary)
     history = generation.context_snapshot.get("provider_messages") or [
         {"role": generation.user_message.role, "content": generation.user_message.content}
     ]
@@ -167,6 +225,20 @@ def run(generation, *, adapter=None):
         "generation",
         {"id": generation.id, "state": "streaming", "correlation_id": generation.correlation_id},
     )
+    try:
+        routing = generation.routing_decision
+        if routing.mode != Conversation.RoutingMode.MANUAL:
+            yield sse(
+                "routing",
+                {
+                    "mode": routing.mode,
+                    "task_taxonomy": routing.task_taxonomy,
+                    "model": routing.selected_model.slug,
+                    "explanation": routing.explanation,
+                },
+            )
+    except RoutingDecision.DoesNotExist:
+        pass
     if generation.context_snapshot.get("memory_action"):
         yield sse("memory", generation.context_snapshot["memory_action"])
     if generation.context_snapshot.get("memory_candidates"):

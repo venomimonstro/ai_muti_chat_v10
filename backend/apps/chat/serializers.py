@@ -40,6 +40,7 @@ class MessageSerializer(serializers.ModelSerializer):
                 "dropped_or_deduplicated": generation.context_snapshot.get(
                     "dropped_or_deduplicated", 0
                 ),
+                "routing": generation.context_snapshot.get("routing"),
             },
         }
 
@@ -53,6 +54,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "selected_model",
+            "routing_mode",
             "project",
             "memory_enabled",
             "created_at",

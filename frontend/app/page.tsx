@@ -148,7 +148,7 @@ export default function Home() {
 
   const createConversation = async () => {
     try {
-      const payload: Record<string, string> = {title: "Новый чат"};
+      const payload: Record<string, string> = {title: "Новый чат", routing_mode: "balanced"};
       if (models.find((item) => item.available)) payload.selected_model = models.find((item) => item.available)!.slug;
       const conversation = await api<Conversation>("/conversations/", {method: "POST", body: JSON.stringify(payload)});
       replaceConversation(conversation); setActiveId(conversation.id); setValue(""); setSidebarOpen(false);
@@ -177,6 +177,7 @@ export default function Home() {
       await streamMessage(conversation.id, {content: prompt, client_message_id: crypto.randomUUID()}, `web:${crypto.randomUUID()}`, ({event, data}) => {
         if (event === "delta") setConversations((items) => items.map((item) => item.id !== conversation!.id ? item : {...item, messages: item.messages.map((message) => message.id === assistantId ? {...message, content: message.content + String(data.text ?? "")} : message)}));
         if (event === "recovery") setStreamNote(data.action === "fallback" ? "Подключаем резервную модель…" : "Провайдер не ответил, повторяем безопасно…");
+        if (event === "routing") setStreamNote(String(data.explanation ?? "AUTO выбрал подходящую модель"));
         if (event === "memory") setStreamNote(String(data.message ?? "Память обновлена"));
         if (event === "memory_candidates") {setStreamNote(String(data.message ?? "Найдены предложения для памяти")); void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);}
         if (event === "error") setError(String(data.message ?? "Ответ не получен. Деньги не списаны."));
@@ -193,18 +194,19 @@ export default function Home() {
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); }
   };
 
-  const updateConversation = async (changes: Partial<Pick<Conversation, "selected_model" | "project" | "title" | "memory_enabled">>) => {
+  const updateConversation = async (changes: Partial<Pick<Conversation, "selected_model" | "routing_mode" | "project" | "title" | "memory_enabled">>) => {
     if (!active) return;
     try { replaceConversation(await api<Conversation>(`/conversations/${active.id}/`, {method: "PATCH", body: JSON.stringify(changes)})); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось изменить чат"); }
   };
 
   const estimatedCost = useMemo(() => {
+    if (active?.routing_mode !== "manual") return null;
     if (!selectedModel?.price) return null;
     const inputTokens = Math.max(value.length, 32);
     const provider = (inputTokens * Number(selectedModel.price.input_rub_per_million) + Math.min(1024, selectedModel.max_output_tokens) * Number(selectedModel.price.output_rub_per_million)) / 1_000_000;
     return provider * (1 + Number(selectedModel.price.markup_percent) / 100);
-  }, [selectedModel, value]);
+  }, [active?.routing_mode, selectedModel, value]);
 
   if (boot === "loading") return <main className="centerState" aria-busy="true"><div className="loader"/><h1>Открываем рабочее пространство</h1><p>Загружаем чаты, проекты и баланс…</p></main>;
   if (boot === "guest") return <AuthScreen onAuthenticated={loadWorkspace}/>;
@@ -237,9 +239,9 @@ export default function Home() {
       <header className="topbar">
         <button className="menuButton" onClick={() => setSidebarOpen(true)} aria-label="Открыть меню"><Icon name="menu"/></button>
         <div className="selectors">
-          <label className="selectWrap"><span className="srOnly">Модель</span><select value={active?.selected_model ?? selectedModel?.slug ?? ""} disabled={!active || sending} onChange={(event) => updateConversation({selected_model: event.target.value})}>
-            {models.length === 0 && <option value="">Модели не настроены</option>}
-            {models.map((model) => <option key={model.slug} value={model.slug} disabled={!model.available}>{model.display_name}{!model.available ? " · недоступна" : ""}</option>)}
+          <label className="selectWrap"><span className="srOnly">Режим и модель</span><select value={active ? active.routing_mode === "manual" ? `model:${active.selected_model}` : `auto:${active.routing_mode}` : ""} disabled={!active || sending} onChange={(event) => {const [kind, value] = event.target.value.split(":"); void (kind === "auto" ? updateConversation({routing_mode: value as Conversation["routing_mode"]}) : updateConversation({routing_mode: "manual", selected_model: value}));}}>
+            <optgroup label="AUTO Router"><option value="auto:balanced">AUTO · Баланс</option><option value="auto:economy">AUTO · Эконом</option><option value="auto:maximum">AUTO · Максимум</option></optgroup>
+            <optgroup label="Выбрать вручную">{models.length === 0 && <option value="">Модели не настроены</option>}{models.map((model) => <option key={model.slug} value={`model:${model.slug}`} disabled={!model.available}>{model.display_name}{!model.available ? " · недоступна" : ""}</option>)}</optgroup>
           </select></label>
           <label className="selectWrap projectSelect"><span className="srOnly">Проект</span><select value={active?.project ?? ""} disabled={!active || sending} onChange={(event) => updateConversation({project: event.target.value || null})}>
             <option value="">Без проекта</option>{projects.filter((project) => !project.archived_at && project.role !== "viewer").map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
@@ -270,7 +272,7 @@ export default function Home() {
         {lowBalance && <button className="lowBalanceNotice" onClick={() => setPanel("wallet")}>Баланс заканчивается. Пополнить →</button>}
         <div className={`composer ${sending ? "busy" : ""}`}>
           <textarea aria-label="Сообщение" value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={composerKey} placeholder="Напишите сообщение…" rows={1}/>
-          <div className="composerActions"><button className="attach" onClick={() => setPanel("files")} aria-label="Прикрепить файл"><Icon name="plus"/></button><span className="costPreview">{estimatedCost === null ? "Цена по факту" : `до ${money(Math.max(estimatedCost, 0.01))}`}</span>{sending ? <button className="send stop" onClick={() => abortRef.current?.abort()} aria-label="Остановить генерацию"><Icon name="stop"/></button> : <button className="send" onClick={send} disabled={!value.trim()} aria-label="Отправить"><Icon name="send"/></button>}</div>
+          <div className="composerActions"><button className="attach" onClick={() => setPanel("files")} aria-label="Прикрепить файл"><Icon name="plus"/></button><span className="costPreview">{active?.routing_mode !== "manual" ? "AUTO рассчитает цену" : estimatedCost === null ? "Цена по факту" : `до ${money(Math.max(estimatedCost, 0.01))}`}</span>{sending ? <button className="send stop" onClick={() => abortRef.current?.abort()} aria-label="Остановить генерацию"><Icon name="stop"/></button> : <button className="send" onClick={send} disabled={!value.trim()} aria-label="Отправить"><Icon name="send"/></button>}</div>
         </div>
         <p className="composerHint">Enter - отправить · Shift+Enter - новая строка · ошибки провайдера не оплачиваются</p>
       </div>
@@ -378,7 +380,8 @@ function ContextInspector({context}: {context: GenerationMeta["context"]}) {
   const used = budget.input_tokens ?? 0;
   const limit = budget.input_limit ?? 0;
   const fill = limit ? Math.min(100, Math.round(used / limit * 100)) : 0;
-  return <section className="contextInspector"><header><div><h3>Context Snapshot</h3><small>{context.sha256 ? `#${context.sha256.slice(0, 10)}` : "Старый формат snapshot"}</small></div><b>{used.toLocaleString("ru")} / {limit.toLocaleString("ru")}</b></header>{limit > 0 && <div className="budgetBar" title={`Использовано ${fill}%`}><i style={{width: `${fill}%`}}/></div>}<div className="budgetMeta"><span>Резерв ответа: {(budget.output_reserved ?? 0).toLocaleString("ru")}</span><span>Свободно: {(budget.remaining ?? 0).toLocaleString("ru")}</span></div><div className="contextList">{components.length === 0 ? <p className="muted">Детализация недоступна для этого ответа.</p> : components.map((item, index) => <article key={`${item.source_id}-${index}`}><small>{labels[item.kind] ?? item.kind} · {item.tokens} токенов{item.truncated ? " · сокращено" : ""}</small><b>{item.label}</b><p>{item.content}</p></article>)}</div>{(context.dropped_or_deduplicated ?? 0) > 0 && <p className="contextDropped">Не включено или удалено дубликатов: {context.dropped_or_deduplicated}</p>}</section>;
+  const routing = context.routing;
+  return <section className="contextInspector">{routing && <div className="routingCard"><header><span>AUTO Router</span><small>{routing.mode === "manual" ? "Вручную" : routing.mode === "economy" ? "Эконом" : routing.mode === "maximum" ? "Максимум" : "Баланс"}</small></header><b>{routing.selected_model}</b><p>{routing.explanation}</p><div><span>Уверенность: {Math.round(routing.classification_confidence * 100)}%</span><span>Оценка: до {money(routing.estimated_cost_rub)}</span></div>{routing.candidates.filter((item) => item.status === "eligible").length > 1 && <details><summary>Сравнение кандидатов</summary>{routing.candidates.filter((item) => item.status === "eligible").sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99)).slice(0, 5).map((item) => <div className="routeCandidate" key={item.model}><span>#{item.rank} {item.model}</span><b>{item.score == null ? "ручной маршрут" : `${Math.round(item.score * 100)} баллов`}</b></div>)}</details>}</div>}<header><div><h3>Context Snapshot</h3><small>{context.sha256 ? `#${context.sha256.slice(0, 10)}` : "Старый формат snapshot"}</small></div><b>{used.toLocaleString("ru")} / {limit.toLocaleString("ru")}</b></header>{limit > 0 && <div className="budgetBar" title={`Использовано ${fill}%`}><i style={{width: `${fill}%`}}/></div>}<div className="budgetMeta"><span>Резерв ответа: {(budget.output_reserved ?? 0).toLocaleString("ru")}</span><span>Свободно: {(budget.remaining ?? 0).toLocaleString("ru")}</span></div><div className="contextList">{components.length === 0 ? <p className="muted">Детализация недоступна для этого ответа.</p> : components.map((item, index) => <article key={`${item.source_id}-${index}`}><small>{labels[item.kind] ?? item.kind} · {item.tokens} токенов{item.truncated ? " · сокращено" : ""}</small><b>{item.label}</b><p>{item.content}</p></article>)}</div>{(context.dropped_or_deduplicated ?? 0) > 0 && <p className="contextDropped">Не включено или удалено дубликатов: {context.dropped_or_deduplicated}</p>}</section>;
 }
 
 function Empty({icon, title, text}: {icon: "search" | "folder" | "file" | "bell" | "memory"; title: string; text: string}) {

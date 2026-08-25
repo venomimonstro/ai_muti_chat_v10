@@ -39,6 +39,27 @@ export type GenerationMeta = {
       truncated: boolean;
     }>;
     dropped_or_deduplicated: number;
+    routing: {
+      decision_id: string;
+      mode: "manual" | "economy" | "balanced" | "maximum";
+      task_taxonomy: string;
+      selected_model: string;
+      explanation: string;
+      policy_version: string;
+      classification_confidence: number;
+      required_capabilities: string[];
+      estimated_cost_rub: string;
+      candidates: Array<{
+        model: string;
+        provider: string;
+        status: "eligible" | "rejected";
+        reasons: string[];
+        estimated_cost_rub: string | null;
+        quality?: number;
+        score?: number | null;
+        rank?: number;
+      }>;
+    } | null;
   };
 };
 
@@ -55,6 +76,7 @@ export type Conversation = {
   id: string;
   title: string;
   selected_model: string;
+  routing_mode: "manual" | "economy" | "balanced" | "maximum";
   project: string | null;
   memory_enabled: boolean;
   created_at: string;
