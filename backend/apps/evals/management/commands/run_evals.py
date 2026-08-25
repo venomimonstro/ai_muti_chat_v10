@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.ai_registry.models import AIModel
+from apps.ai_registry.models import AIModel, ModelVersion
 from apps.evals.models import EvalRun
 from apps.evals.services import run_evaluation
 
@@ -12,6 +12,7 @@ class Command(BaseCommand):
         parser.add_argument("--model", required=True)
         parser.add_argument("--dataset", default="ru-core-v1")
         parser.add_argument("--baseline")
+        parser.add_argument("--model-version")
         parser.add_argument("--limit", type=int)
         parser.add_argument("--fail-on-regression", action="store_true")
 
@@ -23,6 +24,14 @@ class Command(BaseCommand):
         except AIModel.DoesNotExist as exc:
             raise CommandError("Enabled model not found") from exc
         baseline = None
+        model_version = None
+        if options["model_version"]:
+            try:
+                model_version = ModelVersion.objects.get(
+                    model=model, version=options["model_version"]
+                )
+            except ModelVersion.DoesNotExist as exc:
+                raise CommandError("Model version not found") from exc
         if options["baseline"]:
             try:
                 baseline = EvalRun.objects.get(pk=options["baseline"])
@@ -34,6 +43,7 @@ class Command(BaseCommand):
                 dataset_version=options["dataset"],
                 baseline=baseline,
                 limit=options["limit"],
+                model_version=model_version,
             )
         except ValueError as exc:
             raise CommandError(str(exc)) from exc

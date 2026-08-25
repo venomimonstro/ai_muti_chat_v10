@@ -70,6 +70,7 @@ class EvalRun(models.Model):
     )
     run_kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.OFFLINE)
     model_snapshot = models.JSONField(default=dict)
+    model_version_id_snapshot = models.UUIDField(null=True, blank=True, db_index=True)
     state = models.CharField(max_length=16, choices=State.choices, default=State.RUNNING)
     gate_status = models.CharField(max_length=16, choices=Gate.choices, default=Gate.PENDING)
     case_count = models.PositiveIntegerField(default=0)

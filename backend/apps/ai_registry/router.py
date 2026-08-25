@@ -193,7 +193,9 @@ def select_route(*, conversation, content):
     mode = conversation.routing_mode
     if mode == "manual":
         try:
-            primary = AIModel.objects.select_related("provider", "fallback_model").get(
+            primary = AIModel.objects.select_related(
+                "provider", "fallback_model", "current_version"
+            ).get(
                 slug=conversation.selected_model, enabled=True
             )
         except AIModel.DoesNotExist as exc:
@@ -214,6 +216,10 @@ def select_route(*, conversation, content):
                 {
                     "model": model.slug,
                     "provider": model.provider.slug,
+                    "model_version": (
+                        model.current_version.version if model.current_version else None
+                    ),
+                    "exact_api_id": model.upstream_model,
                     "status": "eligible" if allowed else "rejected",
                     "reasons": [] if allowed else ["fallback_price_requires_consent"],
                     "estimated_cost_rub": str(charge),
@@ -246,7 +252,9 @@ def select_route(*, conversation, content):
     unknown_latency = int(policy.thresholds.get("unknown_latency_ms", 1500))
     candidates = []
     model_lookup = {}
-    for model in AIModel.objects.filter(enabled=True).select_related("provider"):
+    for model in AIModel.objects.filter(enabled=True).select_related(
+        "provider", "current_version"
+    ):
         model_lookup[model.slug] = model
         reasons = []
         capabilities = _capabilities(model)
@@ -273,6 +281,10 @@ def select_route(*, conversation, content):
             {
                 "model": model.slug,
                 "provider": model.provider.slug,
+                "model_version": (
+                    model.current_version.version if model.current_version else None
+                ),
+                "exact_api_id": model.upstream_model,
                 "status": "rejected" if reasons else "eligible",
                 "reasons": reasons,
                 "quality": quality,

@@ -2,6 +2,8 @@ from django.contrib import admin
 
 from .models import (
     AIModel,
+    ModelVersion,
+    ModelVersionTransition,
     Provider,
     ProviderHealthSnapshot,
     ReliabilityIncident,
@@ -22,5 +24,7 @@ class RoutingPolicyVersionAdmin(admin.ModelAdmin):
 
 admin.site.register(Provider)
 admin.site.register(AIModel)
+admin.site.register(ModelVersion)
+admin.site.register(ModelVersionTransition)
 admin.site.register(ProviderHealthSnapshot)
 admin.site.register(ReliabilityIncident)

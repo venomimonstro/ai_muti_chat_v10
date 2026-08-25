@@ -24,6 +24,12 @@ class MessageSerializer(serializers.ModelSerializer):
             "state": generation.state,
             "model": generation.routed_model or generation.model,
             "provider": generation.provider_slug,
+            "model_version": generation.context_snapshot.get("routing", {}).get(
+                "model_version"
+            ),
+            "exact_api_id": generation.context_snapshot.get("routing", {}).get(
+                "exact_api_id", ""
+            ),
             "cost_rub": generation.actual_cost_rub,
             "input_tokens": generation.input_tokens,
             "output_tokens": generation.output_tokens,

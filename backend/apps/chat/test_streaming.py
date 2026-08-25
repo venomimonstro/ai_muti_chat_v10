@@ -201,8 +201,12 @@ def test_retry_then_fallback_records_attempts(monkeypatch, settings):
         username="fallback", email="fallback@example.com", password="password123"
     )
     credit(user, Decimal("10"), "test", "fallback")
-    primary_provider = Provider.objects.create(slug="primary", name="Primary")
-    fallback_provider = Provider.objects.create(slug="fallback", name="Fallback")
+    primary_provider = Provider.objects.create(
+        slug="primary", name="Gemini", adapter_type=Provider.AdapterType.GEMINI_GENERATE_CONTENT
+    )
+    fallback_provider = Provider.objects.create(
+        slug="fallback", name="Grok", adapter_type=Provider.AdapterType.XAI_CHAT
+    )
     fallback_model = AIModel.objects.create(
         provider=fallback_provider,
         slug="fallback-v1",

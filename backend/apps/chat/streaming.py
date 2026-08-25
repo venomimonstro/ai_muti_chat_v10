@@ -117,6 +117,12 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             "mode": decision.mode,
             "task_taxonomy": decision.task_taxonomy,
             "selected_model": route.selected.slug,
+            "model_version": (
+                route.selected.current_version.version
+                if route.selected.current_version
+                else None
+            ),
+            "exact_api_id": route.selected.upstream_model,
             "explanation": decision.explanation,
             "policy_version": route.policy.version,
             "classification_confidence": float(decision.classification_confidence),
@@ -183,7 +189,9 @@ def run(generation, *, adapter=None):
         yield sse("error", {"code": generation.error_code or "generation_not_runnable"})
         return
 
-    primary = AIModel.objects.select_related("provider", "fallback_model").get(
+    primary = AIModel.objects.select_related(
+        "provider", "fallback_model", "current_version"
+    ).get(
         slug=generation.model
     )
     if adapter:
@@ -203,7 +211,7 @@ def run(generation, *, adapter=None):
                 item.slug: item
                 for item in AIModel.objects.filter(
                     slug__in=[item["model"] for item in ranked], enabled=True
-                ).select_related("provider", "fallback_model")
+                ).select_related("provider", "fallback_model", "current_version")
             }
             candidates = [
                 models[item["model"]]
@@ -234,6 +242,11 @@ def run(generation, *, adapter=None):
                     "mode": routing.mode,
                     "task_taxonomy": routing.task_taxonomy,
                     "model": routing.selected_model.slug,
+                    "model_version": (
+                        routing.selected_model.current_version.version
+                        if routing.selected_model.current_version
+                        else None
+                    ),
                     "explanation": routing.explanation,
                 },
             )
@@ -372,6 +385,11 @@ def run(generation, *, adapter=None):
                 "input_tokens": completed.input_tokens,
                 "output_tokens": completed.output_tokens,
                 "model": selected_model.slug,
+                "model_version": (
+                    selected_model.current_version.version
+                    if selected_model.current_version
+                    else None
+                ),
                 "provider": selected_model.provider.slug,
             },
         )

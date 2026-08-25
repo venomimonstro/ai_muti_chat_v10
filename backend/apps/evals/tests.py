@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.ai_registry.adapters import ProviderError, ProviderResult
 from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.versioning import create_model_version
 from apps.billing.models import PriceVersion
 
 from .judge import score_response
@@ -76,6 +77,16 @@ class SequenceAdapter:
         )
 
 
+class RecordingAdapter(SequenceAdapter):
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.models = []
+
+    def generate(self, **kwargs):
+        self.models.append(kwargs["model"])
+        return super().generate(**kwargs)
+
+
 def test_deterministic_judge_penalizes_hallucination_and_verbosity():
     clean = score_response(
         "Вода кипит при 100 градусах.",
@@ -140,6 +151,33 @@ def test_runner_collects_score_cost_latency_and_scorecards(settings):
     assert result.price_version_id_snapshot is not None
     assert run.model_snapshot["slug"] == model.slug
     assert ModelScore.objects.filter(run=run, eligible_for_promotion=True).count() == 2
+
+
+@pytest.mark.django_db
+def test_runner_evaluates_candidate_exact_id_without_promoting_it(settings):
+    settings.EVAL_MIN_AVERAGE_SCORE = 0
+    settings.EVAL_MAX_HALLUCINATION_RATE = 1
+    settings.EVAL_MAX_ERROR_RATE = 0
+    model = create_model("version-eval")
+    create_cases("version-eval-v1")
+    candidate = create_model_version(
+        model=model,
+        version="candidate-v2",
+        exact_api_id="provider-exact-v2",
+        max_output_tokens=512,
+    )
+    adapter = RecordingAdapter(["17", "=SUM(B2:B10)"])
+    run = run_evaluation(
+        model=model,
+        model_version=candidate,
+        dataset_version="version-eval-v1",
+        adapter=adapter,
+    )
+    model.refresh_from_db()
+    assert adapter.models == ["provider-exact-v2", "provider-exact-v2"]
+    assert run.model_version_id_snapshot == candidate.id
+    assert run.model_snapshot["exact_api_id"] == "provider-exact-v2"
+    assert model.upstream_model == "version-eval"
 
 
 @pytest.mark.django_db

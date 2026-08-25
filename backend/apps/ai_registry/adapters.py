@@ -356,6 +356,111 @@ class DeepSeekChatAdapter(HTTPAdapter):
         return {"text", "streaming"}
 
 
+class XAIChatAdapter(DeepSeekChatAdapter):
+    """xAI's OpenAI-compatible Chat Completions contract."""
+
+    def __init__(self, *, api_key: str, base_url: str = "https://api.x.ai/v1"):
+        super().__init__(api_key=api_key, base_url=base_url)
+
+    def capabilities(self):
+        return {"text", "streaming", "vision", "tools"}
+
+
+class GeminiGenerateContentAdapter(HTTPAdapter):
+    """Google Gemini streamGenerateContent SSE adapter."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+    ):
+        if not api_key:
+            raise ProviderError(
+                "Provider credential is not configured",
+                code="credential_missing",
+                retryable=False,
+            )
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+
+    @property
+    def headers(self):
+        return {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
+
+    def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        system = "\n\n".join(
+            item["content"] for item in messages if item["role"] == "system"
+        )
+        contents = [
+            {
+                "role": "model" if item["role"] == "assistant" else "user",
+                "parts": [{"text": item["content"]}],
+            }
+            for item in messages
+            if item["role"] in {"user", "assistant"}
+        ]
+        payload = {
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": max_output_tokens},
+        }
+        if system:
+            payload["systemInstruction"] = {"parts": [{"text": system}]}
+        request_id = ""
+        usage = {}
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse",
+                headers=self.headers,
+                json=payload,
+                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data:
+                        continue
+                    event = json.loads(data)
+                    request_id = event.get("responseId", request_id)
+                    usage = event.get("usageMetadata") or usage
+                    blocked = (event.get("promptFeedback") or {}).get("blockReason")
+                    if blocked:
+                        raise ProviderError(
+                            "Provider blocked prompt",
+                            code=f"blocked_{blocked.lower()}",
+                            retryable=False,
+                        )
+                    candidates = event.get("candidates") or []
+                    if not candidates:
+                        continue
+                    parts = ((candidates[0].get("content") or {}).get("parts") or [])
+                    for part in parts:
+                        if not part.get("thought") and part.get("text"):
+                            yield ProviderStreamEvent(kind="delta", text_delta=part["text"])
+                yield ProviderStreamEvent(
+                    kind="completed",
+                    provider_request_id=request_id,
+                    input_tokens=usage.get("promptTokenCount", 0),
+                    output_tokens=usage.get("candidatesTokenCount", 0),
+                )
+        except httpx.HTTPError as exc:
+            raise _http_error(exc) from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Invalid provider stream", code="invalid_stream") from exc
+
+    def generate(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        return _collect(self, model=model, messages=messages, max_output_tokens=max_output_tokens)
+
+    def health_check(self):
+        return self._health_get(url=f"{self.base_url}/models", headers=self.headers)
+
+    def capabilities(self):
+        return {"text", "streaming", "vision", "tools"}
+
+
 def _collect(adapter, *, model: str, messages: list[dict], max_output_tokens: int):
     text = ""
     completed = None
@@ -397,6 +502,20 @@ def adapter_for(model: AIModel):
             api_key=os.getenv(provider.credential_env or "DEEPSEEK_API_KEY", ""),
             base_url=provider.api_base_url
             or os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
+        )
+    if provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT:
+        return GeminiGenerateContentAdapter(
+            api_key=os.getenv(provider.credential_env or "GEMINI_API_KEY", ""),
+            base_url=provider.api_base_url
+            or os.getenv(
+                "GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"
+            ),
+        )
+    if provider.adapter_type == Provider.AdapterType.XAI_CHAT:
+        return XAIChatAdapter(
+            api_key=os.getenv(provider.credential_env or "XAI_API_KEY", ""),
+            base_url=provider.api_base_url
+            or os.getenv("XAI_API_BASE_URL", "https://api.x.ai/v1"),
         )
     raise ProviderError(
         f"Unsupported adapter: {provider.adapter_type}", code="unsupported_adapter", retryable=False

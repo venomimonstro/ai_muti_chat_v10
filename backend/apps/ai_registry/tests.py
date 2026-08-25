@@ -5,10 +5,13 @@ import pytest
 from .adapters import (
     AnthropicMessagesAdapter,
     DeepSeekChatAdapter,
+    GeminiGenerateContentAdapter,
     OpenAIResponsesAdapter,
     ProviderError,
+    XAIChatAdapter,
+    adapter_for,
 )
-from .models import Provider
+from .models import AIModel, Provider
 from .reliability import provider_available, record_failure, record_success
 
 
@@ -116,6 +119,87 @@ def test_deepseek_adapter_normalizes_openai_compatible_stream(monkeypatch):
     assert result.provider_request_id == "deep_test"
     assert result.input_tokens == 5
     assert result.output_tokens == 2
+
+
+class GeminiResponse(FakeResponse):
+    def iter_lines(self):
+        events = [
+            {
+                "responseId": "gemini_test",
+                "candidates": [{"content": {"parts": [{"text": "Gem"}]}}],
+            },
+            {
+                "responseId": "gemini_test",
+                "candidates": [{"content": {"parts": [{"text": "ini"}]}}],
+                "usageMetadata": {"promptTokenCount": 6, "candidatesTokenCount": 2},
+            },
+        ]
+        return [f"data: {json.dumps(event)}" for event in events]
+
+
+def test_gemini_adapter_normalizes_sse_and_usage(monkeypatch):
+    monkeypatch.setattr(
+        "apps.ai_registry.adapters.httpx.stream", lambda *a, **k: GeminiResponse()
+    )
+    result = GeminiGenerateContentAdapter(api_key="test").generate(
+        model="gemini-test",
+        messages=[
+            {"role": "system", "content": "Rules"},
+            {"role": "user", "content": "Hello"},
+        ],
+        max_output_tokens=100,
+    )
+    assert result.text == "Gemini"
+    assert result.provider_request_id == "gemini_test"
+    assert result.input_tokens == 6
+    assert result.output_tokens == 2
+
+
+def test_xai_adapter_uses_openai_compatible_usage_contract(monkeypatch):
+    monkeypatch.setattr(
+        "apps.ai_registry.adapters.httpx.stream", lambda *a, **k: DeepSeekResponse()
+    )
+    result = XAIChatAdapter(api_key="test").generate(
+        model="grok-test",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_output_tokens=100,
+    )
+    assert result.text == "Deep"
+    assert result.input_tokens == 5
+    assert result.output_tokens == 2
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("adapter_type", "expected_type", "credential"),
+    [
+        (Provider.AdapterType.OPENAI_RESPONSES, OpenAIResponsesAdapter, "OPENAI_API_KEY"),
+        (Provider.AdapterType.ANTHROPIC_MESSAGES, AnthropicMessagesAdapter, "ANTHROPIC_API_KEY"),
+        (Provider.AdapterType.DEEPSEEK_CHAT, DeepSeekChatAdapter, "DEEPSEEK_API_KEY"),
+        (
+            Provider.AdapterType.GEMINI_GENERATE_CONTENT,
+            GeminiGenerateContentAdapter,
+            "GEMINI_API_KEY",
+        ),
+        (Provider.AdapterType.XAI_CHAT, XAIChatAdapter, "XAI_API_KEY"),
+    ],
+)
+def test_five_provider_families_share_adapter_contract(
+    monkeypatch, adapter_type, expected_type, credential
+):
+    monkeypatch.setenv(credential, "server-secret")
+    provider = Provider.objects.create(
+        slug=f"provider-{adapter_type}", name=adapter_type, adapter_type=adapter_type
+    )
+    model = AIModel.objects.create(
+        provider=provider,
+        slug=f"model-{adapter_type}",
+        display_name=adapter_type,
+        upstream_model="exact-model-id",
+    )
+    adapter = adapter_for(model)
+    assert isinstance(adapter, expected_type)
+    assert {"text", "streaming"}.issubset(adapter.capabilities())
 
 
 @pytest.mark.django_db(transaction=True)

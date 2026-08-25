@@ -11,6 +11,8 @@ class AIModelSerializer(serializers.ModelSerializer):
     available = serializers.SerializerMethodField()
     health_state = serializers.CharField(source="provider.health_state")
     price = serializers.SerializerMethodField()
+    model_version = serializers.SerializerMethodField()
+    exact_api_id = serializers.CharField(source="upstream_model")
 
     class Meta:
         model = AIModel
@@ -18,6 +20,8 @@ class AIModelSerializer(serializers.ModelSerializer):
             "slug",
             "display_name",
             "provider",
+            "model_version",
+            "exact_api_id",
             "capabilities",
             "context_window",
             "max_output_tokens",
@@ -28,6 +32,9 @@ class AIModelSerializer(serializers.ModelSerializer):
 
     def get_available(self, obj):
         return obj.enabled and provider_available(obj.provider)
+
+    def get_model_version(self, obj):
+        return obj.current_version.version if obj.current_version else None
 
     def get_price(self, obj):
         try:

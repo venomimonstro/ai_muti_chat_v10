@@ -11,6 +11,8 @@ export type GenerationMeta = {
   state: string;
   model: string;
   provider: string;
+  model_version: string | null;
+  exact_api_id: string;
   cost_rub: string | null;
   input_tokens: number;
   output_tokens: number;
@@ -44,6 +46,8 @@ export type GenerationMeta = {
       mode: "manual" | "economy" | "balanced" | "maximum";
       task_taxonomy: string;
       selected_model: string;
+      model_version: string | null;
+      exact_api_id: string;
       explanation: string;
       policy_version: string;
       classification_confidence: number;
@@ -52,6 +56,8 @@ export type GenerationMeta = {
       candidates: Array<{
         model: string;
         provider: string;
+        model_version: string | null;
+        exact_api_id: string;
         status: "eligible" | "rejected";
         reasons: string[];
         estimated_cost_rub: string | null;
@@ -88,6 +94,8 @@ export type AIModel = {
   slug: string;
   display_name: string;
   provider: string;
+  model_version: string | null;
+  exact_api_id: string;
   capabilities: string[];
   context_window: number;
   max_output_tokens: number;

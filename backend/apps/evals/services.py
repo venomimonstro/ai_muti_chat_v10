@@ -86,7 +86,9 @@ def _aggregate(run):
     return scorecard
 
 
-def run_evaluation(*, model, dataset_version, baseline=None, adapter=None, limit=None):
+def run_evaluation(
+    *, model, dataset_version, baseline=None, adapter=None, limit=None, model_version=None
+):
     cases = EvalCase.objects.filter(dataset_version=dataset_version, enabled=True).order_by(
         "taxonomy", "slug"
     )
@@ -97,6 +99,15 @@ def run_evaluation(*, model, dataset_version, baseline=None, adapter=None, limit
         raise ValueError("В выбранном eval dataset нет активных кейсов")
     if baseline and baseline.model_id != model.id:
         raise ValueError("Baseline должен принадлежать той же модели")
+    if model_version and model_version.model_id != model.id:
+        raise ValueError("ModelVersion должна принадлежать выбранной модели")
+
+    exact_api_id = model_version.exact_api_id if model_version else model.upstream_model
+    capabilities = model_version.capabilities if model_version else model.capabilities
+    context_window = model_version.context_window if model_version else model.context_window
+    max_output_tokens = (
+        model_version.max_output_tokens if model_version else model.max_output_tokens
+    )
 
     price = active_price(model.slug)
     run = EvalRun.objects.create(
@@ -104,13 +115,16 @@ def run_evaluation(*, model, dataset_version, baseline=None, adapter=None, limit
         dataset_version=dataset_version,
         baseline=baseline,
         case_count=len(cases),
+        model_version_id_snapshot=model_version.id if model_version else model.current_version_id,
         model_snapshot={
             "slug": model.slug,
             "upstream_model": model.upstream_model,
+            "exact_api_id": exact_api_id,
+            "model_version": model_version.version if model_version else None,
             "provider": model.provider.slug,
-            "context_window": model.context_window,
-            "max_output_tokens": model.max_output_tokens,
-            "capabilities": model.capabilities,
+            "context_window": context_window,
+            "max_output_tokens": max_output_tokens,
+            "capabilities": capabilities,
         },
     )
     try:
@@ -123,9 +137,9 @@ def run_evaluation(*, model, dataset_version, baseline=None, adapter=None, limit
             started = time.monotonic()
             try:
                 result = provider_adapter.generate(
-                    model=model.upstream_model,
+                    model=exact_api_id,
                     messages=messages,
-                    max_output_tokens=min(model.max_output_tokens, settings.EVAL_MAX_OUTPUT_TOKENS),
+                    max_output_tokens=min(max_output_tokens, settings.EVAL_MAX_OUTPUT_TOKENS),
                 )
                 latency_ms = int((time.monotonic() - started) * 1000)
                 judged = score_response(result.text, case.rubric)
