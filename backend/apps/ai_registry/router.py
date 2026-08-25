@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from apps.billing.pricing import active_price, calculate
+from apps.billing.pricing import active_price, quote
 from apps.evals.models import EvalCase, EvalRun, ModelScore
 from apps.files.models import FileAsset
 
@@ -208,10 +208,22 @@ def select_route(*, conversation, content):
         multiplier = Decimal(str(policy.thresholds.get("fallback_price_multiplier", 1.5)))
         for model in available:
             price = active_price(model.slug)
-            _provider_cost, charge = calculate(price, input_tokens, OUTPUT_TOKENS)
+            price_quote = quote(
+                price,
+                input_tokens,
+                OUTPUT_TOKENS,
+                provider_slug=model.provider.slug,
+                model_slug=model.slug,
+            )
+            charge = price_quote.user_charge_rub
             if primary_cost is None:
                 primary_cost = charge
-            allowed = charge <= primary_cost * multiplier
+            allowed = price_quote.margin_allowed and charge <= primary_cost * multiplier
+            reasons = []
+            if not price_quote.margin_allowed:
+                reasons.append("margin_below_floor")
+            if charge > primary_cost * multiplier:
+                reasons.append("fallback_price_requires_consent")
             priced.append(
                 {
                     "model": model.slug,
@@ -221,8 +233,9 @@ def select_route(*, conversation, content):
                     ),
                     "exact_api_id": model.upstream_model,
                     "status": "eligible" if allowed else "rejected",
-                    "reasons": [] if allowed else ["fallback_price_requires_consent"],
+                    "reasons": reasons,
                     "estimated_cost_rub": str(charge),
+                    "gross_margin_percent": str(price_quote.gross_margin_percent),
                     "score": None,
                 }
             )
@@ -267,7 +280,16 @@ def select_route(*, conversation, content):
             reasons.append("context_window_too_small")
         try:
             price = active_price(model.slug)
-            _provider_cost, charge = calculate(price, input_tokens, OUTPUT_TOKENS)
+            price_quote = quote(
+                price,
+                input_tokens,
+                OUTPUT_TOKENS,
+                provider_slug=model.provider.slug,
+                model_slug=model.slug,
+            )
+            charge = price_quote.user_charge_rub
+            if not price_quote.margin_allowed:
+                reasons.append("margin_below_floor")
         except ValidationError:
             charge = None
             reasons.append("price_not_configured")
@@ -294,6 +316,9 @@ def select_route(*, conversation, content):
                 "health": model.provider.health_state,
                 "context_window": model.context_window,
                 "estimated_cost_rub": str(charge) if charge is not None else None,
+                "gross_margin_percent": (
+                    str(price_quote.gross_margin_percent) if charge is not None else None
+                ),
                 "score": None,
             }
         )

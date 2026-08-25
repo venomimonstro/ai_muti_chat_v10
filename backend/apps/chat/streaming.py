@@ -16,7 +16,15 @@ from apps.ai_registry.reliability import (
 )
 from apps.ai_registry.router import select_route
 from apps.billing.models import RequestCost
-from apps.billing.pricing import active_price, calculate, conservative_token_budget
+from apps.billing.pricing import (
+    active_price,
+    calculate,
+    calculate_from_snapshot,
+    conservative_token_budget,
+    quote,
+    require_margin,
+)
+from apps.billing.reconciliation import record_cost_outcome
 from apps.billing.services import release, reserve, settle
 from apps.memory_store.services import (
     extract_memory_candidates,
@@ -146,17 +154,45 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
         input_budget, output_budget = conservative_token_budget(
             history, snapshot["budget"]["output_reserved"]
         )
-        priced = [(model, active_price(model.slug)) for model in candidates]
-        estimates = [calculate(price, input_budget, output_budget)[1] for _, price in priced]
+        priced = []
+        for model in candidates:
+            price = active_price(model.slug)
+            price_quote = require_margin(
+                quote(
+                    price,
+                    input_budget,
+                    output_budget,
+                    provider_slug=model.provider.slug,
+                    model_slug=model.slug,
+                )
+            )
+            priced.append((model, price, price_quote))
+        estimates = [item.user_charge_rub for _, _, item in priced]
         estimated = max(estimates)
         reservation = reserve(user, estimated, f"generation:{generation.id}")
+        selected_quote = priced[0][2]
         RequestCost.objects.create(
             generation_id=generation.id,
             price_version=priced[0][1],
             estimated_rub=estimated,
+            expected_provider_cost_rub=selected_quote.provider_cost_rub,
+            fx_snapshot=selected_quote.fx_snapshot,
+            pricing_snapshot=selected_quote.pricing_snapshot,
+            model_version_id_snapshot=priced[0][0].current_version_id,
         )
         generation.reservation_id = reservation.id
-        generation.route_price_snapshot = {model.slug: str(price.id) for model, price in priced}
+        generation.route_price_snapshot = {
+            model.slug: {
+                "price_version_id": str(price.id),
+                "fx_snapshot_id": str(item.fx_snapshot.id),
+                "pricing_snapshot": item.pricing_snapshot,
+                "expected_provider_cost_rub": str(item.provider_cost_rub),
+                "model_version_id": (
+                    str(model.current_version_id) if model.current_version_id else None
+                ),
+            }
+            for model, price, item in priced
+        }
         generation.state = Generation.State.RUNNING
         generation.save(update_fields=["reservation_id", "route_price_snapshot", "state"])
     except Exception:
@@ -265,11 +301,28 @@ def run(generation, *, adapter=None):
     try:
         for model in candidates:
             request_cost = RequestCost.objects.get(generation_id=generation.id)
-            price_id = generation.route_price_snapshot.get(model.slug)
-            if not price_id:
+            route_price = generation.route_price_snapshot.get(model.slug)
+            if not route_price:
                 raise ValidationError("Missing route price snapshot")
-            request_cost.price_version_id = price_id
-            request_cost.save(update_fields=["price_version"])
+            if isinstance(route_price, str):
+                request_cost.price_version_id = route_price
+                fields = ["price_version"]
+            else:
+                request_cost.price_version_id = route_price["price_version_id"]
+                request_cost.fx_snapshot_id = route_price["fx_snapshot_id"]
+                request_cost.pricing_snapshot = route_price["pricing_snapshot"]
+                request_cost.expected_provider_cost_rub = route_price[
+                    "expected_provider_cost_rub"
+                ]
+                request_cost.model_version_id_snapshot = route_price["model_version_id"]
+                fields = [
+                    "price_version",
+                    "fx_snapshot",
+                    "pricing_snapshot",
+                    "expected_provider_cost_rub",
+                    "model_version_id_snapshot",
+                ]
+            request_cost.save(update_fields=fields)
             max_attempts = 1 if adapter else settings.AI_PROVIDER_MAX_ATTEMPTS
             for retry_index in range(max_attempts):
                 sequence += 1
@@ -340,9 +393,19 @@ def run(generation, *, adapter=None):
         request_cost = RequestCost.objects.select_related("price_version").get(
             generation_id=generation.id
         )
-        provider_cost, charge = calculate(
-            request_cost.price_version, completed.input_tokens, completed.output_tokens
-        )
+        if request_cost.pricing_snapshot:
+            provider_cost, charge, gross_profit, gross_margin = calculate_from_snapshot(
+                request_cost.price_version,
+                completed.input_tokens,
+                completed.output_tokens,
+                request_cost.pricing_snapshot,
+            )
+        else:
+            provider_cost, charge = calculate(
+                request_cost.price_version, completed.input_tokens, completed.output_tokens
+            )
+            gross_profit = charge - provider_cost
+            gross_margin = gross_profit / charge * 100 if charge else 100
         reservation_amount = generation.user_message.conversation.owner.wallet.reservations.get(
             id=generation.reservation_id
         ).amount_rub
@@ -353,9 +416,19 @@ def run(generation, *, adapter=None):
         request_cost.charged_rub = charge
         request_cost.input_tokens = completed.input_tokens
         request_cost.output_tokens = completed.output_tokens
+        request_cost.gross_profit_rub = gross_profit
+        request_cost.gross_margin_percent = gross_margin
         request_cost.save(
-            update_fields=["provider_cost_rub", "charged_rub", "input_tokens", "output_tokens"]
+            update_fields=[
+                "provider_cost_rub",
+                "charged_rub",
+                "input_tokens",
+                "output_tokens",
+                "gross_profit_rub",
+                "gross_margin_percent",
+            ]
         )
+        record_cost_outcome(request_cost, model=selected_model)
         generation.state = Generation.State.COMPLETED
         generation.provider_request_id = completed.provider_request_id
         generation.input_tokens = completed.input_tokens

@@ -1,5 +1,8 @@
 from django.urls import path
 
-from .views import WalletView
+from .views import FinanceSummaryView, WalletView
 
-urlpatterns = [path("wallet/", WalletView.as_view())]
+urlpatterns = [
+    path("wallet/", WalletView.as_view()),
+    path("finance/summary/", FinanceSummaryView.as_view()),
+]

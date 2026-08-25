@@ -1,5 +1,11 @@
+from decimal import Decimal
+
+from django.db.models import Sum
+from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from .models import BillingReconciliationRun, CostAnomaly, RequestCost, Wallet
 
 
 class WalletView(APIView):
@@ -25,5 +31,47 @@ class WalletView(APIView):
                     }
                     for e in entries
                 ],
+            }
+        )
+
+
+class FinanceSummaryView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        totals = RequestCost.objects.filter(charged_rub__isnull=False).aggregate(
+            revenue=Sum("charged_rub"),
+            provider_cost=Sum("provider_cost_rub"),
+            gross_profit=Sum("gross_profit_rub"),
+        )
+        revenue = totals["revenue"] or Decimal("0")
+        provider_cost = totals["provider_cost"] or Decimal("0")
+        gross_profit = totals["gross_profit"] or revenue - provider_cost
+        margin = gross_profit / revenue * 100 if revenue else Decimal("0")
+        liability = Wallet.objects.aggregate(
+            available=Sum("available_rub"), reserved=Sum("reserved_rub")
+        )
+        last_run = BillingReconciliationRun.objects.first()
+        return Response(
+            {
+                "usage_revenue_rub": revenue,
+                "provider_cost_rub": provider_cost,
+                "gross_profit_rub": gross_profit,
+                "gross_margin_percent": margin.quantize(Decimal("0.001")),
+                "balance_liability_rub": (liability["available"] or 0)
+                + (liability["reserved"] or 0),
+                "open_anomalies": CostAnomaly.objects.filter(
+                    status=CostAnomaly.Status.OPEN
+                ).count(),
+                "last_reconciliation": (
+                    {
+                        "id": last_run.id,
+                        "status": last_run.status,
+                        "discrepancies": last_run.discrepancy_count,
+                        "finished_at": last_run.finished_at,
+                    }
+                    if last_run
+                    else None
+                ),
             }
         )

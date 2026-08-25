@@ -103,6 +103,10 @@ def test_stream_settles_actual_usage_and_persists_response(stream_context):
     assert "event: delta" in events
     assert "event: completed" in events
     assert cost.charged_rub == generation.actual_cost_rub
+    assert cost.fx_snapshot is not None
+    assert cost.pricing_snapshot["fx_rate"] == "1.00000000"
+    assert cost.gross_profit_rub is not None
+    assert cost.gross_margin_percent == Decimal("50.000")
     assert reconstruct(user.wallet) == (user.wallet.available_rub, user.wallet.reserved_rub)
 
 

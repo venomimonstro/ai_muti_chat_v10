@@ -1,9 +1,30 @@
 from django.contrib import admin
 
-from .models import BalanceReservation, LedgerEntry, PriceVersion, RequestCost, Wallet
+from .models import (
+    BalanceReservation,
+    BillingReconciliationItem,
+    BillingReconciliationRun,
+    CostAnomaly,
+    FxRateSnapshot,
+    LedgerEntry,
+    MarginPolicyVersion,
+    MarkupRuleVersion,
+    PriceVersion,
+    RequestCost,
+    Wallet,
+)
 
 
-@admin.register(LedgerEntry, PriceVersion, RequestCost)
+@admin.register(
+    LedgerEntry,
+    PriceVersion,
+    RequestCost,
+    FxRateSnapshot,
+    MarkupRuleVersion,
+    MarginPolicyVersion,
+    BillingReconciliationRun,
+    BillingReconciliationItem,
+)
 class ImmutableFinanceAdmin(admin.ModelAdmin):
     def has_change_permission(self, request, obj=None):
         return False
@@ -14,3 +35,4 @@ class ImmutableFinanceAdmin(admin.ModelAdmin):
 
 admin.site.register(Wallet)
 admin.site.register(BalanceReservation)
+admin.site.register(CostAnomaly)

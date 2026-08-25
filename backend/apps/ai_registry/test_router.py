@@ -5,7 +5,7 @@ import pytest
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.billing.models import PriceVersion
+from apps.billing.models import MarkupRuleVersion, PriceVersion
 from apps.billing.services import credit
 from apps.chat.models import Conversation, RoutingDecision
 from apps.chat.streaming import prepare
@@ -160,6 +160,32 @@ def test_capability_and_health_filters_are_hard_constraints():
     assert route.selected == vision_model
     assert "missing_capabilities:vision" in rejected["reasons"]
     assert "provider_unavailable" in health_rejected["reasons"]
+
+
+@pytest.mark.django_db
+def test_auto_router_rejects_candidate_below_margin_floor():
+    user = User.objects.create_user(
+        username="router-margin", email="router-margin@example.com", password="password123"
+    )
+    unsafe = create_routable_model(
+        "unsafe-margin", input_price=1, output_price=1, latency=1
+    )
+    safe = create_routable_model(
+        "safe-margin", input_price=10, output_price=10, latency=100
+    )
+    MarkupRuleVersion.objects.create(
+        scope_type=MarkupRuleVersion.Scope.MODEL,
+        scope_key=unsafe.slug,
+        markup_percent=0,
+        effective_from=timezone.now(),
+    )
+    conversation = Conversation.objects.create(
+        owner=user, routing_mode=Conversation.RoutingMode.BALANCED
+    )
+    route = select_route(conversation=conversation, content="Обычный вопрос")
+    rejected = next(item for item in route.candidates if item["model"] == unsafe.slug)
+    assert route.selected == safe
+    assert "margin_below_floor" in rejected["reasons"]
 
 
 @pytest.mark.django_db

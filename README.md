@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–17.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–18.
 
 ## Что уже заложено
 
@@ -55,6 +55,11 @@
 - immutable ModelVersion с exact API id и candidate → eval → promote процессом;
 - атомарный promotion, аудит переходов и rollback на зарегистрированную версию;
 - version-aware Router/Context Snapshot и межпровайдерный failover contract suite;
+- versioned markup hierarchy global → provider → model → operation → organization → contract;
+- immutable FX и полный Price Snapshot для воспроизводимого settlement;
+- Margin Guard, исключающий убыточные маршруты до provider request;
+- deduplicated cost anomalies и ежедневная ledger/request reconciliation;
+- staff-only Finance Summary с revenue, provider cost, gross profit/margin и liabilities;
 - Docker Compose: PostgreSQL, Redis, backend, worker, frontend;
 - CI: backend lint/tests и frontend lint/build;
 - ADR и implementation brief для текущего этапа.
@@ -96,4 +101,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 18 — Cost Protection, FX snapshots, margin floor и reconciliation jobs.
+Следующий этап: Sprint 19 — RAG v1, pgvector, metadata ACL, citations и injection defenses.

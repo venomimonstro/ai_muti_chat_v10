@@ -45,6 +45,16 @@ services:
       - backend
       - redis
 
+  beat:
+    build: ./backend
+    env_file: .env
+    command: celery -A config beat -l INFO
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - backend
+      - redis
+
   frontend:
     build: ./frontend
     environment:

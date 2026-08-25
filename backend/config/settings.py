@@ -101,6 +101,12 @@ REST_FRAMEWORK = {
 }
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+CELERY_BEAT_SCHEDULE = {
+    "daily-financial-reconciliation": {
+        "task": "apps.billing.tasks.daily_financial_reconciliation",
+        "schedule": 86400.0,
+    }
+}
 SIGNUP_PROMO_RUB = os.getenv("SIGNUP_PROMO_RUB", "25.00")
 AI_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "120"))
 AI_PROVIDER_MAX_ATTEMPTS = int(os.getenv("AI_PROVIDER_MAX_ATTEMPTS", "2"))
