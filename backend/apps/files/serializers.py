@@ -6,7 +6,15 @@ from .models import FileAsset, FileChunk, FileProcessingJob
 class FileChunkSerializer(serializers.ModelSerializer):
     class Meta:
         model = FileChunk
-        fields = ("position", "source_location", "content")
+        fields = (
+            "id",
+            "position",
+            "source_location",
+            "content",
+            "content_sha256",
+            "injection_risk",
+            "indexed_at",
+        )
 
 
 class FileJobSerializer(serializers.ModelSerializer):

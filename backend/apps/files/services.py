@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import FileAsset, FileChunk, FileProcessingJob
+from .rag import prepare_chunk
 
 
 class PartialExtraction(Exception):
@@ -114,7 +115,18 @@ def _chunks(sections):
     for source, content in sections:
         start = 0
         while start < len(content):
-            end = min(start + settings.FILE_CHUNK_CHARS, len(content))
+            hard_end = min(start + settings.FILE_CHUNK_CHARS, len(content))
+            end = hard_end
+            if hard_end < len(content):
+                floor = start + int(settings.FILE_CHUNK_CHARS * 0.6)
+                boundaries = [
+                    content.rfind("\n\n", floor, hard_end),
+                    content.rfind("\n", floor, hard_end),
+                    content.rfind(". ", floor, hard_end),
+                ]
+                boundary = max(boundaries)
+                if boundary > start:
+                    end = boundary + (2 if content[boundary : boundary + 2] == ". " else 0)
             yield FileChunk(
                 position=position,
                 source_location={"source": source, "start_char": start, "end_char": end},
@@ -139,8 +151,7 @@ def process_file(asset: FileAsset):
         if chars > settings.FILE_MAX_EXTRACTED_CHARS:
             raise PartialExtraction("extracted_text_limit")
         chunks = list(_chunks(sections))
-        for chunk in chunks:
-            chunk.file = asset
+        chunks = [prepare_chunk(chunk, asset) for chunk in chunks]
         with transaction.atomic():
             asset.chunks.all().delete()
             FileChunk.objects.bulk_create(chunks)

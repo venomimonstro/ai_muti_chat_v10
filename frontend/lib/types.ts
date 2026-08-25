@@ -39,6 +39,26 @@ export type GenerationMeta = {
       tokens: number;
       score: number;
       truncated: boolean;
+      citation?: {
+        id: string;
+        file_id: string;
+        file_name: string;
+        chunk_id: string;
+        position: number;
+        source_location: Record<string, string | number>;
+        project_id: string;
+        content_sha256: string;
+      };
+    }>;
+    citations: Array<{
+      id: string;
+      file_id: string;
+      file_name: string;
+      chunk_id: string;
+      position: number;
+      source_location: Record<string, string | number>;
+      project_id: string;
+      content_sha256: string;
     }>;
     dropped_or_deduplicated: number;
     routing: {

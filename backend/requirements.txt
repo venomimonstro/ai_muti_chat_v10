@@ -6,3 +6,4 @@ celery[redis]==5.5.3
 gunicorn==23.0.0
 uvicorn==0.35.0
 httpx==0.28.1
+pgvector==0.5.0

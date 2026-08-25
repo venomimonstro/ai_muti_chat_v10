@@ -10,6 +10,7 @@ from apps.ai_registry.models import AIModel, Provider
 from apps.billing.models import PriceVersion
 from apps.billing.services import credit
 from apps.files.models import FileAsset, FileChunk
+from apps.files.rag import prepare_chunk
 from apps.memory_store.models import MemoryItem
 from apps.projects.models import Project, ProjectInstruction
 
@@ -119,10 +120,10 @@ def test_retrieval_is_relevant_deduplicated_and_project_isolated(settings):
         scan_status=FileAsset.ScanStatus.BASIC_PASSED,
         idempotency_key="other",
     )
-    FileChunk.objects.create(file=own_file, position=0, content=duplicate)
-    FileChunk.objects.create(
-        file=other_file, position=0, content="бюджет проекта секретный чужой документ"
-    )
+    prepare_chunk(FileChunk(position=0, content=duplicate), own_file).save()
+    prepare_chunk(
+        FileChunk(position=0, content="бюджет проекта секретный чужой документ"), other_file
+    ).save()
     add_pair(conversation, "промежуточный разговор")
     Message.objects.create(
         conversation=conversation,
@@ -169,6 +170,56 @@ def test_rolling_summary_advances_without_replacing_source_history(settings):
     assert summary.version == first_version + 1
     assert summary.source_message_count == 6
     assert conversation.messages.count() == 8
+
+
+@pytest.mark.django_db
+def test_file_context_has_untrusted_boundary_and_citation(settings):
+    user = User.objects.create_user(username="citation", password="password123")
+    model = registry()
+    project = Project.objects.create(owner=user, name="Sources")
+    conversation = Conversation.objects.create(
+        owner=user, selected_model=model.slug, project=project
+    )
+    asset = FileAsset.objects.create(
+        owner=user,
+        project=project,
+        blob="test/source.txt",
+        original_name="source.txt",
+        detected_type="txt",
+        size_bytes=10,
+        sha256="c" * 64,
+        status=FileAsset.Status.READY,
+        scan_status=FileAsset.ScanStatus.BASIC_PASSED,
+        idempotency_key="citation",
+    )
+    chunk = prepare_chunk(
+        FileChunk(
+            position=0, source_location={"source": "document"}, content="Срок сдачи — декабрь"
+        ),
+        asset,
+    )
+    chunk.save()
+    Message.objects.create(
+        conversation=conversation, role=Message.Role.USER, content="Какой срок сдачи?"
+    )
+    assistant = Message.objects.create(conversation=conversation, role=Message.Role.ASSISTANT)
+
+    snapshot, _ = assemble_context(
+        user=user,
+        conversation=conversation,
+        assistant_message=assistant,
+        model=model,
+        output_tokens=512,
+    )
+
+    assert len(snapshot["citations"]) == 1
+    citation = snapshot["citations"][0]
+    assert citation["file_name"] == "source.txt"
+    assert citation["content_sha256"] == chunk.content_sha256
+    component = next(item for item in snapshot["components"] if item["kind"] == "file_chunk")
+    assert component["citation"]["id"] == citation["id"]
+    assert "FILE_DATA" in component["content"]
+    assert citation["id"] in component["content"]
 
 
 class CaptureAdapter:

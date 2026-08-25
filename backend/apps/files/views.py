@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
@@ -11,6 +12,7 @@ from rest_framework.response import Response
 from apps.projects.access import accessible_projects
 
 from .models import FileAsset
+from .rag import retrieve_project_chunks
 from .serializers import FileAssetSerializer, FileChunkSerializer
 from .services import process_file
 from .validation import detect_and_validate
@@ -86,6 +88,36 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
     def chunks(self, _request, pk=None):
         asset = self.get_object()
         return Response(FileChunkSerializer(asset.chunks.all(), many=True).data)
+
+    @action(detail=False, methods=["post"], url_path="retrieve")
+    def retrieve_chunks(self, request):
+        project_id = request.data.get("project")
+        query = str(request.data.get("query", "")).strip()
+        if not project_id or not query:
+            raise ValidationError({"detail": "Поля project и query обязательны"})
+        try:
+            limit = int(request.data.get("limit", settings.SMART_CONTEXT_FILE_CHUNK_LIMIT))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"limit": "Ожидается целое число"}) from exc
+        if not accessible_projects(request.user).filter(pk=project_id).exists():
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        hits = retrieve_project_chunks(
+            user=request.user, project_id=project_id, query=query, limit=limit
+        )
+        return Response(
+            {
+                "results": [
+                    {
+                        "score": round(hit.score, 4),
+                        "lexical_score": round(hit.lexical_score, 4),
+                        "vector_score": round(hit.vector_score, 4),
+                        "content": hit.chunk.content,
+                        "citation": hit.citation,
+                    }
+                    for hit in hits
+                ]
+            }
+        )
 
     def destroy(self, request, *_args, **_kwargs):
         asset = self.get_object()
