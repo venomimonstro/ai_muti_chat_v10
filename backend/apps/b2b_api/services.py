@@ -310,7 +310,7 @@ def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key=
     except ProviderError as exc:
         _fail(usage, exc.code, started)
         raise PublicAPIError("Upstream model request failed", code=exc.code, status_code=502) from exc
-    except Exception as exc:
+    except Exception:
         _fail(usage, "internal_error", started)
         raise
     return CompletionResult(usage, False)

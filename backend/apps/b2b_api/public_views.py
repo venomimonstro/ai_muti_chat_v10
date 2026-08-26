@@ -35,7 +35,7 @@ class OpenAIAPIView(APIView):
     def handle_exception(self, exc):
         if isinstance(exc, PublicAPIError):
             return error_response(exc)
-        if isinstance(exc, (AuthenticationFailed, NotAuthenticated)):
+        if isinstance(exc, AuthenticationFailed | NotAuthenticated):
             code = getattr(exc, "get_codes", lambda: "invalid_api_key")()
             if isinstance(code, list):
                 code = code[0]
