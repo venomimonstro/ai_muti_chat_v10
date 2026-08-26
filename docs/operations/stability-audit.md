@@ -66,6 +66,19 @@ Reservation освобождается идемпотентно, операци�
 - production settings check с временными безопасными значениями;
 - high-confidence tracked-secret scan.
 
+## Оптимизации производительности
+
+| Область | Проблема | Исправление |
+|---|---|---|
+| `GET /conversations/` | все сообщения + context в list | summary serializer, detail по id |
+| Frontend boot | 11 параллельных API | phased load + lazy panels |
+| File upload | sync parse в HTTP worker | Celery task, ответ `202` |
+| Pricing | repeated `active_price()` queries | Redis cache TTL 120s |
+| Messages JSON | полный context на каждое сообщение | context только на detail |
+| Stream flush | DB UPDATE каждые 400 символов | `FLUSH_CHARS=2000` |
+| Memory/projects list | over-fetch и N+1 | list serializers + prefetch cache |
+| Search | scan limit 500 | default 200 + DB indexes |
+
 ## Остаточные launch blockers
 
 Это не программные ошибки и они не могут быть закрыты автоматически:
