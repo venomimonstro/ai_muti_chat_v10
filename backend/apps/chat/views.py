@@ -38,7 +38,15 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        if self.action == "retrieve":
+        if self.action in {
+            "retrieve",
+            "update",
+            "partial_update",
+            "activate_branch",
+            "compare_branch",
+        }:
+            context["include_message_context"] = True
+        if self.action == "branches" and self.request.method == "POST":
             context["include_message_context"] = True
         return context
 
@@ -84,7 +92,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
             except ValueError as exc:
                 raise APIValidationError({"source_message": str(exc)}) from exc
         conversation.refresh_from_db()
-        return Response(ConversationSerializer(conversation).data)
+        return Response(self.get_serializer(conversation).data)
 
     @action(
         detail=True,
@@ -98,7 +106,8 @@ class ConversationViewSet(viewsets.ModelViewSet):
             raise APIValidationError({"branch": "Ветка не найдена"})
         conversation.active_branch = branch
         conversation.save(update_fields=["active_branch", "updated_at"])
-        return Response(ConversationSerializer(conversation).data)
+        conversation.refresh_from_db()
+        return Response(self.get_serializer(conversation).data)
 
     def _compare_payload(self, request, conversation):
         prompt = str(request.data.get("prompt", "")).strip()
@@ -218,7 +227,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         except ValidationError as exc:
             raise APIValidationError({"detail": exc.messages}) from exc
         conversation.refresh_from_db()
-        return Response(ConversationSerializer(conversation).data)
+        return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["get", "put", "delete"])
     def draft(self, request, pk=None):

@@ -10,6 +10,7 @@ type Panel = "search" | "projects" | "files" | "images" | "memory" | "wallet" | 
 
 const money = (value: string | number | null | undefined) => `${Number(value ?? 0).toFixed(2).replace(".", ",")} ₽`;
 const dateLabel = (value: string) => new Intl.DateTimeFormat("ru", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(value));
+const isLocalMessageId = (id: string) => id.startsWith("local-");
 
 function Button({children, className = "", ...props}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return <button className={`button ${className}`} {...props}>{children}</button>;
@@ -88,7 +89,9 @@ export default function Home() {
   const [compareSource, setCompareSource] = useState<ChatMessage | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const pendingFocusRef = useRef<string | null>(null);
   const pendingSendRef = useRef<{
     conversationId: string;
     prompt: string;
@@ -129,6 +132,7 @@ export default function Home() {
       }
       void api<Notification[]>("/auth/notifications/").then(setNotifications).catch(() => undefined);
       void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);
+      void api<Project[]>("/projects/").then(setProjects).catch(() => undefined);
     } catch (reason) {
       if (reason instanceof ApiError && [401, 403].includes(reason.status)) setBoot("guest");
       else { setError(reason instanceof Error ? reason.message : "Сервис временно недоступен"); setBoot("error"); }
@@ -197,20 +201,33 @@ export default function Home() {
   const refreshConversation = async (id: string) => replaceConversation(await api<Conversation>(`/conversations/${id}/`));
   const refreshWallet = async () => setWallet(await api<Wallet>("/wallet/"));
 
-  const createConversation = async () => {
+  const createConversation = async (): Promise<Conversation | null> => {
     try {
       const payload: Record<string, string> = {title: "Новый чат", routing_mode: "balanced"};
       if (models.find((item) => item.available)) payload.selected_model = models.find((item) => item.available)!.slug;
       const conversation = await api<Conversation>("/conversations/", {method: "POST", body: JSON.stringify(payload)});
       replaceConversation(conversation); setActiveId(conversation.id); setValue(""); setSidebarOpen(false);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось создать чат"); }
+      return conversation;
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось создать чат"); return null; }
   };
 
   const chooseConversation = (id: string, messageId?: string) => {
-    setActiveId(id); setFocusMessageId(messageId ?? null); setSidebarOpen(false); setPanel(null); setError("");
+    setActiveId(id); setSidebarOpen(false); setPanel(null); setError("");
+    pendingFocusRef.current = messageId ?? null;
+    if (!messageId) setFocusMessageId(null);
     const summary = conversations.find((item) => item.id === id);
-    if (summary && summary.messages.length === 0 && (summary.message_count ?? 0) > 0) {
-      void refreshConversation(id);
+    const needsDetail = summary && summary.messages.length === 0 && (summary.message_count ?? 0) > 0;
+    if (needsDetail) {
+      setLoadingConversationId(id);
+      void refreshConversation(id).then(() => {
+        if (pendingFocusRef.current) {
+          setFocusMessageId(pendingFocusRef.current);
+          pendingFocusRef.current = null;
+        }
+      }).finally(() => setLoadingConversationId((current) => current === id ? null : current));
+    } else if (messageId) {
+      setFocusMessageId(messageId);
+      pendingFocusRef.current = null;
     }
   };
 
@@ -219,9 +236,7 @@ export default function Home() {
     setError(""); setStreamNote("");
     let conversation = active;
     if (!conversation) {
-      await createConversation();
-      const latest = await api<Conversation[]>("/conversations/");
-      conversation = latest[0]; setConversations(latest); setActiveId(conversation?.id ?? null);
+      conversation = await createConversation();
     }
     if (!conversation) return;
     let clientMessageId: string;
@@ -256,7 +271,14 @@ export default function Home() {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : "Соединение прервано");
     } finally {
       setSending(false); setStreamNote(""); abortRef.current = null;
-      await Promise.all([refreshConversation(conversation.id), refreshWallet()]).catch(() => undefined);
+      try {
+        await refreshConversation(conversation.id);
+      } catch (reason) {
+        if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+          setError((current) => current || (reason instanceof Error ? reason.message : "Не удалось обновить чат"));
+        }
+      }
+      await refreshWallet().catch(() => undefined);
     }
   };
 
@@ -282,6 +304,8 @@ export default function Home() {
     const provider = (inputTokens * Number(selectedModel.price.input_rub_per_million) + Math.min(1024, selectedModel.max_output_tokens) * Number(selectedModel.price.output_rub_per_million)) / 1_000_000;
     return provider * (1 + Number(selectedModel.price.markup_percent) / 100);
   }, [active?.routing_mode, selectedModel, value]);
+
+  const loadingThread = Boolean(activeId && loadingConversationId === activeId);
 
   if (boot === "loading") return <main className="centerState" aria-busy="true"><div className="loader"/><h1>Открываем рабочее пространство</h1><p>Загружаем чаты, проекты и баланс…</p></main>;
   if (boot === "guest") return <AuthScreen onAuthenticated={loadWorkspace}/>;
@@ -330,16 +354,21 @@ export default function Home() {
       </header>
 
       <div className="thread" ref={threadRef} aria-live="polite">
-        {!active || active.messages.length === 0 ? <section className="emptyChat"><div className="spark"><Icon name="spark" size={30}/></div><p className="eyebrow">AI WORKSPACE</p><h1>Чем займёмся?</h1><p>Выберите задачу или начните с собственного вопроса.</p><div className="suggestions">
+        {loadingThread ? <section className="emptyChat" aria-busy="true"><div className="loader"/><p>Загружаем сообщения…</p></section>
+        : !active || active.messages.length === 0 ? <section className="emptyChat"><div className="spark"><Icon name="spark" size={30}/></div><p className="eyebrow">AI WORKSPACE</p><h1>Чем займёмся?</h1><p>Выберите задачу или начните с собственного вопроса.</p><div className="suggestions">
           {["Составь маркетинговую стратегию", "Проанализируй документ", "Помоги написать код", "Сравни варианты решения"].map((text) => <button key={text} onClick={() => setValue(text)}>{text}<span>↗</span></button>)}
         </div></section> : <div className="messageList">
-          {active.messages.map((message, messageIndex) => <article id={`message-${message.id}`} key={message.id} className={`message ${message.role} ${message.status} ${focusMessageId === message.id ? "searchFocus" : ""}`}>
+          {active.messages.map((message, messageIndex) => {
+            const userSource = active.messages.slice(0, messageIndex).reverse().find((item) => item.role === "user");
+            const canCompare = userSource && !isLocalMessageId(userSource.id);
+            return <article id={`message-${message.id}`} key={message.id} className={`message ${message.role} ${message.status} ${focusMessageId === message.id ? "searchFocus" : ""}`}>
             <div className="messageAvatar">{message.role === "user" ? user?.username.slice(0, 1).toUpperCase() : <Icon name="spark" size={17}/>}</div>
             <div className="messageBody"><div className="messageHead"><b>{message.role === "user" ? "Вы" : "AI Workspace"}</b><time>{dateLabel(message.created_at)}</time>{message.status === "partial" && <span className="statusPill warning">Ответ прервался</span>}{message.status === "failed" && <span className="statusPill danger">Ошибка</span>}</div>
               <div className="messageText">{message.content || (message.status === "streaming" ? <span className="typing"><i/><i/><i/></span> : "Ответ не получен")}</div>
-              {message.role === "assistant" && message.content && <div className="messageActions"><button onClick={() => navigator.clipboard.writeText(message.content)}><Icon name="copy" size={16}/>Копировать</button><button onClick={() => {const source = active.messages.slice(0, messageIndex).reverse().find((item) => item.role === "user"); if (source) {setCompareSource(source); setPanel("compare");}}}>Сравнить</button>{message.generation && <button onClick={() => {setCostMessage(message); setPanel("cost");}}>{money(message.generation.cost_rub)} · {message.generation.model}</button>}</div>}
+              {message.role === "assistant" && message.content && <div className="messageActions"><button onClick={() => navigator.clipboard.writeText(message.content)}><Icon name="copy" size={16}/>Копировать</button><button disabled={!canCompare} onClick={() => {if (canCompare) {setCompareSource(userSource); setPanel("compare");}}}>Сравнить</button>{message.generation && <button onClick={() => {setCostMessage(message); setPanel("cost");}}>{money(message.generation.cost_rub)} · {message.generation.model}</button>}</div>}
             </div>
-          </article>)}
+          </article>;
+          })}
         </div>}
       </div>
 
@@ -378,7 +407,7 @@ function ComparePanel({conversation, source, models, onConversation, onClose}: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (selected.length < 2) return;
+    if (isLocalMessageId(source.id) || selected.length < 2) return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       try {
@@ -408,7 +437,7 @@ function ComparePanel({conversation, source, models, onConversation, onClose}: {
     try {onConversation(await api<Conversation>(`/conversations/${conversation.id}/compare/${result!.id}/variants/${variantId}/branch/`, {method: "POST", body: "{}"})); onClose();}
     catch (reason) {setError(reason instanceof Error ? reason.message : "Ветка не создана"); setBusy(false);}
   };
-  return <Drawer title="Сравнить модели" onClose={onClose}><div className="comparePrompt"><small>Один запрос для всех моделей</small><p>{source.content}</p></div>{!result && <><div className="compareModels">{eligible.map((model) => <label key={model.slug} className={selected.includes(model.slug) ? "selected" : ""}><input type="checkbox" checked={selected.includes(model.slug)} onChange={() => toggle(model.slug)}/><span><b>{model.display_name}</b><small>{model.provider}</small></span></label>)}</div>{preview && selected.length >= 2 && <div className="compareCost"><span>Ожидаемая стоимость</span><b>{money(preview.expected_min_rub)} - {money(preview.expected_max_rub)}</b><small>Верхний лимит резервируется до запуска, списание - по факту.</small></div>}<Button className="primary wide" disabled={busy || selected.length < 2} onClick={run}>{busy ? "Модели отвечают параллельно…" : `Запустить ${selected.length} модели`}</Button></>}{error && <div className="alert error">{error}</div>}{result && <><div className="compareSummary"><span>{result.state === "completed" ? "Сравнение готово" : "Готово частично"}</span><b>Списано {money(result.actual_cost_rub)}</b></div><div className="compareResults">{result.variants.map((variant) => <article key={variant.id} className={variant.state}><header><div><b>{variant.model_name}</b><small>{variant.provider} · {money(variant.actual_cost_rub)}</small></div>{variant.state === "completed" && <button disabled={busy} onClick={() => branch(variant.id)}>Продолжить веткой</button>}</header><p>{variant.output || "Ответ не получен"}</p></article>)}</div>{result.synthesis_output ? <article className="synthesisResult"><header><b>Итоговый ответ</b><small>{money(result.synthesis_cost_rub)}</small></header><p>{result.synthesis_output}</p></article> : <Button className="primary wide" disabled={busy || result.variants.filter((item) => item.state === "completed").length < 2} onClick={synthesize}>{busy ? "Формируем итог…" : "Сформировать лучший итог"}</Button>}</>}</Drawer>;
+  return <Drawer title="Сравнить модели" onClose={onClose}>{isLocalMessageId(source.id) ? <p className="muted">Сообщение ещё сохраняется на сервере. Дождитесь завершения ответа и повторите сравнение.</p> : <><div className="comparePrompt"><small>Один запрос для всех моделей</small><p>{source.content}</p></div>{!result && <><div className="compareModels">{eligible.map((model) => <label key={model.slug} className={selected.includes(model.slug) ? "selected" : ""}><input type="checkbox" checked={selected.includes(model.slug)} onChange={() => toggle(model.slug)}/><span><b>{model.display_name}</b><small>{model.provider}</small></span></label>)}</div>{preview && selected.length >= 2 && <div className="compareCost"><span>Ожидаемая стоимость</span><b>{money(preview.expected_min_rub)} - {money(preview.expected_max_rub)}</b><small>Верхний лимит резервируется до запуска, списание - по факту.</small></div>}<Button className="primary wide" disabled={busy || selected.length < 2} onClick={run}>{busy ? "Модели отвечают параллельно…" : `Запустить ${selected.length} модели`}</Button></>}{error && <div className="alert error">{error}</div>}{result && <><div className="compareSummary"><span>{result.state === "completed" ? "Сравнение готово" : "Готово частично"}</span><b>Списано {money(result.actual_cost_rub)}</b></div><div className="compareResults">{result.variants.map((variant) => <article key={variant.id} className={variant.state}><header><div><b>{variant.model_name}</b><small>{variant.provider} · {money(variant.actual_cost_rub)}</small></div>{variant.state === "completed" && <button disabled={busy} onClick={() => branch(variant.id)}>Продолжить веткой</button>}</header><p>{variant.output || "Ответ не получен"}</p></article>)}</div>{result.synthesis_output ? <article className="synthesisResult"><header><b>Итоговый ответ</b><small>{money(result.synthesis_cost_rub)}</small></header><p>{result.synthesis_output}</p></article> : <Button className="primary wide" disabled={busy || result.variants.filter((item) => item.state === "completed").length < 2} onClick={synthesize}>{busy ? "Формируем итог…" : "Сформировать лучший итог"}</Button>}</>}</>}</Drawer>;
 }
 
 function ImageStudioPanel({models, generations, onChange, onWalletChange, onClose}: {models: ImageModel[]; generations: ImageGeneration[]; onChange: (value: ImageGeneration[]) => void; onWalletChange: () => Promise<void>; onClose: () => void}) {
@@ -421,6 +450,17 @@ function ImageStudioPanel({models, generations, onChange, onWalletChange, onClos
   const [preview, setPreview] = useState<{expected_cost_rub: string; confirmation_required: boolean} | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (models.length === 0) return;
+    const current = models.find((item) => item.slug === modelSlug);
+    if (!current) {
+      const first = models[0];
+      setModelSlug(first.slug);
+      setSize(first.supported_sizes[0] ?? "");
+      setQuality(first.supported_qualities[0] ?? "");
+      setCount((value) => Math.min(value, first.max_images ?? 1));
+    }
+  }, [models, modelSlug]);
   useEffect(() => {
     if (!model || !prompt.trim() || !size || !quality) return;
     let cancelled = false;
@@ -490,6 +530,22 @@ function ProjectsPanel({projects, onChange, onClose}: {projects: Project[]; onCh
 
 function FilesPanel({files, projects, onChange, onClose}: {files: FileAsset[]; projects: Project[]; onChange: (items: FileAsset[]) => void; onClose: () => void}) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const fileRef = useRef<HTMLInputElement>(null);
+  const pendingStatuses = new Set(["parsing", "uploaded"]);
+  useEffect(() => {
+    if (!files.some((file) => pendingStatuses.has(file.status))) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const latest = await api<FileAsset[]>("/files/");
+        if (!cancelled) onChange(latest);
+      } catch {
+        // Ignore transient polling errors.
+      }
+    };
+    const interval = window.setInterval(() => void poll(), 2500);
+    void poll();
+    return () => {cancelled = true; window.clearInterval(interval);};
+  }, [files, onChange]);
   const upload = async (event: FormEvent<HTMLFormElement>) => {event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); setBusy(true); setError(""); try {const item = await api<FileAsset>("/files/", {method: "POST", headers: {"Idempotency-Key": `web-file:${crypto.randomUUID()}`}, body: data}); onChange([item, ...files]); form.reset();} catch (reason) {setError(reason instanceof Error ? reason.message : "Не удалось загрузить файл");} finally {setBusy(false);}};
   return <Drawer title="Файлы" onClose={onClose}><form className="uploadBox" onSubmit={upload}><input ref={fileRef} name="file" type="file" accept=".txt,.md,.csv,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp" required/><label>Проект<select name="project" required defaultValue=""><option value="" disabled>Выберите проект</option>{projects.filter((project) => !project.archived_at && project.role !== "viewer").map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><Button type="button" onClick={() => fileRef.current?.click()}><Icon name="plus"/>Выбрать файл</Button><Button className="primary" disabled={busy || projects.length === 0}>{busy ? "Проверяем…" : "Загрузить"}</Button><small>До 20 МБ · TXT, MD, CSV, DOCX, XLSX, PDF и изображения</small></form>{error && <div className="alert error">{error}</div>}<div className="cardList compact">{files.length === 0 && <Empty icon="file" title="Файлов пока нет" text="Загрузите документ в проект и следите за статусом обработки."/>}{files.map((file) => <article key={file.id}><span className="cardIcon"><Icon name="file"/></span><div><h3>{file.original_name}</h3><p>{(file.size_bytes / 1024).toFixed(1)} КБ · {file.detected_type.toUpperCase()}</p><small className={`fileStatus ${file.status}`}>{file.status === "ready" ? "Готов" : file.status === "partial" ? "Частично обработан" : file.status === "failed" ? "Ошибка" : "Обрабатывается"}</small></div></article>)}</div></Drawer>;
 }
