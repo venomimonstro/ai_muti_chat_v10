@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "apps.workspace_search",
     "apps.memory_store",
     "apps.evals",
+    "apps.image_studio",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -133,6 +134,10 @@ COMPARE_ENABLED = os.getenv("COMPARE_ENABLED", "true").lower() == "true"
 COMPARE_MAX_MODELS = int(os.getenv("COMPARE_MAX_MODELS", "4"))
 COMPARE_MAX_OUTPUT_TOKENS = int(os.getenv("COMPARE_MAX_OUTPUT_TOKENS", "1024"))
 COMPARE_CONFIRM_THRESHOLD_RUB = os.getenv("COMPARE_CONFIRM_THRESHOLD_RUB", "20.00")
+IMAGES_ENABLED = os.getenv("IMAGES_ENABLED", "true").lower() == "true"
+IMAGE_MAX_PROMPT_CHARS = int(os.getenv("IMAGE_MAX_PROMPT_CHARS", "4000"))
+IMAGE_MAX_RESULT_BYTES = int(os.getenv("IMAGE_MAX_RESULT_BYTES", str(20 * 1024 * 1024)))
+IMAGE_CONFIRM_THRESHOLD_RUB = os.getenv("IMAGE_CONFIRM_THRESHOLD_RUB", "20.00")
 AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY_ENABLED", "false").lower() == "true"
 AUTO_MEMORY_MAX_CANDIDATES = int(os.getenv("AUTO_MEMORY_MAX_CANDIDATES", "3"))
 SMART_CONTEXT_RECENT_TURNS = int(os.getenv("SMART_CONTEXT_RECENT_TURNS", "6"))

@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–21.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–22.
 
 ## Что уже заложено
 
@@ -67,6 +67,9 @@
 - hybrid Workspace Search: keyword + vector + recency, ACL-first filters и точная навигация к сообщению;
 - Compare для 2–4 моделей с cost preview, единым hard reserve, параллельными ответами и synthesis;
 - ветвление от любого сообщения или Compare-варианта без изменения исходной истории;
+- отдельный image provider contract с Echo и OpenAI Images adapters;
+- генерация изображений с cost preview, hard reserve, фактическим settlement и идемпотентностью;
+- приватная галерея, история визуальных результатов и защищённые source links оригиналов;
 - Docker Compose: PostgreSQL, Redis, backend, worker, frontend;
 - CI: backend lint/tests и frontend lint/build;
 - ADR и implementation brief для текущего этапа.
@@ -108,4 +111,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 22 — генерация изображений, галерея и история визуальных результатов.
+Следующий этап: Sprint 23 — публичный B2B API с OpenAI-совместимой поверхностью.

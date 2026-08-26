@@ -2,10 +2,10 @@
 
 import {FormEvent, KeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {ApiError, api, ensureCsrf, streamMessage} from "../lib/api";
-import type {AIModel, ChatMessage, CompareRun, Conversation, FileAsset, GenerationMeta, MemoryCandidate, MemoryItem, Notification, Preference, Project, SearchResult, User, Wallet} from "../lib/types";
+import type {AIModel, ChatMessage, CompareRun, Conversation, FileAsset, GenerationMeta, ImageGeneration, ImageModel, MemoryCandidate, MemoryItem, Notification, Preference, Project, SearchResult, User, Wallet} from "../lib/types";
 import {Icon} from "./components/icons";
 
-type Panel = "search" | "projects" | "files" | "memory" | "wallet" | "notifications" | "settings" | "support" | "cost" | "compare" | null;
+type Panel = "search" | "projects" | "files" | "images" | "memory" | "wallet" | "notifications" | "settings" | "support" | "cost" | "compare" | null;
 
 const money = (value: string | number | null | undefined) => `${Number(value ?? 0).toFixed(2).replace(".", ",")} ₽`;
 const dateLabel = (value: string) => new Intl.DateTimeFormat("ru", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(value));
@@ -71,6 +71,8 @@ export default function Home() {
   const [models, setModels] = useState<AIModel[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [files, setFiles] = useState<FileAsset[]>([]);
+  const [imageModels, setImageModels] = useState<ImageModel[]>([]);
+  const [imageGenerations, setImageGenerations] = useState<ImageGeneration[]>([]);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -98,12 +100,12 @@ export default function Home() {
     try {
       await ensureCsrf();
       const me = await api<User>("/auth/me/");
-      const [chatData, modelData, projectData, fileData, memoryData, candidateData, walletData, notificationData, preferenceData] = await Promise.all([
+      const [chatData, modelData, projectData, fileData, imageModelData, imageData, memoryData, candidateData, walletData, notificationData, preferenceData] = await Promise.all([
         api<Conversation[]>("/conversations/"), api<AIModel[]>("/models/"), api<Project[]>("/projects/"),
-        api<FileAsset[]>("/files/"), api<MemoryItem[]>("/memories/"), api<MemoryCandidate[]>("/memory-candidates/"), api<Wallet>("/wallet/"), api<Notification[]>("/auth/notifications/"), api<Preference>("/auth/preferences/"),
+        api<FileAsset[]>("/files/"), api<ImageModel[]>("/image-models/"), api<ImageGeneration[]>("/images/generations/"), api<MemoryItem[]>("/memories/"), api<MemoryCandidate[]>("/memory-candidates/"), api<Wallet>("/wallet/"), api<Notification[]>("/auth/notifications/"), api<Preference>("/auth/preferences/"),
       ]);
       setUser(me); setConversations(chatData); setModels(modelData); setProjects(projectData);
-      setFiles(fileData); setMemories(memoryData); setMemoryCandidates(candidateData); setWallet(walletData); setNotifications(notificationData); setPreferences(preferenceData);
+      setFiles(fileData); setImageModels(imageModelData); setImageGenerations(imageData); setMemories(memoryData); setMemoryCandidates(candidateData); setWallet(walletData); setNotifications(notificationData); setPreferences(preferenceData);
       setActiveId((current) => current && chatData.some((item) => item.id === current) ? current : chatData[0]?.id ?? null);
       setBoot("ready");
     } catch (reason) {
@@ -237,6 +239,7 @@ export default function Home() {
       <nav className="mainNav" aria-label="Разделы">
         <button onClick={() => setPanel("projects")}><Icon name="folder"/>Проекты<span>{projects.filter((item) => !item.archived_at).length}</span></button>
         <button onClick={() => setPanel("files")}><Icon name="file"/>Файлы<span>{files.length}</span></button>
+        <button onClick={() => setPanel("images")}><Icon name="image"/>Изображения<span>{imageGenerations.reduce((sum, item) => sum + item.actual_count, 0)}</span></button>
         <button onClick={() => setPanel("memory")}><Icon name="memory"/>Память<span>{memoryCandidates.length > 0 ? `+${memoryCandidates.length}` : memories.filter((item) => item.status === "active").length}</span></button>
       </nav>
       <div className="historyLabel">Недавние чаты</div>
@@ -297,6 +300,7 @@ export default function Home() {
     {panel === "search" && <SearchPanel projects={projects} onChoose={chooseConversation} onClose={() => setPanel(null)}/>} 
     {panel === "projects" && <ProjectsPanel projects={projects} onChange={setProjects} onClose={() => setPanel(null)}/>} 
     {panel === "files" && <FilesPanel files={files} projects={projects} onChange={setFiles} onClose={() => setPanel(null)}/>} 
+    {panel === "images" && <ImageStudioPanel models={imageModels} generations={imageGenerations} onChange={setImageGenerations} onWalletChange={refreshWallet} onClose={() => setPanel(null)}/>} 
     {panel === "memory" && <MemoryPanel items={memories} candidates={memoryCandidates} projects={projects} conversations={conversations} onChange={setMemories} onCandidatesChange={setMemoryCandidates} onClose={() => setPanel(null)}/>} 
     {panel === "wallet" && <WalletPanel wallet={wallet} onClose={() => setPanel(null)}/>} 
     {panel === "notifications" && <NotificationsPanel items={notifications} onChange={setNotifications} onClose={() => setPanel(null)}/>} 
@@ -347,6 +351,45 @@ function ComparePanel({conversation, source, models, onConversation, onClose}: {
     catch (reason) {setError(reason instanceof Error ? reason.message : "Ветка не создана"); setBusy(false);}
   };
   return <Drawer title="Сравнить модели" onClose={onClose}><div className="comparePrompt"><small>Один запрос для всех моделей</small><p>{source.content}</p></div>{!result && <><div className="compareModels">{eligible.map((model) => <label key={model.slug} className={selected.includes(model.slug) ? "selected" : ""}><input type="checkbox" checked={selected.includes(model.slug)} onChange={() => toggle(model.slug)}/><span><b>{model.display_name}</b><small>{model.provider}</small></span></label>)}</div>{preview && selected.length >= 2 && <div className="compareCost"><span>Ожидаемая стоимость</span><b>{money(preview.expected_min_rub)} - {money(preview.expected_max_rub)}</b><small>Верхний лимит резервируется до запуска, списание - по факту.</small></div>}<Button className="primary wide" disabled={busy || selected.length < 2} onClick={run}>{busy ? "Модели отвечают параллельно…" : `Запустить ${selected.length} модели`}</Button></>}{error && <div className="alert error">{error}</div>}{result && <><div className="compareSummary"><span>{result.state === "completed" ? "Сравнение готово" : "Готово частично"}</span><b>Списано {money(result.actual_cost_rub)}</b></div><div className="compareResults">{result.variants.map((variant) => <article key={variant.id} className={variant.state}><header><div><b>{variant.model_name}</b><small>{variant.provider} · {money(variant.actual_cost_rub)}</small></div>{variant.state === "completed" && <button disabled={busy} onClick={() => branch(variant.id)}>Продолжить веткой</button>}</header><p>{variant.output || "Ответ не получен"}</p></article>)}</div>{result.synthesis_output ? <article className="synthesisResult"><header><b>Итоговый ответ</b><small>{money(result.synthesis_cost_rub)}</small></header><p>{result.synthesis_output}</p></article> : <Button className="primary wide" disabled={busy || result.variants.filter((item) => item.state === "completed").length < 2} onClick={synthesize}>{busy ? "Формируем итог…" : "Сформировать лучший итог"}</Button>}</>}</Drawer>;
+}
+
+function ImageStudioPanel({models, generations, onChange, onWalletChange, onClose}: {models: ImageModel[]; generations: ImageGeneration[]; onChange: (value: ImageGeneration[]) => void; onWalletChange: () => Promise<void>; onClose: () => void}) {
+  const [modelSlug, setModelSlug] = useState(models[0]?.slug ?? "");
+  const model = models.find((item) => item.slug === modelSlug) ?? models[0];
+  const [prompt, setPrompt] = useState("");
+  const [size, setSize] = useState(model?.supported_sizes[0] ?? "");
+  const [quality, setQuality] = useState(model?.supported_qualities[0] ?? "");
+  const [count, setCount] = useState(1);
+  const [preview, setPreview] = useState<{expected_cost_rub: string; confirmation_required: boolean} | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!model || !prompt.trim() || !size || !quality) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const value = await api<{expected_cost_rub: string; confirmation_required: boolean}>("/images/preview/", {method: "POST", body: JSON.stringify({model: model.slug, prompt, size, quality, count})});
+        if (!cancelled) {setPreview(value); setError("");}
+      } catch (reason) {if (!cancelled) setError(reason instanceof Error ? reason.message : "Не удалось рассчитать стоимость");}
+    }, 300);
+    return () => {cancelled = true; window.clearTimeout(timer);};
+  }, [model, prompt, size, quality, count]);
+  const run = async () => {
+    if (!model || !prompt.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const generated = await api<ImageGeneration>("/images/generations/", {method: "POST", headers: {"Idempotency-Key": `web-image:${crypto.randomUUID()}`}, body: JSON.stringify({model: model.slug, prompt, size, quality, count, confirm_cost: true})});
+      onChange([generated, ...generations.filter((item) => item.id !== generated.id)]); setPrompt(""); setPreview(null); await onWalletChange();
+    } catch (reason) {setError(reason instanceof Error ? reason.message : "Изображение не создано");}
+    finally {setBusy(false);}
+  };
+  return <Drawer title="Изображения" onClose={onClose}><section className="imageStudio">
+    {models.length === 0 ? <div className="emptyPanel"><Icon name="image" size={32}/><h3>Image-модели не настроены</h3><p>Администратор может подключить провайдера и цену в Django admin.</p></div> : <>
+      <div className="imageComposer"><label>Описание<textarea value={prompt} onChange={(event) => {setPrompt(event.target.value); if (!event.target.value.trim()) setPreview(null);}} maxLength={4000} rows={4} placeholder="Опишите сцену, стиль, свет и композицию…"/></label><div className="imageOptions"><label>Модель<select value={modelSlug} onChange={(event) => {const next = models.find((item) => item.slug === event.target.value); setModelSlug(event.target.value); setSize(next?.supported_sizes[0] ?? ""); setQuality(next?.supported_qualities[0] ?? ""); setCount((value) => Math.min(value, next?.max_images ?? 1)); setPreview(null);}}>{models.map((item) => <option key={item.slug} value={item.slug}>{item.display_name}</option>)}</select></label><label>Размер<select value={size} onChange={(event) => setSize(event.target.value)}>{model?.supported_sizes.map((item) => <option key={item}>{item}</option>)}</select></label><label>Качество<select value={quality} onChange={(event) => setQuality(event.target.value)}>{model?.supported_qualities.map((item) => <option key={item}>{item}</option>)}</select></label><label>Количество<select value={count} onChange={(event) => setCount(Number(event.target.value))}>{Array.from({length: Math.min(model?.max_images ?? 1, 4)}, (_, index) => index + 1).map((item) => <option key={item}>{item}</option>)}</select></label></div>{preview && <div className="imageCost"><span>Ожидаемая стоимость</span><b>{money(preview.expected_cost_rub)}</b><small>{preview.confirmation_required ? "Стоимость будет явно подтверждена при запуске." : "Резерв до запуска, списание только за сохранённые результаты."}</small></div>}{error && <div className="alert error">{error}</div>}<Button className="primary wide" disabled={busy || !prompt.trim() || !preview} onClick={run}>{busy ? "Создаём изображения…" : `Создать ${count}`}</Button></div>
+      <header className="galleryHeader"><div><h3>Галерея</h3><p>История генераций и оригиналы с защищёнными source links.</p></div><span>{generations.reduce((sum, item) => sum + item.actual_count, 0)}</span></header>
+      {generations.length === 0 ? <p className="muted">Здесь появятся созданные изображения.</p> : <div className="imageHistory">{generations.map((generation) => <article key={generation.id}><header><div><b>{generation.model_name}</b><small>{dateLabel(generation.created_at)} · {generation.size} · {generation.quality}</small></div><span className={`statusPill ${generation.state === "failed" ? "danger" : ""}`}>{generation.state === "completed" ? money(generation.actual_cost_rub) : generation.state === "running" ? "В работе" : "Ошибка"}</span></header><p>{generation.prompt}</p>{generation.images.length > 0 && <div className="imageGrid">{generation.images.map((image) => <figure key={image.id}><img src={image.source_url} alt={image.revised_prompt || generation.prompt}/><figcaption><span>#{image.position + 1} · {(image.size_bytes / 1024).toFixed(0)} КБ</span><a href={image.source_url} target="_blank" rel="noreferrer">Оригинал ↗</a></figcaption></figure>)}</div>}{generation.error_code && <small className="imageError">Код ошибки: {generation.error_code}. Средства не списаны.</small>}</article>)}</div>}
+    </>}
+  </section></Drawer>;
 }
 
 function SearchPanel({projects, onClose, onChoose}: {projects: Project[]; onClose: () => void; onChoose: (id: string, messageId?: string) => void}) {

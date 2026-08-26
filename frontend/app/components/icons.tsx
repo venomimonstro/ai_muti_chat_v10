@@ -14,7 +14,8 @@ type IconName =
   | "spark"
   | "copy"
   | "stop"
-  | "memory";
+  | "memory"
+  | "image";
 
 const paths: Record<IconName, React.ReactNode> = {
   chat: <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-5 4v-4.5A2.5 2.5 0 0 1 4 12.5z" />,
@@ -33,6 +34,7 @@ const paths: Record<IconName, React.ReactNode> = {
   copy: <><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></>,
   stop: <rect x="6" y="6" width="12" height="12" rx="2"/>,
   memory: <><path d="M9 4a3 3 0 0 0-3 3v1a3 3 0 0 0-2 3c0 1 .5 2 1.3 2.5A3 3 0 0 0 8 18h1M15 4a3 3 0 0 1 3 3v1a3 3 0 0 1 2 3c0 1-.5 2-1.3 2.5A3 3 0 0 1 16 18h-1M9 4v16M15 4v16M9 9h3M12 15h3"/></>,
+  image: <><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m4 17 5-5 4 4 2-2 5 5"/></>,
 };
 
 export function Icon({name, size = 20}: {name: IconName; size?: number}) {

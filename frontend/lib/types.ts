@@ -288,3 +288,40 @@ export type SearchResult = {
   };
   signals?: {lexical: number; semantic: number};
 };
+
+export type ImageModel = {
+  slug: string;
+  display_name: string;
+  provider: string;
+  supported_sizes: string[];
+  supported_qualities: string[];
+  max_images: number;
+};
+
+export type ImageGeneration = {
+  id: string;
+  model: string;
+  model_name: string;
+  provider: string;
+  prompt: string;
+  size: string;
+  quality: string;
+  requested_count: number;
+  actual_count: number;
+  state: "running" | "completed" | "failed";
+  estimated_cost_rub: string;
+  actual_cost_rub: string | null;
+  error_code: string;
+  created_at: string;
+  completed_at: string | null;
+  images: Array<{
+    id: string;
+    position: number;
+    mime_type: string;
+    size_bytes: number;
+    sha256: string;
+    revised_prompt: string;
+    source_url: string;
+    created_at: string;
+  }>;
+};

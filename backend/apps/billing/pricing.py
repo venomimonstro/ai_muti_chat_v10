@@ -155,9 +155,7 @@ def _native_cost(price, input_tokens, output_tokens):
         if price.output_price_per_million is not None
         else price.output_rub_per_million
     )
-    return (
-        Decimal(input_tokens) * input_price + Decimal(output_tokens) * output_price
-    ) / MILLION
+    return (Decimal(input_tokens) * input_price + Decimal(output_tokens) * output_price) / MILLION
 
 
 def quote(
@@ -183,14 +181,12 @@ def quote(
         organization_id=organization_id,
         contract_id=contract_id,
     )
-    charge = (
-        provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier
-    ).quantize(MONEY_STEP, rounding=ROUND_UP)
+    charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+        MONEY_STEP, rounding=ROUND_UP
+    )
     profit = (charge - provider_cost).quantize(MONEY_STEP)
     margin = (
-        (profit / charge * Decimal("100")).quantize(PERCENT_STEP)
-        if charge
-        else Decimal("100.000")
+        (profit / charge * Decimal("100")).quantize(PERCENT_STEP) if charge else Decimal("100.000")
     )
     policy = active_margin_policy()
     snapshot = {
@@ -217,6 +213,77 @@ def quote(
     )
 
 
+def quote_flat(
+    *,
+    provider_cost_native,
+    provider_currency,
+    base_markup_percent,
+    provider_slug,
+    model_slug,
+    operation_type,
+):
+    """Price a non-token operation while retaining the normal margin hierarchy."""
+    price_config = type("FlatPriceConfig", (), {"markup_percent": base_markup_percent})()
+    fx = active_fx_snapshot(provider_currency)
+    provider_cost = (Decimal(provider_cost_native) * fx.rate).quantize(
+        MONEY_STEP, rounding=ROUND_UP
+    )
+    markup, multiplier, rules = _effective_rules(
+        price=price_config,
+        provider_slug=provider_slug,
+        model_slug=model_slug,
+        operation_type=operation_type,
+    )
+    charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+        MONEY_STEP, rounding=ROUND_UP
+    )
+    profit = (charge - provider_cost).quantize(MONEY_STEP)
+    margin = (
+        (profit / charge * Decimal("100")).quantize(PERCENT_STEP)
+        if charge
+        else Decimal("100.000")
+    )
+    policy = active_margin_policy()
+    return PriceQuote(
+        provider_cost_rub=provider_cost,
+        user_charge_rub=charge,
+        gross_profit_rub=profit,
+        gross_margin_percent=margin,
+        margin_floor_percent=policy.minimum_gross_margin_percent,
+        margin_allowed=margin >= policy.minimum_gross_margin_percent,
+        fx_snapshot=fx,
+        pricing_snapshot={
+            "provider_currency": provider_currency,
+            "fx_snapshot_id": str(fx.id),
+            "fx_rate": str(fx.rate),
+            "effective_markup_percent": str(markup),
+            "price_multiplier": str(multiplier.quantize(Decimal("0.0001"))),
+            "markup_rules": rules,
+            "margin_policy_id": str(policy.id),
+            "margin_floor_percent": str(policy.minimum_gross_margin_percent),
+            "operation_type": operation_type,
+        },
+    )
+
+
+def calculate_flat_from_snapshot(provider_cost_native, snapshot):
+    provider_cost = (Decimal(provider_cost_native) * Decimal(snapshot["fx_rate"])).quantize(
+        MONEY_STEP, rounding=ROUND_UP
+    )
+    charge = (
+        provider_cost
+        * (Decimal("1") + Decimal(snapshot["effective_markup_percent"]) / Decimal("100"))
+        * Decimal(snapshot["price_multiplier"])
+    ).quantize(MONEY_STEP, rounding=ROUND_UP)
+    profit = (charge - provider_cost).quantize(MONEY_STEP)
+    margin = (
+        (profit / charge * Decimal("100")).quantize(PERCENT_STEP)
+        if charge
+        else Decimal("100.000")
+    )
+    return provider_cost, charge, profit, margin
+
+
 def calculate(price: PriceVersion, input_tokens: int, output_tokens: int):
     value = quote(price, input_tokens, output_tokens, model_slug=price.model_slug)
     return value.provider_cost_rub, value.user_charge_rub
@@ -229,14 +296,12 @@ def calculate_from_snapshot(price, input_tokens, output_tokens, snapshot):
     provider_cost = (_native_cost(price, input_tokens, output_tokens) * fx_rate).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
-    charge = (
-        provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier
-    ).quantize(MONEY_STEP, rounding=ROUND_UP)
+    charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+        MONEY_STEP, rounding=ROUND_UP
+    )
     profit = (charge - provider_cost).quantize(MONEY_STEP)
     margin = (
-        (profit / charge * Decimal("100")).quantize(PERCENT_STEP)
-        if charge
-        else Decimal("100.000")
+        (profit / charge * Decimal("100")).quantize(PERCENT_STEP) if charge else Decimal("100.000")
     )
     return provider_cost, charge, profit, margin
 
