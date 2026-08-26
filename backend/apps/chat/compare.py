@@ -10,6 +10,7 @@ from django.utils import timezone
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
+from apps.billing.models import BalanceReservation
 from apps.billing.pricing import active_price, calculate_from_snapshot, quote, require_margin
 from apps.billing.services import release, reserve, settle
 from apps.workspace_search.embeddings import index_message
@@ -235,11 +236,18 @@ def run_compare(
     return run
 
 
+@transaction.atomic
 def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
+    compare_run = CompareRun.objects.select_for_update().get(pk=compare_run.pk)
     if compare_run.synthesis_output:
         return compare_run
     if compare_run.synthesis_reservation_id:
-        raise ValidationError("Предыдущая попытка синтеза уже завершилась ошибкой")
+        active = BalanceReservation.objects.filter(
+            pk=compare_run.synthesis_reservation_id,
+            state=BalanceReservation.State.ACTIVE,
+        ).exists()
+        if active:
+            raise ValidationError("Синтез уже выполняется")
     variants = list(compare_run.variants.filter(state=CompareVariant.State.COMPLETED))
     if len(variants) < 2:
         raise ValidationError("Для синтеза нужны минимум два успешных ответа")
@@ -288,6 +296,8 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
         compare_run.save(update_fields=["synthesis_output", "synthesis_cost_rub"])
     except Exception:
         release(reservation.id)
+        compare_run.synthesis_reservation_id = None
+        compare_run.save(update_fields=["synthesis_reservation_id"])
         raise
     return compare_run
 

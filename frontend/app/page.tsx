@@ -89,6 +89,12 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const pendingSendRef = useRef<{
+    conversationId: string;
+    prompt: string;
+    clientMessageId: string;
+    idempotencyKey: string;
+  } | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
   const active = conversations.find((item) => item.id === activeId) ?? null;
@@ -180,14 +186,26 @@ export default function Home() {
       conversation = latest[0]; setConversations(latest); setActiveId(conversation?.id ?? null);
     }
     if (!conversation) return;
-    const userMessage: ChatMessage = {id: `local-user-${crypto.randomUUID()}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
+    let clientMessageId: string;
+    let idempotencyKey: string;
+    if (
+      pendingSendRef.current?.conversationId === conversation.id &&
+      pendingSendRef.current.prompt === prompt
+    ) {
+      ({clientMessageId, idempotencyKey} = pendingSendRef.current);
+    } else {
+      clientMessageId = crypto.randomUUID();
+      idempotencyKey = `web:${crypto.randomUUID()}`;
+      pendingSendRef.current = {conversationId: conversation.id, prompt, clientMessageId, idempotencyKey};
+    }
+    const userMessage: ChatMessage = {id: `local-user-${clientMessageId}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
     const assistantId = `local-ai-${crypto.randomUUID()}`;
     const assistantMessage: ChatMessage = {id: assistantId, branch: conversation.active_branch, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
     replaceConversation({...conversation, messages: [...conversation.messages, userMessage, assistantMessage]});
     setValue(""); localStorage.removeItem(`draft:${conversation.id}`); setSending(true);
     const controller = new AbortController(); abortRef.current = controller;
     try {
-      await streamMessage(conversation.id, {content: prompt, client_message_id: crypto.randomUUID()}, `web:${crypto.randomUUID()}`, ({event, data}) => {
+      await streamMessage(conversation.id, {content: prompt, client_message_id: clientMessageId}, idempotencyKey, ({event, data}) => {
         if (event === "delta") setConversations((items) => items.map((item) => item.id !== conversation!.id ? item : {...item, messages: item.messages.map((message) => message.id === assistantId ? {...message, content: message.content + String(data.text ?? "")} : message)}));
         if (event === "recovery") setStreamNote(data.action === "fallback" ? "Подключаем резервную модель…" : "Провайдер не ответил, повторяем безопасно…");
         if (event === "routing") setStreamNote(String(data.explanation ?? "AUTO выбрал подходящую модель"));
@@ -195,6 +213,7 @@ export default function Home() {
         if (event === "memory_candidates") {setStreamNote(String(data.message ?? "Найдены предложения для памяти")); void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);}
         if (event === "error") setError(String(data.message ?? "Ответ не получен. Деньги не списаны."));
       }, controller.signal);
+      pendingSendRef.current = null;
     } catch (reason) {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : "Соединение прервано");
     } finally {

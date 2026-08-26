@@ -106,7 +106,11 @@ export async function streamMessage(
         if (line.startsWith("event:")) event = line.slice(6).trim();
         if (line.startsWith("data:")) data = line.slice(5).trim();
       }
-      onEvent({event, data: JSON.parse(data) as Record<string, unknown>});
+      try {
+        onEvent({event, data: JSON.parse(data) as Record<string, unknown>});
+      } catch {
+        // Ignore malformed SSE payloads instead of aborting the stream loop.
+      }
     }
     if (done) break;
   }
