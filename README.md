@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–23.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–24.
 
 ## Что уже заложено
 
@@ -74,6 +74,10 @@
 - организации, серверные membership ACL и ключи с одноразовым показом секрета;
 - scopes, model/endpoint/IP allowlists, RPM, concurrency и месячные hard budgets;
 - B2B reservation/settlement, идемпотентность, аналитика использования и audit log;
+- единый staff-only Admin Ops API: executive, finance, payments, ledger и pricing;
+- quality, incidents, request inspector, users/organizations, support и immutable audit;
+- массовые model/provider controls, feature flags и безопасный canary/rolling rollout;
+- security containment и контролируемый backup verification/restore drill lifecycle;
 - Docker Compose: PostgreSQL, Redis, backend, worker, frontend;
 - CI: backend lint/tests и frontend lint/build;
 - ADR и implementation brief для текущего этапа.
@@ -115,4 +119,4 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Следующий этап: Sprint 24 — зрелая административная control plane.
+Следующий этап: Sprint 25 — release hardening и финальная подготовка к запуску.

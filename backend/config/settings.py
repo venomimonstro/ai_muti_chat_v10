@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "apps.evals",
     "apps.image_studio",
     "apps.b2b_api",
+    "apps.admin_ops",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
