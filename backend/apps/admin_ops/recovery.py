@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.b2b_api.models import APIUsage
+from apps.billing.models import BalanceReservation
 from apps.billing.services import release
 from apps.chat.models import CompareRun, CompareVariant, Generation, Message
 from apps.files.models import FileAsset, FileProcessingJob
@@ -27,6 +28,13 @@ def _recover_generation(pk):
         return False
     if generation.reservation_id:
         release(generation.reservation_id)
+    else:
+        stranded = BalanceReservation.objects.filter(
+            idempotency_key=f"generation:{generation.id}",
+            state=BalanceReservation.State.ACTIVE,
+        ).first()
+        if stranded:
+            release(stranded.id)
     assistant = generation.assistant_message
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["status"])
@@ -122,6 +130,33 @@ def _recover_file(pk):
     return True
 
 
+def recover_stranded_reservations():
+    cutoff = _cutoff()
+    released = 0
+    for generation in Generation.objects.filter(
+        state=Generation.State.FAILED,
+        completed_at__lt=cutoff,
+    ).iterator():
+        reservation_id = generation.reservation_id
+        if reservation_id:
+            active = BalanceReservation.objects.filter(
+                pk=reservation_id,
+                state=BalanceReservation.State.ACTIVE,
+            ).exists()
+            if active:
+                release(reservation_id)
+                released += 1
+                continue
+        stranded = BalanceReservation.objects.filter(
+            idempotency_key=f"generation:{generation.id}",
+            state=BalanceReservation.State.ACTIVE,
+        ).first()
+        if stranded:
+            release(stranded.id)
+            released += 1
+    return released
+
+
 def recover_stale_operations():
     cutoff = _cutoff()
     groups = (
@@ -161,4 +196,5 @@ def recover_stale_operations():
                 continue
         result[name] = count
     result["api_usages"] = recover_stale_api_usages()
+    result["stranded_reservations"] = recover_stranded_reservations()
     return result

@@ -1,6 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Count, OuterRef, Prefetch, Subquery
 from django.http import StreamingHttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -21,6 +21,7 @@ from .models import CompareVariant, Conversation, ConversationDraft, Message
 from .serializers import (
     ConversationDraftSerializer,
     ConversationSerializer,
+    ConversationSummarySerializer,
     SendMessageSerializer,
 )
 from .services import generate_reply
@@ -30,17 +31,35 @@ from .streaming import prepare, run
 class ConversationViewSet(viewsets.ModelViewSet):
     serializer_class = ConversationSerializer
 
+    def get_serializer_class(self):
+        if self.action == "list":
+            return ConversationSummarySerializer
+        return ConversationSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.action == "retrieve":
+            context["include_message_context"] = True
+        return context
+
     def get_queryset(self):
-        return (
-            Conversation.objects.filter(owner=self.request.user)
-            .select_related("active_branch")
-            .prefetch_related(
-                "branches",
-                Prefetch(
-                    "messages", queryset=Message.objects.select_related("generation_response")
-                ),
+        base = Conversation.objects.filter(owner=self.request.user).select_related("active_branch")
+        if self.action == "list":
+            last_message = Message.objects.filter(conversation=OuterRef("pk")).order_by("-created_at")
+            return (
+                base.prefetch_related("branches")
+                .annotate(
+                    message_count=Count("messages", distinct=True),
+                    last_message_preview=Subquery(last_message.values("content")[:1]),
+                )
+                .order_by("-updated_at")
             )
-        )
+        return base.prefetch_related(
+            "branches",
+            Prefetch(
+                "messages", queryset=Message.objects.select_related("generation_response")
+            ),
+        ).order_by("-updated_at")
 
     def perform_create(self, serializer):
         conversation = serializer.save(owner=self.request.user)

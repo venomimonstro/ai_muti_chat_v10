@@ -15,6 +15,7 @@ def staff_client():
         email="release-admin@example.com",
         password="password123",
         is_staff=True,
+        role=User.Role.PLATFORM_ADMIN,
     )
     client = APIClient()
     client.force_authenticate(user)

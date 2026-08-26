@@ -11,12 +11,12 @@ from .models import AdminAuditEvent, BackupRecord, FeatureFlag, ReleaseRecord, S
 from .services import feature_enabled
 
 
-def admin_client(*, platform_role=False):
+def admin_client(*, platform_role=True):
     user = User.objects.create_user(
         username="admin",
         email="admin@example.com",
         password="password123",
-        is_staff=not platform_role,
+        is_staff=True,
         role=User.Role.PLATFORM_ADMIN if platform_role else User.Role.USER,
     )
     client = APIClient()

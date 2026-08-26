@@ -9,5 +9,5 @@ class IsPlatformAdmin(BasePermission):
             request.user
             and request.user.is_authenticated
             and request.user.status == User.Status.ACTIVE
-            and (request.user.is_staff or request.user.role == User.Role.PLATFORM_ADMIN)
+            and request.user.role == User.Role.PLATFORM_ADMIN
         )

@@ -89,6 +89,12 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const pendingSendRef = useRef<{
+    conversationId: string;
+    prompt: string;
+    clientMessageId: string;
+    idempotencyKey: string;
+  } | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
   const active = conversations.find((item) => item.id === activeId) ?? null;
@@ -101,14 +107,28 @@ export default function Home() {
     try {
       await ensureCsrf();
       const me = await api<User>("/auth/me/");
-      const [chatData, modelData, projectData, fileData, imageModelData, imageData, memoryData, candidateData, walletData, notificationData, preferenceData] = await Promise.all([
-        api<Conversation[]>("/conversations/"), api<AIModel[]>("/models/"), api<Project[]>("/projects/"),
-        api<FileAsset[]>("/files/"), api<ImageModel[]>("/image-models/"), api<ImageGeneration[]>("/images/generations/"), api<MemoryItem[]>("/memories/"), api<MemoryCandidate[]>("/memory-candidates/"), api<Wallet>("/wallet/"), api<Notification[]>("/auth/notifications/"), api<Preference>("/auth/preferences/"),
+      const [chatData, modelData, walletData, preferenceData] = await Promise.all([
+        api<Conversation[]>("/conversations/"),
+        api<AIModel[]>("/models/"),
+        api<Wallet>("/wallet/"),
+        api<Preference>("/auth/preferences/"),
       ]);
-      setUser(me); setConversations(chatData); setModels(modelData); setProjects(projectData);
-      setFiles(fileData); setImageModels(imageModelData); setImageGenerations(imageData); setMemories(memoryData); setMemoryCandidates(candidateData); setWallet(walletData); setNotifications(notificationData); setPreferences(preferenceData);
-      setActiveId((current) => current && chatData.some((item) => item.id === current) ? current : chatData[0]?.id ?? null);
+      const summaries = chatData.map((item) => ({...item, messages: item.messages ?? []}));
+      setUser(me);
+      setConversations(summaries);
+      setModels(modelData);
+      setWallet(walletData);
+      setPreferences(preferenceData);
+      const initialId = summaries[0]?.id ?? null;
+      setActiveId((current) => current && summaries.some((item) => item.id === current) ? current : initialId);
       setBoot("ready");
+      if (initialId && (summaries[0]?.message_count ?? summaries[0]?.messages.length ?? 0) > 0) {
+        void api<Conversation>(`/conversations/${initialId}/`).then((conversation) => {
+          setConversations((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
+        }).catch(() => undefined);
+      }
+      void api<Notification[]>("/auth/notifications/").then(setNotifications).catch(() => undefined);
+      void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);
     } catch (reason) {
       if (reason instanceof ApiError && [401, 403].includes(reason.status)) setBoot("guest");
       else { setError(reason instanceof Error ? reason.message : "Сервис временно недоступен"); setBoot("error"); }
@@ -119,6 +139,24 @@ export default function Home() {
     queueMicrotask(() => void loadWorkspace());
     navigator.serviceWorker?.register("/sw.js").catch(() => undefined);
   }, [loadWorkspace]);
+  useEffect(() => {
+    if (!panel || boot !== "ready") return;
+    if (panel === "projects" && projects.length === 0) {
+      void api<Project[]>("/projects/").then(setProjects).catch(() => undefined);
+    }
+    if (panel === "files" && files.length === 0) {
+      void api<FileAsset[]>("/files/").then(setFiles).catch(() => undefined);
+    }
+    if (panel === "images" && imageModels.length === 0) {
+      void api<ImageModel[]>("/image-models/").then(setImageModels).catch(() => undefined);
+    }
+    if (panel === "images" && imageGenerations.length === 0) {
+      void api<ImageGeneration[]>("/images/generations/").then(setImageGenerations).catch(() => undefined);
+    }
+    if (panel === "memory" && memories.length === 0) {
+      void api<MemoryItem[]>("/memories/").then(setMemories).catch(() => undefined);
+    }
+  }, [panel, boot, projects.length, files.length, imageModels.length, imageGenerations.length, memories.length]);
   useEffect(() => {
     const shortcut = (event: globalThis.KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPanel("search"); }
@@ -168,7 +206,13 @@ export default function Home() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось создать чат"); }
   };
 
-  const chooseConversation = (id: string, messageId?: string) => { setActiveId(id); setFocusMessageId(messageId ?? null); setSidebarOpen(false); setPanel(null); setError(""); };
+  const chooseConversation = (id: string, messageId?: string) => {
+    setActiveId(id); setFocusMessageId(messageId ?? null); setSidebarOpen(false); setPanel(null); setError("");
+    const summary = conversations.find((item) => item.id === id);
+    if (summary && summary.messages.length === 0 && (summary.message_count ?? 0) > 0) {
+      void refreshConversation(id);
+    }
+  };
 
   const send = async () => {
     const prompt = value.trim(); if (!prompt || sending) return;
@@ -180,14 +224,26 @@ export default function Home() {
       conversation = latest[0]; setConversations(latest); setActiveId(conversation?.id ?? null);
     }
     if (!conversation) return;
-    const userMessage: ChatMessage = {id: `local-user-${crypto.randomUUID()}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
+    let clientMessageId: string;
+    let idempotencyKey: string;
+    if (
+      pendingSendRef.current?.conversationId === conversation.id &&
+      pendingSendRef.current.prompt === prompt
+    ) {
+      ({clientMessageId, idempotencyKey} = pendingSendRef.current);
+    } else {
+      clientMessageId = crypto.randomUUID();
+      idempotencyKey = `web:${crypto.randomUUID()}`;
+      pendingSendRef.current = {conversationId: conversation.id, prompt, clientMessageId, idempotencyKey};
+    }
+    const userMessage: ChatMessage = {id: `local-user-${clientMessageId}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
     const assistantId = `local-ai-${crypto.randomUUID()}`;
     const assistantMessage: ChatMessage = {id: assistantId, branch: conversation.active_branch, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
     replaceConversation({...conversation, messages: [...conversation.messages, userMessage, assistantMessage]});
     setValue(""); localStorage.removeItem(`draft:${conversation.id}`); setSending(true);
     const controller = new AbortController(); abortRef.current = controller;
     try {
-      await streamMessage(conversation.id, {content: prompt, client_message_id: crypto.randomUUID()}, `web:${crypto.randomUUID()}`, ({event, data}) => {
+      await streamMessage(conversation.id, {content: prompt, client_message_id: clientMessageId}, idempotencyKey, ({event, data}) => {
         if (event === "delta") setConversations((items) => items.map((item) => item.id !== conversation!.id ? item : {...item, messages: item.messages.map((message) => message.id === assistantId ? {...message, content: message.content + String(data.text ?? "")} : message)}));
         if (event === "recovery") setStreamNote(data.action === "fallback" ? "Подключаем резервную модель…" : "Провайдер не ответил, повторяем безопасно…");
         if (event === "routing") setStreamNote(String(data.explanation ?? "AUTO выбрал подходящую модель"));
@@ -195,6 +251,7 @@ export default function Home() {
         if (event === "memory_candidates") {setStreamNote(String(data.message ?? "Найдены предложения для памяти")); void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);}
         if (event === "error") setError(String(data.message ?? "Ответ не получен. Деньги не списаны."));
       }, controller.signal);
+      pendingSendRef.current = null;
     } catch (reason) {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : "Соединение прервано");
     } finally {
@@ -307,7 +364,7 @@ export default function Home() {
     {panel === "notifications" && <NotificationsPanel items={notifications} onChange={setNotifications} onClose={() => setPanel(null)}/>} 
     {panel === "settings" && preferences && user && <SettingsPanel user={user} preferences={preferences} onChange={(value) => {setPreferences(value); if (!value.auto_memory_enabled) setMemoryCandidates([]);}} onLogout={() => {setUser(null); setBoot("guest");}} onClose={() => setPanel(null)}/>} 
     {panel === "support" && <SupportPanel onClose={() => setPanel(null)}/>} 
-    {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl><ContextInspector context={costMessage.generation.context}/></Drawer>}
+    {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl>{costMessage.generation.context ? <ContextInspector context={costMessage.generation.context}/> : <p className="muted">Контекст недоступен для этого сообщения.</p>}</Drawer>}
     {panel === "compare" && active && compareSource && <ComparePanel conversation={active} source={compareSource} models={models} onConversation={replaceConversation} onClose={() => setPanel(null)}/>} 
     <button className="supportFloat" onClick={() => setPanel("support")} aria-label="Написать в поддержку"><Icon name="support"/></button>
   </main>;
@@ -501,7 +558,7 @@ function SupportPanel({onClose}: {onClose: () => void}) {
   return <Drawer title="Поддержка" onClose={onClose}>{sent ? <div className="successState"><div>✓</div><h3>Обращение отправлено</h3><p>Мы сохранили запрос и его технический контекст.</p><Button onClick={onClose}>Готово</Button></div> : <form className="stack" onSubmit={submit}><p className="muted">Опишите проблему без паролей, ключей и платёжных секретов.</p><label>Тема<input name="subject" maxLength={160} required/></label><label>Что произошло<textarea name="message" rows={7} required/></label>{error && <div className="alert error">{error}</div>}<Button className="primary">Отправить обращение</Button></form>}</Drawer>;
 }
 
-function ContextInspector({context}: {context: GenerationMeta["context"]}) {
+function ContextInspector({context}: {context: NonNullable<GenerationMeta["context"]>}) {
   const budget = context.budget ?? {};
   const components = context.components ?? [];
   const citations = context.citations ?? [];

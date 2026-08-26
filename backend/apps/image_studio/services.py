@@ -49,58 +49,55 @@ def preview(*, model_slug, prompt, size, quality, count):
     return model, value, prompt, count
 
 
-def generate(
-    *, user, model_slug, prompt, size, quality, count, idempotency_key,
-    confirmed=False, adapter=None
-):
-    if not idempotency_key or len(idempotency_key) > 160:
-        raise ValidationError("Корректный Idempotency-Key обязателен")
-    existing = ImageGeneration.objects.filter(owner=user, idempotency_key=idempotency_key).first()
-    if existing:
-        normalized_prompt = str(prompt).strip()
-        try:
-            normalized_count = int(count)
-        except (TypeError, ValueError) as exc:
-            raise ValidationError("Количество должно быть целым числом") from exc
-        if (
-            existing.model.slug != model_slug
-            or existing.prompt != normalized_prompt
-            or existing.size != size
-            or existing.quality != quality
-            or existing.requested_count != normalized_count
-        ):
-            raise ValidationError("Idempotency-Key уже использован для другого запроса")
-        return existing
-    model, value, prompt, count = preview(
-        model_slug=model_slug, prompt=prompt, size=size, quality=quality, count=count
-    )
-    if value.user_charge_rub >= Decimal(str(settings.IMAGE_CONFIRM_THRESHOLD_RUB)) and not confirmed:
-        raise ValidationError("Подтвердите ожидаемую стоимость генерации")
-    snapshot = {
-        **value.pricing_snapshot,
-        "model_slug": model.slug,
-        "provider_slug": model.provider.slug,
-        "provider_price_per_image": str(model.provider_price_per_image),
-        "requested_count": count,
-        "size": size,
-        "quality": quality,
-    }
+def _validate_existing_payload(existing, model_slug, prompt, size, quality, count):
+    normalized_prompt = str(prompt).strip()
     try:
-        with transaction.atomic():
-            generation = ImageGeneration.objects.create(
-                owner=user, model=model, prompt=prompt, size=size, quality=quality,
-                requested_count=count, idempotency_key=idempotency_key,
-                price_snapshot=snapshot, estimated_cost_rub=value.user_charge_rub,
-            )
-            reservation = reserve(user, value.user_charge_rub, f"image:{generation.id}")
-            generation.reservation = reservation
-            generation.save(update_fields=["reservation"])
-    except IntegrityError:
-        return ImageGeneration.objects.get(owner=user, idempotency_key=idempotency_key)
+        normalized_count = int(count)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Количество должно быть целым числом") from exc
+    if (
+        existing.model.slug != model_slug
+        or existing.prompt != normalized_prompt
+        or existing.size != size
+        or existing.quality != quality
+        or existing.requested_count != normalized_count
+    ):
+        raise ValidationError("Idempotency-Key уже использован для другого запроса")
 
+
+def _reset_failed_generation(generation):
+    if generation.reservation_id:
+        release(generation.reservation_id)
+    for image in generation.images.all():
+        image.file.delete(save=False)
+    generation.images.all().delete()
+    generation.state = ImageGeneration.State.RUNNING
+    generation.error_code = ""
+    generation.actual_count = 0
+    generation.provider_request_id = ""
+    generation.provider_cost_rub = Decimal("0")
+    generation.actual_cost_rub = Decimal("0")
+    generation.completed_at = None
+    generation.reservation = None
+    generation.save(
+        update_fields=[
+            "state",
+            "error_code",
+            "actual_count",
+            "provider_request_id",
+            "provider_cost_rub",
+            "actual_cost_rub",
+            "completed_at",
+            "reservation",
+        ]
+    )
+
+
+def _execute_generation(generation, model, snapshot, count, adapter=None):
     try:
         result = (adapter or adapter_for(model)).generate(
-            model=model.upstream_model, prompt=prompt, size=size, quality=quality, count=count
+            model=model.upstream_model, prompt=generation.prompt, size=generation.size,
+            quality=generation.quality, count=count,
         )
         if not result.images or len(result.images) > count:
             raise ImageProviderError("Invalid number of images", code="invalid_response")
@@ -143,3 +140,62 @@ def generate(
         generation.completed_at = timezone.now()
         generation.save(update_fields=["state", "error_code", "completed_at"])
     return generation
+
+
+def generate(
+    *, user, model_slug, prompt, size, quality, count, idempotency_key,
+    confirmed=False, adapter=None
+):
+    if not idempotency_key or len(idempotency_key) > 160:
+        raise ValidationError("Корректный Idempotency-Key обязателен")
+    existing = ImageGeneration.objects.filter(owner=user, idempotency_key=idempotency_key).first()
+    if existing:
+        _validate_existing_payload(existing, model_slug, prompt, size, quality, count)
+        if existing.state == ImageGeneration.State.COMPLETED:
+            return existing
+        if existing.state == ImageGeneration.State.RUNNING:
+            return existing
+        _reset_failed_generation(existing)
+        reservation = reserve(user, existing.estimated_cost_rub, f"image:{existing.id}")
+        existing.reservation = reservation
+        existing.save(update_fields=["reservation"])
+        return _execute_generation(existing, existing.model, existing.price_snapshot, existing.requested_count, adapter)
+
+    model, value, prompt, count = preview(
+        model_slug=model_slug, prompt=prompt, size=size, quality=quality, count=count
+    )
+    if value.user_charge_rub >= Decimal(str(settings.IMAGE_CONFIRM_THRESHOLD_RUB)) and not confirmed:
+        raise ValidationError("Подтвердите ожидаемую стоимость генерации")
+    snapshot = {
+        **value.pricing_snapshot,
+        "model_slug": model.slug,
+        "provider_slug": model.provider.slug,
+        "provider_price_per_image": str(model.provider_price_per_image),
+        "requested_count": count,
+        "size": size,
+        "quality": quality,
+    }
+    try:
+        with transaction.atomic():
+            generation = ImageGeneration.objects.create(
+                owner=user, model=model, prompt=prompt, size=size, quality=quality,
+                requested_count=count, idempotency_key=idempotency_key,
+                price_snapshot=snapshot, estimated_cost_rub=value.user_charge_rub,
+            )
+            reservation = reserve(user, value.user_charge_rub, f"image:{generation.id}")
+            generation.reservation = reservation
+            generation.save(update_fields=["reservation"])
+    except IntegrityError:
+        replay = ImageGeneration.objects.get(owner=user, idempotency_key=idempotency_key)
+        _validate_existing_payload(replay, model_slug, prompt, size, quality, count)
+        if replay.state == ImageGeneration.State.COMPLETED:
+            return replay
+        if replay.state == ImageGeneration.State.RUNNING:
+            return replay
+        _reset_failed_generation(replay)
+        reservation = reserve(user, replay.estimated_cost_rub, f"image:{replay.id}")
+        replay.reservation = reservation
+        replay.save(update_fields=["reservation"])
+        return _execute_generation(replay, replay.model, replay.price_snapshot, replay.requested_count, adapter)
+
+    return _execute_generation(generation, model, snapshot, count, adapter)

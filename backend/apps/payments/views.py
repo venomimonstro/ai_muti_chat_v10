@@ -3,6 +3,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.admin_ops.permissions import IsPlatformAdmin
@@ -62,8 +63,13 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 class YooKassaWebhookView(APIView):
     authentication_classes = []
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "webhook"
 
     def post(self, request):
+        event = request.data.get("event")
+        if event not in {"payment.succeeded", "payment.canceled", "refund.succeeded", "refund.canceled"}:
+            return Response(status=status.HTTP_200_OK)
         try:
             process_webhook(request.data, client=YooKassaClient.from_settings())
         except ValidationError:

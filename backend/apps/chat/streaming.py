@@ -16,7 +16,7 @@ from apps.ai_registry.reliability import (
     record_success,
 )
 from apps.ai_registry.router import select_route
-from apps.billing.models import RequestCost
+from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.pricing import (
     active_price,
     calculate,
@@ -39,7 +39,7 @@ from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 
 MAX_OUTPUT_TOKENS = 1024
-FLUSH_CHARS = 400
+FLUSH_CHARS = 2000
 logger = logging.getLogger(__name__)
 
 
@@ -251,6 +251,15 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
         generation.state = Generation.State.QUEUED
         generation.save(update_fields=["reservation_id", "route_price_snapshot", "state"])
     except Exception:
+        if generation.reservation_id:
+            release(generation.reservation_id)
+        else:
+            stranded = BalanceReservation.objects.filter(
+                idempotency_key=f"generation:{generation.id}",
+                state=BalanceReservation.State.ACTIVE,
+            ).first()
+            if stranded:
+                release(stranded.id)
         generation.state = Generation.State.FAILED
         generation.error_code = "preflight_failed"
         generation.completed_at = timezone.now()

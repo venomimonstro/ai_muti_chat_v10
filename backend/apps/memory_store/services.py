@@ -309,7 +309,9 @@ def build_memory_context(user, conversation):
     selected = []
     seen = set()
     size = 0
-    for item in eligible_memories(user, conversation)[: MEMORY_CONTEXT_LIMIT * 2]:
+    for item in eligible_memories(user, conversation).order_by("-pinned", "-importance_score")[
+        : MEMORY_CONTEXT_LIMIT * 2
+    ]:
         if item.normalized_content in seen:
             continue
         line = f"- [{item.scope}/{item.memory_type}] {item.content}"

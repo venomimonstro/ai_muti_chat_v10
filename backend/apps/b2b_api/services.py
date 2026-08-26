@@ -24,7 +24,7 @@ from apps.billing.pricing import (
 from apps.billing.services import release, reserve, settle
 
 from .keys import key_is_active
-from .models import APIKey, APIUsage
+from .models import APIKey, APIUsage, Organization
 
 ZERO = Decimal("0")
 
@@ -173,6 +173,47 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
                 )
             if existing.state == APIUsage.State.COMPLETED:
                 return existing, True
+            recover_stale_api_usages(api_key=locked)
+            existing.refresh_from_db()
+            if existing.state == APIUsage.State.FAILED:
+                if existing.reservation_id:
+                    release(existing.reservation_id)
+                reservation = reserve(
+                    locked.organization.billing_user, estimate, f"public-api:{existing.id}"
+                )
+                existing.reservation = reservation
+                existing.estimated_cost_rub = estimate
+                existing.pricing_snapshot = snapshot
+                existing.state = APIUsage.State.RUNNING
+                existing.error_code = ""
+                existing.provider_cost_rub = Decimal("0")
+                existing.charged_rub = Decimal("0")
+                existing.prompt_tokens = 0
+                existing.completion_tokens = 0
+                existing.provider_request_id = ""
+                existing.response_text = ""
+                existing.latency_ms = None
+                existing.completed_at = None
+                existing.save(
+                    update_fields=[
+                        "reservation",
+                        "estimated_cost_rub",
+                        "pricing_snapshot",
+                        "state",
+                        "error_code",
+                        "provider_cost_rub",
+                        "charged_rub",
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "provider_request_id",
+                        "response_text",
+                        "latency_ms",
+                        "completed_at",
+                    ]
+                )
+                locked.last_used_at = timezone.now()
+                locked.save(update_fields=["last_used_at"])
+                return existing, False
             raise PublicAPIError(
                 "A request with this Idempotency-Key is already in progress or failed",
                 code="idempotency_key_in_use",
@@ -180,6 +221,7 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
             )
     now = timezone.now()
     recover_stale_api_usages(api_key=locked)
+    org = Organization.objects.select_for_update().get(pk=locked.organization_id)
     recent = APIUsage.objects.filter(api_key=locked, created_at__gte=now - timedelta(minutes=1))
     if recent.count() >= locked.rate_limit_per_minute:
         raise PublicAPIError("Rate limit exceeded", code="rate_limit_exceeded", status_code=429)
@@ -200,18 +242,18 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
         APIUsage.objects.filter(api_key=locked, state=APIUsage.State.RUNNING, created_at__gte=period)
     )
     org_done, _ = _spent(
-        APIUsage.objects.filter(organization=locked.organization, state=APIUsage.State.COMPLETED, created_at__gte=period)
+        APIUsage.objects.filter(organization=org, state=APIUsage.State.COMPLETED, created_at__gte=period)
     )
     _, org_pending = _spent(
-        APIUsage.objects.filter(organization=locked.organization, state=APIUsage.State.RUNNING, created_at__gte=period)
+        APIUsage.objects.filter(organization=org, state=APIUsage.State.RUNNING, created_at__gte=period)
     )
     if locked.monthly_limit_rub is not None and key_done + key_pending + estimate > locked.monthly_limit_rub:
         raise PublicAPIError("API key monthly budget exceeded", code="budget_exceeded", status_code=402)
-    org_limit = locked.organization.monthly_limit_rub
+    org_limit = org.monthly_limit_rub
     if org_limit is not None and org_done + org_pending + estimate > org_limit:
         raise PublicAPIError("Organization monthly budget exceeded", code="budget_exceeded", status_code=402)
     usage = APIUsage.objects.create(
-        organization=locked.organization,
+        organization=org,
         api_key=locked,
         model=model,
         response_id=f"chatcmpl-{uuid.uuid4().hex}",
