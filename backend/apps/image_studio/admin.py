@@ -1,6 +1,10 @@
 from django.contrib import admin
 
-from .models import GeneratedImage, ImageGeneration, ImageModel
+from .models import (
+    GeneratedImage,
+    ImageGeneration,
+    ImageModel,
+)
 
 
 admin.site.register(ImageModel)

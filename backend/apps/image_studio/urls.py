@@ -1,7 +1,12 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .views import GeneratedImageSourceView, ImageGenerationViewSet, ImageModelView, ImagePreviewView
+from .views import (
+    GeneratedImageSourceView,
+    ImageGenerationViewSet,
+    ImageModelView,
+    ImagePreviewView,
+)
 
 router = DefaultRouter()
 router.register("images/generations", ImageGenerationViewSet, basename="image-generation")
