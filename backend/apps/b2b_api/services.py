@@ -24,7 +24,7 @@ from apps.billing.pricing import (
 from apps.billing.services import release, reserve, settle
 
 from .keys import key_is_active
-from .models import APIKey, APIUsage
+from .models import APIKey, APIUsage, Organization
 
 ZERO = Decimal("0")
 
@@ -221,6 +221,7 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
             )
     now = timezone.now()
     recover_stale_api_usages(api_key=locked)
+    org = Organization.objects.select_for_update().get(pk=locked.organization_id)
     recent = APIUsage.objects.filter(api_key=locked, created_at__gte=now - timedelta(minutes=1))
     if recent.count() >= locked.rate_limit_per_minute:
         raise PublicAPIError("Rate limit exceeded", code="rate_limit_exceeded", status_code=429)
@@ -241,18 +242,18 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
         APIUsage.objects.filter(api_key=locked, state=APIUsage.State.RUNNING, created_at__gte=period)
     )
     org_done, _ = _spent(
-        APIUsage.objects.filter(organization=locked.organization, state=APIUsage.State.COMPLETED, created_at__gte=period)
+        APIUsage.objects.filter(organization=org, state=APIUsage.State.COMPLETED, created_at__gte=period)
     )
     _, org_pending = _spent(
-        APIUsage.objects.filter(organization=locked.organization, state=APIUsage.State.RUNNING, created_at__gte=period)
+        APIUsage.objects.filter(organization=org, state=APIUsage.State.RUNNING, created_at__gte=period)
     )
     if locked.monthly_limit_rub is not None and key_done + key_pending + estimate > locked.monthly_limit_rub:
         raise PublicAPIError("API key monthly budget exceeded", code="budget_exceeded", status_code=402)
-    org_limit = locked.organization.monthly_limit_rub
+    org_limit = org.monthly_limit_rub
     if org_limit is not None and org_done + org_pending + estimate > org_limit:
         raise PublicAPIError("Organization monthly budget exceeded", code="budget_exceeded", status_code=402)
     usage = APIUsage.objects.create(
-        organization=locked.organization,
+        organization=org,
         api_key=locked,
         model=model,
         response_id=f"chatcmpl-{uuid.uuid4().hex}",

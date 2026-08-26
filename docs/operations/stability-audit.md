@@ -21,7 +21,12 @@ background jobs, files, production Docker topology, установка и обн
 | Compare synthesis не переживал retry | одна ошибка блокировала синтез | очистка synthesis_reservation_id и select_for_update |
 | B2B/image idempotency после FAILED | клиент получал 409 или stale FAILED | retry с тем же Idempotency-Key |
 | Frontend mintил новые idempotency keys | двойные списания при повторе send | reuse client_message_id/idempotency до успешного stream |
-| install.sh resume сбрасывал admin password | неожиданная блокировка при продолжении установки | bootstrap только на первичной установке |
+| B2B org budget race (parallel keys) | превышение monthly cap организации | `select_for_update` на Organization в `_begin()` |
+| `is_staff` открывал admin API | privilege escalation | только `role=PLATFORM_ADMIN` |
+| B2B IP spoofing при прямом доступе к backend | bypass allowlist | XFF только от trusted proxy peers |
+| Session fixation на login/register | hijack сессии | `session.cycle_key()` после auth |
+| Слабые production defaults | компрометация при misconfig | fail-fast при DEBUG=false |
+| Conversation/project write через read_only | IDOR при создании чата в чужом проекте | корректные read_only_fields в serializers |
 | Production topology не имела ingress/TLS/static | приложение недоступно или небезопасно | Caddy, automatic HTTPS, static volume, health dependencies |
 | Backend/frontend запускались root | усиление последствий container escape | непривилегированные runtime users |
 

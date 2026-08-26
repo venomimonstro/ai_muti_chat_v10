@@ -124,6 +124,7 @@ if [[ "${RESUME}" != true ]]; then
   printf 'PUBLIC_API_URL=https://%s/api/v1\n' "${APP_DOMAIN}"
   printf 'PAYMENT_RETURN_URL=https://%s/settings/billing/return\n' "${APP_DOMAIN}"
   printf 'B2B_TRUST_PROXY_IP_HEADER=true\n'
+  printf 'B2B_TRUSTED_PROXY_IPS=10.0.0.0/8,172.16.0.0/12\n'
   printf 'ADMIN_MFA_ENFORCED=false\n'
   printf 'PAYMENTS_ENABLED=false\n'
   printf 'PAYMENTS_LIVE_ENABLED=false\n'

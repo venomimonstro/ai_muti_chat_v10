@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-development-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
@@ -153,6 +155,7 @@ REST_FRAMEWORK = {
         "user": os.getenv("API_USER_RATE", "300/min"),
         "login": os.getenv("API_LOGIN_RATE", "10/min"),
         "register": os.getenv("API_REGISTER_RATE", "5/hour"),
+        "webhook": os.getenv("API_WEBHOOK_RATE", "30/min"),
     },
 }
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -193,7 +196,7 @@ HISTORY_EMBEDDING_MODEL = os.getenv("HISTORY_EMBEDDING_MODEL", "local-history-ha
 SEARCH_VECTOR_WEIGHT = float(os.getenv("SEARCH_VECTOR_WEIGHT", "0.50"))
 SEARCH_LEXICAL_WEIGHT = float(os.getenv("SEARCH_LEXICAL_WEIGHT", "0.40"))
 SEARCH_RECENCY_WEIGHT = float(os.getenv("SEARCH_RECENCY_WEIGHT", "0.10"))
-SEARCH_RETRIEVAL_SCAN_LIMIT = int(os.getenv("SEARCH_RETRIEVAL_SCAN_LIMIT", "500"))
+SEARCH_RETRIEVAL_SCAN_LIMIT = int(os.getenv("SEARCH_RETRIEVAL_SCAN_LIMIT", "200"))
 SEARCH_MIN_SEMANTIC_SCORE = float(os.getenv("SEARCH_MIN_SEMANTIC_SCORE", "0.10"))
 COMPARE_ENABLED = os.getenv("COMPARE_ENABLED", "true").lower() == "true"
 COMPARE_MAX_MODELS = int(os.getenv("COMPARE_MAX_MODELS", "4"))
@@ -211,6 +214,14 @@ B2B_API_RUNNING_TIMEOUT_SECONDS = int(
     os.getenv("B2B_API_RUNNING_TIMEOUT_SECONDS", "600")
 )
 B2B_TRUST_PROXY_IP_HEADER = os.getenv("B2B_TRUST_PROXY_IP_HEADER", "false").lower() == "true"
+B2B_TRUSTED_PROXY_IPS = [
+    x.strip()
+    for x in os.getenv(
+        "B2B_TRUSTED_PROXY_IPS",
+        "127.0.0.1,10.0.0.0/8,172.16.0.0/12",
+    ).split(",")
+    if x.strip()
+]
 OPERATION_STALE_TIMEOUT_SECONDS = int(os.getenv("OPERATION_STALE_TIMEOUT_SECONDS", "900"))
 AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY_ENABLED", "false").lower() == "true"
 AUTO_MEMORY_MAX_CANDIDATES = int(os.getenv("AUTO_MEMORY_MAX_CANDIDATES", "3"))
@@ -245,3 +256,12 @@ PAYMENTS_VAT_CODE = int(os.getenv("PAYMENTS_VAT_CODE", "1"))
 PAYMENT_MIN_RUB = os.getenv("PAYMENT_MIN_RUB", "100.00")
 PAYMENT_MAX_RUB = os.getenv("PAYMENT_MAX_RUB", "100000.00")
 ADMIN_MFA_ENFORCED = os.getenv("ADMIN_MFA_ENFORCED", "false").lower() == "true"
+
+if not DEBUG:
+    _weak_secret_markers = ("unsafe", "change-me", "django-insecure")
+    if len(SECRET_KEY) < 50 or any(marker in SECRET_KEY for marker in _weak_secret_markers):
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must be a long random value in production")
+    if B2B_API_KEY_PEPPER == SECRET_KEY:
+        raise ImproperlyConfigured("B2B_API_KEY_PEPPER must differ from DJANGO_SECRET_KEY")
+    if PAYMENTS_LIVE_ENABLED and not YOOKASSA_API_BASE_URL.startswith("https://api.yookassa.ru"):
+        raise ImproperlyConfigured("YOOKASSA_API_BASE_URL must point to the official YooKassa API")

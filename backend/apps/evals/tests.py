@@ -236,6 +236,7 @@ def test_eval_api_is_staff_only():
         email="eval-admin@example.com",
         password="password123",
         is_staff=True,
+        role=User.Role.PLATFORM_ADMIN,
     )
     EvalCase.objects.create(
         dataset_version="api-v1",

@@ -39,7 +39,7 @@ from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 
 MAX_OUTPUT_TOKENS = 1024
-FLUSH_CHARS = 400
+FLUSH_CHARS = 2000
 logger = logging.getLogger(__name__)
 
 
