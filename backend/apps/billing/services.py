@@ -79,7 +79,7 @@ def reserve(user, amount: Decimal, key: str):
     existing = BalanceReservation.objects.filter(idempotency_key=key).first()
     if existing:
         return existing
-    wallet = Wallet.objects.select_for_update().get(user=user)
+    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
     enforce_spend_limits(wallet, amount)
     if wallet.available_rub < amount:
         raise ValidationError("Недостаточно средств")
@@ -230,7 +230,7 @@ def reconstruct_buckets(wallet):
 def debit_paid(user, amount: Decimal, source_type: str, source_id: str):
     if amount <= 0:
         raise ValidationError("Debit must be positive")
-    wallet = Wallet.objects.select_for_update().get(user=user)
+    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
     key = f"refund:{source_type}:{source_id}"
     existing = LedgerEntry.objects.filter(idempotency_key=key).first()
     if existing:

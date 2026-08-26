@@ -605,7 +605,9 @@ class SecurityEventActionView(AdminAPIView):
             event.resolved_at = timezone.now()
             fields = ["status", "resolved_by", "resolved_at"]
             if action == "contain" and event.user_id:
-                User.objects.filter(pk=event.user_id).update(status=User.Status.BLOCKED)
+                User.objects.filter(pk=event.user_id).update(
+                    status=User.Status.BLOCKED, is_active=False
+                )
                 APIKey.objects.filter(
                     organization__billing_user_id=event.user_id, revoked_at__isnull=True
                 ).update(revoked_at=timezone.now())

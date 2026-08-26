@@ -44,7 +44,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers,
     credentials: "include",
   });
+  if (["/auth/login/", "/auth/register/", "/auth/logout/", "/auth/logout-all/"].includes(path)) {
+    // Django rotates the CSRF secret on authentication state changes.
+    csrfToken = "";
+  }
   if (!response.ok) {
+    if (response.status === 403) csrfToken = "";
     let message = `Ошибка ${response.status}`;
     try {
       message = errorText(await response.json());

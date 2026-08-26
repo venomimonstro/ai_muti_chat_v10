@@ -1,0 +1,42 @@
+{
+    email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+    encode zstd gzip
+
+    handle /static/* {
+        root * /srv
+        file_server
+    }
+
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    handle /v1/* {
+        reverse_proxy backend:8000 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    handle /admin/* {
+        reverse_proxy backend:8000 {
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    handle {
+        reverse_proxy frontend:3000
+    }
+
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}

@@ -1,6 +1,6 @@
 import hashlib
 import json
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -23,7 +23,10 @@ CENT = Decimal("0.01")
 
 
 def _money(value):
-    return Decimal(str(value)).quantize(CENT)
+    try:
+        return Decimal(str(value)).quantize(CENT)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValidationError("Invalid money value") from exc
 
 
 def _assert_payments_ready():
@@ -53,6 +56,7 @@ def _receipt(user, amount):
     }
 
 
+@transaction.atomic
 def create_topup(*, user, amount, idempotency_key, client=None):
     _assert_payments_ready()
     amount = _money(amount)
@@ -61,10 +65,11 @@ def create_topup(*, user, amount, idempotency_key, client=None):
     if amount < Decimal(settings.PAYMENT_MIN_RUB) or amount > Decimal(settings.PAYMENT_MAX_RUB):
         raise ValidationError("Сумма пополнения вне разрешённого диапазона")
 
+    user.__class__.objects.select_for_update().only("pk").get(pk=user.pk)
     payment, _ = Payment.objects.get_or_create(
+        user=user,
         idempotency_key=idempotency_key,
         defaults={
-            "user": user,
             "amount_rub": amount,
             "return_url": settings.PAYMENT_RETURN_URL,
             "description": f"Пополнение баланса {amount:.2f} ₽",
@@ -75,7 +80,7 @@ def create_topup(*, user, amount, idempotency_key, client=None):
             ),
         },
     )
-    if payment.user_id != user.id or payment.amount_rub != amount:
+    if payment.amount_rub != amount:
         raise ValidationError("Idempotency-Key уже использован для другой операции")
     if payment.provider_payment_id:
         return payment
@@ -92,7 +97,10 @@ def create_topup(*, user, amount, idempotency_key, client=None):
         payload["receipt"] = receipt
     client = client or YooKassaClient.from_settings()
     try:
-        remote = client.create_payment(payload, idempotency_key)
+        provider_key = hashlib.sha256(
+            f"payment:{user.id}:{idempotency_key}".encode()
+        ).hexdigest()
+        remote = client.create_payment(payload, provider_key)
     except Exception as exc:
         payment.last_error = exc.__class__.__name__
         payment.save(update_fields=["last_error", "updated_at"])
@@ -116,6 +124,8 @@ def create_topup(*, user, amount, idempotency_key, client=None):
 
 
 def _validate_remote_payment(payment, remote):
+    if not isinstance(remote, dict):
+        raise ValidationError("Invalid provider payment payload")
     amount = remote.get("amount") or {}
     metadata = remote.get("metadata") or {}
     if remote.get("id") != payment.provider_payment_id:
@@ -171,6 +181,8 @@ def apply_payment_status(payment_id, remote, *, event=None):
 
 
 def process_webhook(payload, *, client=None):
+    if not isinstance(payload, dict):
+        raise ValidationError("Invalid notification payload")
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     object_data = payload.get("object") or {}
@@ -211,15 +223,18 @@ def process_webhook(payload, *, client=None):
     return event.result
 
 
+@transaction.atomic
 def create_refund(*, payment, amount, idempotency_key, client=None):
     _assert_payments_ready()
     amount = _money(amount)
-    payment = Payment.objects.select_related("user").get(pk=payment.pk)
+    payment = Payment.objects.select_for_update().select_related("user").get(pk=payment.pk)
     if not 1 <= len(idempotency_key) <= 64:
         raise ValidationError("Idempotency-Key должен содержать от 1 до 64 символов")
     if payment.status != Payment.Status.SUCCEEDED:
         raise ValidationError("Возврат доступен только для успешного платежа")
-    existing = Refund.objects.filter(idempotency_key=idempotency_key).first()
+    existing = Refund.objects.filter(
+        payment=payment, idempotency_key=idempotency_key
+    ).first()
     if existing:
         if existing.payment_id != payment.id or existing.amount_rub != amount:
             raise ValidationError("Idempotency-Key уже использован для другой операции")
@@ -231,8 +246,9 @@ def create_refund(*, payment, amount, idempotency_key, client=None):
     if amount < Decimal("1.00") or already + amount > payment.amount_rub:
         raise ValidationError("Недопустимая сумма возврата")
     refund, _created = Refund.objects.get_or_create(
+        payment=payment,
         idempotency_key=idempotency_key,
-        defaults={"payment": payment, "amount_rub": amount},
+        defaults={"amount_rub": amount},
     )
     if refund.payment_id != payment.id or refund.amount_rub != amount:
         raise ValidationError("Idempotency-Key уже использован для другой операции")
@@ -241,12 +257,15 @@ def create_refund(*, payment, amount, idempotency_key, client=None):
         refund.wallet_debited_at = timezone.now()
         refund.save(update_fields=["wallet_debited_at", "updated_at"])
     client = client or YooKassaClient.from_settings()
+    provider_key = hashlib.sha256(
+        f"refund:{payment.id}:{idempotency_key}".encode()
+    ).hexdigest()
     remote = client.create_refund(
         {
             "payment_id": payment.provider_payment_id,
             "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
         },
-        idempotency_key,
+        provider_key,
     )
     refund.provider_refund_id = remote["id"]
     refund.status = remote.get("status", Refund.Status.PENDING)
@@ -258,6 +277,8 @@ def create_refund(*, payment, amount, idempotency_key, client=None):
 @transaction.atomic
 def apply_refund_status(refund_id, remote, *, event=None):
     refund = Refund.objects.select_for_update().select_related("payment__user").get(id=refund_id)
+    if not isinstance(remote, dict):
+        raise ValidationError("Invalid provider refund payload")
     amount = remote.get("amount") or {}
     if remote.get("id") != refund.provider_refund_id:
         raise ValidationError("Provider refund id mismatch")

@@ -1,10 +1,11 @@
 from django.core.exceptions import ValidationError
+from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.models import User
+from apps.admin_ops.permissions import IsPlatformAdmin
 
 from .models import Payment
 from .provider import PaymentProviderError, YooKassaClient
@@ -15,15 +16,6 @@ from .serializers import (
     RefundSerializer,
 )
 from .services import create_refund, create_topup, process_webhook
-
-
-class IsPlatformAdmin(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and (request.user.is_staff or request.user.role == User.Role.PLATFORM_ADMIN)
-        )
 
 
 class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
@@ -53,7 +45,7 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[IsPlatformAdmin])
     def refunds(self, request, pk=None):
-        payment = Payment.objects.get(pk=pk)
+        payment = get_object_or_404(Payment, pk=pk)
         serializer = CreateRefundSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -74,6 +66,8 @@ class YooKassaWebhookView(APIView):
     def post(self, request):
         try:
             process_webhook(request.data, client=YooKassaClient.from_settings())
-        except (ValidationError, PaymentProviderError):
+        except ValidationError:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        except PaymentProviderError:
             return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(status=status.HTTP_200_OK)

@@ -1,7 +1,7 @@
 # Pre-launch edge-case matrix
 
 This matrix is the mandatory regression scope before every production release. Automated rows
-must remain green in CI; manual rows require evidence in the Admin Ops sign-off or drill record.
+must pass before release; manual rows require evidence in the Admin Ops sign-off or drill record.
 
 | Area | Edge case | Expected result | Evidence |
 | --- | --- | --- | --- |
@@ -30,7 +30,7 @@ must remain green in CI; manual rows require evidence in the Admin Ops sign-off 
 | Payments | Duplicate webhook | One event and one credit | YooKassa tests |
 | Payments | Reordered cancellation | Success cannot be downgraded | YooKassa tests |
 | Refunds | Duplicate refund | One provider call and one paid debit | YooKassa tests |
-| Ledger | Parallel reserves | Available balance never negative | PostgreSQL CI torture test |
+| Ledger | Parallel reserves | Available balance never negative | PostgreSQL torture test |
 | Ledger | Cached balance mismatch | Alert/manual review, no silent rewrite | Reconciliation tests |
 | B2B | Reused idempotency key/new body | `409`, no second charge | B2B tests |
 | B2B | RPM/concurrency/budget/IP | Hard limit before provider request | B2B tests |
@@ -41,5 +41,5 @@ must remain green in CI; manual rows require evidence in the Admin Ops sign-off 
 | Backup | Restore before verify | `409` | Backup state-machine tests |
 | Backup | Wrong restore target | Script refuses DB without `_restore_drill` suffix | Restore runbook |
 | Status | Public incident | Sanitized message visible, internals hidden | Status tests |
-| Secrets | Committed high-confidence token/key | CI fails | `scripts/security_scan.sh` |
+| Secrets | Committed high-confidence token/key | Release check fails | `scripts/security_scan.sh` |
 | Load | Readiness under bounded concurrency | Error rate and p95 below thresholds | Load report artifact |

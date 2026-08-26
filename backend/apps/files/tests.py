@@ -54,10 +54,32 @@ def test_text_upload_extracts_chunks_and_is_idempotent(tmp_path, settings):
     second = upload(
         client,
         project,
-        SimpleUploadedFile("other.md", b"other", content_type="text/markdown"),
+        SimpleUploadedFile("notes.md", "Привет\nмир".encode(), content_type="text/markdown"),
     )
     assert second.status_code == 200
     assert second.data["id"] == first.data["id"]
+    assert FileAsset.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_upload_idempotency_key_rejects_different_payload(tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+    user = User.objects.create_user(username="file-idempotency", password="password123")
+    project = make_project(user)
+    client = APIClient()
+    client.force_authenticate(user)
+    first = upload(
+        client,
+        project,
+        SimpleUploadedFile("notes.md", b"first", content_type="text/markdown"),
+    )
+    conflict = upload(
+        client,
+        project,
+        SimpleUploadedFile("notes.md", b"second", content_type="text/markdown"),
+    )
+    assert first.status_code == 201
+    assert conflict.status_code == 400
     assert FileAsset.objects.count() == 1
 
 

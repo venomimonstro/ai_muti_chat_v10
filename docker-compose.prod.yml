@@ -1,3 +1,11 @@
+name: ai-workspace
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -14,19 +22,23 @@ services:
       timeout: 5s
       retries: 10
     networks: [private]
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?required}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?required}", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 10
     networks: [private]
+    logging: *default-logging
 
   backend:
     build: ./backend
@@ -35,6 +47,7 @@ services:
     command: uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers
     volumes:
       - media_data:/app/media
+      - static_data:/app/staticfiles
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=3)"]
       interval: 15s
@@ -44,6 +57,9 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     networks: [private, edge]
+    init: true
+    stop_grace_period: 30s
+    logging: *default-logging
 
   worker:
     build: ./backend
@@ -55,6 +71,9 @@ services:
     depends_on:
       backend: {condition: service_healthy}
     networks: [private]
+    init: true
+    stop_grace_period: 45s
+    logging: *default-logging
 
   beat:
     build: ./backend
@@ -64,6 +83,9 @@ services:
     depends_on:
       backend: {condition: service_healthy}
     networks: [private]
+    init: true
+    stop_grace_period: 30s
+    logging: *default-logging
 
   frontend:
     build:
@@ -73,9 +95,37 @@ services:
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/status').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
     depends_on:
       backend: {condition: service_healthy}
     networks: [edge]
+    init: true
+    logging: *default-logging
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?required}
+      ACME_EMAIL: ${ACME_EMAIL:?required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - static_data:/srv/static:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend: {condition: service_healthy}
+      frontend: {condition: service_healthy}
+    networks: [edge]
+    logging: *default-logging
 
 networks:
   private:
@@ -86,3 +136,6 @@ volumes:
   postgres_data:
   redis_data:
   media_data:
+  static_data:
+  caddy_data:
+  caddy_config:

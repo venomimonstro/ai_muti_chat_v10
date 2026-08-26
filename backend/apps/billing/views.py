@@ -1,16 +1,17 @@
 from decimal import Decimal
 
 from django.db.models import Sum
-from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from apps.admin_ops.permissions import IsPlatformAdmin
 
 from .models import BillingReconciliationRun, CostAnomaly, RequestCost, Wallet
 
 
 class WalletView(APIView):
     def get(self, request):
-        wallet = request.user.wallet
+        wallet, _ = Wallet.objects.get_or_create(user=request.user)
         entries = wallet.entries.order_by("-created_at")[:50]
         return Response(
             {
@@ -36,7 +37,7 @@ class WalletView(APIView):
 
 
 class FinanceSummaryView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsPlatformAdmin]
 
     def get(self, request):
         totals = RequestCost.objects.filter(charged_rub__isnull=False).aggregate(

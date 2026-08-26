@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils.text import slugify
@@ -53,11 +55,8 @@ class OrganizationListCreateView(APIView):
         serializer = OrganizationSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         base = slugify(serializer.validated_data["name"], allow_unicode=False) or "organization"
-        slug = base
-        suffix = 2
-        while Organization.objects.filter(slug=slug).exists():
-            slug = f"{base}-{suffix}"
-            suffix += 1
+        # A random suffix avoids the check-then-insert race between concurrent requests.
+        slug = f"{base}-{uuid.uuid4().hex[:12]}"
         organization = Organization.objects.create(
             name=serializer.validated_data["name"],
             slug=slug,

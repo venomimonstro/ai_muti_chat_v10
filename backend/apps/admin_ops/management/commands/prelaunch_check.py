@@ -14,12 +14,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--strict", action="store_true")
-        parser.add_argument("--ci", action="store_true")
         parser.add_argument("--json", action="store_true", dest="as_json")
 
     def handle(self, *args, **options):
         results = self._structural_checks()
-        if options["strict"] and not options["ci"]:
+        if options["strict"]:
             results.extend(self._production_checks())
             results.extend(self._evidence_checks())
         failed = [item for item in results if not item["passed"]]

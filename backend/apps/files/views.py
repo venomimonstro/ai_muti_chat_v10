@@ -6,7 +6,7 @@ from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 
 from apps.projects.access import accessible_projects
@@ -16,6 +16,24 @@ from .rag import retrieve_project_chunks
 from .serializers import FileAssetSerializer, FileChunkSerializer
 from .services import process_file
 from .validation import detect_and_validate
+
+
+class FileStorageUnavailable(APIException):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "Хранилище файлов временно недоступно"
+    default_code = "file_storage_unavailable"
+
+
+def _validate_idempotent_replay(asset, project, original_name, uploaded, digest):
+    if (
+        asset.project_id != project.id
+        or asset.original_name != original_name
+        or asset.size_bytes != uploaded.size
+        or asset.sha256 != digest
+    ):
+        raise ValidationError(
+            {"Idempotency-Key": "Ключ уже использован для другой загрузки"}
+        )
 
 
 class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
@@ -38,9 +56,6 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
         key = request.headers.get("Idempotency-Key", "")
         if not key or len(key) > 160:
             raise ValidationError({"detail": "Корректный Idempotency-Key обязателен"})
-        existing = FileAsset.objects.filter(owner=request.user, idempotency_key=key).first()
-        if existing:
-            return Response(self.get_serializer(existing).data)
         uploaded = request.FILES.get("file")
         if uploaded is None:
             raise ValidationError({"file": "Файл обязателен"})
@@ -55,6 +70,12 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
             original_name, detected, digest = detect_and_validate(uploaded)
         except DjangoValidationError as exc:
             raise ValidationError({"file": exc.messages}) from exc
+        existing = FileAsset.objects.filter(owner=request.user, idempotency_key=key).first()
+        if existing:
+            _validate_idempotent_replay(
+                existing, project, original_name, uploaded, digest
+            )
+            return Response(self.get_serializer(existing).data)
         try:
             with transaction.atomic():
                 asset = FileAsset.objects.create(
@@ -72,8 +93,18 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
                 )
         except IntegrityError:
             asset = FileAsset.objects.get(owner=request.user, idempotency_key=key)
+            _validate_idempotent_replay(
+                asset, project, original_name, uploaded, digest
+            )
             return Response(self.get_serializer(asset).data)
-        asset.blob.save(original_name, uploaded, save=True)
+        try:
+            asset.blob.save(original_name, uploaded, save=True)
+        except Exception as exc:
+            try:
+                asset.blob.delete(save=False)
+            finally:
+                asset.delete()
+            raise FileStorageUnavailable() from exc
         process_file(asset)
         return Response(self.get_serializer(asset).data, status=status.HTTP_201_CREATED)
 
@@ -95,6 +126,8 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
         query = str(request.data.get("query", "")).strip()
         if not project_id or not query:
             raise ValidationError({"detail": "Поля project и query обязательны"})
+        if len(query) > 10_000:
+            raise ValidationError({"query": "Запрос не должен превышать 10000 символов"})
         try:
             limit = int(request.data.get("limit", settings.SMART_CONTEXT_FILE_CHUNK_LIMIT))
         except (TypeError, ValueError) as exc:

@@ -5,6 +5,14 @@ from rest_framework.exceptions import AuthenticationFailed
 from .keys import authenticate_raw_key, ip_is_allowed
 
 
+def _client_ip(request):
+    if settings.B2B_TRUST_PROXY_IP_HEADER:
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+    return request.META.get("REMOTE_ADDR", "")
+
+
 class APIKeyAuthentication(BaseAuthentication):
     keyword = "Bearer"
 
@@ -23,7 +31,7 @@ class APIKeyAuthentication(BaseAuthentication):
         key = authenticate_raw_key(raw_key)
         if key is None:
             raise AuthenticationFailed("Invalid API key", code="invalid_api_key")
-        if not ip_is_allowed(key, request.META.get("REMOTE_ADDR", "")):
+        if not ip_is_allowed(key, _client_ip(request)):
             raise AuthenticationFailed("IP address is not allowed", code="ip_not_allowed")
         return key.organization.billing_user, key
 

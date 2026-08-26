@@ -151,6 +151,9 @@ class Generation(models.Model):
         CANCELLED = "cancelled", "Остановлено"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="generations"
+    )
     user_message = models.OneToOneField(
         Message, on_delete=models.PROTECT, related_name="generation_request"
     )
@@ -159,7 +162,7 @@ class Generation(models.Model):
     )
     state = models.CharField(max_length=16, choices=State.choices, default=State.QUEUED)
     model = models.CharField(max_length=100)
-    idempotency_key = models.CharField(max_length=160, unique=True)
+    idempotency_key = models.CharField(max_length=160)
     reservation_id = models.UUIDField(null=True)
     provider_request_id = models.CharField(max_length=200, blank=True)
     input_tokens = models.PositiveIntegerField(default=0)
@@ -174,6 +177,13 @@ class Generation(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "idempotency_key"], name="unique_user_generation_idempotency"
+            )
+        ]
+
 
 class CompareRun(models.Model):
     class State(models.TextChoices):
@@ -184,6 +194,9 @@ class CompareRun(models.Model):
         FAILED = "failed", "Ошибка"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="compare_runs"
+    )
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, related_name="compare_runs"
     )
@@ -194,7 +207,7 @@ class CompareRun(models.Model):
         Message, on_delete=models.SET_NULL, null=True, blank=True, related_name="compare_runs"
     )
     prompt = models.TextField()
-    idempotency_key = models.CharField(max_length=160, unique=True)
+    idempotency_key = models.CharField(max_length=160)
     state = models.CharField(max_length=16, choices=State.choices, default=State.PREVIEWED)
     model_slugs = models.JSONField(default=list)
     expected_min_rub = models.DecimalField(max_digits=14, decimal_places=4)
@@ -211,6 +224,11 @@ class CompareRun(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "idempotency_key"], name="unique_user_compare_idempotency"
+            )
+        ]
 
 
 class CompareVariant(models.Model):

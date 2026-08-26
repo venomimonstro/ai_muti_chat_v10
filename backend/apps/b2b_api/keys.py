@@ -6,6 +6,8 @@ import secrets
 from django.conf import settings
 from django.utils import timezone
 
+from apps.accounts.models import User
+
 from .models import APIKey, AuditLog
 
 DEFAULT_SCOPES = ["chat.completions", "models.read", "usage.read"]
@@ -62,6 +64,8 @@ def key_is_active(key) -> bool:
     now = timezone.now()
     return bool(
         key.organization.active
+        and key.organization.billing_user.is_active
+        and key.organization.billing_user.status == User.Status.ACTIVE
         and key.revoked_at is None
         and (key.expires_at is None or key.expires_at > now)
     )

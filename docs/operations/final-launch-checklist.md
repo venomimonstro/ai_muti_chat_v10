@@ -1,12 +1,12 @@
 # Final launch checklist
 
-Run `python manage.py prelaunch_check --strict` with production settings. A green CI build is
-necessary but does not replace the manual evidence below.
+Run `python manage.py prelaunch_check --strict` with production settings. Local automated checks
+are necessary but do not replace the manual evidence below.
 
 ## Automated technical gates
 
-- [x] Backend lint, migrations and full tests in CI.
-- [x] Frontend lint and production build in CI.
+- [x] Backend lint, migrations and full tests run locally before release.
+- [x] Frontend lint and production build run locally before release.
 - [x] High-confidence committed-secret scan.
 - [x] BOLA/BFLA coverage for user, project, file, B2B and admin resources.
 - [x] CSRF middleware, browser security headers and secure production cookie controls.

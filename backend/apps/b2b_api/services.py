@@ -157,6 +157,8 @@ def _model_for(key, model_slug):
 
 @transaction.atomic
 def _begin(key, model, estimate, snapshot, idem_key, request_hash):
+    from apps.admin_ops.recovery import recover_stale_api_usages
+
     locked = APIKey.objects.select_for_update().select_related("organization").get(pk=key.pk)
     if not key_is_active(locked):
         raise PublicAPIError("API key is inactive", code="invalid_api_key", status_code=401)
@@ -177,6 +179,7 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
                 status_code=409,
             )
     now = timezone.now()
+    recover_stale_api_usages(api_key=locked)
     recent = APIUsage.objects.filter(api_key=locked, created_at__gte=now - timedelta(minutes=1))
     if recent.count() >= locked.rate_limit_per_minute:
         raise PublicAPIError("Rate limit exceeded", code="rate_limit_exceeded", status_code=429)

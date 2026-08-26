@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -61,10 +62,18 @@ def test_compare_runs_models_and_settles_one_hard_reservation(settings):
     reservation = BalanceReservation.objects.get(pk=run.reservation_id)
     assert reservation.state == BalanceReservation.State.SETTLED
     assert reservation.actual_rub == run.actual_cost_rub
+    with pytest.raises(ValidationError):
+        run_compare(
+            user=user,
+            conversation=conversation,
+            prompt="Этот текст не должен создать новый запуск",
+            model_slugs=[item.slug for item in models],
+            idempotency_key="compare:test:one",
+        )
     replay = run_compare(
         user=user,
         conversation=conversation,
-        prompt="Этот текст не должен создать новый запуск",
+        prompt="Сравни два варианта стратегии",
         model_slugs=[item.slug for item in models],
         idempotency_key="compare:test:one",
     )

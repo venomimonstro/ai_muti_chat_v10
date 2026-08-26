@@ -56,7 +56,7 @@ def test_management_key_secret_is_shown_once_and_only_hash_is_stored():
     client.force_authenticate(user)
     response = client.post(
         f"/api/v1/organizations/{organization.id}/keys/",
-        {"name": "CI", "allowed_models": ["echo-b2b"]},
+        {"name": "Test", "allowed_models": ["echo-b2b"]},
         format="json",
     )
     assert response.status_code == 201

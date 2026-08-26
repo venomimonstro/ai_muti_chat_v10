@@ -7,7 +7,7 @@ const securityHeaders = [
   {key: "Cross-Origin-Opener-Policy", value: "same-origin"},
   {
     key: "Content-Security-Policy",
-    value: "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'; img-src 'self' data: blob: http: https:; connect-src 'self' http://localhost:8000 https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+    value: "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'; img-src 'self' data: blob:; connect-src 'self' http://localhost:8000; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
   },
 ];
 const nextConfig: NextConfig = {

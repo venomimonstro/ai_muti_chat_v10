@@ -11,17 +11,19 @@ from .services import create_refund, create_topup, process_webhook
 
 
 class FakeYooKassa:
-    def __init__(self):
+    def __init__(self, payment_id="pay_remote_1", refund_id="refund_remote_1"):
         self.payment_calls = 0
         self.refund_calls = 0
         self.payment_status = "pending"
         self.refund_status = "pending"
         self.payment_amount = "100.00"
+        self.payment_id = payment_id
+        self.refund_id = refund_id
 
     def create_payment(self, payload, idempotency_key):
         self.payment_calls += 1
         return {
-            "id": "pay_remote_1",
+            "id": self.payment_id,
             "status": "pending",
             "amount": payload["amount"],
             "confirmation": {"confirmation_url": "https://yookassa.test/confirm"},
@@ -41,7 +43,7 @@ class FakeYooKassa:
     def create_refund(self, payload, idempotency_key):
         self.refund_calls += 1
         return {
-            "id": "refund_remote_1",
+            "id": self.refund_id,
             "payment_id": payload["payment_id"],
             "status": self.refund_status,
             "amount": payload["amount"],
@@ -180,3 +182,22 @@ def test_live_payments_blocked_without_fiscalization(user):
             idempotency_key="live-without-receipt",
             client=FakeYooKassa(),
         )
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(PAYMENTS_ENABLED=True, PAYMENTS_LIVE_ENABLED=False)
+def test_payment_idempotency_is_scoped_per_user(user):
+    other = User.objects.create_user(username="payer-two", email="payer-two@example.com")
+    first = create_topup(
+        user=user,
+        amount="100.00",
+        idempotency_key="same-client-key",
+        client=FakeYooKassa(payment_id="pay_scope_1"),
+    )
+    second = create_topup(
+        user=other,
+        amount="100.00",
+        idempotency_key="same-client-key",
+        client=FakeYooKassa(payment_id="pay_scope_2"),
+    )
+    assert first.id != second.id

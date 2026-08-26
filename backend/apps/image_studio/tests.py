@@ -51,8 +51,15 @@ def test_image_preview_generation_history_and_idempotency(image_context):
     headers = {"HTTP_IDEMPOTENCY_KEY": "image:web:one"}
     first = client.post("/api/v1/images/generations/", payload, format="json", **headers)
     second = client.post("/api/v1/images/generations/", payload, format="json", **headers)
+    conflict = client.post(
+        "/api/v1/images/generations/",
+        {**payload, "prompt": "Другой запрос"},
+        format="json",
+        **headers,
+    )
     assert first.status_code == 201
     assert second.data["id"] == first.data["id"]
+    assert conflict.status_code == 400
     assert first.data["actual_count"] == 2
     assert Decimal(first.data["actual_cost_rub"]) == Decimal("0.8000")
     assert ImageGeneration.objects.filter(owner=user).count() == 1

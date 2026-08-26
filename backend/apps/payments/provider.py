@@ -35,7 +35,10 @@ class YooKassaClient:
                 timeout=30,
             )
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Unexpected YooKassa response")
+            return payload
         except (httpx.HTTPError, ValueError) as exc:
             raise PaymentProviderError("YooKassa request failed") from exc
 

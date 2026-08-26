@@ -6,7 +6,7 @@
 
 ## In scope
 
-- окружение, CI, ADR, secrets policy;
+- окружение, локальные quality checks, ADR, secrets policy;
 - регистрация, вход, профиль, роли;
 - provider contract и mock provider;
 - conversation/message/generation;
@@ -31,4 +31,3 @@
 ## Rollback / forward-fix
 
 До production миграции могут откатываться штатно. После начала денежных операций финансовые таблицы исправляются только forward-fix миграциями; ledger entries никогда не переписываются.
-

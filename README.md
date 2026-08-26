@@ -2,7 +2,7 @@
 
 Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–25.
+Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–26.
 
 ## Что уже заложено
 
@@ -82,11 +82,28 @@
 - публичная status page, incident publishing и доказуемые compliance sign-offs;
 - bounded load smoke runner, изолированный PostgreSQL restore drill и launch gate;
 - production Docker Compose, support/incident runbooks и полный pre-launch checklist;
-- Docker Compose: PostgreSQL, Redis, backend, worker, frontend;
-- CI: backend lint/tests и frontend lint/build;
+- однокомандный production installer с HTTPS, секретами, миграциями и созданием администратора;
+- Caddy reverse proxy, автоматический TLS, private network и ограничение Docker-логов;
+- автоматическое восстановление зависших резервов и операций после аварийного завершения;
+- Docker Compose: PostgreSQL, Redis, backend, worker, frontend и Caddy;
 - ADR и implementation brief для текущего этапа.
 
 ## Быстрый запуск
+
+### Production на чистом Ubuntu/Debian сервере
+
+После настройки DNS на сервер:
+
+```bash
+chmod +x install.sh
+sudo ./install.sh
+```
+
+Установщик сам проверит Docker, спросит домен и администратора, создаст секреты, поднимет
+PostgreSQL/Redis, применит миграции, соберёт static-файлы и выпустит HTTPS-сертификат.
+Подробности: `docs/operations/installation.md`.
+
+### Локальная разработка
 
 ```bash
 cp .env.example .env
@@ -123,5 +140,5 @@ pytest
 5. Ни один запрос не имеет неограниченную стоимость.
 6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
 
-Инженерный roadmap Sprint 0–25 завершён. Production-запуск разрешается только после закрытия
+Инженерный roadmap Sprint 0–26 завершён. Production-запуск разрешается только после закрытия
 ручных юридических, фискальных, MFA и договорных sign-off из launch checklist.

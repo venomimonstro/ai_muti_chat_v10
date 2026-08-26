@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from .models import Notification, SupportRequest, User, UserPreference
@@ -21,6 +22,13 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)
+
+    def validate_password(self, value):
+        validate_password(value)
+        return value
+
+    def validate_email(self, value):
+        return value.strip().casefold()
 
 
 class LoginSerializer(serializers.Serializer):
@@ -95,4 +103,8 @@ class ChangePasswordSerializer(serializers.Serializer):
     def validate_current_password(self, value):
         if not self.context["request"].user.check_password(value):
             raise serializers.ValidationError("Текущий пароль указан неверно")
+        return value
+
+    def validate_new_password(self, value):
+        validate_password(value, user=self.context["request"].user)
         return value

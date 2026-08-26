@@ -14,9 +14,10 @@ RUN npm run build
 FROM node:22-alpine AS runner
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/package*.json ./
-COPY --from=dependencies /app/node_modules ./node_modules
+COPY --chown=node:node --from=builder /app/.next ./.next
+COPY --chown=node:node --from=builder /app/public ./public
+COPY --chown=node:node --from=builder /app/package*.json ./
+COPY --chown=node:node --from=dependencies /app/node_modules ./node_modules
+USER node
 EXPOSE 3000
 CMD ["npm", "run", "start"]

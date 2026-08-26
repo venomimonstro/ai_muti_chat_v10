@@ -30,6 +30,7 @@ def test_public_status_page_and_security_headers():
         "API",
         "База данных",
         "AI-провайдеры",
+        "Очередь задач",
     }
     assert "frame-ancestors 'none'" in response["Content-Security-Policy"]
     assert response["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
@@ -87,7 +88,7 @@ def test_compliance_signoff_requires_evidence_and_remains_explicit():
 
 
 @pytest.mark.django_db
-def test_ci_prelaunch_gate_validates_structural_controls():
+def test_prelaunch_gate_validates_structural_controls():
     output = StringIO()
-    call_command("prelaunch_check", "--ci", stdout=output)
+    call_command("prelaunch_check", stdout=output)
     assert "Pre-launch checks passed" in output.getvalue()

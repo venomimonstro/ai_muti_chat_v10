@@ -17,7 +17,7 @@
 - conservative reservation до начала inference;
 - release всего резерва при provider failure;
 - повторный Idempotency-Key не создаёт вторую генерацию или стоимость.
-- PostgreSQL CI проверяет 20 параллельных попыток резерва при балансе только на 10;
+- PostgreSQL torture test проверяет 20 параллельных попыток резерва при балансе только на 10;
 - аномальный provider usage сверх резерва блокируется без debit;
 - повторные release/settle безопасны.
 

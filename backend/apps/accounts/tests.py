@@ -79,3 +79,18 @@ def test_change_password_keeps_current_session_authenticated():
     assert client.get("/api/v1/auth/me/").status_code == 200
     user.refresh_from_db()
     assert user.check_password("new-password-456")
+
+
+@pytest.mark.django_db
+def test_blocked_user_loses_existing_api_session():
+    user = User.objects.create_user(
+        username="blocked-session", email="blocked@example.com", password="password123"
+    )
+    client = APIClient()
+    assert client.login(username="blocked-session", password="password123")
+    assert client.get("/api/v1/auth/me/").status_code == 200
+    user.status = User.Status.BLOCKED
+    user.save(update_fields=["status"])
+    assert client.get("/api/v1/auth/me/").status_code == 403
+    user.refresh_from_db()
+    assert user.is_active is False

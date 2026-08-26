@@ -111,6 +111,16 @@ def _provider_call(model, messages):
     return text.strip(), completed, int((time.monotonic() - started) * 1000)
 
 
+def _validate_replayed_compare(run, conversation, prompt, model_slugs):
+    if (
+        run.conversation_id != conversation.id
+        or run.prompt != prompt
+        or run.model_slugs != list(dict.fromkeys(model_slugs))
+    ):
+        raise ValidationError("Idempotency-Key уже использован для другого Compare-запроса")
+    return run
+
+
 def run_compare(
     *,
     user,
@@ -123,41 +133,54 @@ def run_compare(
 ):
     if not settings.COMPARE_ENABLED:
         raise ValidationError("Compare временно отключён")
+    if not idempotency_key or len(idempotency_key) > 160:
+        raise ValidationError("Корректный Idempotency-Key обязателен")
+    prompt = str(prompt).strip()
+    if not prompt or len(prompt) > 100_000:
+        raise ValidationError("Compare-запрос должен содержать от 1 до 100000 символов")
     existing = CompareRun.objects.filter(
-        idempotency_key=idempotency_key, conversation__owner=user
+        idempotency_key=idempotency_key, owner=user
     ).first()
     if existing:
-        return existing
+        return _validate_replayed_compare(existing, conversation, prompt, model_slugs)
     preview = compare_preview(prompt=prompt, model_slugs=model_slugs)
     if preview["confirmation_required"] and not confirmed:
         raise ValidationError("Подтвердите ожидаемую стоимость Compare")
-    branch = ensure_active_branch(conversation, user)
-    run = CompareRun.objects.create(
-        conversation=conversation,
-        branch=branch,
-        source_message=source_message,
-        prompt=prompt,
-        idempotency_key=idempotency_key,
-        state=CompareRun.State.RUNNING,
-        model_slugs=[row["model"].slug for row in preview["models"]],
-        expected_min_rub=preview["expected_min_rub"],
-        expected_max_rub=preview["expected_max_rub"],
-    )
-    reservation = reserve(user, preview["expected_max_rub"], f"compare:{run.id}")
-    run.reservation_id = reservation.id
-    run.save(update_fields=["reservation_id"])
-    variants = []
-    for position, row in enumerate(preview["models"]):
-        variant = CompareVariant.objects.create(
-            compare_run=run,
-            model=row["model"],
-            position=position,
-            state=CompareVariant.State.RUNNING,
-            expected_min_rub=row["minimum"].user_charge_rub,
-            expected_max_rub=row["maximum"].user_charge_rub,
-            pricing_snapshot=row["maximum"].pricing_snapshot,
+    with transaction.atomic():
+        user.__class__.objects.select_for_update().only("pk").get(pk=user.pk)
+        existing = CompareRun.objects.filter(
+            idempotency_key=idempotency_key, owner=user
+        ).first()
+        if existing:
+            return _validate_replayed_compare(existing, conversation, prompt, model_slugs)
+        branch = ensure_active_branch(conversation, user)
+        run = CompareRun.objects.create(
+            owner=user,
+            conversation=conversation,
+            branch=branch,
+            source_message=source_message,
+            prompt=prompt,
+            idempotency_key=idempotency_key,
+            state=CompareRun.State.RUNNING,
+            model_slugs=[row["model"].slug for row in preview["models"]],
+            expected_min_rub=preview["expected_min_rub"],
+            expected_max_rub=preview["expected_max_rub"],
         )
-        variants.append((variant, row))
+        reservation = reserve(user, preview["expected_max_rub"], f"compare:{run.id}")
+        run.reservation_id = reservation.id
+        run.save(update_fields=["reservation_id"])
+        variants = []
+        for position, row in enumerate(preview["models"]):
+            variant = CompareVariant.objects.create(
+                compare_run=run,
+                model=row["model"],
+                position=position,
+                state=CompareVariant.State.RUNNING,
+                expected_min_rub=row["minimum"].user_charge_rub,
+                expected_max_rub=row["maximum"].user_charge_rub,
+                pricing_snapshot=row["maximum"].pricing_snapshot,
+            )
+            variants.append((variant, row))
     messages = [{"role": "user", "content": prompt}]
     futures = {}
     with ThreadPoolExecutor(max_workers=len(variants), thread_name_prefix="compare") as pool:
@@ -189,18 +212,26 @@ def run_compare(
             variant.completed_at = timezone.now()
             variant.save()
     actual = sum((variant.actual_cost_rub for variant, _row in variants), Decimal("0"))
-    settle(reservation.id, actual)
     success_count = sum(variant.state == CompareVariant.State.COMPLETED for variant, _ in variants)
-    run.actual_cost_rub = actual
-    run.state = (
-        CompareRun.State.COMPLETED
-        if success_count == len(variants)
-        else CompareRun.State.PARTIAL
-        if success_count
-        else CompareRun.State.FAILED
-    )
-    run.completed_at = timezone.now()
-    run.save(update_fields=["actual_cost_rub", "state", "completed_at"])
+    try:
+        with transaction.atomic():
+            settle(reservation.id, actual)
+            run.actual_cost_rub = actual
+            run.state = (
+                CompareRun.State.COMPLETED
+                if success_count == len(variants)
+                else CompareRun.State.PARTIAL
+                if success_count
+                else CompareRun.State.FAILED
+            )
+            run.completed_at = timezone.now()
+            run.save(update_fields=["actual_cost_rub", "state", "completed_at"])
+    except Exception:
+        release(reservation.id)
+        run.state = CompareRun.State.PARTIAL if success_count else CompareRun.State.FAILED
+        run.completed_at = timezone.now()
+        run.save(update_fields=["state", "completed_at"])
+        raise
     return run
 
 

@@ -3,11 +3,13 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth import login, logout, update_session_auth_hash
 from django.contrib.sessions.models import Session
+from django.db import transaction
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 
@@ -28,7 +30,10 @@ from .serializers import (
 
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "register"
 
+    @transaction.atomic
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -46,6 +51,8 @@ class RegisterView(APIView):
 
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
@@ -56,6 +63,8 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def post(self, request):
         logout(request)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -110,6 +119,8 @@ class ChangePasswordView(APIView):
 
 
 class LogoutAllView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def post(self, request):
         user_id = str(request.user.id)
         for session in Session.objects.filter(expire_date__gte=timezone.now()):

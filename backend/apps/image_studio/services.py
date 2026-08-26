@@ -57,6 +57,19 @@ def generate(
         raise ValidationError("Корректный Idempotency-Key обязателен")
     existing = ImageGeneration.objects.filter(owner=user, idempotency_key=idempotency_key).first()
     if existing:
+        normalized_prompt = str(prompt).strip()
+        try:
+            normalized_count = int(count)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Количество должно быть целым числом") from exc
+        if (
+            existing.model.slug != model_slug
+            or existing.prompt != normalized_prompt
+            or existing.size != size
+            or existing.quality != quality
+            or existing.requested_count != normalized_count
+        ):
+            raise ValidationError("Idempotency-Key уже использован для другого запроса")
         return existing
     model, value, prompt, count = preview(
         model_slug=model_slug, prompt=prompt, size=size, quality=quality, count=count
@@ -108,19 +121,23 @@ def generate(
         actual_count = generation.images.count()
         native = Decimal(snapshot["provider_price_per_image"]) * actual_count
         provider_cost, charge, _profit, _margin = calculate_flat_from_snapshot(native, snapshot)
-        settle(generation.reservation_id, charge)
-        generation.state = ImageGeneration.State.COMPLETED
-        generation.actual_count = actual_count
-        generation.provider_request_id = result.provider_request_id
-        generation.provider_cost_rub = provider_cost
-        generation.actual_cost_rub = charge
-        generation.completed_at = timezone.now()
-        generation.save(update_fields=[
-            "state", "actual_count", "provider_request_id", "provider_cost_rub",
-            "actual_cost_rub", "completed_at",
-        ])
+        with transaction.atomic():
+            settle(generation.reservation_id, charge)
+            generation.state = ImageGeneration.State.COMPLETED
+            generation.actual_count = actual_count
+            generation.provider_request_id = result.provider_request_id
+            generation.provider_cost_rub = provider_cost
+            generation.actual_cost_rub = charge
+            generation.completed_at = timezone.now()
+            generation.save(update_fields=[
+                "state", "actual_count", "provider_request_id", "provider_cost_rub",
+                "actual_cost_rub", "completed_at",
+            ])
     except Exception as exc:
         release(generation.reservation_id)
+        for image in generation.images.all():
+            image.file.delete(save=False)
+        generation.images.all().delete()
         generation.state = ImageGeneration.State.FAILED
         generation.error_code = exc.code if isinstance(exc, ImageProviderError) else "internal_error"
         generation.completed_at = timezone.now()

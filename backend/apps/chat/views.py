@@ -236,7 +236,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         serializer = SendMessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         key = request.headers.get("Idempotency-Key")
-        if not key:
+        if not key or len(key) > 160:
             return Response(
                 {"detail": "Idempotency-Key обязателен"}, status=status.HTTP_400_BAD_REQUEST
             )
@@ -263,7 +263,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         serializer = SendMessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         key = request.headers.get("Idempotency-Key")
-        if not key:
+        if not key or len(key) > 160:
             return Response(
                 {"detail": "Idempotency-Key обязателен"}, status=status.HTTP_400_BAD_REQUEST
             )

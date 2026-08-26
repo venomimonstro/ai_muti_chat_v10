@@ -1,5 +1,6 @@
 from rest_framework import mixins, viewsets
-from rest_framework.permissions import IsAdminUser
+
+from apps.admin_ops.permissions import IsPlatformAdmin
 
 from .models import EvalCase, EvalRun, ModelScore
 from .serializers import (
@@ -11,7 +12,7 @@ from .serializers import (
 
 
 class EvalCaseViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsPlatformAdmin]
     serializer_class = EvalCaseSerializer
 
     def get_queryset(self):
@@ -26,7 +27,7 @@ class EvalCaseViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets
 
 
 class EvalRunViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsPlatformAdmin]
     serializer_class = EvalRunSerializer
 
     def get_serializer_class(self):
@@ -46,7 +47,7 @@ class EvalRunViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
 
 
 class ModelScoreViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsPlatformAdmin]
     serializer_class = ModelScoreSerializer
 
     def get_queryset(self):

@@ -7,8 +7,8 @@ runbooks and an executable launch gate.
 ## Commands
 
 ```bash
-# Structural checks suitable for CI
-python manage.py prelaunch_check --ci
+# Structural checks before a release
+python manage.py prelaunch_check
 
 # Production gate: security settings + legal/drill evidence
 python manage.py prelaunch_check --strict

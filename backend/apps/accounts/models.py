@@ -21,6 +21,13 @@ class User(AbstractUser):
     role = models.CharField(max_length=32, choices=Role.choices, default=Role.USER)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
 
+    def save(self, *args, **kwargs):
+        self.is_active = self.status == self.Status.ACTIVE
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "status" in update_fields:
+            kwargs["update_fields"] = set(update_fields) | {"is_active"}
+        return super().save(*args, **kwargs)
+
 
 class UserPreference(models.Model):
     class AutoMemoryScope(models.TextChoices):

@@ -46,7 +46,7 @@ def test_historical_price_version_is_immutable_and_reproducible():
 @pytest.mark.django_db(transaction=True)
 def test_parallel_reserves_never_make_postgres_balance_negative():
     if connection.vendor != "postgresql":
-        pytest.skip("Real row-lock test runs in PostgreSQL CI")
+        pytest.skip("Real row-lock test requires PostgreSQL")
     user = User.objects.create_user(username="parallel", password="password123")
     credit(user, Decimal("10"), "test", "parallel")
 

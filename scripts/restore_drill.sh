@@ -8,6 +8,10 @@ if [[ "$backup_file" != /* || ! -f "$backup_file" ]]; then
   echo "Backup must be an existing absolute file path." >&2
   exit 2
 fi
+if [[ -f "${backup_file}.sha256" ]]; then
+  sha256sum --check "${backup_file}.sha256"
+fi
+pg_restore --list "$backup_file" >/dev/null
 
 database_name="${RESTORE_DRILL_DATABASE_URL%%\?*}"
 database_name="${database_name##*/}"

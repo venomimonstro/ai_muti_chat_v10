@@ -6,7 +6,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-development-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
 ALLOWED_HOSTS = [
-    x for x in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if x
+    x.strip()
+    for x in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if x.strip()
 ]
 
 INSTALLED_APPS = [
@@ -72,6 +74,8 @@ if parsed.scheme.startswith("postgres"):
             "PASSWORD": parsed.password,
             "HOST": parsed.hostname,
             "PORT": parsed.port or 5432,
+            "CONN_MAX_AGE": int(os.getenv("DATABASE_CONN_MAX_AGE", "60")),
+            "CONN_HEALTH_CHECKS": True,
         }
     }
 else:
@@ -92,6 +96,7 @@ TIME_ZONE = "Europe/Moscow"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", "false").lower() == "true"
@@ -101,11 +106,14 @@ SESSION_COOKIE_SECURE = os.getenv(
 CSRF_COOKIE_SECURE = os.getenv(
     "DJANGO_CSRF_COOKIE_SECURE", "false" if DEBUG else "true"
 ).lower() == "true"
+CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "0"))
-SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv(
+    "DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", "false"
+).lower() == "true"
 SECURE_HSTS_PRELOAD = os.getenv("DJANGO_SECURE_HSTS_PRELOAD", "false").lower() == "true"
 SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
 SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -115,21 +123,55 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE", str(2
 if os.getenv("DJANGO_TRUST_PROXY_SSL_HEADER", "false").lower() == "true":
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 CORS_ALLOWED_ORIGINS = [
-    x for x in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",") if x
+    x.strip()
+    for x in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if x.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+CACHE_URL = os.getenv("CACHE_URL", "")
+CACHES = {
+    "default": (
+        {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": CACHE_URL,
+            "OPTIONS": {"socket_connect_timeout": 2, "socket_timeout": 2},
+        }
+        if CACHE_URL
+        else {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+    )
+}
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
-    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_PERMISSION_CLASSES": ["apps.accounts.permissions.IsActiveUser"],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("API_ANON_RATE", "60/min"),
+        "user": os.getenv("API_USER_RATE", "300/min"),
+        "login": os.getenv("API_LOGIN_RATE", "10/min"),
+        "register": os.getenv("API_REGISTER_RATE", "5/hour"),
+    },
 }
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "300"))
+CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "330"))
 CELERY_BEAT_SCHEDULE = {
     "daily-financial-reconciliation": {
         "task": "apps.billing.tasks.daily_financial_reconciliation",
         "schedule": 86400.0,
-    }
+    },
+    "recover-stale-operations": {
+        "task": "apps.admin_ops.tasks.recover_stale_operations_task",
+        "schedule": 300.0,
+    },
 }
 SIGNUP_PROMO_RUB = os.getenv("SIGNUP_PROMO_RUB", "25.00")
 AI_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "120"))
@@ -168,6 +210,8 @@ B2B_API_MAX_MESSAGE_CHARS = int(os.getenv("B2B_API_MAX_MESSAGE_CHARS", "100000")
 B2B_API_RUNNING_TIMEOUT_SECONDS = int(
     os.getenv("B2B_API_RUNNING_TIMEOUT_SECONDS", "600")
 )
+B2B_TRUST_PROXY_IP_HEADER = os.getenv("B2B_TRUST_PROXY_IP_HEADER", "false").lower() == "true"
+OPERATION_STALE_TIMEOUT_SECONDS = int(os.getenv("OPERATION_STALE_TIMEOUT_SECONDS", "900"))
 AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY_ENABLED", "false").lower() == "true"
 AUTO_MEMORY_MAX_CANDIDATES = int(os.getenv("AUTO_MEMORY_MAX_CANDIDATES", "3"))
 SMART_CONTEXT_RECENT_TURNS = int(os.getenv("SMART_CONTEXT_RECENT_TURNS", "6"))

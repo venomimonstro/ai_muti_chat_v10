@@ -79,7 +79,12 @@ class OpenAIImageAdapter:
         images = []
         try:
             for item in payload.get("data", []):
-                content = base64.b64decode(item["b64_json"], validate=True)
+                encoded = item["b64_json"]
+                if not isinstance(encoded, str) or len(encoded) > (
+                    (settings.IMAGE_MAX_RESULT_BYTES + 2) // 3 * 4 + 4
+                ):
+                    raise ValueError("Image payload exceeds configured limit")
+                content = base64.b64decode(encoded, validate=True)
                 images.append(ImageResult(content, _detect_mime(content), item.get("revised_prompt", "")))
         except (KeyError, ValueError, binascii.Error) as exc:
             raise ImageProviderError("Invalid provider response", code="invalid_response") from exc

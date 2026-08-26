@@ -31,6 +31,8 @@ def error_response(error):
 class OpenAIAPIView(APIView):
     authentication_classes = [APIKeyAuthentication]
     permission_classes = [IsAuthenticated]
+    # Public API keys have transactional per-key rate/concurrency limits.
+    throttle_classes = []
 
     def handle_exception(self, exc):
         if isinstance(exc, PublicAPIError):
@@ -134,12 +136,19 @@ class ChatCompletionView(OpenAIAPIView):
         if not isinstance(raw_max, int) or isinstance(raw_max, bool) or raw_max <= 0:
             return error_response(PublicAPIError("max_completion_tokens must be a positive integer", param="max_completion_tokens"))
         try:
+            idempotency_key = request.headers.get("Idempotency-Key", "")
+            if len(idempotency_key) > 160:
+                raise PublicAPIError(
+                    "Idempotency-Key is too long",
+                    code="invalid_idempotency_key",
+                    param="Idempotency-Key",
+                )
             result = create_completion(
                 key=request.auth,
                 model_slug=model,
                 messages=request.data.get("messages"),
                 max_tokens=raw_max,
-                idempotency_key=request.headers.get("Idempotency-Key", "")[:160],
+                idempotency_key=idempotency_key,
             )
         except PublicAPIError as exc:
             return error_response(exc)

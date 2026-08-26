@@ -54,19 +54,58 @@ def _index_history(message):
         logger.exception("History indexing failed for message_id=%s", message.id)
 
 
+def _validate_replayed_generation(generation, conversation, content, client_message_id):
+    message = generation.user_message
+    if (
+        message.conversation_id != conversation.id
+        or message.content != content
+        or message.client_message_id != client_message_id
+    ):
+        raise ValidationError("Idempotency-Key уже использован для другого запроса")
+    return generation
+
+
 def prepare(*, user, conversation, content, client_message_id, idempotency_key):
+    if not idempotency_key or len(idempotency_key) > 160:
+        raise ValidationError("Корректный Idempotency-Key обязателен")
+    if not isinstance(content, str) or not content.strip() or len(content) > 100_000:
+        raise ValidationError("Сообщение должно содержать от 1 до 100000 символов")
     existing = (
-        Generation.objects.filter(
-            idempotency_key=idempotency_key, user_message__conversation__owner=user
-        )
+        Generation.objects.filter(idempotency_key=idempotency_key, owner=user)
         .select_related("assistant_message", "user_message")
         .first()
     )
     if existing:
-        return existing, False
+        return _validate_replayed_generation(
+            existing, conversation, content, client_message_id
+        ), False
 
     with transaction.atomic():
+        user.__class__.objects.select_for_update().only("pk").get(pk=user.pk)
+        existing = (
+            Generation.objects.filter(idempotency_key=idempotency_key, owner=user)
+            .select_related("assistant_message", "user_message")
+            .first()
+        )
+        if existing:
+            return _validate_replayed_generation(
+                existing, conversation, content, client_message_id
+            ), False
         locked = Conversation.objects.select_for_update().get(pk=conversation.pk, owner=user)
+        repeated_message = (
+            Message.objects.filter(
+                conversation=locked, client_message_id=client_message_id, role=Message.Role.USER
+            )
+            .select_related("generation_request__assistant_message")
+            .first()
+        )
+        if repeated_message is not None:
+            if repeated_message.content != content:
+                raise ValidationError("client_message_id уже использован с другим содержимым")
+            try:
+                return repeated_message.generation_request, False
+            except Message.generation_request.RelatedObjectDoesNotExist:
+                raise ValidationError("Повторное сообщение ещё не готово к обработке") from None
         branch = ensure_active_branch(locked, user)
         user_message = Message.objects.create(
             conversation=locked,
@@ -83,6 +122,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             status=Message.Status.SAVED,
         )
         generation = Generation.objects.create(
+            owner=user,
             user_message=user_message,
             assistant_message=assistant_message,
             model=locked.selected_model,
@@ -208,7 +248,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             }
             for model, price, item in priced
         }
-        generation.state = Generation.State.RUNNING
+        generation.state = Generation.State.QUEUED
         generation.save(update_fields=["reservation_id", "route_price_snapshot", "state"])
     except Exception:
         generation.state = Generation.State.FAILED
@@ -235,6 +275,16 @@ def run(generation, *, adapter=None):
     assistant = generation.assistant_message
     if generation.state == Generation.State.COMPLETED:
         yield sse("snapshot", {"text": assistant.content, "state": generation.state})
+        return
+    claimed = Generation.objects.filter(
+        pk=generation.pk, state=Generation.State.QUEUED
+    ).update(state=Generation.State.RUNNING)
+    if claimed:
+        generation.state = Generation.State.RUNNING
+    else:
+        generation.refresh_from_db(fields=["state", "error_code"])
+    if generation.state == Generation.State.RUNNING and not claimed:
+        yield sse("error", {"code": "generation_in_progress"})
         return
     if generation.state != Generation.State.RUNNING:
         yield sse("error", {"code": generation.error_code or "generation_not_runnable"})
@@ -398,68 +448,71 @@ def run(generation, *, adapter=None):
         if selected_model is None or completed is None:
             raise last_error
 
-        assistant.content = full_text
-        assistant.status = Message.Status.COMPLETED
-        assistant.save(update_fields=["content", "status"])
-        request_cost = RequestCost.objects.select_related("price_version").get(
-            generation_id=generation.id
-        )
-        if request_cost.pricing_snapshot:
-            provider_cost, charge, gross_profit, gross_margin = calculate_from_snapshot(
-                request_cost.price_version,
-                completed.input_tokens,
-                completed.output_tokens,
-                request_cost.pricing_snapshot,
+        with transaction.atomic():
+            request_cost = RequestCost.objects.select_for_update().select_related(
+                "price_version"
+            ).get(generation_id=generation.id)
+            if request_cost.pricing_snapshot:
+                provider_cost, charge, gross_profit, gross_margin = calculate_from_snapshot(
+                    request_cost.price_version,
+                    completed.input_tokens,
+                    completed.output_tokens,
+                    request_cost.pricing_snapshot,
+                )
+            else:
+                provider_cost, charge = calculate(
+                    request_cost.price_version, completed.input_tokens, completed.output_tokens
+                )
+                gross_profit = charge - provider_cost
+                gross_margin = gross_profit / charge * 100 if charge else 100
+            reservation_amount = (
+                generation.user_message.conversation.owner.wallet.reservations.get(
+                    id=generation.reservation_id
+                ).amount_rub
             )
-        else:
-            provider_cost, charge = calculate(
-                request_cost.price_version, completed.input_tokens, completed.output_tokens
+            if charge > reservation_amount:
+                raise ValidationError("Provider usage exceeded reserved maximum")
+            settle(generation.reservation_id, charge)
+            request_cost.provider_cost_rub = provider_cost
+            request_cost.charged_rub = charge
+            request_cost.input_tokens = completed.input_tokens
+            request_cost.output_tokens = completed.output_tokens
+            request_cost.gross_profit_rub = gross_profit
+            request_cost.gross_margin_percent = gross_margin
+            request_cost.save(
+                update_fields=[
+                    "provider_cost_rub",
+                    "charged_rub",
+                    "input_tokens",
+                    "output_tokens",
+                    "gross_profit_rub",
+                    "gross_margin_percent",
+                ]
             )
-            gross_profit = charge - provider_cost
-            gross_margin = gross_profit / charge * 100 if charge else 100
-        reservation_amount = generation.user_message.conversation.owner.wallet.reservations.get(
-            id=generation.reservation_id
-        ).amount_rub
-        if charge > reservation_amount:
-            raise ValidationError("Provider usage exceeded reserved maximum")
-        settle(generation.reservation_id, charge)
-        request_cost.provider_cost_rub = provider_cost
-        request_cost.charged_rub = charge
-        request_cost.input_tokens = completed.input_tokens
-        request_cost.output_tokens = completed.output_tokens
-        request_cost.gross_profit_rub = gross_profit
-        request_cost.gross_margin_percent = gross_margin
-        request_cost.save(
-            update_fields=[
-                "provider_cost_rub",
-                "charged_rub",
-                "input_tokens",
-                "output_tokens",
-                "gross_profit_rub",
-                "gross_margin_percent",
-            ]
-        )
-        record_cost_outcome(request_cost, model=selected_model)
-        generation.state = Generation.State.COMPLETED
-        generation.provider_request_id = completed.provider_request_id
-        generation.input_tokens = completed.input_tokens
-        generation.output_tokens = completed.output_tokens
-        generation.actual_cost_rub = charge
-        generation.routed_model = selected_model.slug
-        generation.provider_slug = selected_model.provider.slug
-        generation.completed_at = timezone.now()
-        generation.save(
-            update_fields=[
-                "state",
-                "provider_request_id",
-                "input_tokens",
-                "output_tokens",
-                "actual_cost_rub",
-                "routed_model",
-                "provider_slug",
-                "completed_at",
-            ]
-        )
+            record_cost_outcome(request_cost, model=selected_model)
+            assistant.content = full_text
+            assistant.status = Message.Status.COMPLETED
+            assistant.save(update_fields=["content", "status"])
+            generation.state = Generation.State.COMPLETED
+            generation.provider_request_id = completed.provider_request_id
+            generation.input_tokens = completed.input_tokens
+            generation.output_tokens = completed.output_tokens
+            generation.actual_cost_rub = charge
+            generation.routed_model = selected_model.slug
+            generation.provider_slug = selected_model.provider.slug
+            generation.completed_at = timezone.now()
+            generation.save(
+                update_fields=[
+                    "state",
+                    "provider_request_id",
+                    "input_tokens",
+                    "output_tokens",
+                    "actual_cost_rub",
+                    "routed_model",
+                    "provider_slug",
+                    "completed_at",
+                ]
+            )
         _index_history(assistant)
         refresh_rolling_summary(generation.user_message.conversation)
         yield sse(

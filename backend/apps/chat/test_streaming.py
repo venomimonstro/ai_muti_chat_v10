@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -132,6 +133,72 @@ def test_duplicate_stream_prepare_is_idempotent(stream_context):
     assert second_created is False
     assert conversation.messages.count() == 2
     assert RequestCost.objects.filter(generation_id=first.id).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_generation_idempotency_is_scoped_per_user(stream_context):
+    first_user, first_conversation = stream_context
+    second_user = User.objects.create_user(username="second-stream", password="password123")
+    credit(second_user, Decimal("10"), "test", "second-stream")
+    second_conversation = Conversation.objects.create(
+        owner=second_user, selected_model="echo-v1"
+    )
+    first, _ = prepare(
+        user=first_user,
+        conversation=first_conversation,
+        content="Первый",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="shared-browser-key",
+    )
+    second, _ = prepare(
+        user=second_user,
+        conversation=second_conversation,
+        content="Второй",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="shared-browser-key",
+    )
+    assert first.id != second.id
+
+
+@pytest.mark.django_db(transaction=True)
+def test_only_one_runner_can_claim_stream(stream_context):
+    user, conversation = stream_context
+    generation, _ = prepare(
+        user=user,
+        conversation=conversation,
+        content="Один исполнитель",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="stream:single-runner",
+    )
+    first_stream = run(generation, adapter=LongRunningAdapter())
+    assert "event: generation" in next(first_stream)
+    replay = "".join(run(generation, adapter=LongRunningAdapter()))
+    assert "generation_in_progress" in replay
+    first_stream.close()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stale_generation_releases_reservation(stream_context, settings):
+    from apps.admin_ops.recovery import recover_stale_operations
+
+    settings.OPERATION_STALE_TIMEOUT_SECONDS = 60
+    user, conversation = stream_context
+    generation, _ = prepare(
+        user=user,
+        conversation=conversation,
+        content="Зависший запрос",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="stream:stale",
+    )
+    Generation.objects.filter(pk=generation.pk).update(
+        created_at=timezone.now() - timedelta(minutes=5)
+    )
+    result = recover_stale_operations()
+    generation.refresh_from_db()
+    user.wallet.refresh_from_db()
+    assert result["generations"] == 1
+    assert generation.state == Generation.State.FAILED
+    assert user.wallet.reserved_rub == Decimal("0.0000")
 
 
 @pytest.mark.django_db(transaction=True)
