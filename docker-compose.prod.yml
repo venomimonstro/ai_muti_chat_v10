@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?required}
+      POSTGRES_USER: ${POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [private]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?required}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?required}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [private]
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env.production
+    command: uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers
+    volumes:
+      - media_data:/app/media
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [private, edge]
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env.production
+    command: celery -A config worker -l INFO --concurrency=2
+    volumes:
+      - media_data:/app/media
+    depends_on:
+      backend: {condition: service_healthy}
+    networks: [private]
+
+  beat:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env.production
+    command: celery -A config beat -l INFO
+    depends_on:
+      backend: {condition: service_healthy}
+    networks: [private]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
+    depends_on:
+      backend: {condition: service_healthy}
+    networks: [edge]
+
+networks:
+  private:
+    internal: true
+  edge:
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:

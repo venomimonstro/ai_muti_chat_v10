@@ -169,3 +169,61 @@ class AdminAuditEvent(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Admin audit events cannot be deleted")
+
+
+class ComplianceSignoff(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Ожидает"
+        APPROVED = "approved", "Подтверждено"
+        BLOCKED = "blocked", "Блокирует запуск"
+
+    key = models.SlugField(max_length=100, primary_key=True)
+    title = models.CharField(max_length=200)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    evidence_reference = models.CharField(max_length=400, blank=True)
+    notes = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="compliance_signoffs",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["key"]
+
+
+class StatusIncident(models.Model):
+    class Impact(models.TextChoices):
+        MINOR = "minor", "Незначительный"
+        MAJOR = "major", "Серьёзный"
+        CRITICAL = "critical", "Критический"
+
+    class State(models.TextChoices):
+        INVESTIGATING = "investigating", "Расследуется"
+        MONITORING = "monitoring", "Наблюдение"
+        RESOLVED = "resolved", "Устранён"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    impact = models.CharField(max_length=16, choices=Impact.choices)
+    state = models.CharField(
+        max_length=20, choices=State.choices, default=State.INVESTIGATING
+    )
+    affected_components = models.JSONField(default=list)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_status_incidents",
+    )
+    started_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]

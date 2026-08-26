@@ -26,7 +26,15 @@ from apps.chat.models import Generation
 from apps.evals.models import EvalRun, ModelScore
 from apps.payments.models import Payment, PaymentFeeVersion, ReconciliationRun, Refund
 
-from .models import AdminAuditEvent, BackupRecord, FeatureFlag, ReleaseRecord, SecurityEvent
+from .models import (
+    AdminAuditEvent,
+    BackupRecord,
+    ComplianceSignoff,
+    FeatureFlag,
+    ReleaseRecord,
+    SecurityEvent,
+    StatusIncident,
+)
 from .permissions import IsPlatformAdmin
 from .services import audit
 
@@ -882,3 +890,126 @@ class AuditView(AdminAPIView):
                 for item in queryset[: _limit(request, 200)]
             ]
         )
+
+
+class ComplianceSignoffView(AdminAPIView):
+    REQUIRED = {
+        "entity-tax-regime": "Юрлицо и налоговый режим",
+        "wallet-fiscalization": "Фискализация пополнения баланса",
+        "receipt-refund-flow": "Чеки оплаты и возврата",
+        "privacy-data-flow": "Privacy и карта потоков данных",
+        "provider-commercial-terms": "Коммерческие условия AI-провайдеров",
+        "public-legal-documents": "Оферта, privacy policy и правила возврата",
+        "admin-mfa": "MFA административных аккаунтов",
+    }
+
+    def get(self, request):
+        existing = {item.key: item for item in ComplianceSignoff.objects.all()}
+        return Response(
+            [
+                self._serialize(
+                    existing.get(key)
+                    or ComplianceSignoff(key=key, title=title)
+                )
+                for key, title in self.REQUIRED.items()
+            ]
+        )
+
+    def post(self, request):
+        key = request.data.get("key")
+        if key not in self.REQUIRED:
+            return Response({"detail": "Unknown sign-off key"}, status=400)
+        signoff_status = request.data.get("status", ComplianceSignoff.Status.PENDING)
+        if signoff_status not in ComplianceSignoff.Status.values:
+            return Response({"detail": "Invalid sign-off status"}, status=400)
+        evidence = request.data.get("evidence_reference", "")
+        if signoff_status == ComplianceSignoff.Status.APPROVED and not evidence:
+            return Response({"detail": "Approved sign-off requires evidence"}, status=400)
+        item, _created = ComplianceSignoff.objects.get_or_create(
+            key=key, defaults={"title": self.REQUIRED[key]}
+        )
+        item.title = self.REQUIRED[key]
+        item.status = signoff_status
+        item.evidence_reference = evidence
+        item.notes = request.data.get("notes", "")
+        item.reviewed_by = request.user if signoff_status != item.Status.PENDING else None
+        item.reviewed_at = timezone.now() if signoff_status != item.Status.PENDING else None
+        item.save()
+        audit(
+            request,
+            "compliance_signoff.updated",
+            "compliance_signoff",
+            item.key,
+            {"status": item.status, "evidence_reference": evidence},
+        )
+        return Response(self._serialize(item))
+
+    def _serialize(self, item):
+        return {
+            "key": item.key,
+            "title": item.title,
+            "status": item.status,
+            "evidence_reference": item.evidence_reference,
+            "notes": item.notes,
+            "reviewed_by": item.reviewed_by_id,
+            "reviewed_at": item.reviewed_at,
+        }
+
+
+class StatusIncidentControlView(AdminAPIView):
+    def get(self, request):
+        return Response([self._serialize(item) for item in StatusIncident.objects.all()[:100]])
+
+    def post(self, request):
+        required = ("title", "message", "impact")
+        if any(not request.data.get(field) for field in required):
+            return Response({"detail": "title, message and impact are required"}, status=400)
+        if request.data["impact"] not in StatusIncident.Impact.values:
+            return Response({"detail": "Invalid impact"}, status=400)
+        item = StatusIncident.objects.create(
+            title=request.data["title"],
+            message=request.data["message"],
+            impact=request.data["impact"],
+            affected_components=request.data.get("affected_components") or [],
+            created_by=request.user,
+        )
+        audit(request, "status_incident.created", "status_incident", item.id)
+        return Response(self._serialize(item), status=status.HTTP_201_CREATED)
+
+    def _serialize(self, item):
+        return {
+            "id": item.id,
+            "title": item.title,
+            "message": item.message,
+            "impact": item.impact,
+            "state": item.state,
+            "affected_components": item.affected_components,
+            "started_at": item.started_at,
+            "updated_at": item.updated_at,
+            "resolved_at": item.resolved_at,
+        }
+
+
+class StatusIncidentUpdateView(StatusIncidentControlView):
+    def post(self, request, incident_id):
+        item = get_object_or_404(StatusIncident, pk=incident_id)
+        new_state = request.data.get("state")
+        if new_state not in StatusIncident.State.values:
+            return Response({"detail": "Invalid incident state"}, status=400)
+        if item.state == StatusIncident.State.RESOLVED:
+            return Response({"detail": "Resolved incident is immutable"}, status=409)
+        item.state = new_state
+        if request.data.get("message"):
+            item.message = request.data["message"]
+        item.resolved_at = (
+            timezone.now() if new_state == StatusIncident.State.RESOLVED else None
+        )
+        item.save(update_fields=["state", "message", "resolved_at", "updated_at"])
+        audit(
+            request,
+            "status_incident.updated",
+            "status_incident",
+            item.id,
+            {"state": item.state},
+        )
+        return Response(self._serialize(item))

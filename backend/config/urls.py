@@ -3,6 +3,8 @@ from django.db import connection
 from django.http import JsonResponse
 from django.urls import include, path
 
+from apps.admin_ops.public_views import PublicStatusView
+
 
 def health(_request):
     return JsonResponse({"status": "ok"})
@@ -22,6 +24,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/health/", health),
     path("api/v1/readiness/", readiness),
+    path("api/v1/status/", PublicStatusView.as_view(), name="public-status"),
     path("api/v1/auth/", include("apps.accounts.urls")),
     path("api/v1/", include("apps.ai_registry.urls")),
     path("api/v1/", include("apps.chat.urls")),

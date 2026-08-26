@@ -4,6 +4,7 @@ from .views import (
     AuditView,
     BackupActionView,
     BackupView,
+    ComplianceSignoffView,
     ExecutiveOverviewView,
     FeatureFlagDetailView,
     FeatureFlagView,
@@ -20,6 +21,8 @@ from .views import (
     RequestInspectorView,
     SecurityEventActionView,
     SecurityEventView,
+    StatusIncidentControlView,
+    StatusIncidentUpdateView,
     SupportControlView,
     SupportStatusView,
     UserOrganizationView,
@@ -72,4 +75,15 @@ urlpatterns = [
         name="admin-feature-flag-detail",
     ),
     path("audit/", AuditView.as_view(), name="admin-audit"),
+    path("signoffs/", ComplianceSignoffView.as_view(), name="admin-signoffs"),
+    path(
+        "status-incidents/",
+        StatusIncidentControlView.as_view(),
+        name="admin-status-incidents",
+    ),
+    path(
+        "status-incidents/<uuid:incident_id>/",
+        StatusIncidentUpdateView.as_view(),
+        name="admin-status-incident-update",
+    ),
 ]

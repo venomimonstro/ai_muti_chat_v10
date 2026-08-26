@@ -1,6 +1,14 @@
 from django.contrib import admin
 
-from .models import AdminAuditEvent, BackupRecord, FeatureFlag, ReleaseRecord, SecurityEvent
+from .models import (
+    AdminAuditEvent,
+    BackupRecord,
+    ComplianceSignoff,
+    FeatureFlag,
+    ReleaseRecord,
+    SecurityEvent,
+    StatusIncident,
+)
 
 
 @admin.register(AdminAuditEvent)
@@ -20,3 +28,5 @@ admin.site.register(FeatureFlag)
 admin.site.register(SecurityEvent)
 admin.site.register(ReleaseRecord)
 admin.site.register(BackupRecord)
+admin.site.register(ComplianceSignoff)
+admin.site.register(StatusIncident)
