@@ -76,8 +76,63 @@ def credit(user, amount: Decimal, source_type: str, source_id: str, *, bucket="p
 def reserve(user, amount: Decimal, key: str):
     if amount <= 0:
         raise ValidationError("Reserve must be positive")
-    existing = BalanceReservation.objects.filter(idempotency_key=key).first()
+    existing = BalanceReservation.objects.select_for_update().filter(idempotency_key=key).first()
     if existing:
+        if existing.state == BalanceReservation.State.ACTIVE:
+            return existing
+        if existing.state == BalanceReservation.State.SETTLED:
+            return existing
+        if existing.state != BalanceReservation.State.RELEASED:
+            raise ValidationError("Reservation is in an unexpected state")
+        wallet = Wallet.objects.select_for_update().get(pk=existing.wallet_id)
+        if wallet.user_id != user.id:
+            raise ValidationError("Reservation belongs to another wallet")
+        enforce_spend_limits(wallet, amount)
+        if wallet.available_rub < amount:
+            raise ValidationError("Недостаточно средств")
+        promo_amount = min(wallet.promo_rub, amount)
+        paid_amount = amount - promo_amount
+        if wallet.paid_rub < paid_amount:
+            raise ValidationError("Wallet bucket invariant violated")
+        wallet.available_rub -= amount
+        wallet.reserved_rub += amount
+        wallet.promo_rub -= promo_amount
+        wallet.paid_rub -= paid_amount
+        wallet.save(
+            update_fields=["available_rub", "reserved_rub", "paid_rub", "promo_rub", "updated_at"]
+        )
+        existing.amount_rub = amount
+        existing.paid_amount_rub = paid_amount
+        existing.promo_amount_rub = promo_amount
+        existing.actual_rub = None
+        existing.state = BalanceReservation.State.ACTIVE
+        existing.settled_at = None
+        existing.save(
+            update_fields=[
+                "amount_rub",
+                "paid_amount_rub",
+                "promo_amount_rub",
+                "actual_rub",
+                "state",
+                "settled_at",
+            ]
+        )
+        attempt = LedgerEntry.objects.filter(
+            source_id=str(existing.id),
+            kind=LedgerEntry.Kind.RESERVE,
+        ).count()
+        _entry(
+            wallet,
+            LedgerEntry.Kind.RESERVE,
+            amount,
+            -amount,
+            amount,
+            -paid_amount,
+            -promo_amount,
+            "generation",
+            existing.id,
+            f"reserve:{existing.id}:{attempt}",
+        )
         return existing
     wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
     enforce_spend_limits(wallet, amount)

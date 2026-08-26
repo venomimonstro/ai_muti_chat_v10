@@ -173,6 +173,47 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
                 )
             if existing.state == APIUsage.State.COMPLETED:
                 return existing, True
+            recover_stale_api_usages(api_key=locked)
+            existing.refresh_from_db()
+            if existing.state == APIUsage.State.FAILED:
+                if existing.reservation_id:
+                    release(existing.reservation_id)
+                reservation = reserve(
+                    locked.organization.billing_user, estimate, f"public-api:{existing.id}"
+                )
+                existing.reservation = reservation
+                existing.estimated_cost_rub = estimate
+                existing.pricing_snapshot = snapshot
+                existing.state = APIUsage.State.RUNNING
+                existing.error_code = ""
+                existing.provider_cost_rub = Decimal("0")
+                existing.charged_rub = Decimal("0")
+                existing.prompt_tokens = 0
+                existing.completion_tokens = 0
+                existing.provider_request_id = ""
+                existing.response_text = ""
+                existing.latency_ms = None
+                existing.completed_at = None
+                existing.save(
+                    update_fields=[
+                        "reservation",
+                        "estimated_cost_rub",
+                        "pricing_snapshot",
+                        "state",
+                        "error_code",
+                        "provider_cost_rub",
+                        "charged_rub",
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "provider_request_id",
+                        "response_text",
+                        "latency_ms",
+                        "completed_at",
+                    ]
+                )
+                locked.last_used_at = timezone.now()
+                locked.save(update_fields=["last_used_at"])
+                return existing, False
             raise PublicAPIError(
                 "A request with this Idempotency-Key is already in progress or failed",
                 code="idempotency_key_in_use",
