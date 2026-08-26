@@ -119,6 +119,47 @@ def test_provider_failure_releases_full_image_reservation(image_context):
     assert user.wallet.reserved_rub == Decimal("0.0000")
 
 
+@pytest.mark.django_db(transaction=True)
+def test_failed_image_generation_retries_with_same_idempotency_key(image_context):
+    user, model, _client = image_context
+    from .services import generate
+
+    class FlakyImageAdapter:
+        calls = 0
+
+        def generate(self, **_kwargs):
+            FlakyImageAdapter.calls += 1
+            if FlakyImageAdapter.calls == 1:
+                raise ImageProviderError("down", code="upstream_down")
+            return EchoImageAdapter().generate(**_kwargs)
+
+    first = generate(
+        user=user,
+        model_slug=model.slug,
+        prompt="Retry image",
+        size="1024x1024",
+        quality="standard",
+        count=1,
+        idempotency_key="image:retry",
+        adapter=FlakyImageAdapter(),
+    )
+    assert first.state == ImageGeneration.State.FAILED
+
+    second = generate(
+        user=user,
+        model_slug=model.slug,
+        prompt="Retry image",
+        size="1024x1024",
+        quality="standard",
+        count=1,
+        idempotency_key="image:retry",
+        adapter=FlakyImageAdapter(),
+    )
+    assert second.id == first.id
+    assert second.state == ImageGeneration.State.COMPLETED
+    assert ImageGeneration.objects.filter(owner=user, idempotency_key="image:retry").count() == 1
+
+
 def test_openai_adapter_uses_current_response_format_contract(monkeypatch):
     calls = []
 

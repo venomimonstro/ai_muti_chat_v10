@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from decimal import ROUND_UP, Decimal
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
@@ -28,6 +29,12 @@ class PriceQuote:
 
 
 def active_price(model_slug: str) -> PriceVersion:
+    cache_key = f"price:active:{model_slug}"
+    cached_id = cache.get(cache_key)
+    if cached_id:
+        price = PriceVersion.objects.filter(pk=cached_id).first()
+        if price is not None:
+            return price
     price = (
         PriceVersion.objects.filter(
             model_slug=model_slug, active=True, effective_from__lte=timezone.now()
@@ -37,6 +44,7 @@ def active_price(model_slug: str) -> PriceVersion:
     )
     if not price:
         raise ValidationError("Для выбранной модели не настроена цена")
+    cache.set(cache_key, str(price.pk), 120)
     return price
 
 

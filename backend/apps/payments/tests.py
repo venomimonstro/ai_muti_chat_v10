@@ -201,3 +201,21 @@ def test_payment_idempotency_is_scoped_per_user(user):
         client=FakeYooKassa(payment_id="pay_scope_2"),
     )
     assert first.id != second.id
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(PAYMENTS_ENABLED=True, PAYMENTS_LIVE_ENABLED=False)
+def test_reconcile_skips_payments_without_provider_id(user):
+    from .services import reconcile_open_payments
+
+    payment = Payment.objects.create(
+        user=user,
+        amount_rub=Decimal("100.00"),
+        idempotency_key="orphan-payment",
+        status=Payment.Status.CREATED,
+    )
+    run = reconcile_open_payments(client=FakeYooKassa(payment_id="unused"))
+    assert run.error_count == 0
+    payment.refresh_from_db()
+    assert payment.status == Payment.Status.CREATED
+    assert payment.provider_payment_id is None

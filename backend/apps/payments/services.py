@@ -311,6 +311,8 @@ def reconcile_open_payments(*, client=None):
         status__in=[Payment.Status.CREATED, Payment.Status.PENDING]
     ):
         run.checked_count += 1
+        if not payment.provider_payment_id:
+            continue
         try:
             remote = client.get_payment(payment.provider_payment_id)
             result = apply_payment_status(payment.id, remote)

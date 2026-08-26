@@ -12,9 +12,7 @@ class MemoryRevisionSerializer(serializers.ModelSerializer):
         fields = ("id", "content", "scope", "created_at")
 
 
-class MemoryItemSerializer(serializers.ModelSerializer):
-    revisions = MemoryRevisionSerializer(many=True, read_only=True)
-
+class MemoryItemListSerializer(serializers.ModelSerializer):
     class Meta:
         model = MemoryItem
         fields = (
@@ -36,7 +34,6 @@ class MemoryItemSerializer(serializers.ModelSerializer):
             "enabled",
             "created_at",
             "updated_at",
-            "revisions",
         )
         read_only_fields = (
             "id",
@@ -46,8 +43,15 @@ class MemoryItemSerializer(serializers.ModelSerializer):
             "source_message",
             "created_at",
             "updated_at",
-            "revisions",
         )
+
+
+class MemoryItemSerializer(MemoryItemListSerializer):
+    revisions = MemoryRevisionSerializer(many=True, read_only=True)
+
+    class Meta(MemoryItemListSerializer.Meta):
+        fields = MemoryItemListSerializer.Meta.fields + ("revisions",)
+        read_only_fields = MemoryItemListSerializer.Meta.read_only_fields + ("revisions",)
 
     def validate(self, attrs):
         instance = self.instance

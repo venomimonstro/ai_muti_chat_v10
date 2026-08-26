@@ -69,27 +69,28 @@ printf '\nAI Workspace - автоматическая установка\n'
 if [[ "${RESUME}" == true ]]; then
   APP_DOMAIN="$(sed -n 's/^APP_DOMAIN=//p' "${ENV_FILE}" | head -n 1)"
   [[ -n "${APP_DOMAIN}" ]] || fail "в .env.production отсутствует APP_DOMAIN"
-  printf 'Продолжаем прерванную установку для %s.\n\n' "${APP_DOMAIN}"
+  printf 'Продолжаем прерванную установку для %s.\n' "${APP_DOMAIN}"
+  printf 'Учётные данные администратора не изменяются.\n\n'
 else
   printf 'Перед продолжением направьте A/AAAA-запись домена на этот сервер.\n\n'
   APP_DOMAIN="$(prompt_required "Домен без https:// (например ai.example.ru)")"
   valid_domain "${APP_DOMAIN}" || fail "некорректный домен"
   ACME_EMAIL="$(prompt_required "Email для сертификата HTTPS")"
   valid_email "${ACME_EMAIL}" || fail "некорректный email"
-fi
-ADMIN_USERNAME="$(prompt_required "Логин администратора")"
-[[ "${ADMIN_USERNAME}" =~ ^[A-Za-z0-9_.@+-]{3,150}$ ]] || fail "некорректный логин"
-ADMIN_EMAIL="$(prompt_required "Email администратора")"
-valid_email "${ADMIN_EMAIL}" || fail "некорректный email администратора"
+  ADMIN_USERNAME="$(prompt_required "Логин администратора")"
+  [[ "${ADMIN_USERNAME}" =~ ^[A-Za-z0-9_.@+-]{3,150}$ ]] || fail "некорректный логин"
+  ADMIN_EMAIL="$(prompt_required "Email администратора")"
+  valid_email "${ADMIN_EMAIL}" || fail "некорректный email администратора"
 
-read -r -s -p "Пароль администратора (минимум 12 символов; Enter - сгенерировать): " ADMIN_PASSWORD
-printf '\n'
-GENERATED_ADMIN_PASSWORD=false
-if [[ -z "${ADMIN_PASSWORD}" ]]; then
-  ADMIN_PASSWORD="$(openssl rand -hex 16)"
-  GENERATED_ADMIN_PASSWORD=true
+  read -r -s -p "Пароль администратора (минимум 12 символов; Enter - сгенерировать): " ADMIN_PASSWORD
+  printf '\n'
+  GENERATED_ADMIN_PASSWORD=false
+  if [[ -z "${ADMIN_PASSWORD}" ]]; then
+    ADMIN_PASSWORD="$(openssl rand -hex 16)"
+    GENERATED_ADMIN_PASSWORD=true
+  fi
+  [[ "${#ADMIN_PASSWORD}" -ge 12 ]] || fail "пароль администратора короче 12 символов"
 fi
-[[ "${#ADMIN_PASSWORD}" -ge 12 ]] || fail "пароль администратора короче 12 символов"
 
 if [[ "${RESUME}" != true ]]; then
   POSTGRES_PASSWORD="$(openssl rand -hex 32)"
@@ -123,6 +124,7 @@ if [[ "${RESUME}" != true ]]; then
   printf 'PUBLIC_API_URL=https://%s/api/v1\n' "${APP_DOMAIN}"
   printf 'PAYMENT_RETURN_URL=https://%s/settings/billing/return\n' "${APP_DOMAIN}"
   printf 'B2B_TRUST_PROXY_IP_HEADER=true\n'
+  printf 'B2B_TRUSTED_PROXY_IPS=10.0.0.0/8,172.16.0.0/12\n'
   printf 'ADMIN_MFA_ENFORCED=false\n'
   printf 'PAYMENTS_ENABLED=false\n'
   printf 'PAYMENTS_LIVE_ENABLED=false\n'
@@ -141,10 +143,12 @@ compose build --pull
 compose up -d postgres redis
 compose run --rm backend python manage.py migrate --noinput
 compose run --rm backend python manage.py collectstatic --noinput
-compose run --rm \
-  -e "AIWORKSPACE_ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
-  backend python manage.py bootstrap_admin \
-  --username "${ADMIN_USERNAME}" --email "${ADMIN_EMAIL}" --reset-password
+if [[ "${RESUME}" != true ]]; then
+  compose run --rm \
+    -e "AIWORKSPACE_ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
+    backend python manage.py bootstrap_admin \
+    --username "${ADMIN_USERNAME}" --email "${ADMIN_EMAIL}" --reset-password
+fi
 compose up -d --remove-orphans
 
 READY=false
@@ -156,7 +160,7 @@ for _attempt in $(seq 1 60); do
   sleep 2
 done
 
-printf 'Логин администратора: %s\n' "${ADMIN_USERNAME}"
+printf 'Логин администратора: %s\n' "${ADMIN_USERNAME:-существующий}"
 if [[ "${GENERATED_ADMIN_PASSWORD}" == true ]]; then
   printf 'Сгенерированный пароль: %s\n' "${ADMIN_PASSWORD}"
   printf 'Сохраните его сейчас: повторно он не выводится.\n'

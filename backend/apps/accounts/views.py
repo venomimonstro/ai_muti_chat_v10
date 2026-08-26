@@ -46,6 +46,7 @@ class RegisterView(APIView):
             bucket="promo",
         )
         login(request, user)
+        request.session.cycle_key()
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
@@ -59,6 +60,7 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         login(request, user)
+        request.session.cycle_key()
         return Response(UserSerializer(user).data)
 
 
