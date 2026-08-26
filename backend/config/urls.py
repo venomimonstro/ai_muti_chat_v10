@@ -33,4 +33,6 @@ urlpatterns = [
     path("api/v1/", include("apps.memory_store.urls")),
     path("api/v1/", include("apps.evals.urls")),
     path("api/v1/", include("apps.image_studio.urls")),
+    path("api/v1/", include("apps.b2b_api.management_urls")),
+    path("v1/", include("apps.b2b_api.public_urls")),
 ]

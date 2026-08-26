@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     "apps.memory_store",
     "apps.evals",
     "apps.image_studio",
+    "apps.b2b_api",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -138,6 +139,13 @@ IMAGES_ENABLED = os.getenv("IMAGES_ENABLED", "true").lower() == "true"
 IMAGE_MAX_PROMPT_CHARS = int(os.getenv("IMAGE_MAX_PROMPT_CHARS", "4000"))
 IMAGE_MAX_RESULT_BYTES = int(os.getenv("IMAGE_MAX_RESULT_BYTES", str(20 * 1024 * 1024)))
 IMAGE_CONFIRM_THRESHOLD_RUB = os.getenv("IMAGE_CONFIRM_THRESHOLD_RUB", "20.00")
+B2B_API_ENABLED = os.getenv("B2B_API_ENABLED", "true").lower() == "true"
+B2B_API_KEY_PEPPER = os.getenv("B2B_API_KEY_PEPPER", SECRET_KEY)
+B2B_API_MAX_OUTPUT_TOKENS = int(os.getenv("B2B_API_MAX_OUTPUT_TOKENS", "4096"))
+B2B_API_MAX_MESSAGE_CHARS = int(os.getenv("B2B_API_MAX_MESSAGE_CHARS", "100000"))
+B2B_API_RUNNING_TIMEOUT_SECONDS = int(
+    os.getenv("B2B_API_RUNNING_TIMEOUT_SECONDS", "600")
+)
 AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY_ENABLED", "false").lower() == "true"
 AUTO_MEMORY_MAX_CANDIDATES = int(os.getenv("AUTO_MEMORY_MAX_CANDIDATES", "3"))
 SMART_CONTEXT_RECENT_TURNS = int(os.getenv("SMART_CONTEXT_RECENT_TURNS", "6"))
