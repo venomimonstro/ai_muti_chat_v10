@@ -9,6 +9,7 @@ from .models import MemoryCandidate, MemoryItem
 from .serializers import (
     AcceptCandidateSerializer,
     MemoryCandidateSerializer,
+    MemoryItemListSerializer,
     MemoryItemSerializer,
 )
 from .services import accept_candidate, reject_candidate
@@ -17,13 +18,19 @@ from .services import accept_candidate, reject_candidate
 class MemoryItemViewSet(viewsets.ModelViewSet):
     serializer_class = MemoryItemSerializer
 
+    def get_serializer_class(self):
+        if self.action == "list":
+            return MemoryItemListSerializer
+        return MemoryItemSerializer
+
     def get_queryset(self):
         queryset = (
             MemoryItem.objects.filter(owner=self.request.user)
             .exclude(status=MemoryItem.Status.DELETED)
             .select_related("project", "conversation", "source_message")
-            .prefetch_related("revisions")
         )
+        if self.action == "retrieve":
+            queryset = queryset.prefetch_related("revisions")
         query = self.request.query_params.get("q", "").strip()
         if query:
             queryset = queryset.filter(

@@ -10,6 +10,15 @@ type Panel = "search" | "projects" | "files" | "images" | "memory" | "wallet" | 
 
 const money = (value: string | number | null | undefined) => `${Number(value ?? 0).toFixed(2).replace(".", ",")} ₽`;
 const dateLabel = (value: string) => new Intl.DateTimeFormat("ru", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(value));
+const isLocalMessageId = (id: string) => id.startsWith("local-");
+
+const streamErrorMessage = (data: Record<string, unknown>) => {
+  if (typeof data.message === "string" && data.message) return data.message;
+  const code = String(data.code ?? "");
+  if (code === "generation_in_progress") return "Ответ уже генерируется. Подождите завершения.";
+  if (code === "generation_not_runnable") return "Этот запрос нельзя повторить. Отправьте новое сообщение.";
+  return "Ответ не получен. Деньги не списаны.";
+};
 
 function Button({children, className = "", ...props}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return <button className={`button ${className}`} {...props}>{children}</button>;
@@ -88,7 +97,18 @@ export default function Home() {
   const [compareSource, setCompareSource] = useState<ChatMessage | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const pendingFocusRef = useRef<string | null>(null);
+  const draftReadyRef = useRef<string | null>(null);
+  const loadRequestRef = useRef(0);
+  const pendingSendRef = useRef<{
+    conversationId: string;
+    prompt: string;
+    clientMessageId: string;
+    idempotencyKey: string;
+    assistantId: string;
+  } | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
   const active = conversations.find((item) => item.id === activeId) ?? null;
@@ -97,19 +117,44 @@ export default function Home() {
   const lowBalance = wallet && preferences && Number(wallet.available_rub) <= Number(preferences.low_balance_threshold_rub);
 
   const loadWorkspace = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setBoot("loading"); setError("");
     try {
       await ensureCsrf();
       const me = await api<User>("/auth/me/");
-      const [chatData, modelData, projectData, fileData, imageModelData, imageData, memoryData, candidateData, walletData, notificationData, preferenceData] = await Promise.all([
-        api<Conversation[]>("/conversations/"), api<AIModel[]>("/models/"), api<Project[]>("/projects/"),
-        api<FileAsset[]>("/files/"), api<ImageModel[]>("/image-models/"), api<ImageGeneration[]>("/images/generations/"), api<MemoryItem[]>("/memories/"), api<MemoryCandidate[]>("/memory-candidates/"), api<Wallet>("/wallet/"), api<Notification[]>("/auth/notifications/"), api<Preference>("/auth/preferences/"),
+      const [chatData, modelData, walletData, preferenceData] = await Promise.all([
+        api<Conversation[]>("/conversations/"),
+        api<AIModel[]>("/models/"),
+        api<Wallet>("/wallet/"),
+        api<Preference>("/auth/preferences/"),
       ]);
-      setUser(me); setConversations(chatData); setModels(modelData); setProjects(projectData);
-      setFiles(fileData); setImageModels(imageModelData); setImageGenerations(imageData); setMemories(memoryData); setMemoryCandidates(candidateData); setWallet(walletData); setNotifications(notificationData); setPreferences(preferenceData);
-      setActiveId((current) => current && chatData.some((item) => item.id === current) ? current : chatData[0]?.id ?? null);
+      if (requestId !== loadRequestRef.current) return;
+      const summaries = chatData.map((item) => ({...item, messages: item.messages ?? []}));
+      setUser(me);
+      setConversations(summaries);
+      setModels(modelData);
+      setWallet(walletData);
+      setPreferences(preferenceData);
+      const initialId = summaries[0]?.id ?? null;
+      setActiveId((current) => current && summaries.some((item) => item.id === current) ? current : initialId);
       setBoot("ready");
+      if (initialId && (summaries[0]?.message_count ?? summaries[0]?.messages.length ?? 0) > 0) {
+        void api<Conversation>(`/conversations/${initialId}/`).then((conversation) => {
+          if (requestId !== loadRequestRef.current) return;
+          setConversations((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
+        }).catch(() => undefined);
+      }
+      void api<Notification[]>("/auth/notifications/").then((items) => {
+        if (requestId === loadRequestRef.current) setNotifications(items);
+      }).catch(() => undefined);
+      void api<MemoryCandidate[]>("/memory-candidates/").then((items) => {
+        if (requestId === loadRequestRef.current) setMemoryCandidates(items);
+      }).catch(() => undefined);
+      void api<Project[]>("/projects/").then((items) => {
+        if (requestId === loadRequestRef.current) setProjects(items);
+      }).catch(() => undefined);
     } catch (reason) {
+      if (requestId !== loadRequestRef.current) return;
       if (reason instanceof ApiError && [401, 403].includes(reason.status)) setBoot("guest");
       else { setError(reason instanceof Error ? reason.message : "Сервис временно недоступен"); setBoot("error"); }
     }
@@ -119,6 +164,24 @@ export default function Home() {
     queueMicrotask(() => void loadWorkspace());
     navigator.serviceWorker?.register("/sw.js").catch(() => undefined);
   }, [loadWorkspace]);
+  useEffect(() => {
+    if (!panel || boot !== "ready") return;
+    if (panel === "projects" && projects.length === 0) {
+      void api<Project[]>("/projects/").then(setProjects).catch(() => undefined);
+    }
+    if (panel === "files" && files.length === 0) {
+      void api<FileAsset[]>("/files/").then(setFiles).catch(() => undefined);
+    }
+    if (panel === "images" && imageModels.length === 0) {
+      void api<ImageModel[]>("/image-models/").then(setImageModels).catch(() => undefined);
+    }
+    if (panel === "images" && imageGenerations.length === 0) {
+      void api<ImageGeneration[]>("/images/generations/").then(setImageGenerations).catch(() => undefined);
+    }
+    if (panel === "memory" && memories.length === 0) {
+      void api<MemoryItem[]>("/memories/").then(setMemories).catch(() => undefined);
+    }
+  }, [panel, boot, projects.length, files.length, imageModels.length, imageGenerations.length, memories.length]);
   useEffect(() => {
     const shortcut = (event: globalThis.KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPanel("search"); }
@@ -137,15 +200,24 @@ export default function Home() {
   }, [active?.id, activeId, focusMessageId]);
   useEffect(() => {
     if (!activeId || boot !== "ready") return;
+    draftReadyRef.current = null;
     const localKey = `draft:${activeId}`;
     let cancelled = false;
     api<{content: string}>(`/conversations/${activeId}/draft/`).then((draft) => {
-      if (!cancelled) setValue(draft.content || localStorage.getItem(localKey) || "");
-    }).catch(() => { if (!cancelled) setValue(localStorage.getItem(localKey) || ""); });
+      if (!cancelled) {
+        setValue(draft.content || localStorage.getItem(localKey) || "");
+        draftReadyRef.current = activeId;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setValue(localStorage.getItem(localKey) || "");
+        draftReadyRef.current = activeId;
+      }
+    });
     return () => { cancelled = true; };
   }, [activeId, boot]);
   useEffect(() => {
-    if (!activeId || boot !== "ready") return;
+    if (!activeId || boot !== "ready" || draftReadyRef.current !== activeId) return;
     const key = `draft:${activeId}`; localStorage.setItem(key, value);
     const timer = window.setTimeout(() => {
       const request = value ? api(`/conversations/${activeId}/draft/`, {method: "PUT", body: JSON.stringify({content: value})})
@@ -159,47 +231,95 @@ export default function Home() {
   const refreshConversation = async (id: string) => replaceConversation(await api<Conversation>(`/conversations/${id}/`));
   const refreshWallet = async () => setWallet(await api<Wallet>("/wallet/"));
 
-  const createConversation = async () => {
+  const createConversation = async (): Promise<Conversation | null> => {
     try {
       const payload: Record<string, string> = {title: "Новый чат", routing_mode: "balanced"};
       if (models.find((item) => item.available)) payload.selected_model = models.find((item) => item.available)!.slug;
       const conversation = await api<Conversation>("/conversations/", {method: "POST", body: JSON.stringify(payload)});
       replaceConversation(conversation); setActiveId(conversation.id); setValue(""); setSidebarOpen(false);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось создать чат"); }
+      return conversation;
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось создать чат"); return null; }
   };
 
-  const chooseConversation = (id: string, messageId?: string) => { setActiveId(id); setFocusMessageId(messageId ?? null); setSidebarOpen(false); setPanel(null); setError(""); };
+  const chooseConversation = (id: string, messageId?: string) => {
+    setActiveId(id); setSidebarOpen(false); setPanel(null); setError("");
+    pendingFocusRef.current = messageId ?? null;
+    if (!messageId) setFocusMessageId(null);
+    const summary = conversations.find((item) => item.id === id);
+    const needsDetail = summary && summary.messages.length === 0 && (summary.message_count ?? 0) > 0;
+    if (needsDetail) {
+      setLoadingConversationId(id);
+      void refreshConversation(id).then(() => {
+        if (pendingFocusRef.current) {
+          setFocusMessageId(pendingFocusRef.current);
+          pendingFocusRef.current = null;
+        }
+      }).finally(() => setLoadingConversationId((current) => current === id ? null : current));
+    } else if (messageId) {
+      setFocusMessageId(messageId);
+      pendingFocusRef.current = null;
+    }
+  };
 
   const send = async () => {
     const prompt = value.trim(); if (!prompt || sending) return;
     setError(""); setStreamNote("");
     let conversation = active;
     if (!conversation) {
-      await createConversation();
-      const latest = await api<Conversation[]>("/conversations/");
-      conversation = latest[0]; setConversations(latest); setActiveId(conversation?.id ?? null);
+      conversation = await createConversation();
     }
     if (!conversation) return;
-    const userMessage: ChatMessage = {id: `local-user-${crypto.randomUUID()}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
-    const assistantId = `local-ai-${crypto.randomUUID()}`;
-    const assistantMessage: ChatMessage = {id: assistantId, branch: conversation.active_branch, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
-    replaceConversation({...conversation, messages: [...conversation.messages, userMessage, assistantMessage]});
+    let clientMessageId: string;
+    let idempotencyKey: string;
+    let assistantId: string;
+    const isRetry =
+      pendingSendRef.current?.conversationId === conversation.id &&
+      pendingSendRef.current.prompt === prompt;
+    if (isRetry) {
+      ({clientMessageId, idempotencyKey, assistantId} = pendingSendRef.current!);
+    } else {
+      clientMessageId = crypto.randomUUID();
+      idempotencyKey = `web:${crypto.randomUUID()}`;
+      assistantId = `local-ai-${crypto.randomUUID()}`;
+      pendingSendRef.current = {conversationId: conversation.id, prompt, clientMessageId, idempotencyKey, assistantId};
+    }
+    if (!isRetry) {
+      const userMessage: ChatMessage = {id: `local-user-${clientMessageId}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
+      const assistantMessage: ChatMessage = {id: assistantId, branch: conversation.active_branch, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
+      replaceConversation({...conversation, messages: [...conversation.messages, userMessage, assistantMessage]});
+    } else {
+      replaceConversation({
+        ...conversation,
+        messages: conversation.messages.map((message) =>
+          message.id === assistantId ? {...message, content: "", status: "streaming"} : message,
+        ),
+      });
+    }
     setValue(""); localStorage.removeItem(`draft:${conversation.id}`); setSending(true);
     const controller = new AbortController(); abortRef.current = controller;
     try {
-      await streamMessage(conversation.id, {content: prompt, client_message_id: crypto.randomUUID()}, `web:${crypto.randomUUID()}`, ({event, data}) => {
+      await streamMessage(conversation.id, {content: prompt, client_message_id: clientMessageId}, idempotencyKey, ({event, data}) => {
         if (event === "delta") setConversations((items) => items.map((item) => item.id !== conversation!.id ? item : {...item, messages: item.messages.map((message) => message.id === assistantId ? {...message, content: message.content + String(data.text ?? "")} : message)}));
+        if (event === "snapshot") setConversations((items) => items.map((item) => item.id !== conversation!.id ? item : {...item, messages: item.messages.map((message) => message.id === assistantId ? {...message, content: String(data.text ?? ""), status: String(data.state ?? "saved")} : message)}));
         if (event === "recovery") setStreamNote(data.action === "fallback" ? "Подключаем резервную модель…" : "Провайдер не ответил, повторяем безопасно…");
         if (event === "routing") setStreamNote(String(data.explanation ?? "AUTO выбрал подходящую модель"));
         if (event === "memory") setStreamNote(String(data.message ?? "Память обновлена"));
         if (event === "memory_candidates") {setStreamNote(String(data.message ?? "Найдены предложения для памяти")); void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);}
-        if (event === "error") setError(String(data.message ?? "Ответ не получен. Деньги не списаны."));
+        if (event === "error") setError(streamErrorMessage(data));
       }, controller.signal);
+      pendingSendRef.current = null;
     } catch (reason) {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : "Соединение прервано");
     } finally {
       setSending(false); setStreamNote(""); abortRef.current = null;
-      await Promise.all([refreshConversation(conversation.id), refreshWallet()]).catch(() => undefined);
+      try {
+        await refreshConversation(conversation.id);
+      } catch (reason) {
+        if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+          setError((current) => current || (reason instanceof Error ? reason.message : "Не удалось обновить чат"));
+        }
+      }
+      await refreshWallet().catch(() => undefined);
     }
   };
 
@@ -225,6 +345,8 @@ export default function Home() {
     const provider = (inputTokens * Number(selectedModel.price.input_rub_per_million) + Math.min(1024, selectedModel.max_output_tokens) * Number(selectedModel.price.output_rub_per_million)) / 1_000_000;
     return provider * (1 + Number(selectedModel.price.markup_percent) / 100);
   }, [active?.routing_mode, selectedModel, value]);
+
+  const loadingThread = Boolean(activeId && loadingConversationId === activeId);
 
   if (boot === "loading") return <main className="centerState" aria-busy="true"><div className="loader"/><h1>Открываем рабочее пространство</h1><p>Загружаем чаты, проекты и баланс…</p></main>;
   if (boot === "guest") return <AuthScreen onAuthenticated={loadWorkspace}/>;
@@ -273,16 +395,21 @@ export default function Home() {
       </header>
 
       <div className="thread" ref={threadRef} aria-live="polite">
-        {!active || active.messages.length === 0 ? <section className="emptyChat"><div className="spark"><Icon name="spark" size={30}/></div><p className="eyebrow">AI WORKSPACE</p><h1>Чем займёмся?</h1><p>Выберите задачу или начните с собственного вопроса.</p><div className="suggestions">
+        {loadingThread ? <section className="emptyChat" aria-busy="true"><div className="loader"/><p>Загружаем сообщения…</p></section>
+        : !active || active.messages.length === 0 ? <section className="emptyChat"><div className="spark"><Icon name="spark" size={30}/></div><p className="eyebrow">AI WORKSPACE</p><h1>Чем займёмся?</h1><p>Выберите задачу или начните с собственного вопроса.</p><div className="suggestions">
           {["Составь маркетинговую стратегию", "Проанализируй документ", "Помоги написать код", "Сравни варианты решения"].map((text) => <button key={text} onClick={() => setValue(text)}>{text}<span>↗</span></button>)}
         </div></section> : <div className="messageList">
-          {active.messages.map((message, messageIndex) => <article id={`message-${message.id}`} key={message.id} className={`message ${message.role} ${message.status} ${focusMessageId === message.id ? "searchFocus" : ""}`}>
+          {active.messages.map((message, messageIndex) => {
+            const userSource = active.messages.slice(0, messageIndex).reverse().find((item) => item.role === "user");
+            const canCompare = userSource && !isLocalMessageId(userSource.id);
+            return <article id={`message-${message.id}`} key={message.id} className={`message ${message.role} ${message.status} ${focusMessageId === message.id ? "searchFocus" : ""}`}>
             <div className="messageAvatar">{message.role === "user" ? user?.username.slice(0, 1).toUpperCase() : <Icon name="spark" size={17}/>}</div>
             <div className="messageBody"><div className="messageHead"><b>{message.role === "user" ? "Вы" : "AI Workspace"}</b><time>{dateLabel(message.created_at)}</time>{message.status === "partial" && <span className="statusPill warning">Ответ прервался</span>}{message.status === "failed" && <span className="statusPill danger">Ошибка</span>}</div>
               <div className="messageText">{message.content || (message.status === "streaming" ? <span className="typing"><i/><i/><i/></span> : "Ответ не получен")}</div>
-              {message.role === "assistant" && message.content && <div className="messageActions"><button onClick={() => navigator.clipboard.writeText(message.content)}><Icon name="copy" size={16}/>Копировать</button><button onClick={() => {const source = active.messages.slice(0, messageIndex).reverse().find((item) => item.role === "user"); if (source) {setCompareSource(source); setPanel("compare");}}}>Сравнить</button>{message.generation && <button onClick={() => {setCostMessage(message); setPanel("cost");}}>{money(message.generation.cost_rub)} · {message.generation.model}</button>}</div>}
+              {message.role === "assistant" && message.content && <div className="messageActions"><button onClick={() => navigator.clipboard.writeText(message.content)}><Icon name="copy" size={16}/>Копировать</button><button disabled={!canCompare} onClick={() => {if (canCompare) {setCompareSource(userSource); setPanel("compare");}}}>Сравнить</button>{message.generation && <button onClick={() => {setCostMessage(message); setPanel("cost");}}>{money(message.generation.cost_rub)} · {message.generation.model}</button>}</div>}
             </div>
-          </article>)}
+          </article>;
+          })}
         </div>}
       </div>
 
@@ -305,9 +432,9 @@ export default function Home() {
     {panel === "memory" && <MemoryPanel items={memories} candidates={memoryCandidates} projects={projects} conversations={conversations} onChange={setMemories} onCandidatesChange={setMemoryCandidates} onClose={() => setPanel(null)}/>} 
     {panel === "wallet" && <WalletPanel wallet={wallet} onClose={() => setPanel(null)}/>} 
     {panel === "notifications" && <NotificationsPanel items={notifications} onChange={setNotifications} onClose={() => setPanel(null)}/>} 
-    {panel === "settings" && preferences && user && <SettingsPanel user={user} preferences={preferences} onChange={(value) => {setPreferences(value); if (!value.auto_memory_enabled) setMemoryCandidates([]);}} onLogout={() => {setUser(null); setBoot("guest");}} onClose={() => setPanel(null)}/>} 
+    {panel === "settings" && user && (preferences ? <SettingsPanel user={user} preferences={preferences} onChange={(value) => {setPreferences(value); if (!value.auto_memory_enabled) setMemoryCandidates([]);}} onLogout={() => {setUser(null); setBoot("guest");}} onClose={() => setPanel(null)}/> : <Drawer title="Аккаунт и настройки" onClose={() => setPanel(null)}><p className="muted">Не удалось загрузить настройки.</p><Button className="primary" onClick={loadWorkspace}>Повторить</Button></Drawer>)} 
     {panel === "support" && <SupportPanel onClose={() => setPanel(null)}/>} 
-    {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl><ContextInspector context={costMessage.generation.context}/></Drawer>}
+    {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl>{costMessage.generation.context ? <ContextInspector context={costMessage.generation.context}/> : <p className="muted">Контекст недоступен для этого сообщения.</p>}</Drawer>}
     {panel === "compare" && active && compareSource && <ComparePanel conversation={active} source={compareSource} models={models} onConversation={replaceConversation} onClose={() => setPanel(null)}/>} 
     <button className="supportFloat" onClick={() => setPanel("support")} aria-label="Написать в поддержку"><Icon name="support"/></button>
   </main>;
@@ -321,7 +448,7 @@ function ComparePanel({conversation, source, models, onConversation, onClose}: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (selected.length < 2) return;
+    if (isLocalMessageId(source.id) || selected.length < 2) return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       try {
@@ -351,7 +478,7 @@ function ComparePanel({conversation, source, models, onConversation, onClose}: {
     try {onConversation(await api<Conversation>(`/conversations/${conversation.id}/compare/${result!.id}/variants/${variantId}/branch/`, {method: "POST", body: "{}"})); onClose();}
     catch (reason) {setError(reason instanceof Error ? reason.message : "Ветка не создана"); setBusy(false);}
   };
-  return <Drawer title="Сравнить модели" onClose={onClose}><div className="comparePrompt"><small>Один запрос для всех моделей</small><p>{source.content}</p></div>{!result && <><div className="compareModels">{eligible.map((model) => <label key={model.slug} className={selected.includes(model.slug) ? "selected" : ""}><input type="checkbox" checked={selected.includes(model.slug)} onChange={() => toggle(model.slug)}/><span><b>{model.display_name}</b><small>{model.provider}</small></span></label>)}</div>{preview && selected.length >= 2 && <div className="compareCost"><span>Ожидаемая стоимость</span><b>{money(preview.expected_min_rub)} - {money(preview.expected_max_rub)}</b><small>Верхний лимит резервируется до запуска, списание - по факту.</small></div>}<Button className="primary wide" disabled={busy || selected.length < 2} onClick={run}>{busy ? "Модели отвечают параллельно…" : `Запустить ${selected.length} модели`}</Button></>}{error && <div className="alert error">{error}</div>}{result && <><div className="compareSummary"><span>{result.state === "completed" ? "Сравнение готово" : "Готово частично"}</span><b>Списано {money(result.actual_cost_rub)}</b></div><div className="compareResults">{result.variants.map((variant) => <article key={variant.id} className={variant.state}><header><div><b>{variant.model_name}</b><small>{variant.provider} · {money(variant.actual_cost_rub)}</small></div>{variant.state === "completed" && <button disabled={busy} onClick={() => branch(variant.id)}>Продолжить веткой</button>}</header><p>{variant.output || "Ответ не получен"}</p></article>)}</div>{result.synthesis_output ? <article className="synthesisResult"><header><b>Итоговый ответ</b><small>{money(result.synthesis_cost_rub)}</small></header><p>{result.synthesis_output}</p></article> : <Button className="primary wide" disabled={busy || result.variants.filter((item) => item.state === "completed").length < 2} onClick={synthesize}>{busy ? "Формируем итог…" : "Сформировать лучший итог"}</Button>}</>}</Drawer>;
+  return <Drawer title="Сравнить модели" onClose={onClose}>{isLocalMessageId(source.id) ? <p className="muted">Сообщение ещё сохраняется на сервере. Дождитесь завершения ответа и повторите сравнение.</p> : <><div className="comparePrompt"><small>Один запрос для всех моделей</small><p>{source.content}</p></div>{!result && <><div className="compareModels">{eligible.map((model) => <label key={model.slug} className={selected.includes(model.slug) ? "selected" : ""}><input type="checkbox" checked={selected.includes(model.slug)} onChange={() => toggle(model.slug)}/><span><b>{model.display_name}</b><small>{model.provider}</small></span></label>)}</div>{preview && selected.length >= 2 && <div className="compareCost"><span>Ожидаемая стоимость</span><b>{money(preview.expected_min_rub)} - {money(preview.expected_max_rub)}</b><small>Верхний лимит резервируется до запуска, списание - по факту.</small></div>}<Button className="primary wide" disabled={busy || selected.length < 2} onClick={run}>{busy ? "Модели отвечают параллельно…" : `Запустить ${selected.length} модели`}</Button></>}{error && <div className="alert error">{error}</div>}{result && <><div className="compareSummary"><span>{result.state === "completed" ? "Сравнение готово" : "Готово частично"}</span><b>Списано {money(result.actual_cost_rub)}</b></div><div className="compareResults">{result.variants.map((variant) => <article key={variant.id} className={variant.state}><header><div><b>{variant.model_name}</b><small>{variant.provider} · {money(variant.actual_cost_rub)}</small></div>{variant.state === "completed" && <button disabled={busy} onClick={() => branch(variant.id)}>Продолжить веткой</button>}</header><p>{variant.output || "Ответ не получен"}</p></article>)}</div>{result.synthesis_output ? <article className="synthesisResult"><header><b>Итоговый ответ</b><small>{money(result.synthesis_cost_rub)}</small></header><p>{result.synthesis_output}</p></article> : <Button className="primary wide" disabled={busy || result.variants.filter((item) => item.state === "completed").length < 2} onClick={synthesize}>{busy ? "Формируем итог…" : "Сформировать лучший итог"}</Button>}</>}</>}</Drawer>;
 }
 
 function ImageStudioPanel({models, generations, onChange, onWalletChange, onClose}: {models: ImageModel[]; generations: ImageGeneration[]; onChange: (value: ImageGeneration[]) => void; onWalletChange: () => Promise<void>; onClose: () => void}) {
@@ -364,6 +491,17 @@ function ImageStudioPanel({models, generations, onChange, onWalletChange, onClos
   const [preview, setPreview] = useState<{expected_cost_rub: string; confirmation_required: boolean} | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (models.length === 0) return;
+    const current = models.find((item) => item.slug === modelSlug);
+    if (!current) {
+      const first = models[0];
+      setModelSlug(first.slug);
+      setSize(first.supported_sizes[0] ?? "");
+      setQuality(first.supported_qualities[0] ?? "");
+      setCount((value) => Math.min(value, first.max_images ?? 1));
+    }
+  }, [models, modelSlug]);
   useEffect(() => {
     if (!model || !prompt.trim() || !size || !quality) return;
     let cancelled = false;
@@ -402,7 +540,11 @@ function SearchPanel({projects, onClose, onChoose}: {projects: Project[]; onClos
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (query.trim().length < 2) return;
+    if (query.trim().length < 2) {
+      setBusy(false);
+      setResults([]);
+      return;
+    }
     let cancelled = false;
     const timer = setTimeout(async () => {
       setBusy(true); setError("");
@@ -419,7 +561,7 @@ function SearchPanel({projects, onClose, onChoose}: {projects: Project[]; onClos
         if (!cancelled) setBusy(false);
       }
     }, 300);
-    return () => {cancelled = true; clearTimeout(timer);};
+    return () => {cancelled = true; clearTimeout(timer); setBusy(false);};
   }, [query, scope, project, role]);
   const typeLabel = (item: SearchResult) => item.type === "message" ? (item.match === "semantic" ? "По смыслу" : item.match === "hybrid" ? "Точное + смысл" : "Совпадение") : item.type === "conversation" ? "Чат" : item.type === "project" ? "Проект" : "Файл";
   return <Drawer title="Поиск по рабочему пространству" onClose={onClose}><div className="searchField"><Icon name="search"/><input autoFocus value={query} onChange={(event) => {setQuery(event.target.value); if (event.target.value.trim().length < 2) setResults([]);}} placeholder="Найдите решение, факт или обсуждение" aria-label="Поисковый запрос"/>{busy && <div className="miniLoader"/>}</div><div className="searchFilters"><select value={scope} onChange={(event) => {setScope(event.target.value); if (event.target.value !== "message") setRole("");}} aria-label="Тип результата"><option value="all">Везде</option><option value="message">Сообщения</option><option value="conversation">Чаты</option><option value="project">Проекты</option><option value="file">Файлы</option></select><select value={project} onChange={(event) => setProject(event.target.value)} aria-label="Проект"><option value="">Все проекты</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select value={role} onChange={(event) => {setRole(event.target.value); if (event.target.value) setScope("message");}} aria-label="Автор сообщения"><option value="">Все авторы</option><option value="user">Я</option><option value="assistant">AI</option></select></div>{error && <div className="alert error">{error}</div>}<div className="resultList">{query.length < 2 && <Empty icon="search" title="Введите минимум два символа" text="Поиск работает только в доступных вам данных."/>}{query.length >= 2 && !busy && results.length === 0 && <Empty icon="search" title="Ничего не найдено" text="Попробуйте другую формулировку или снимите фильтры."/>}{query.length >= 2 && results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => {if (item.type === "conversation" || item.type === "message") onChoose(item.conversation_id ?? item.id, item.navigation.message_id); else onClose();}}><span className="resultIcon"><Icon name={item.type === "project" ? "folder" : item.type === "file" ? "file" : "chat"}/></span><span><b>{item.title}</b><small>{item.excerpt}</small></span><em>{typeLabel(item)}</em></button>)}</div></Drawer>;
@@ -433,6 +575,22 @@ function ProjectsPanel({projects, onChange, onClose}: {projects: Project[]; onCh
 
 function FilesPanel({files, projects, onChange, onClose}: {files: FileAsset[]; projects: Project[]; onChange: (items: FileAsset[]) => void; onClose: () => void}) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const fileRef = useRef<HTMLInputElement>(null);
+  const pendingStatuses = new Set(["parsing", "uploaded"]);
+  useEffect(() => {
+    if (!files.some((file) => pendingStatuses.has(file.status))) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const latest = await api<FileAsset[]>("/files/");
+        if (!cancelled) onChange(latest);
+      } catch {
+        // Ignore transient polling errors.
+      }
+    };
+    const interval = window.setInterval(() => void poll(), 2500);
+    void poll();
+    return () => {cancelled = true; window.clearInterval(interval);};
+  }, [files, onChange]);
   const upload = async (event: FormEvent<HTMLFormElement>) => {event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); setBusy(true); setError(""); try {const item = await api<FileAsset>("/files/", {method: "POST", headers: {"Idempotency-Key": `web-file:${crypto.randomUUID()}`}, body: data}); onChange([item, ...files]); form.reset();} catch (reason) {setError(reason instanceof Error ? reason.message : "Не удалось загрузить файл");} finally {setBusy(false);}};
   return <Drawer title="Файлы" onClose={onClose}><form className="uploadBox" onSubmit={upload}><input ref={fileRef} name="file" type="file" accept=".txt,.md,.csv,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp" required/><label>Проект<select name="project" required defaultValue=""><option value="" disabled>Выберите проект</option>{projects.filter((project) => !project.archived_at && project.role !== "viewer").map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><Button type="button" onClick={() => fileRef.current?.click()}><Icon name="plus"/>Выбрать файл</Button><Button className="primary" disabled={busy || projects.length === 0}>{busy ? "Проверяем…" : "Загрузить"}</Button><small>До 20 МБ · TXT, MD, CSV, DOCX, XLSX, PDF и изображения</small></form>{error && <div className="alert error">{error}</div>}<div className="cardList compact">{files.length === 0 && <Empty icon="file" title="Файлов пока нет" text="Загрузите документ в проект и следите за статусом обработки."/>}{files.map((file) => <article key={file.id}><span className="cardIcon"><Icon name="file"/></span><div><h3>{file.original_name}</h3><p>{(file.size_bytes / 1024).toFixed(1)} КБ · {file.detected_type.toUpperCase()}</p><small className={`fileStatus ${file.status}`}>{file.status === "ready" ? "Готов" : file.status === "partial" ? "Частично обработан" : file.status === "failed" ? "Ошибка" : "Обрабатывается"}</small></div></article>)}</div></Drawer>;
 }
@@ -478,12 +636,12 @@ function MemoryPanel({items, candidates, projects, conversations, onChange, onCa
 
 function WalletPanel({wallet, onClose}: {wallet: Wallet | null; onClose: () => void}) {
   const [amount, setAmount] = useState("500"); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  const topup = async () => {setBusy(true); setError(""); try {const payment = await api<{confirmation_url: string}>("/payments/", {method: "POST", headers: {"Idempotency-Key": `web-payment:${crypto.randomUUID()}`}, body: JSON.stringify({amount_rub: amount})}); if (payment.confirmation_url) window.location.assign(payment.confirmation_url);} catch (reason) {setError(reason instanceof Error ? reason.message : "Пополнение временно недоступно");} finally {setBusy(false);}};
+  const topup = async () => {setBusy(true); setError(""); try {const payment = await api<{confirmation_url?: string}>("/payments/", {method: "POST", headers: {"Idempotency-Key": `web-payment:${crypto.randomUUID()}`}, body: JSON.stringify({amount_rub: amount})}); if (payment.confirmation_url) window.location.assign(payment.confirmation_url); else setError("Платёжная система не вернула ссылку для оплаты");} catch (reason) {setError(reason instanceof Error ? reason.message : "Пополнение временно недоступно");} finally {setBusy(false);}};
   return <Drawer title="Баланс и расходы" onClose={onClose}><div className="walletHero"><small>Доступно</small><strong>{money(wallet?.available_rub)}</strong><div><span>Оплачено: {money(wallet?.paid_rub)}</span><span>Промо: {money(wallet?.promo_rub)}</span><span>В резерве: {money(wallet?.reserved_rub)}</span></div></div><h3>Пополнить баланс</h3><div className="amountGrid">{[300,500,1000,3000].map((item) => <button key={item} className={amount === String(item) ? "active" : ""} onClick={() => setAmount(String(item))}>{item.toLocaleString("ru")} ₽</button>)}</div><label>Другая сумма<input type="number" min="100" max="100000" value={amount} onChange={(event) => setAmount(event.target.value)}/></label>{error && <div className="alert error">{error}</div>}<Button className="primary wide" onClick={topup} disabled={busy}>{busy ? "Создаём платёж…" : `Пополнить на ${money(amount)}`}</Button><p className="safeNote">Баланс не сгорает. Зачисление происходит только после подтверждения платёжной системой.</p><h3>Последние операции</h3><div className="ledger">{wallet?.entries.map((entry) => <div key={entry.id}><span><b>{entry.kind}</b><small>{dateLabel(entry.created_at)}</small></span><strong>{money(entry.amount_rub)}</strong></div>)}</div></Drawer>;
 }
 
 function NotificationsPanel({items, onChange, onClose}: {items: Notification[]; onChange: (items: Notification[]) => void; onClose: () => void}) {
-  const read = async (item: Notification) => {if (item.read_at) return; const updated = await api<Notification>(`/auth/notifications/${item.id}/read/`, {method: "POST"}); onChange(items.map((current) => current.id === item.id ? updated : current));};
+  const read = async (item: Notification) => {if (item.read_at) return; try {const updated = await api<Notification>(`/auth/notifications/${item.id}/read/`, {method: "POST"}); onChange(items.map((current) => current.id === item.id ? updated : current));} catch { /* ignore read failures */ }};
   return <Drawer title="Уведомления" onClose={onClose}><div className="cardList notifications">{items.length === 0 && <Empty icon="bell" title="Уведомлений нет" text="Здесь появятся важные события по балансу и работе сервиса."/>}{items.map((item) => <button key={item.id} className={item.read_at ? "read" : ""} onClick={() => read(item)}><i className={item.level}/><span><b>{item.title}</b><p>{item.body}</p><small>{dateLabel(item.created_at)}</small></span></button>)}</div></Drawer>;
 }
 
@@ -501,7 +659,7 @@ function SupportPanel({onClose}: {onClose: () => void}) {
   return <Drawer title="Поддержка" onClose={onClose}>{sent ? <div className="successState"><div>✓</div><h3>Обращение отправлено</h3><p>Мы сохранили запрос и его технический контекст.</p><Button onClick={onClose}>Готово</Button></div> : <form className="stack" onSubmit={submit}><p className="muted">Опишите проблему без паролей, ключей и платёжных секретов.</p><label>Тема<input name="subject" maxLength={160} required/></label><label>Что произошло<textarea name="message" rows={7} required/></label>{error && <div className="alert error">{error}</div>}<Button className="primary">Отправить обращение</Button></form>}</Drawer>;
 }
 
-function ContextInspector({context}: {context: GenerationMeta["context"]}) {
+function ContextInspector({context}: {context: NonNullable<GenerationMeta["context"]>}) {
   const budget = context.budget ?? {};
   const components = context.components ?? [];
   const citations = context.citations ?? [];

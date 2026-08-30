@@ -186,6 +186,7 @@ def test_finance_summary_is_staff_only():
         email="finance-staff@example.com",
         password="password123",
         is_staff=True,
+        role=User.Role.PLATFORM_ADMIN,
     )
     client = APIClient()
     client.force_authenticate(user)

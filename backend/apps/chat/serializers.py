@@ -20,20 +20,23 @@ class MessageSerializer(serializers.ModelSerializer):
             generation = obj.generation_response
         except Message.generation_response.RelatedObjectDoesNotExist:
             return None
-        return {
+        routing = generation.context_snapshot.get("routing", {})
+        payload = {
             "id": generation.id,
             "state": generation.state,
             "model": generation.routed_model or generation.model,
             "provider": generation.provider_slug,
-            "model_version": generation.context_snapshot.get("routing", {}).get("model_version"),
-            "exact_api_id": generation.context_snapshot.get("routing", {}).get("exact_api_id", ""),
+            "model_version": routing.get("model_version"),
+            "exact_api_id": routing.get("exact_api_id", ""),
             "cost_rub": generation.actual_cost_rub,
             "input_tokens": generation.input_tokens,
             "output_tokens": generation.output_tokens,
             "error_code": generation.error_code,
             "correlation_id": generation.correlation_id,
             "completed_at": generation.completed_at,
-            "context": {
+        }
+        if self.context.get("include_message_context"):
+            payload["context"] = {
                 "memories": generation.context_snapshot.get("memory_items", []),
                 "memory_action": generation.context_snapshot.get("memory_action"),
                 "version": generation.context_snapshot.get("version"),
@@ -44,14 +47,15 @@ class MessageSerializer(serializers.ModelSerializer):
                 "dropped_or_deduplicated": generation.context_snapshot.get(
                     "dropped_or_deduplicated", 0
                 ),
-                "routing": generation.context_snapshot.get("routing"),
-            },
-        }
+                "routing": routing,
+            }
+        return payload
 
 
-class ConversationSerializer(serializers.ModelSerializer):
-    messages = serializers.SerializerMethodField()
+class ConversationSummarySerializer(serializers.ModelSerializer):
     branches = serializers.SerializerMethodField()
+    message_count = serializers.IntegerField(read_only=True)
+    last_message_preview = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -64,21 +68,27 @@ class ConversationSerializer(serializers.ModelSerializer):
             "memory_enabled",
             "active_branch",
             "branches",
+            "message_count",
+            "last_message_preview",
             "created_at",
             "updated_at",
-            "messages",
         )
         read_only_fields = (
             "id",
             "active_branch",
             "branches",
+            "message_count",
+            "last_message_preview",
             "created_at",
             "updated_at",
-            "messages",
         )
 
-    def get_messages(self, obj):
-        return MessageSerializer(visible_messages(obj).order_by("created_at"), many=True).data
+    def get_last_message_preview(self, obj):
+        preview = getattr(obj, "last_message_preview", None)
+        if preview is None:
+            return ""
+        text = str(preview).strip().replace("\n", " ")
+        return text[:160]
 
     def get_branches(self, obj):
         return [
@@ -91,6 +101,21 @@ class ConversationSerializer(serializers.ModelSerializer):
             }
             for branch in obj.branches.all()
         ]
+
+
+class ConversationSerializer(ConversationSummarySerializer):
+    messages = serializers.SerializerMethodField()
+
+    class Meta(ConversationSummarySerializer.Meta):
+        fields = ConversationSummarySerializer.Meta.fields + ("messages",)
+        read_only_fields = ConversationSummarySerializer.Meta.read_only_fields + ("messages",)
+
+    def get_messages(self, obj):
+        return MessageSerializer(
+            visible_messages(obj).order_by("created_at"),
+            many=True,
+            context={**self.context, "include_message_context": self.context.get("include_message_context", False)},
+        ).data
 
     def validate_selected_model(self, value):
         try:

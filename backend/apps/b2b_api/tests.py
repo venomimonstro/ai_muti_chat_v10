@@ -201,3 +201,38 @@ def test_revoked_key_returns_openai_error_shape():
     assert response.status_code == 401
     assert set(response.data["error"]) == {"message", "type", "param", "code"}
     assert response.data["error"]["code"] == "invalid_api_key"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_failed_idempotent_request_can_be_retried():
+    from apps.ai_registry.adapters import ProviderError
+
+    registry()
+    user, _organization, key, secret = account("idem-retry")
+    client = APIClient()
+    payload = {
+        "model": "echo-b2b",
+        "messages": [{"role": "user", "content": "Retry me"}],
+        "max_completion_tokens": 32,
+    }
+    headers = {"HTTP_AUTHORIZATION": f"Bearer {secret}", "HTTP_IDEMPOTENCY_KEY": "retry-key"}
+
+    class FailingAdapter:
+        def generate(self, **_kwargs):
+            raise ProviderError("down", code="upstream_down")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "apps.b2b_api.services.adapter_for",
+            lambda _model: FailingAdapter(),
+        )
+        failed = client.post("/v1/chat/completions", payload, format="json", **headers)
+    assert failed.status_code == 502
+
+    retry = client.post("/v1/chat/completions", payload, format="json", **headers)
+    assert retry.status_code == 200
+    usage = APIUsage.objects.get(api_key=key, idempotency_key="retry-key")
+    assert usage.state == APIUsage.State.COMPLETED
+    assert usage.charged_rub > 0
+    user.wallet.refresh_from_db()
+    assert user.wallet.available_rub < Decimal("100")

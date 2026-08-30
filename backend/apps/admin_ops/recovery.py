@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.b2b_api.models import APIUsage
+from apps.billing.models import BalanceReservation
 from apps.billing.services import release
 from apps.chat.models import CompareRun, CompareVariant, Generation, Message
 from apps.files.models import FileAsset, FileProcessingJob
@@ -27,6 +28,13 @@ def _recover_generation(pk):
         return False
     if generation.reservation_id:
         release(generation.reservation_id)
+    else:
+        stranded = BalanceReservation.objects.filter(
+            idempotency_key=f"generation:{generation.id}",
+            state=BalanceReservation.State.ACTIVE,
+        ).first()
+        if stranded:
+            release(stranded.id)
     assistant = generation.assistant_message
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["status"])
@@ -83,6 +91,13 @@ def _recover_api_usage(pk):
     if usage.state != APIUsage.State.RUNNING or usage.created_at >= cutoff:
         return False
     if usage.reservation_id:
+        reservation = BalanceReservation.objects.filter(pk=usage.reservation_id).first()
+        if reservation and reservation.state == BalanceReservation.State.SETTLED:
+            usage.charged_rub = reservation.actual_rub
+            usage.state = APIUsage.State.COMPLETED
+            usage.completed_at = timezone.now()
+            usage.save(update_fields=["charged_rub", "state", "completed_at"])
+            return True
         release(usage.reservation_id)
     usage.state = APIUsage.State.FAILED
     usage.error_code = "stale_operation_recovered"
@@ -122,6 +137,44 @@ def _recover_file(pk):
     return True
 
 
+def recover_stranded_reservations():
+    cutoff = _cutoff()
+    released = 0
+    for generation in Generation.objects.filter(
+        state=Generation.State.FAILED,
+        completed_at__lt=cutoff,
+    ).iterator():
+        reservation_id = generation.reservation_id
+        if reservation_id:
+            active = BalanceReservation.objects.filter(
+                pk=reservation_id,
+                state=BalanceReservation.State.ACTIVE,
+            ).exists()
+            if active:
+                release(reservation_id)
+                released += 1
+                continue
+        stranded = BalanceReservation.objects.filter(
+            idempotency_key=f"generation:{generation.id}",
+            state=BalanceReservation.State.ACTIVE,
+        ).first()
+        if stranded:
+            release(stranded.id)
+            released += 1
+    return released
+
+
+@transaction.atomic
+def _recover_quarantine_file(pk):
+    asset = FileAsset.objects.select_for_update().get(pk=pk)
+    if asset.status != FileAsset.Status.QUARANTINE or asset.created_at >= _cutoff():
+        return False
+    asset.status = FileAsset.Status.FAILED
+    asset.error_code = "stale_operation_recovered"
+    asset.save(update_fields=["status", "error_code", "updated_at"])
+    return True
+
+
 def recover_stale_operations():
     cutoff = _cutoff()
     groups = (
@@ -150,6 +203,11 @@ def recover_stale_operations():
             FileAsset.objects.filter(status=FileAsset.Status.PARSING, updated_at__lt=cutoff),
             _recover_file,
         ),
+        (
+            "quarantine_files",
+            FileAsset.objects.filter(status=FileAsset.Status.QUARANTINE, created_at__lt=cutoff),
+            _recover_quarantine_file,
+        ),
     )
     result = {}
     for name, queryset, recover in groups:
@@ -161,4 +219,5 @@ def recover_stale_operations():
                 continue
         result[name] = count
     result["api_usages"] = recover_stale_api_usages()
+    result["stranded_reservations"] = recover_stranded_reservations()
     return result

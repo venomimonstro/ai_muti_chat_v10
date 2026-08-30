@@ -38,7 +38,7 @@ def test_text_upload_extracts_chunks_and_is_idempotent(tmp_path, settings):
         project,
         SimpleUploadedFile("notes.md", "Привет\nмир".encode(), content_type="text/markdown"),
     )
-    assert first.status_code == 201
+    assert first.status_code in {201, 202}
     asset = FileAsset.objects.get(pk=first.data["id"])
     assert asset.status == FileAsset.Status.READY
     assert asset.scan_status == FileAsset.ScanStatus.BASIC_PASSED
@@ -78,7 +78,7 @@ def test_upload_idempotency_key_rejects_different_payload(tmp_path, settings):
         project,
         SimpleUploadedFile("notes.md", b"second", content_type="text/markdown"),
     )
-    assert first.status_code == 201
+    assert first.status_code in {201, 202}
     assert conflict.status_code == 400
     assert FileAsset.objects.count() == 1
 
@@ -191,7 +191,7 @@ def test_docx_extraction_and_zip_traversal_rejection(tmp_path, settings):
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ),
     )
-    assert response.status_code == 201
+    assert response.status_code in {201, 202}
     asset = FileAsset.objects.get(pk=response.data["id"])
     assert asset.status == FileAsset.Status.READY
     assert "Текст DOCX" in asset.chunks.get().content
@@ -224,7 +224,7 @@ def test_xlsx_extraction_and_honest_pdf_partial_status(tmp_path, settings):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
     )
-    assert xlsx.status_code == 201
+    assert xlsx.status_code in {201, 202}
     xlsx_asset = FileAsset.objects.get(pk=xlsx.data["id"])
     assert xlsx_asset.status == FileAsset.Status.READY
     assert "Ячейка XLSX" in xlsx_asset.chunks.get().content
@@ -234,9 +234,10 @@ def test_xlsx_extraction_and_honest_pdf_partial_status(tmp_path, settings):
         SimpleUploadedFile("source.pdf", b"%PDF-1.7\n%%EOF", content_type="application/pdf"),
         key="file:pdf",
     )
-    assert pdf.status_code == 201
-    assert pdf.data["status"] == FileAsset.Status.PARTIAL
-    assert pdf.data["error_code"] == "pdf_extractor_unavailable"
+    assert pdf.status_code in {201, 202}
+    pdf_asset = FileAsset.objects.get(pk=pdf.data["id"])
+    assert pdf_asset.status == FileAsset.Status.PARTIAL
+    assert pdf_asset.error_code == "pdf_extractor_unavailable"
 
 
 @pytest.mark.django_db

@@ -25,6 +25,12 @@ class ProjectSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "archived_at", "created_at", "updated_at")
 
     def get_active_instruction(self, obj):
+        prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("instructions")
+        if prefetched is not None:
+            for item in prefetched:
+                if item.active:
+                    return item.content
+            return ""
         item = obj.instructions.filter(active=True).first()
         return item.content if item else ""
 
@@ -32,6 +38,12 @@ class ProjectSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
         if obj.owner_id == user.id:
             return ProjectMembership.Role.OWNER
+        memberships = getattr(obj, "_prefetched_objects_cache", {}).get("memberships")
+        if memberships is not None:
+            for membership in memberships:
+                if membership.user_id == user.id:
+                    return membership.role
+            return None
         membership = obj.memberships.filter(user=user).first()
         return membership.role if membership else None
 

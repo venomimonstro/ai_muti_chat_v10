@@ -30,13 +30,18 @@ export default function StatusPage() {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
-    fetch(`${apiBase}/status/`, {cache: "no-store"})
+    const controller = new AbortController();
+    fetch(`${apiBase}/status/`, {cache: "no-store", signal: controller.signal})
       .then((response) => {
         if (!response.ok) throw new Error("status unavailable");
         return response.json() as Promise<StatusPayload>;
       })
       .then(setData)
-      .catch(() => setFailed(true));
+      .catch((reason) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setFailed(true);
+      });
+    return () => controller.abort();
   }, []);
   const state = failed ? "major_outage" : data?.status ?? "degraded";
   return <main className={styles.page}>

@@ -271,6 +271,35 @@ def test_usage_above_reserved_maximum_is_not_debited(stream_context):
 
 
 @pytest.mark.django_db(transaction=True)
+def test_failed_generation_can_be_retried_with_same_idempotency_key(stream_context):
+    user, conversation = stream_context
+    generation, _ = prepare(
+        user=user,
+        conversation=conversation,
+        content="Повтор после сбоя",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="stream:retry-failed",
+    )
+    "".join(run(generation, adapter=PartialFailureAdapter()))
+    generation.refresh_from_db()
+    assert generation.state == Generation.State.FAILED
+
+    replay, created = prepare(
+        user=user,
+        conversation=conversation,
+        content="Повтор после сбоя",
+        client_message_id=generation.user_message.client_message_id,
+        idempotency_key="stream:retry-failed",
+    )
+    assert created is False
+    assert replay.state == Generation.State.QUEUED
+    events = "".join(run(replay, adapter=LongRunningAdapter()))
+    replay.refresh_from_db()
+    assert replay.state == Generation.State.COMPLETED
+    assert "event: completed" in events
+
+
+@pytest.mark.django_db(transaction=True)
 def test_retry_then_fallback_records_attempts(monkeypatch, settings):
     settings.AI_PROVIDER_MAX_ATTEMPTS = 2
     user = User.objects.create_user(
@@ -326,3 +355,30 @@ def test_retry_then_fallback_records_attempts(monkeypatch, settings):
     assert generation.attempts.count() == 3
     assert '"action": "retry"' in events
     assert '"action": "fallback"' in events
+
+
+@pytest.mark.django_db(transaction=True)
+def test_preflight_failure_releases_reservation(stream_context, monkeypatch):
+    user, conversation = stream_context
+    wallet_before = user.wallet.available_rub
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("preflight glitch")
+
+    monkeypatch.setattr(RequestCost.objects, "create", boom)
+
+    with pytest.raises(RuntimeError, match="preflight glitch"):
+        prepare(
+            user=user,
+            conversation=conversation,
+            content="Preflight fail",
+            client_message_id=uuid.uuid4(),
+            idempotency_key="stream:preflight-fail",
+        )
+
+    user.wallet.refresh_from_db()
+    assert user.wallet.available_rub == wallet_before
+    assert user.wallet.reserved_rub == Decimal("0")
+    generation = Generation.objects.get(idempotency_key="stream:preflight-fail")
+    assert generation.state == Generation.State.FAILED
+    assert generation.error_code == "preflight_failed"

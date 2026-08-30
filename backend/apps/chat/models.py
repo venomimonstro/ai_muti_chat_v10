@@ -39,6 +39,10 @@ class Conversation(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [models.Index(fields=["owner", "updated_at"], name="conversation_owner_updated_idx")]
+
 
 class ConversationBranch(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -107,7 +111,10 @@ class Message(models.Model):
                 name="unique_client_message_per_conversation",
             )
         ]
-        indexes = [models.Index(fields=["role", "created_at"], name="message_role_created_idx")]
+        indexes = [
+            models.Index(fields=["role", "created_at"], name="message_role_created_idx"),
+            models.Index(fields=["conversation", "created_at"], name="message_conv_created_idx"),
+        ]
 
 
 class ConversationDraft(models.Model):

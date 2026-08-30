@@ -117,6 +117,58 @@ def test_synthesis_and_compare_variant_create_navigable_branch(settings):
     assert visible_messages(conversation).filter(content=variant.output).exists()
 
 
+@pytest.mark.django_db(transaction=True)
+def test_synthesis_retry_after_failure(settings, monkeypatch):
+    settings.COMPARE_CONFIRM_THRESHOLD_RUB = "999"
+    from apps.ai_registry.adapters import ProviderError
+
+    user = User.objects.create_user(
+        username="compare-retry", email="compare-retry@example.com", password="password123"
+    )
+    credit(user, Decimal("10"), "test", "compare-retry")
+    conversation = Conversation.objects.create(owner=user)
+    models = compare_registry()
+    run = run_compare(
+        user=user,
+        conversation=conversation,
+        prompt="Сравни два варианта",
+        model_slugs=[item.slug for item in models],
+        idempotency_key="compare:test:retry",
+    )
+
+    calls = {"count": 0}
+
+    def flaky_call(model, messages):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ProviderError("down", code="upstream_down")
+        from apps.ai_registry.adapters import ProviderStreamEvent
+
+        return (
+            "Тестовый ответ синтеза",
+            ProviderStreamEvent(
+                kind="completed",
+                provider_request_id="syn-ok",
+                input_tokens=4,
+                output_tokens=3,
+            ),
+            10,
+        )
+
+    monkeypatch.setattr("apps.chat.compare._provider_call", flaky_call)
+
+    with pytest.raises(ProviderError):
+        synthesize_compare(user=user, compare_run=run, model_slug=models[0].slug, confirmed=True)
+
+    run.refresh_from_db()
+    assert run.synthesis_output == ""
+    assert run.synthesis_reservation_id is None
+
+    synthesize_compare(user=user, compare_run=run, model_slug=models[0].slug, confirmed=True)
+    run.refresh_from_db()
+    assert run.synthesis_output.startswith("Тестовый ответ")
+
+
 @pytest.mark.django_db
 def test_branch_fork_inherits_only_history_through_source():
     user = User.objects.create_user(

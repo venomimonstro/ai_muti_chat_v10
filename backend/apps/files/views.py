@@ -14,7 +14,6 @@ from apps.projects.access import accessible_projects
 from .models import FileAsset
 from .rag import retrieve_project_chunks
 from .serializers import FileAssetSerializer, FileChunkSerializer
-from .services import process_file
 from .validation import detect_and_validate
 
 
@@ -105,8 +104,12 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
             finally:
                 asset.delete()
             raise FileStorageUnavailable() from exc
-        process_file(asset)
-        return Response(self.get_serializer(asset).data, status=status.HTTP_201_CREATED)
+        asset.status = FileAsset.Status.PARSING
+        asset.save(update_fields=["status", "updated_at"])
+        from .tasks import process_file_task
+
+        process_file_task.delay(str(asset.pk))
+        return Response(self.get_serializer(asset).data, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=["get"])
     def download(self, _request, pk=None):

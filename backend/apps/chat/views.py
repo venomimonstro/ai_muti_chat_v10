@@ -1,6 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Count, OuterRef, Prefetch, Subquery
 from django.http import StreamingHttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -21,6 +21,7 @@ from .models import CompareVariant, Conversation, ConversationDraft, Message
 from .serializers import (
     ConversationDraftSerializer,
     ConversationSerializer,
+    ConversationSummarySerializer,
     SendMessageSerializer,
 )
 from .services import generate_reply
@@ -30,17 +31,43 @@ from .streaming import prepare, run
 class ConversationViewSet(viewsets.ModelViewSet):
     serializer_class = ConversationSerializer
 
+    def get_serializer_class(self):
+        if self.action == "list":
+            return ConversationSummarySerializer
+        return ConversationSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.action in {
+            "retrieve",
+            "update",
+            "partial_update",
+            "activate_branch",
+            "compare_branch",
+        }:
+            context["include_message_context"] = True
+        if self.action == "branches" and self.request.method == "POST":
+            context["include_message_context"] = True
+        return context
+
     def get_queryset(self):
-        return (
-            Conversation.objects.filter(owner=self.request.user)
-            .select_related("active_branch")
-            .prefetch_related(
-                "branches",
-                Prefetch(
-                    "messages", queryset=Message.objects.select_related("generation_response")
-                ),
+        base = Conversation.objects.filter(owner=self.request.user).select_related("active_branch")
+        if self.action == "list":
+            last_message = Message.objects.filter(conversation=OuterRef("pk")).order_by("-created_at")
+            return (
+                base.prefetch_related("branches")
+                .annotate(
+                    message_count=Count("messages", distinct=True),
+                    last_message_preview=Subquery(last_message.values("content")[:1]),
+                )
+                .order_by("-updated_at")
             )
-        )
+        return base.prefetch_related(
+            "branches",
+            Prefetch(
+                "messages", queryset=Message.objects.select_related("generation_response")
+            ),
+        ).order_by("-updated_at")
 
     def perform_create(self, serializer):
         conversation = serializer.save(owner=self.request.user)
@@ -65,7 +92,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
             except ValueError as exc:
                 raise APIValidationError({"source_message": str(exc)}) from exc
         conversation.refresh_from_db()
-        return Response(ConversationSerializer(conversation).data)
+        return Response(self.get_serializer(conversation).data)
 
     @action(
         detail=True,
@@ -79,7 +106,8 @@ class ConversationViewSet(viewsets.ModelViewSet):
             raise APIValidationError({"branch": "Ветка не найдена"})
         conversation.active_branch = branch
         conversation.save(update_fields=["active_branch", "updated_at"])
-        return Response(ConversationSerializer(conversation).data)
+        conversation.refresh_from_db()
+        return Response(self.get_serializer(conversation).data)
 
     def _compare_payload(self, request, conversation):
         prompt = str(request.data.get("prompt", "")).strip()
@@ -199,7 +227,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         except ValidationError as exc:
             raise APIValidationError({"detail": exc.messages}) from exc
         conversation.refresh_from_db()
-        return Response(ConversationSerializer(conversation).data)
+        return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["get", "put", "delete"])
     def draft(self, request, pk=None):
