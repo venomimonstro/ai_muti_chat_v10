@@ -21,6 +21,7 @@ from apps.billing.pricing import (
     quote,
     require_margin,
 )
+from apps.billing.models import BalanceReservation
 from apps.billing.services import release, reserve, settle
 
 from .keys import key_is_active
@@ -177,6 +178,15 @@ def _begin(key, model, estimate, snapshot, idem_key, request_hash):
             existing.refresh_from_db()
             if existing.state == APIUsage.State.FAILED:
                 if existing.reservation_id:
+                    reservation = BalanceReservation.objects.filter(pk=existing.reservation_id).first()
+                    if reservation and reservation.state == BalanceReservation.State.SETTLED:
+                        existing.charged_rub = reservation.actual_rub
+                        existing.state = APIUsage.State.COMPLETED
+                        existing.completed_at = existing.completed_at or timezone.now()
+                        existing.save(update_fields=["charged_rub", "state", "completed_at"])
+                        locked.last_used_at = timezone.now()
+                        locked.save(update_fields=["last_used_at"])
+                        return existing, True
                     release(existing.reservation_id)
                 reservation = reserve(
                     locked.organization.billing_user, estimate, f"public-api:{existing.id}"
@@ -334,21 +344,22 @@ def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key=
                 code="cost_limit_exceeded",
                 status_code=502,
             )
-        settle(usage.reservation_id, charge)
-        usage.state = APIUsage.State.COMPLETED
-        usage.provider_cost_rub = provider_cost
-        usage.charged_rub = charge
-        usage.prompt_tokens = result.input_tokens
-        usage.completion_tokens = result.output_tokens
-        usage.provider_request_id = result.provider_request_id
-        usage.response_text = result.text
-        usage.latency_ms = int((time.monotonic() - started) * 1000)
-        usage.completed_at = timezone.now()
-        usage.save(update_fields=[
-            "state", "provider_cost_rub", "charged_rub", "prompt_tokens",
-            "completion_tokens", "provider_request_id", "response_text", "latency_ms",
-            "completed_at",
-        ])
+        with transaction.atomic():
+            settle(usage.reservation_id, charge)
+            usage.state = APIUsage.State.COMPLETED
+            usage.provider_cost_rub = provider_cost
+            usage.charged_rub = charge
+            usage.prompt_tokens = result.input_tokens
+            usage.completion_tokens = result.output_tokens
+            usage.provider_request_id = result.provider_request_id
+            usage.response_text = result.text
+            usage.latency_ms = int((time.monotonic() - started) * 1000)
+            usage.completed_at = timezone.now()
+            usage.save(update_fields=[
+                "state", "provider_cost_rub", "charged_rub", "prompt_tokens",
+                "completion_tokens", "provider_request_id", "response_text", "latency_ms",
+                "completed_at",
+            ])
     except PublicAPIError as exc:
         _fail(usage, exc.code, started)
         raise

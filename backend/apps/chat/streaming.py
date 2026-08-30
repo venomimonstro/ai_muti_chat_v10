@@ -54,7 +54,28 @@ def _index_history(message):
         logger.exception("History indexing failed for message_id=%s", message.id)
 
 
-def _validate_replayed_generation(generation, conversation, content, client_message_id):
+def _requeue_failed_generation(generation, *, user):
+    if generation.state not in (Generation.State.FAILED, Generation.State.CANCELLED):
+        return generation
+    request_cost = RequestCost.objects.filter(generation_id=generation.id).first()
+    if request_cost is None:
+        raise ValidationError("Не удалось повторить запрос")
+    if generation.reservation_id:
+        release(generation.reservation_id)
+    reservation = reserve(user, request_cost.estimated_rub, f"generation:{generation.id}")
+    assistant = generation.assistant_message
+    assistant.content = ""
+    assistant.status = Message.Status.SAVED
+    assistant.save(update_fields=["content", "status"])
+    generation.reservation_id = reservation.id
+    generation.state = Generation.State.QUEUED
+    generation.error_code = ""
+    generation.completed_at = None
+    generation.save(update_fields=["reservation_id", "state", "error_code", "completed_at"])
+    return generation
+
+
+def _validate_replayed_generation(generation, conversation, content, client_message_id, *, user):
     message = generation.user_message
     if (
         message.conversation_id != conversation.id
@@ -62,7 +83,7 @@ def _validate_replayed_generation(generation, conversation, content, client_mess
         or message.client_message_id != client_message_id
     ):
         raise ValidationError("Idempotency-Key уже использован для другого запроса")
-    return generation
+    return _requeue_failed_generation(generation, user=user)
 
 
 def prepare(*, user, conversation, content, client_message_id, idempotency_key):
@@ -77,7 +98,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
     )
     if existing:
         return _validate_replayed_generation(
-            existing, conversation, content, client_message_id
+            existing, conversation, content, client_message_id, user=user
         ), False
 
     with transaction.atomic():
@@ -89,7 +110,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
         )
         if existing:
             return _validate_replayed_generation(
-                existing, conversation, content, client_message_id
+                existing, conversation, content, client_message_id, user=user
             ), False
         locked = Conversation.objects.select_for_update().get(pk=conversation.pk, owner=user)
         repeated_message = (
@@ -103,9 +124,10 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             if repeated_message.content != content:
                 raise ValidationError("client_message_id уже использован с другим содержимым")
             try:
-                return repeated_message.generation_request, False
+                generation = repeated_message.generation_request
             except Message.generation_request.RelatedObjectDoesNotExist:
                 raise ValidationError("Повторное сообщение ещё не готово к обработке") from None
+            return _requeue_failed_generation(generation, user=user), False
         branch = ensure_active_branch(locked, user)
         user_message = Message.objects.create(
             conversation=locked,
@@ -541,28 +563,30 @@ def run(generation, *, adapter=None):
             },
         )
     except GeneratorExit:
-        release(generation.reservation_id)
-        assistant.content = full_text
-        assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
-        assistant.save(update_fields=["content", "status"])
+        with transaction.atomic():
+            release(generation.reservation_id)
+            assistant.content = full_text
+            assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
+            assistant.save(update_fields=["content", "status"])
+            generation.state = Generation.State.CANCELLED
+            generation.error_code = "client_cancelled"
+            generation.completed_at = timezone.now()
+            generation.save(update_fields=["state", "error_code", "completed_at"])
         _index_history(assistant)
-        generation.state = Generation.State.CANCELLED
-        generation.error_code = "client_cancelled"
-        generation.completed_at = timezone.now()
-        generation.save(update_fields=["state", "error_code", "completed_at"])
         return
     except Exception as exc:
-        release(generation.reservation_id)
-        assistant.content = full_text
-        assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
-        assistant.save(update_fields=["content", "status"])
+        with transaction.atomic():
+            release(generation.reservation_id)
+            assistant.content = full_text
+            assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
+            assistant.save(update_fields=["content", "status"])
+            generation.state = Generation.State.FAILED
+            generation.error_code = (
+                exc.code if isinstance(exc, ProviderError) else "cost_or_internal_error"
+            )
+            generation.completed_at = timezone.now()
+            generation.save(update_fields=["state", "error_code", "completed_at"])
         _index_history(assistant)
-        generation.state = Generation.State.FAILED
-        generation.error_code = (
-            exc.code if isinstance(exc, ProviderError) else "cost_or_internal_error"
-        )
-        generation.completed_at = timezone.now()
-        generation.save(update_fields=["state", "error_code", "completed_at"])
         yield sse(
             "error",
             {

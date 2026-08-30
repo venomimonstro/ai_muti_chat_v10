@@ -91,6 +91,13 @@ def _recover_api_usage(pk):
     if usage.state != APIUsage.State.RUNNING or usage.created_at >= cutoff:
         return False
     if usage.reservation_id:
+        reservation = BalanceReservation.objects.filter(pk=usage.reservation_id).first()
+        if reservation and reservation.state == BalanceReservation.State.SETTLED:
+            usage.charged_rub = reservation.actual_rub
+            usage.state = APIUsage.State.COMPLETED
+            usage.completed_at = timezone.now()
+            usage.save(update_fields=["charged_rub", "state", "completed_at"])
+            return True
         release(usage.reservation_id)
     usage.state = APIUsage.State.FAILED
     usage.error_code = "stale_operation_recovered"
@@ -157,6 +164,17 @@ def recover_stranded_reservations():
     return released
 
 
+@transaction.atomic
+def _recover_quarantine_file(pk):
+    asset = FileAsset.objects.select_for_update().get(pk=pk)
+    if asset.status != FileAsset.Status.QUARANTINE or asset.created_at >= _cutoff():
+        return False
+    asset.status = FileAsset.Status.FAILED
+    asset.error_code = "stale_operation_recovered"
+    asset.save(update_fields=["status", "error_code", "updated_at"])
+    return True
+
+
 def recover_stale_operations():
     cutoff = _cutoff()
     groups = (
@@ -184,6 +202,11 @@ def recover_stale_operations():
             "files",
             FileAsset.objects.filter(status=FileAsset.Status.PARSING, updated_at__lt=cutoff),
             _recover_file,
+        ),
+        (
+            "quarantine_files",
+            FileAsset.objects.filter(status=FileAsset.Status.QUARANTINE, created_at__lt=cutoff),
+            _recover_quarantine_file,
         ),
     )
     result = {}

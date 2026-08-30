@@ -271,6 +271,35 @@ def test_usage_above_reserved_maximum_is_not_debited(stream_context):
 
 
 @pytest.mark.django_db(transaction=True)
+def test_failed_generation_can_be_retried_with_same_idempotency_key(stream_context):
+    user, conversation = stream_context
+    generation, _ = prepare(
+        user=user,
+        conversation=conversation,
+        content="Повтор после сбоя",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="stream:retry-failed",
+    )
+    "".join(run(generation, adapter=PartialFailureAdapter()))
+    generation.refresh_from_db()
+    assert generation.state == Generation.State.FAILED
+
+    replay, created = prepare(
+        user=user,
+        conversation=conversation,
+        content="Повтор после сбоя",
+        client_message_id=generation.user_message.client_message_id,
+        idempotency_key="stream:retry-failed",
+    )
+    assert created is False
+    assert replay.state == Generation.State.QUEUED
+    events = "".join(run(replay, adapter=LongRunningAdapter()))
+    replay.refresh_from_db()
+    assert replay.state == Generation.State.COMPLETED
+    assert "event: completed" in events
+
+
+@pytest.mark.django_db(transaction=True)
 def test_retry_then_fallback_records_attempts(monkeypatch, settings):
     settings.AI_PROVIDER_MAX_ATTEMPTS = 2
     user = User.objects.create_user(

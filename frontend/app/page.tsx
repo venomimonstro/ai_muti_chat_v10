@@ -12,6 +12,14 @@ const money = (value: string | number | null | undefined) => `${Number(value ?? 
 const dateLabel = (value: string) => new Intl.DateTimeFormat("ru", {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(value));
 const isLocalMessageId = (id: string) => id.startsWith("local-");
 
+const streamErrorMessage = (data: Record<string, unknown>) => {
+  if (typeof data.message === "string" && data.message) return data.message;
+  const code = String(data.code ?? "");
+  if (code === "generation_in_progress") return "Ответ уже генерируется. Подождите завершения.";
+  if (code === "generation_not_runnable") return "Этот запрос нельзя повторить. Отправьте новое сообщение.";
+  return "Ответ не получен. Деньги не списаны.";
+};
+
 function Button({children, className = "", ...props}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return <button className={`button ${className}`} {...props}>{children}</button>;
 }
@@ -92,11 +100,14 @@ export default function Home() {
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const pendingFocusRef = useRef<string | null>(null);
+  const draftReadyRef = useRef<string | null>(null);
+  const loadRequestRef = useRef(0);
   const pendingSendRef = useRef<{
     conversationId: string;
     prompt: string;
     clientMessageId: string;
     idempotencyKey: string;
+    assistantId: string;
   } | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -106,6 +117,7 @@ export default function Home() {
   const lowBalance = wallet && preferences && Number(wallet.available_rub) <= Number(preferences.low_balance_threshold_rub);
 
   const loadWorkspace = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setBoot("loading"); setError("");
     try {
       await ensureCsrf();
@@ -116,6 +128,7 @@ export default function Home() {
         api<Wallet>("/wallet/"),
         api<Preference>("/auth/preferences/"),
       ]);
+      if (requestId !== loadRequestRef.current) return;
       const summaries = chatData.map((item) => ({...item, messages: item.messages ?? []}));
       setUser(me);
       setConversations(summaries);
@@ -127,13 +140,21 @@ export default function Home() {
       setBoot("ready");
       if (initialId && (summaries[0]?.message_count ?? summaries[0]?.messages.length ?? 0) > 0) {
         void api<Conversation>(`/conversations/${initialId}/`).then((conversation) => {
+          if (requestId !== loadRequestRef.current) return;
           setConversations((items) => [conversation, ...items.filter((item) => item.id !== conversation.id)]);
         }).catch(() => undefined);
       }
-      void api<Notification[]>("/auth/notifications/").then(setNotifications).catch(() => undefined);
-      void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);
-      void api<Project[]>("/projects/").then(setProjects).catch(() => undefined);
+      void api<Notification[]>("/auth/notifications/").then((items) => {
+        if (requestId === loadRequestRef.current) setNotifications(items);
+      }).catch(() => undefined);
+      void api<MemoryCandidate[]>("/memory-candidates/").then((items) => {
+        if (requestId === loadRequestRef.current) setMemoryCandidates(items);
+      }).catch(() => undefined);
+      void api<Project[]>("/projects/").then((items) => {
+        if (requestId === loadRequestRef.current) setProjects(items);
+      }).catch(() => undefined);
     } catch (reason) {
+      if (requestId !== loadRequestRef.current) return;
       if (reason instanceof ApiError && [401, 403].includes(reason.status)) setBoot("guest");
       else { setError(reason instanceof Error ? reason.message : "Сервис временно недоступен"); setBoot("error"); }
     }
@@ -179,15 +200,24 @@ export default function Home() {
   }, [active?.id, activeId, focusMessageId]);
   useEffect(() => {
     if (!activeId || boot !== "ready") return;
+    draftReadyRef.current = null;
     const localKey = `draft:${activeId}`;
     let cancelled = false;
     api<{content: string}>(`/conversations/${activeId}/draft/`).then((draft) => {
-      if (!cancelled) setValue(draft.content || localStorage.getItem(localKey) || "");
-    }).catch(() => { if (!cancelled) setValue(localStorage.getItem(localKey) || ""); });
+      if (!cancelled) {
+        setValue(draft.content || localStorage.getItem(localKey) || "");
+        draftReadyRef.current = activeId;
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setValue(localStorage.getItem(localKey) || "");
+        draftReadyRef.current = activeId;
+      }
+    });
     return () => { cancelled = true; };
   }, [activeId, boot]);
   useEffect(() => {
-    if (!activeId || boot !== "ready") return;
+    if (!activeId || boot !== "ready" || draftReadyRef.current !== activeId) return;
     const key = `draft:${activeId}`; localStorage.setItem(key, value);
     const timer = window.setTimeout(() => {
       const request = value ? api(`/conversations/${activeId}/draft/`, {method: "PUT", body: JSON.stringify({content: value})})
@@ -241,30 +271,41 @@ export default function Home() {
     if (!conversation) return;
     let clientMessageId: string;
     let idempotencyKey: string;
-    if (
+    let assistantId: string;
+    const isRetry =
       pendingSendRef.current?.conversationId === conversation.id &&
-      pendingSendRef.current.prompt === prompt
-    ) {
-      ({clientMessageId, idempotencyKey} = pendingSendRef.current);
+      pendingSendRef.current.prompt === prompt;
+    if (isRetry) {
+      ({clientMessageId, idempotencyKey, assistantId} = pendingSendRef.current!);
     } else {
       clientMessageId = crypto.randomUUID();
       idempotencyKey = `web:${crypto.randomUUID()}`;
-      pendingSendRef.current = {conversationId: conversation.id, prompt, clientMessageId, idempotencyKey};
+      assistantId = `local-ai-${crypto.randomUUID()}`;
+      pendingSendRef.current = {conversationId: conversation.id, prompt, clientMessageId, idempotencyKey, assistantId};
     }
-    const userMessage: ChatMessage = {id: `local-user-${clientMessageId}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
-    const assistantId = `local-ai-${crypto.randomUUID()}`;
-    const assistantMessage: ChatMessage = {id: assistantId, branch: conversation.active_branch, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
-    replaceConversation({...conversation, messages: [...conversation.messages, userMessage, assistantMessage]});
+    if (!isRetry) {
+      const userMessage: ChatMessage = {id: `local-user-${clientMessageId}`, branch: conversation.active_branch, role: "user", content: prompt, status: "saved", generation: null, created_at: new Date().toISOString()};
+      const assistantMessage: ChatMessage = {id: assistantId, branch: conversation.active_branch, role: "assistant", content: "", status: "streaming", generation: null, created_at: new Date().toISOString()};
+      replaceConversation({...conversation, messages: [...conversation.messages, userMessage, assistantMessage]});
+    } else {
+      replaceConversation({
+        ...conversation,
+        messages: conversation.messages.map((message) =>
+          message.id === assistantId ? {...message, content: "", status: "streaming"} : message,
+        ),
+      });
+    }
     setValue(""); localStorage.removeItem(`draft:${conversation.id}`); setSending(true);
     const controller = new AbortController(); abortRef.current = controller;
     try {
       await streamMessage(conversation.id, {content: prompt, client_message_id: clientMessageId}, idempotencyKey, ({event, data}) => {
         if (event === "delta") setConversations((items) => items.map((item) => item.id !== conversation!.id ? item : {...item, messages: item.messages.map((message) => message.id === assistantId ? {...message, content: message.content + String(data.text ?? "")} : message)}));
+        if (event === "snapshot") setConversations((items) => items.map((item) => item.id !== conversation!.id ? item : {...item, messages: item.messages.map((message) => message.id === assistantId ? {...message, content: String(data.text ?? ""), status: String(data.state ?? "saved")} : message)}));
         if (event === "recovery") setStreamNote(data.action === "fallback" ? "Подключаем резервную модель…" : "Провайдер не ответил, повторяем безопасно…");
         if (event === "routing") setStreamNote(String(data.explanation ?? "AUTO выбрал подходящую модель"));
         if (event === "memory") setStreamNote(String(data.message ?? "Память обновлена"));
         if (event === "memory_candidates") {setStreamNote(String(data.message ?? "Найдены предложения для памяти")); void api<MemoryCandidate[]>("/memory-candidates/").then(setMemoryCandidates).catch(() => undefined);}
-        if (event === "error") setError(String(data.message ?? "Ответ не получен. Деньги не списаны."));
+        if (event === "error") setError(streamErrorMessage(data));
       }, controller.signal);
       pendingSendRef.current = null;
     } catch (reason) {
@@ -391,7 +432,7 @@ export default function Home() {
     {panel === "memory" && <MemoryPanel items={memories} candidates={memoryCandidates} projects={projects} conversations={conversations} onChange={setMemories} onCandidatesChange={setMemoryCandidates} onClose={() => setPanel(null)}/>} 
     {panel === "wallet" && <WalletPanel wallet={wallet} onClose={() => setPanel(null)}/>} 
     {panel === "notifications" && <NotificationsPanel items={notifications} onChange={setNotifications} onClose={() => setPanel(null)}/>} 
-    {panel === "settings" && preferences && user && <SettingsPanel user={user} preferences={preferences} onChange={(value) => {setPreferences(value); if (!value.auto_memory_enabled) setMemoryCandidates([]);}} onLogout={() => {setUser(null); setBoot("guest");}} onClose={() => setPanel(null)}/>} 
+    {panel === "settings" && user && (preferences ? <SettingsPanel user={user} preferences={preferences} onChange={(value) => {setPreferences(value); if (!value.auto_memory_enabled) setMemoryCandidates([]);}} onLogout={() => {setUser(null); setBoot("guest");}} onClose={() => setPanel(null)}/> : <Drawer title="Аккаунт и настройки" onClose={() => setPanel(null)}><p className="muted">Не удалось загрузить настройки.</p><Button className="primary" onClick={loadWorkspace}>Повторить</Button></Drawer>)} 
     {panel === "support" && <SupportPanel onClose={() => setPanel(null)}/>} 
     {panel === "cost" && costMessage?.generation && <Drawer title="Стоимость и контекст" onClose={() => setPanel(null)}><div className="costHero"><small>Списано по факту</small><strong>{money(costMessage.generation.cost_rub)}</strong></div><dl className="details"><div><dt>Модель</dt><dd>{costMessage.generation.model}</dd></div><div><dt>Провайдер</dt><dd>{costMessage.generation.provider || "—"}</dd></div><div><dt>Входные токены</dt><dd>{costMessage.generation.input_tokens}</dd></div><div><dt>Выходные токены</dt><dd>{costMessage.generation.output_tokens}</dd></div><div><dt>Correlation ID</dt><dd className="mono">{costMessage.generation.correlation_id}</dd></div></dl>{costMessage.generation.context ? <ContextInspector context={costMessage.generation.context}/> : <p className="muted">Контекст недоступен для этого сообщения.</p>}</Drawer>}
     {panel === "compare" && active && compareSource && <ComparePanel conversation={active} source={compareSource} models={models} onConversation={replaceConversation} onClose={() => setPanel(null)}/>} 
@@ -499,7 +540,11 @@ function SearchPanel({projects, onClose, onChoose}: {projects: Project[]; onClos
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (query.trim().length < 2) return;
+    if (query.trim().length < 2) {
+      setBusy(false);
+      setResults([]);
+      return;
+    }
     let cancelled = false;
     const timer = setTimeout(async () => {
       setBusy(true); setError("");
@@ -516,7 +561,7 @@ function SearchPanel({projects, onClose, onChoose}: {projects: Project[]; onClos
         if (!cancelled) setBusy(false);
       }
     }, 300);
-    return () => {cancelled = true; clearTimeout(timer);};
+    return () => {cancelled = true; clearTimeout(timer); setBusy(false);};
   }, [query, scope, project, role]);
   const typeLabel = (item: SearchResult) => item.type === "message" ? (item.match === "semantic" ? "По смыслу" : item.match === "hybrid" ? "Точное + смысл" : "Совпадение") : item.type === "conversation" ? "Чат" : item.type === "project" ? "Проект" : "Файл";
   return <Drawer title="Поиск по рабочему пространству" onClose={onClose}><div className="searchField"><Icon name="search"/><input autoFocus value={query} onChange={(event) => {setQuery(event.target.value); if (event.target.value.trim().length < 2) setResults([]);}} placeholder="Найдите решение, факт или обсуждение" aria-label="Поисковый запрос"/>{busy && <div className="miniLoader"/>}</div><div className="searchFilters"><select value={scope} onChange={(event) => {setScope(event.target.value); if (event.target.value !== "message") setRole("");}} aria-label="Тип результата"><option value="all">Везде</option><option value="message">Сообщения</option><option value="conversation">Чаты</option><option value="project">Проекты</option><option value="file">Файлы</option></select><select value={project} onChange={(event) => setProject(event.target.value)} aria-label="Проект"><option value="">Все проекты</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select value={role} onChange={(event) => {setRole(event.target.value); if (event.target.value) setScope("message");}} aria-label="Автор сообщения"><option value="">Все авторы</option><option value="user">Я</option><option value="assistant">AI</option></select></div>{error && <div className="alert error">{error}</div>}<div className="resultList">{query.length < 2 && <Empty icon="search" title="Введите минимум два символа" text="Поиск работает только в доступных вам данных."/>}{query.length >= 2 && !busy && results.length === 0 && <Empty icon="search" title="Ничего не найдено" text="Попробуйте другую формулировку или снимите фильтры."/>}{query.length >= 2 && results.map((item) => <button key={`${item.type}:${item.id}`} onClick={() => {if (item.type === "conversation" || item.type === "message") onChoose(item.conversation_id ?? item.id, item.navigation.message_id); else onClose();}}><span className="resultIcon"><Icon name={item.type === "project" ? "folder" : item.type === "file" ? "file" : "chat"}/></span><span><b>{item.title}</b><small>{item.excerpt}</small></span><em>{typeLabel(item)}</em></button>)}</div></Drawer>;
@@ -591,12 +636,12 @@ function MemoryPanel({items, candidates, projects, conversations, onChange, onCa
 
 function WalletPanel({wallet, onClose}: {wallet: Wallet | null; onClose: () => void}) {
   const [amount, setAmount] = useState("500"); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  const topup = async () => {setBusy(true); setError(""); try {const payment = await api<{confirmation_url: string}>("/payments/", {method: "POST", headers: {"Idempotency-Key": `web-payment:${crypto.randomUUID()}`}, body: JSON.stringify({amount_rub: amount})}); if (payment.confirmation_url) window.location.assign(payment.confirmation_url);} catch (reason) {setError(reason instanceof Error ? reason.message : "Пополнение временно недоступно");} finally {setBusy(false);}};
+  const topup = async () => {setBusy(true); setError(""); try {const payment = await api<{confirmation_url?: string}>("/payments/", {method: "POST", headers: {"Idempotency-Key": `web-payment:${crypto.randomUUID()}`}, body: JSON.stringify({amount_rub: amount})}); if (payment.confirmation_url) window.location.assign(payment.confirmation_url); else setError("Платёжная система не вернула ссылку для оплаты");} catch (reason) {setError(reason instanceof Error ? reason.message : "Пополнение временно недоступно");} finally {setBusy(false);}};
   return <Drawer title="Баланс и расходы" onClose={onClose}><div className="walletHero"><small>Доступно</small><strong>{money(wallet?.available_rub)}</strong><div><span>Оплачено: {money(wallet?.paid_rub)}</span><span>Промо: {money(wallet?.promo_rub)}</span><span>В резерве: {money(wallet?.reserved_rub)}</span></div></div><h3>Пополнить баланс</h3><div className="amountGrid">{[300,500,1000,3000].map((item) => <button key={item} className={amount === String(item) ? "active" : ""} onClick={() => setAmount(String(item))}>{item.toLocaleString("ru")} ₽</button>)}</div><label>Другая сумма<input type="number" min="100" max="100000" value={amount} onChange={(event) => setAmount(event.target.value)}/></label>{error && <div className="alert error">{error}</div>}<Button className="primary wide" onClick={topup} disabled={busy}>{busy ? "Создаём платёж…" : `Пополнить на ${money(amount)}`}</Button><p className="safeNote">Баланс не сгорает. Зачисление происходит только после подтверждения платёжной системой.</p><h3>Последние операции</h3><div className="ledger">{wallet?.entries.map((entry) => <div key={entry.id}><span><b>{entry.kind}</b><small>{dateLabel(entry.created_at)}</small></span><strong>{money(entry.amount_rub)}</strong></div>)}</div></Drawer>;
 }
 
 function NotificationsPanel({items, onChange, onClose}: {items: Notification[]; onChange: (items: Notification[]) => void; onClose: () => void}) {
-  const read = async (item: Notification) => {if (item.read_at) return; const updated = await api<Notification>(`/auth/notifications/${item.id}/read/`, {method: "POST"}); onChange(items.map((current) => current.id === item.id ? updated : current));};
+  const read = async (item: Notification) => {if (item.read_at) return; try {const updated = await api<Notification>(`/auth/notifications/${item.id}/read/`, {method: "POST"}); onChange(items.map((current) => current.id === item.id ? updated : current));} catch { /* ignore read failures */ }};
   return <Drawer title="Уведомления" onClose={onClose}><div className="cardList notifications">{items.length === 0 && <Empty icon="bell" title="Уведомлений нет" text="Здесь появятся важные события по балансу и работе сервиса."/>}{items.map((item) => <button key={item.id} className={item.read_at ? "read" : ""} onClick={() => read(item)}><i className={item.level}/><span><b>{item.title}</b><p>{item.body}</p><small>{dateLabel(item.created_at)}</small></span></button>)}</div></Drawer>;
 }
 
