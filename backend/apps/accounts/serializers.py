@@ -7,10 +7,12 @@ from .models import Notification, SupportRequest, User, UserPreference
 
 
 class UserSerializer(serializers.ModelSerializer):
+    email_verified = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = User
-        fields = ("id", "username", "email", "role", "status")
-        read_only_fields = ("id", "role", "status")
+        fields = ("id", "username", "email", "email_verified", "role", "status")
+        read_only_fields = ("id", "email_verified", "role", "status")
 
 
 class RegisterSerializer(serializers.ModelSerializer):
