@@ -9,12 +9,7 @@ from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.models import AIModel
-from apps.ai_registry.reliability import (
-    candidate_models,
-    provider_available,
-    record_failure,
-    record_success,
-)
+from apps.ai_registry.reliability import candidate_models, provider_available, record_failure, record_success
 from apps.ai_registry.router import select_route
 from apps.billing.models import RequestCost
 from apps.billing.pricing import (
@@ -27,19 +22,17 @@ from apps.billing.pricing import (
 )
 from apps.billing.reconciliation import record_cost_outcome
 from apps.billing.services import release, reserve, settle
-from apps.memory_store.services import (
-    extract_memory_candidates,
-    process_explicit_command,
-    record_memory_usage,
-)
+from apps.memory_store.services import extract_memory_candidates, process_explicit_command, record_memory_usage
 from apps.workspace_search.embeddings import index_message
 
 from .branches import ensure_active_branch
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
+from .vision import attach_vision_to_messages, resolve_vision_assets, vision_metadata
 
 MAX_OUTPUT_TOKENS = 1024
 FLUSH_CHARS = 400
+VISION_RESERVE_TOKENS_PER_IMAGE = 2048
 logger = logging.getLogger(__name__)
 
 
@@ -54,31 +47,38 @@ def _index_history(message):
         logger.exception("History indexing failed for message_id=%s", message.id)
 
 
-def _validate_replayed_generation(generation, conversation, content, client_message_id):
+def _snapshot_file_ids(generation):
+    return [item.get("file_id") for item in generation.context_snapshot.get("vision_assets", []) if item.get("file_id")]
+
+
+def _validate_replayed_generation(generation, conversation, content, client_message_id, file_ids=None):
     message = generation.user_message
+    requested_ids = [str(item) for item in (file_ids or [])]
     if (
         message.conversation_id != conversation.id
         or message.content != content
         or message.client_message_id != client_message_id
+        or _snapshot_file_ids(generation) != requested_ids
     ):
         raise ValidationError("Idempotency-Key уже использован для другого запроса")
     return generation
 
 
-def prepare(*, user, conversation, content, client_message_id, idempotency_key):
+def prepare(*, user, conversation, content, client_message_id, idempotency_key, file_ids=None):
+    file_ids = file_ids or []
     if not idempotency_key or len(idempotency_key) > 160:
         raise ValidationError("Корректный Idempotency-Key обязателен")
     if not isinstance(content, str) or not content.strip() or len(content) > 100_000:
         raise ValidationError("Сообщение должно содержать от 1 до 100000 символов")
+
+    vision_assets = resolve_vision_assets(user=user, conversation=conversation, file_ids=file_ids)
     existing = (
         Generation.objects.filter(idempotency_key=idempotency_key, owner=user)
         .select_related("assistant_message", "user_message")
         .first()
     )
     if existing:
-        return _validate_replayed_generation(
-            existing, conversation, content, client_message_id
-        ), False
+        return _validate_replayed_generation(existing, conversation, content, client_message_id, file_ids), False
 
     with transaction.atomic():
         user.__class__.objects.select_for_update().only("pk").get(pk=user.pk)
@@ -88,9 +88,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             .first()
         )
         if existing:
-            return _validate_replayed_generation(
-                existing, conversation, content, client_message_id
-            ), False
+            return _validate_replayed_generation(existing, conversation, content, client_message_id, file_ids), False
         locked = Conversation.objects.select_for_update().get(pk=conversation.pk, owner=user)
         repeated_message = (
             Message.objects.filter(
@@ -103,7 +101,10 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             if repeated_message.content != content:
                 raise ValidationError("client_message_id уже использован с другим содержимым")
             try:
-                return repeated_message.generation_request, False
+                repeated = repeated_message.generation_request
+                if _snapshot_file_ids(repeated) != [str(item) for item in file_ids]:
+                    raise ValidationError("client_message_id уже использован с другими вложениями")
+                return repeated, False
             except Message.generation_request.RelatedObjectDoesNotExist:
                 raise ValidationError("Повторное сообщение ещё не готово к обработке") from None
         branch = ensure_active_branch(locked, user)
@@ -133,12 +134,8 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
     memory_action, suppress_memory = process_explicit_command(
         user=user, conversation=conversation, source_message=user_message
     )
-    memory_candidates = (
-        []
-        if memory_action or suppress_memory
-        else extract_memory_candidates(
-            user=user, conversation=conversation, source_message=user_message
-        )
+    memory_candidates = [] if memory_action or suppress_memory else extract_memory_candidates(
+        user=user, conversation=conversation, source_message=user_message
     )
     memory_metadata = {
         "memory_action": memory_action,
@@ -146,7 +143,12 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
     }
 
     try:
-        route = select_route(conversation=locked, content=content)
+        routing_content = content
+        if vision_assets:
+            routing_content += "\n[vision attachment: изображение фото скриншот]"
+        route = select_route(conversation=locked, content=routing_content)
+        if vision_assets and "vision" not in set(route.selected.capabilities or []):
+            raise ValidationError("Выбранная модель не поддерживает анализ изображений")
         generation.model = route.selected.slug
         generation.save(update_fields=["model"])
         decision = RoutingDecision.objects.create(
@@ -165,6 +167,8 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             estimated_cost_rub=route.estimated_cost_rub,
         )
         candidates = route.ordered_models
+        if vision_assets:
+            candidates = [model for model in candidates if "vision" in set(model.capabilities or [])]
         if not candidates:
             raise ValidationError("Выбранная модель временно недоступна")
         narrowest = min(candidates, key=lambda item: item.context_window)
@@ -177,14 +181,13 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             include_memory=not suppress_memory,
         )
         snapshot.update(memory_metadata)
+        snapshot["vision_assets"] = vision_metadata(vision_assets)
         snapshot["routing"] = {
             "decision_id": str(decision.id),
             "mode": decision.mode,
             "task_taxonomy": decision.task_taxonomy,
             "selected_model": route.selected.slug,
-            "model_version": (
-                route.selected.current_version.version if route.selected.current_version else None
-            ),
+            "model_version": route.selected.current_version.version if route.selected.current_version else None,
             "exact_api_id": route.selected.upstream_model,
             "explanation": decision.explanation,
             "policy_version": route.policy.version,
@@ -194,21 +197,15 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
             "candidates": decision.candidate_snapshot,
         }
         snapshot["memory_items"] = [
-            {
-                "id": str(item.id),
-                "scope": item.scope,
-                "memory_type": item.memory_type,
-                "content": item.content,
-            }
+            {"id": str(item.id), "scope": item.scope, "memory_type": item.memory_type, "content": item.content}
             for item in memory_items
         ]
         generation.context_snapshot = snapshot
         generation.save(update_fields=["context_snapshot"])
         record_memory_usage(generation, memory_items)
         history = snapshot["provider_messages"]
-        input_budget, output_budget = conservative_token_budget(
-            history, snapshot["budget"]["output_reserved"]
-        )
+        input_budget, output_budget = conservative_token_budget(history, snapshot["budget"]["output_reserved"])
+        input_budget += len(vision_assets) * VISION_RESERVE_TOKENS_PER_IMAGE
         priced = []
         for model in candidates:
             price = active_price(model.slug)
@@ -242,9 +239,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key):
                 "fx_snapshot_id": str(item.fx_snapshot.id),
                 "pricing_snapshot": item.pricing_snapshot,
                 "expected_provider_cost_rub": str(item.provider_cost_rub),
-                "model_version_id": (
-                    str(model.current_version_id) if model.current_version_id else None
-                ),
+                "model_version_id": str(model.current_version_id) if model.current_version_id else None,
             }
             for model, price, item in priced
         }
@@ -276,9 +271,9 @@ def run(generation, *, adapter=None):
     if generation.state == Generation.State.COMPLETED:
         yield sse("snapshot", {"text": assistant.content, "state": generation.state})
         return
-    claimed = Generation.objects.filter(
-        pk=generation.pk, state=Generation.State.QUEUED
-    ).update(state=Generation.State.RUNNING)
+    claimed = Generation.objects.filter(pk=generation.pk, state=Generation.State.QUEUED).update(
+        state=Generation.State.RUNNING
+    )
     if claimed:
         generation.state = Generation.State.RUNNING
     else:
@@ -290,27 +285,20 @@ def run(generation, *, adapter=None):
         yield sse("error", {"code": generation.error_code or "generation_not_runnable"})
         return
 
-    primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(
-        slug=generation.model
-    )
+    primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(slug=generation.model)
     if adapter:
         candidates = [primary]
     else:
         try:
             snapshot = generation.routing_decision.candidate_snapshot
             ranked = sorted(
-                (
-                    item
-                    for item in snapshot
-                    if item.get("status") == "eligible" and item.get("fallback_allowed", True)
-                ),
+                (item for item in snapshot if item.get("status") == "eligible" and item.get("fallback_allowed", True)),
                 key=lambda item: item.get("rank", 9999),
             )
             models = {
                 item.slug: item
-                for item in AIModel.objects.filter(
-                    slug__in=[item["model"] for item in ranked], enabled=True
-                ).select_related("provider", "fallback_model", "current_version")
+                for item in AIModel.objects.filter(slug__in=[item["model"] for item in ranked], enabled=True)
+                .select_related("provider", "fallback_model", "current_version")
             }
             candidates = [
                 models[item["model"]]
@@ -319,19 +307,26 @@ def run(generation, *, adapter=None):
             ]
         except RoutingDecision.DoesNotExist:
             candidates = candidate_models(primary)
+
     history = generation.context_snapshot.get("provider_messages") or [
         {"role": generation.user_message.role, "content": generation.user_message.content}
     ]
+    vision_ids = _snapshot_file_ids(generation)
+    if vision_ids:
+        assets = resolve_vision_assets(
+            user=generation.owner,
+            conversation=generation.user_message.conversation,
+            file_ids=vision_ids,
+        )
+        history = attach_vision_to_messages(history, generation.user_message.content, assets)
+
     full_text = assistant.content
     sequence = generation.attempts.count()
     completed = None
     selected_model = None
     last_error = ProviderError("No healthy provider", code="provider_unavailable")
 
-    yield sse(
-        "generation",
-        {"id": generation.id, "state": "streaming", "correlation_id": generation.correlation_id},
-    )
+    yield sse("generation", {"id": generation.id, "state": "streaming", "correlation_id": generation.correlation_id})
     try:
         routing = generation.routing_decision
         if routing.mode != Conversation.RoutingMode.MANUAL:
@@ -341,11 +336,7 @@ def run(generation, *, adapter=None):
                     "mode": routing.mode,
                     "task_taxonomy": routing.task_taxonomy,
                     "model": routing.selected_model.slug,
-                    "model_version": (
-                        routing.selected_model.current_version.version
-                        if routing.selected_model.current_version
-                        else None
-                    ),
+                    "model_version": routing.selected_model.current_version.version if routing.selected_model.current_version else None,
                     "explanation": routing.explanation,
                 },
             )
@@ -356,11 +347,9 @@ def run(generation, *, adapter=None):
     if generation.context_snapshot.get("memory_candidates"):
         yield sse(
             "memory_candidates",
-            {
-                "count": len(generation.context_snapshot["memory_candidates"]),
-                "message": "Найдены предложения для памяти",
-            },
+            {"count": len(generation.context_snapshot["memory_candidates"]), "message": "Найдены предложения для памяти"},
         )
+
     try:
         for model in candidates:
             request_cost = RequestCost.objects.get(generation_id=generation.id)
@@ -376,22 +365,13 @@ def run(generation, *, adapter=None):
                 request_cost.pricing_snapshot = route_price["pricing_snapshot"]
                 request_cost.expected_provider_cost_rub = route_price["expected_provider_cost_rub"]
                 request_cost.model_version_id_snapshot = route_price["model_version_id"]
-                fields = [
-                    "price_version",
-                    "fx_snapshot",
-                    "pricing_snapshot",
-                    "expected_provider_cost_rub",
-                    "model_version_id_snapshot",
-                ]
+                fields = ["price_version", "fx_snapshot", "pricing_snapshot", "expected_provider_cost_rub", "model_version_id_snapshot"]
             request_cost.save(update_fields=fields)
             max_attempts = 1 if adapter else settings.AI_PROVIDER_MAX_ATTEMPTS
             for retry_index in range(max_attempts):
                 sequence += 1
                 attempt = GenerationAttempt.objects.create(
-                    generation=generation,
-                    provider=model.provider,
-                    model_slug=model.slug,
-                    sequence=sequence,
+                    generation=generation, provider=model.provider, model_slug=model.slug, sequence=sequence
                 )
                 started = time.monotonic()
                 emitted = False
@@ -414,25 +394,16 @@ def run(generation, *, adapter=None):
                         else:
                             attempt_completed = event
                     if attempt_completed is None:
-                        raise ProviderError(
-                            "Stream ended without usage", code="invalid_stream", retryable=True
-                        )
+                        raise ProviderError("Stream ended without usage", code="invalid_stream", retryable=True)
                     latency = int((time.monotonic() - started) * 1000)
-                    _finish_attempt(
-                        attempt, state=GenerationAttempt.State.COMPLETED, started=started
-                    )
+                    _finish_attempt(attempt, state=GenerationAttempt.State.COMPLETED, started=started)
                     record_success(model.provider, latency)
                     completed = attempt_completed
                     selected_model = model
                     break
                 except ProviderError as exc:
                     last_error = exc
-                    _finish_attempt(
-                        attempt,
-                        state=GenerationAttempt.State.FAILED,
-                        started=started,
-                        error=exc,
-                    )
+                    _finish_attempt(attempt, state=GenerationAttempt.State.FAILED, started=started, error=exc)
                     record_failure(model.provider, exc)
                     if emitted:
                         raise
@@ -449,27 +420,16 @@ def run(generation, *, adapter=None):
             raise last_error
 
         with transaction.atomic():
-            request_cost = RequestCost.objects.select_for_update().select_related(
-                "price_version"
-            ).get(generation_id=generation.id)
+            request_cost = RequestCost.objects.select_for_update().select_related("price_version").get(generation_id=generation.id)
             if request_cost.pricing_snapshot:
                 provider_cost, charge, gross_profit, gross_margin = calculate_from_snapshot(
-                    request_cost.price_version,
-                    completed.input_tokens,
-                    completed.output_tokens,
-                    request_cost.pricing_snapshot,
+                    request_cost.price_version, completed.input_tokens, completed.output_tokens, request_cost.pricing_snapshot
                 )
             else:
-                provider_cost, charge = calculate(
-                    request_cost.price_version, completed.input_tokens, completed.output_tokens
-                )
+                provider_cost, charge = calculate(request_cost.price_version, completed.input_tokens, completed.output_tokens)
                 gross_profit = charge - provider_cost
                 gross_margin = gross_profit / charge * 100 if charge else 100
-            reservation_amount = (
-                generation.user_message.conversation.owner.wallet.reservations.get(
-                    id=generation.reservation_id
-                ).amount_rub
-            )
+            reservation_amount = generation.user_message.conversation.owner.wallet.reservations.get(id=generation.reservation_id).amount_rub
             if charge > reservation_amount:
                 raise ValidationError("Provider usage exceeded reserved maximum")
             settle(generation.reservation_id, charge)
@@ -479,16 +439,9 @@ def run(generation, *, adapter=None):
             request_cost.output_tokens = completed.output_tokens
             request_cost.gross_profit_rub = gross_profit
             request_cost.gross_margin_percent = gross_margin
-            request_cost.save(
-                update_fields=[
-                    "provider_cost_rub",
-                    "charged_rub",
-                    "input_tokens",
-                    "output_tokens",
-                    "gross_profit_rub",
-                    "gross_margin_percent",
-                ]
-            )
+            request_cost.save(update_fields=[
+                "provider_cost_rub", "charged_rub", "input_tokens", "output_tokens", "gross_profit_rub", "gross_margin_percent"
+            ])
             record_cost_outcome(request_cost, model=selected_model)
             assistant.content = full_text
             assistant.status = Message.Status.COMPLETED
@@ -501,18 +454,9 @@ def run(generation, *, adapter=None):
             generation.routed_model = selected_model.slug
             generation.provider_slug = selected_model.provider.slug
             generation.completed_at = timezone.now()
-            generation.save(
-                update_fields=[
-                    "state",
-                    "provider_request_id",
-                    "input_tokens",
-                    "output_tokens",
-                    "actual_cost_rub",
-                    "routed_model",
-                    "provider_slug",
-                    "completed_at",
-                ]
-            )
+            generation.save(update_fields=[
+                "state", "provider_request_id", "input_tokens", "output_tokens", "actual_cost_rub", "routed_model", "provider_slug", "completed_at"
+            ])
         _index_history(assistant)
         refresh_rolling_summary(generation.user_message.conversation)
         yield sse(
@@ -523,11 +467,7 @@ def run(generation, *, adapter=None):
                 "input_tokens": completed.input_tokens,
                 "output_tokens": completed.output_tokens,
                 "model": selected_model.slug,
-                "model_version": (
-                    selected_model.current_version.version
-                    if selected_model.current_version
-                    else None
-                ),
+                "model_version": selected_model.current_version.version if selected_model.current_version else None,
                 "provider": selected_model.provider.slug,
             },
         )
@@ -549,9 +489,7 @@ def run(generation, *, adapter=None):
         assistant.save(update_fields=["content", "status"])
         _index_history(assistant)
         generation.state = Generation.State.FAILED
-        generation.error_code = (
-            exc.code if isinstance(exc, ProviderError) else "cost_or_internal_error"
-        )
+        generation.error_code = exc.code if isinstance(exc, ProviderError) else "cost_or_internal_error"
         generation.completed_at = timezone.now()
         generation.save(update_fields=["state", "error_code", "completed_at"])
         yield sse(
