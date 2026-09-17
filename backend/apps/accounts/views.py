@@ -1,6 +1,3 @@
-from decimal import Decimal
-
-from django.conf import settings
 from django.contrib.auth import login, logout, update_session_auth_hash
 from django.contrib.sessions.models import Session
 from django.db import transaction
@@ -13,7 +10,6 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 
-from apps.billing.services import credit
 from apps.memory_store.models import MemoryCandidate
 
 from .models import Notification, SupportRequest, UserPreference
@@ -39,13 +35,6 @@ class RegisterView(APIView):
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        credit(
-            user,
-            Decimal(settings.SIGNUP_PROMO_RUB),
-            "signup_promo",
-            f"signup:{user.id}",
-            bucket="promo",
-        )
         login(request, user)
         transaction.on_commit(lambda: send_verification_email(user))
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
