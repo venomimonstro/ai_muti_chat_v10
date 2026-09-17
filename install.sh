@@ -121,7 +121,11 @@ if [[ "${RESUME}" != true ]]; then
   printf 'DJANGO_TRUST_PROXY_SSL_HEADER=true\n'
   printf 'CORS_ALLOWED_ORIGINS=https://%s\n' "${APP_DOMAIN}"
   printf 'PUBLIC_API_URL=https://%s/api/v1\n' "${APP_DOMAIN}"
+  printf 'FRONTEND_PUBLIC_URL=https://%s\n' "${APP_DOMAIN}"
   printf 'PAYMENT_RETURN_URL=https://%s/settings/billing/return\n' "${APP_DOMAIN}"
+  printf 'EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend\n'
+  printf 'EMAIL_HOST=\nEMAIL_PORT=587\nEMAIL_HOST_USER=\nEMAIL_HOST_PASSWORD=\nEMAIL_USE_TLS=true\n'
+  printf 'DEFAULT_FROM_EMAIL=noreply@%s\n' "${APP_DOMAIN}"
   printf 'B2B_TRUST_PROXY_IP_HEADER=true\n'
   printf 'ADMIN_MFA_ENFORCED=false\n'
   printf 'PAYMENTS_ENABLED=false\n'
@@ -172,11 +176,12 @@ if [[ "${READY}" == true ]]; then
   printf '\nУстановка завершена.\n'
   printf 'Сайт: https://%s\n' "${APP_DOMAIN}"
   printf 'Админка: https://%s/admin/\n' "${APP_DOMAIN}"
-  printf 'Проверка коммерческой конфигурации: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py commercial_config_check\n'
+  printf 'MFA администратора: https://%s/security/mfa\n' "${APP_DOMAIN}"
+  printf 'Проверка коммерческого запуска: sudo bash scripts/commercial_launch_check.sh\n'
 else
   printf '\nКонтейнеры запущены, но HTTPS пока не готов. Установка не помечена завершённой.\n' >&2
   printf 'Проверьте DNS и журнал: sudo docker compose --env-file .env.production -f docker-compose.prod.yml logs caddy\n' >&2
   printf 'После исправления повторите: sudo ./install.sh\n' >&2
   exit 1
 fi
-printf 'Платежи и внешние AI-провайдеры выключены до заполнения ключей, моделей, цен и ручной проверки.\n'
+printf 'До коммерческого запуска заполните SMTP, AI-провайдеров/цены, YooKassa, включите MFA и закройте compliance signoffs.\n'
