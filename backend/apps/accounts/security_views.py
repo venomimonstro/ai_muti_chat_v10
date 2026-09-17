@@ -1,6 +1,8 @@
 import os
+from decimal import Decimal
 from urllib.parse import urlencode
 
+from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.contrib.sessions.models import Session
@@ -13,6 +15,8 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+
+from apps.billing.services import credit
 
 from .models import User
 
@@ -91,6 +95,13 @@ class EmailVerificationConfirmView(APIView):
         if not user.email_verified:
             user.email_verified_at = timezone.now()
             user.save(update_fields=["email_verified_at"])
+            credit(
+                user,
+                Decimal(settings.SIGNUP_PROMO_RUB),
+                "signup_promo",
+                f"signup:{user.id}",
+                bucket="promo",
+            )
         return Response({"verified": True})
 
 
