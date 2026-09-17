@@ -9,6 +9,7 @@ def generate_reply(
     content: str,
     client_message_id,
     idempotency_key: str,
+    file_ids=None,
     adapter=None,
 ):
     generation, created = prepare(
@@ -17,6 +18,7 @@ def generate_reply(
         content=content,
         client_message_id=client_message_id,
         idempotency_key=idempotency_key,
+        file_ids=file_ids or [],
     )
     if created:
         list(run(generation, adapter=adapter))
