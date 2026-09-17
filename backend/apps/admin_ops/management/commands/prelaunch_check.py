@@ -1,12 +1,16 @@
 import json
 from datetime import timedelta
+from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.accounts.models import User, UserSecurityProfile
+from apps.admin_ops.compliance_manifest import required_compliance_keys
 from apps.admin_ops.models import BackupRecord, ComplianceSignoff, ReleaseRecord
+from apps.ai_registry.models import Provider
 
 
 class Command(BaseCommand):
@@ -37,6 +41,8 @@ class Command(BaseCommand):
 
     def _structural_checks(self):
         status_path = reverse("public-status")
+        legal_dir = Path(settings.BASE_DIR).parent / "docs" / "legal"
+        legal_files = ("offer.md", "privacy.md", "refunds.md", "acceptable-use.md")
         return [
             self._check("status_page", status_path == "/api/v1/status/", status_path),
             self._check(
@@ -46,14 +52,18 @@ class Command(BaseCommand):
             ),
             self._check(
                 "cost_limits",
-                settings.B2B_API_MAX_OUTPUT_TOKENS > 0
-                and settings.COMPARE_MAX_OUTPUT_TOKENS > 0,
+                settings.B2B_API_MAX_OUTPUT_TOKENS > 0 and settings.COMPARE_MAX_OUTPUT_TOKENS > 0,
                 "B2B and Compare output caps are configured",
             ),
             self._check(
                 "security_middleware",
                 "config.middleware.SecurityHeadersMiddleware" in settings.MIDDLEWARE,
                 "CSP and browser hardening middleware",
+            ),
+            self._check(
+                "legal_templates",
+                all((legal_dir / name).exists() for name in legal_files),
+                f"required templates: {', '.join(legal_files)}",
             ),
         ]
 
@@ -80,51 +90,49 @@ class Command(BaseCommand):
                 settings.SECURE_SSL_REDIRECT and settings.SECURE_HSTS_SECONDS >= 86400,
                 "HTTPS redirect and HSTS enabled",
             ),
-            self._check(
-                "admin_mfa",
-                settings.ADMIN_MFA_ENFORCED,
-                "MFA must be enforced by the selected identity layer",
-            ),
+            self._check("admin_mfa_enforced", settings.ADMIN_MFA_ENFORCED, "ADMIN_MFA_ENFORCED=true"),
             self._check(
                 "payments_fiscalization",
-                not settings.PAYMENTS_LIVE_ENABLED
-                or settings.PAYMENTS_FISCALIZATION_MODE != "disabled",
+                not settings.PAYMENTS_LIVE_ENABLED or settings.PAYMENTS_FISCALIZATION_MODE != "disabled",
                 "Live payments require a reviewed fiscalization mode",
             ),
         ]
 
     def _evidence_checks(self):
-        required = set(ComplianceSignoffViewKeys.values)
+        required = required_compliance_keys()
         approved = set(
-            ComplianceSignoff.objects.filter(
-                status=ComplianceSignoff.Status.APPROVED
-            ).values_list("key", flat=True)
+            ComplianceSignoff.objects.filter(status=ComplianceSignoff.Status.APPROVED).values_list("key", flat=True)
         )
         backup = BackupRecord.objects.filter(
             status=BackupRecord.Status.RESTORED,
             restored_at__gte=timezone.now() - timedelta(days=30),
         ).exists()
-        rollback = ReleaseRecord.objects.filter(
-            state=ReleaseRecord.State.ROLLED_BACK
-        ).exists()
+        rollback = ReleaseRecord.objects.filter(state=ReleaseRecord.State.ROLLED_BACK).exists()
+        admins = User.objects.filter(status=User.Status.ACTIVE).filter(
+            is_staff=True
+        ) | User.objects.filter(status=User.Status.ACTIVE, role=User.Role.PLATFORM_ADMIN)
+        admin_ids = set(admins.values_list("id", flat=True))
+        mfa_ids = set(
+            UserSecurityProfile.objects.filter(user_id__in=admin_ids, mfa_enabled=True).values_list("user_id", flat=True)
+        )
+        enabled_providers = Provider.objects.filter(enabled=True).count()
+        provider_signoffs = len([key for key in required if key.startswith("provider-terms-") and key in approved])
         return [
             self._check(
                 "compliance_signoffs",
                 required <= approved,
                 f"approved {len(required & approved)}/{len(required)}",
             ),
+            self._check(
+                "provider_terms_signoffs",
+                provider_signoffs == enabled_providers,
+                f"approved provider terms {provider_signoffs}/{enabled_providers}",
+            ),
+            self._check(
+                "administrator_mfa_profiles",
+                bool(admin_ids) and admin_ids <= mfa_ids,
+                f"MFA enabled {len(admin_ids & mfa_ids)}/{len(admin_ids)} admins",
+            ),
             self._check("restore_drill", backup, "Successful restore drill within 30 days"),
             self._check("rollback_drill", rollback, "At least one recorded rollback drill"),
         ]
-
-
-class ComplianceSignoffViewKeys:
-    values = (
-        "entity-tax-regime",
-        "wallet-fiscalization",
-        "receipt-refund-flow",
-        "privacy-data-flow",
-        "provider-commercial-terms",
-        "public-legal-documents",
-        "admin-mfa",
-    )
