@@ -5,6 +5,8 @@ from xml.etree import ElementTree
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from .models import FileAsset, FileChunk, FileProcessingJob
 from .rag import prepare_chunk
@@ -35,10 +37,7 @@ def _read_limited(stream) -> str:
 
 def _xml_root(archive, name):
     info = archive.getinfo(name)
-    xml_limit = min(
-        settings.FILE_MAX_UNCOMPRESSED_BYTES,
-        settings.FILE_MAX_EXTRACTED_CHARS * 8,
-    )
+    xml_limit = min(settings.FILE_MAX_UNCOMPRESSED_BYTES, settings.FILE_MAX_EXTRACTED_CHARS * 8)
     if info.file_size > xml_limit:
         raise PartialExtraction("xml_size_limit")
     payload = archive.read(name)
@@ -71,8 +70,7 @@ def _xlsx_sections(stream):
                 for item in root
             ]
         sheet_names = sorted(
-            name
-            for name in archive.namelist()
+            name for name in archive.namelist()
             if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
         )
         for sheet_name in sheet_names:
@@ -81,9 +79,7 @@ def _xlsx_sections(stream):
             for cell in (node for node in root.iter() if node.tag.endswith("}c")):
                 value = next((node.text for node in cell if node.tag.endswith("}v")), None)
                 if value is None:
-                    value = "".join(
-                        (node.text or "") for node in cell.iter() if node.tag.endswith("}t")
-                    )
+                    value = "".join((node.text or "") for node in cell.iter() if node.tag.endswith("}t"))
                 elif cell.attrib.get("t") == "s" and value.isdigit():
                     index = int(value)
                     value = shared[index] if index < len(shared) else ""
@@ -92,6 +88,46 @@ def _xlsx_sections(stream):
             sections.append((sheet_name.rsplit("/", 1)[-1], _normalize("\n".join(values))))
             if sum(len(content) for _, content in sections) > settings.FILE_MAX_EXTRACTED_CHARS:
                 raise PartialExtraction("extracted_text_limit")
+    return sections
+
+
+def _pdf_sections(stream):
+    max_pages = int(getattr(settings, "FILE_MAX_PDF_PAGES", 300))
+    try:
+        reader = PdfReader(stream, strict=False)
+    except (PdfReadError, ValueError, TypeError) as exc:
+        raise PartialExtraction("pdf_read_error") from exc
+    if reader.is_encrypted:
+        try:
+            unlocked = reader.decrypt("")
+        except Exception as exc:
+            raise PartialExtraction("pdf_encrypted") from exc
+        if not unlocked:
+            raise PartialExtraction("pdf_encrypted")
+    page_count = len(reader.pages)
+    if page_count > max_pages:
+        raise PartialExtraction("pdf_page_limit")
+    sections = []
+    total_chars = 0
+    pages_with_text = 0
+    for index, page in enumerate(reader.pages, start=1):
+        try:
+            text = _normalize(page.extract_text() or "")
+        except Exception:
+            text = ""
+        if not text:
+            continue
+        pages_with_text += 1
+        total_chars += len(text)
+        if total_chars > settings.FILE_MAX_EXTRACTED_CHARS:
+            raise PartialExtraction("extracted_text_limit")
+        sections.append((f"page:{index}", text))
+    if not sections:
+        # OCR is intentionally not attempted here. Scanned PDFs are marked partial so a
+        # dedicated OCR worker can handle them later without making normal PDF parsing risky.
+        raise PartialExtraction("pdf_text_layer_missing")
+    if pages_with_text < page_count:
+        sections.append(("pdf:metadata", f"Text extracted from {pages_with_text} of {page_count} pages."))
     return sections
 
 
@@ -104,7 +140,7 @@ def _extract(asset: FileAsset):
         if asset.detected_type == "xlsx":
             return _xlsx_sections(stream)
         if asset.detected_type == "pdf":
-            raise PartialExtraction("pdf_extractor_unavailable")
+            return _pdf_sections(stream)
         if asset.detected_type in {"png", "jpeg", "webp"}:
             return []
     raise PartialExtraction("unsupported_extractor")
@@ -127,9 +163,12 @@ def _chunks(sections):
                 boundary = max(boundaries)
                 if boundary > start:
                     end = boundary + (2 if content[boundary : boundary + 2] == ". " else 0)
+            source_location = {"source": source, "start_char": start, "end_char": end}
+            if source.startswith("page:"):
+                source_location["page"] = int(source.split(":", 1)[1])
             yield FileChunk(
                 position=position,
-                source_location={"source": source, "start_char": start, "end_char": end},
+                source_location=source_location,
                 content=content[start:end],
             )
             position += 1
@@ -150,8 +189,7 @@ def process_file(asset: FileAsset):
         chars = sum(len(content) for _, content in sections)
         if chars > settings.FILE_MAX_EXTRACTED_CHARS:
             raise PartialExtraction("extracted_text_limit")
-        chunks = list(_chunks(sections))
-        chunks = [prepare_chunk(chunk, asset) for chunk in chunks]
+        chunks = [prepare_chunk(chunk, asset) for chunk in _chunks(sections)]
         with transaction.atomic():
             asset.chunks.all().delete()
             FileChunk.objects.bulk_create(chunks)
