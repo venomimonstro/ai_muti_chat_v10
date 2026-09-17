@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .mfa_views import MFAConfirmView, MFASetupView, MFAStatusView, MFAVerifyView
+from .onboarding_views import OnboardingStatusView
 from .security_views import (
     EmailVerificationConfirmView,
     EmailVerificationRequestView,
@@ -34,6 +35,7 @@ urlpatterns = [
     path("me/", MeView.as_view()),
     path("csrf/", CsrfView.as_view()),
     path("preferences/", PreferenceView.as_view()),
+    path("onboarding/", OnboardingStatusView.as_view()),
     path("change-password/", ChangePasswordView.as_view()),
     path("logout-all/", LogoutAllView.as_view()),
     path("verify-email/request/", EmailVerificationRequestView.as_view()),
