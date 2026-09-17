@@ -18,8 +18,13 @@ class User(AbstractUser):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True)
+    email_verified_at = models.DateTimeField(null=True, blank=True)
     role = models.CharField(max_length=32, choices=Role.choices, default=Role.USER)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+
+    @property
+    def email_verified(self):
+        return self.email_verified_at is not None
 
     def save(self, *args, **kwargs):
         self.is_active = self.status == self.Status.ACTIVE
