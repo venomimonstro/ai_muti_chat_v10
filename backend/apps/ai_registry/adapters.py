@@ -43,26 +43,87 @@ class ProviderStreamEvent:
 
 
 class ProviderAdapter(Protocol):
-    def generate(
-        self, *, model: str, messages: list[dict], max_output_tokens: int
-    ) -> ProviderResult: ...
-
-    def stream(
-        self, *, model: str, messages: list[dict], max_output_tokens: int
-    ) -> Iterator[ProviderStreamEvent]: ...
-
+    def generate(self, *, model: str, messages: list[dict], max_output_tokens: int) -> ProviderResult: ...
+    def stream(self, *, model: str, messages: list[dict], max_output_tokens: int) -> Iterator[ProviderStreamEvent]: ...
     def health_check(self) -> AdapterHealth: ...
-
     def capabilities(self) -> set[str]: ...
 
 
-class EchoProviderAdapter:
-    """Безопасный deterministic adapter для разработки и contract tests."""
+def _generic_blocks(content):
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return content
+    return [{"type": "text", "text": str(content)}]
 
-    def generate(
-        self, *, model: str, messages: list[dict], max_output_tokens: int
-    ) -> ProviderResult:
-        prompt = messages[-1]["content"]
+
+def _text_only(content):
+    return "\n".join(
+        block.get("text", "") for block in _generic_blocks(content) if block.get("type") == "text"
+    )
+
+
+def _data_url(block):
+    return f"data:{block['media_type']};base64,{block['data']}"
+
+
+def _openai_responses_content(content):
+    result = []
+    for block in _generic_blocks(content):
+        if block.get("type") == "text":
+            result.append({"type": "input_text", "text": block.get("text", "")})
+        elif block.get("type") == "image":
+            result.append({"type": "input_image", "image_url": _data_url(block)})
+    return result
+
+
+def _openai_chat_content(content):
+    blocks = _generic_blocks(content)
+    if all(block.get("type") == "text" for block in blocks):
+        return "\n".join(block.get("text", "") for block in blocks)
+    result = []
+    for block in blocks:
+        if block.get("type") == "text":
+            result.append({"type": "text", "text": block.get("text", "")})
+        elif block.get("type") == "image":
+            result.append({"type": "image_url", "image_url": {"url": _data_url(block)}})
+    return result
+
+
+def _anthropic_content(content):
+    result = []
+    for block in _generic_blocks(content):
+        if block.get("type") == "text":
+            result.append({"type": "text", "text": block.get("text", "")})
+        elif block.get("type") == "image":
+            result.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": block["media_type"],
+                        "data": block["data"],
+                    },
+                }
+            )
+    return result
+
+
+def _gemini_parts(content):
+    result = []
+    for block in _generic_blocks(content):
+        if block.get("type") == "text":
+            result.append({"text": block.get("text", "")})
+        elif block.get("type") == "image":
+            result.append(
+                {"inlineData": {"mimeType": block["media_type"], "data": block["data"]}}
+            )
+    return result
+
+
+class EchoProviderAdapter:
+    def generate(self, *, model: str, messages: list[dict], max_output_tokens: int) -> ProviderResult:
+        prompt = _text_only(messages[-1]["content"])
         text = f"Тестовый ответ: {prompt}"[: max_output_tokens * 4]
         return ProviderResult(
             text=text,
@@ -97,11 +158,7 @@ class HTTPAdapter:
             response.raise_for_status()
             return AdapterHealth(True, int((time.monotonic() - started) * 1000))
         except httpx.HTTPError as exc:
-            return AdapterHealth(
-                False,
-                int((time.monotonic() - started) * 1000),
-                _http_error(exc).code,
-            )
+            return AdapterHealth(False, int((time.monotonic() - started) * 1000), _http_error(exc).code)
 
 
 def _http_error(exc: httpx.HTTPError) -> ProviderError:
@@ -117,8 +174,6 @@ def _http_error(exc: httpx.HTTPError) -> ProviderError:
 
 
 class OpenAIResponsesAdapter(HTTPAdapter):
-    """Server-side adapter for typed SSE events from the Responses API."""
-
     def __init__(self, *, api_key: str, base_url: str = "https://api.openai.com/v1"):
         if not api_key:
             raise ProviderError("Provider credential is not configured")
@@ -129,7 +184,7 @@ class OpenAIResponsesAdapter(HTTPAdapter):
         normalized = [
             {
                 "role": "developer" if item["role"] == "system" else item["role"],
-                "content": item["content"],
+                "content": _openai_responses_content(item["content"]),
             }
             for item in messages
         ]
@@ -143,10 +198,7 @@ class OpenAIResponsesAdapter(HTTPAdapter):
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         try:
             with httpx.stream(
-                "POST",
-                f"{self.base_url}/responses",
-                headers=headers,
-                json=payload,
+                "POST", f"{self.base_url}/responses", headers=headers, json=payload,
                 timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
             ) as response:
                 response.raise_for_status()
@@ -177,23 +229,7 @@ class OpenAIResponsesAdapter(HTTPAdapter):
             raise ProviderError("Invalid provider stream", code="invalid_stream") from exc
 
     def generate(self, *, model: str, messages: list[dict], max_output_tokens: int):
-        text = ""
-        completed = None
-        for event in self.stream(
-            model=model, messages=messages, max_output_tokens=max_output_tokens
-        ):
-            if event.kind == "delta":
-                text += event.text_delta
-            else:
-                completed = event
-        if completed is None:
-            raise ProviderError("Provider stream ended without completion event")
-        return ProviderResult(
-            text=text,
-            input_tokens=completed.input_tokens,
-            output_tokens=completed.output_tokens,
-            provider_request_id=completed.provider_request_id,
-        )
+        return _collect(self, model=model, messages=messages, max_output_tokens=max_output_tokens)
 
     def health_check(self):
         return self._health_get(
@@ -207,9 +243,7 @@ class OpenAIResponsesAdapter(HTTPAdapter):
 class AnthropicMessagesAdapter(HTTPAdapter):
     def __init__(self, *, api_key: str, base_url: str = "https://api.anthropic.com/v1"):
         if not api_key:
-            raise ProviderError(
-                "Provider credential is not configured", code="credential_missing", retryable=False
-            )
+            raise ProviderError("Provider credential is not configured", code="credential_missing", retryable=False)
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
 
@@ -222,10 +256,13 @@ class AnthropicMessagesAdapter(HTTPAdapter):
         }
 
     def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
-        system = "\n\n".join(item["content"] for item in messages if item["role"] == "system")
+        system = "\n\n".join(_text_only(item["content"]) for item in messages if item["role"] == "system")
         payload = {
             "model": model,
-            "messages": [item for item in messages if item["role"] in {"user", "assistant"}],
+            "messages": [
+                {"role": item["role"], "content": _anthropic_content(item["content"])}
+                for item in messages if item["role"] in {"user", "assistant"}
+            ],
             "max_tokens": max_output_tokens,
             "stream": True,
         }
@@ -236,10 +273,7 @@ class AnthropicMessagesAdapter(HTTPAdapter):
         output_tokens = 0
         try:
             with httpx.stream(
-                "POST",
-                f"{self.base_url}/messages",
-                headers=self.headers,
-                json=payload,
+                "POST", f"{self.base_url}/messages", headers=self.headers, json=payload,
                 timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
             ) as response:
                 response.raise_for_status()
@@ -257,9 +291,7 @@ class AnthropicMessagesAdapter(HTTPAdapter):
                         if delta.get("type") == "text_delta":
                             yield ProviderStreamEvent(kind="delta", text_delta=delta.get("text", ""))
                     elif event_type == "message_delta":
-                        output_tokens = (event.get("usage") or {}).get(
-                            "output_tokens", output_tokens
-                        )
+                        output_tokens = (event.get("usage") or {}).get("output_tokens", output_tokens)
                     elif event_type == "error":
                         error = event.get("error") or {}
                         raise ProviderError(
@@ -269,10 +301,8 @@ class AnthropicMessagesAdapter(HTTPAdapter):
                         )
                     elif event_type == "message_stop":
                         yield ProviderStreamEvent(
-                            kind="completed",
-                            provider_request_id=request_id,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
+                            kind="completed", provider_request_id=request_id,
+                            input_tokens=input_tokens, output_tokens=output_tokens,
                         )
         except httpx.HTTPError as exc:
             raise _http_error(exc) from exc
@@ -292,9 +322,7 @@ class AnthropicMessagesAdapter(HTTPAdapter):
 class DeepSeekChatAdapter(HTTPAdapter):
     def __init__(self, *, api_key: str, base_url: str = "https://api.deepseek.com"):
         if not api_key:
-            raise ProviderError(
-                "Provider credential is not configured", code="credential_missing", retryable=False
-            )
+            raise ProviderError("Provider credential is not configured", code="credential_missing", retryable=False)
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
 
@@ -303,9 +331,11 @@ class DeepSeekChatAdapter(HTTPAdapter):
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
     def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        if any(any(block.get("type") == "image" for block in _generic_blocks(item.get("content"))) for item in messages):
+            raise ProviderError("Model does not support image input", code="vision_unsupported", retryable=False)
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": [{"role": item["role"], "content": _text_only(item["content"])} for item in messages],
             "max_tokens": max_output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -314,10 +344,7 @@ class DeepSeekChatAdapter(HTTPAdapter):
         usage = {}
         try:
             with httpx.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=payload,
+                "POST", f"{self.base_url}/chat/completions", headers=self.headers, json=payload,
                 timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
             ) as response:
                 response.raise_for_status()
@@ -336,10 +363,8 @@ class DeepSeekChatAdapter(HTTPAdapter):
                         if text:
                             yield ProviderStreamEvent(kind="delta", text_delta=text)
                 yield ProviderStreamEvent(
-                    kind="completed",
-                    provider_request_id=request_id,
-                    input_tokens=usage.get("prompt_tokens", 0),
-                    output_tokens=usage.get("completion_tokens", 0),
+                    kind="completed", provider_request_id=request_id,
+                    input_tokens=usage.get("prompt_tokens", 0), output_tokens=usage.get("completion_tokens", 0),
                 )
         except httpx.HTTPError as exc:
             raise _http_error(exc) from exc
@@ -357,30 +382,58 @@ class DeepSeekChatAdapter(HTTPAdapter):
 
 
 class XAIChatAdapter(DeepSeekChatAdapter):
-    """xAI's OpenAI-compatible Chat Completions contract."""
-
     def __init__(self, *, api_key: str, base_url: str = "https://api.x.ai/v1"):
         super().__init__(api_key=api_key, base_url=base_url)
+
+    def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": item["role"], "content": _openai_chat_content(item["content"])} for item in messages
+            ],
+            "max_tokens": max_output_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        request_id = ""
+        usage = {}
+        try:
+            with httpx.stream(
+                "POST", f"{self.base_url}/chat/completions", headers=self.headers, json=payload,
+                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    event = json.loads(data)
+                    request_id = event.get("id", request_id)
+                    usage = event.get("usage") or usage
+                    choices = event.get("choices") or []
+                    if choices:
+                        text = (choices[0].get("delta") or {}).get("content") or ""
+                        if text:
+                            yield ProviderStreamEvent(kind="delta", text_delta=text)
+                yield ProviderStreamEvent(
+                    kind="completed", provider_request_id=request_id,
+                    input_tokens=usage.get("prompt_tokens", 0), output_tokens=usage.get("completion_tokens", 0),
+                )
+        except httpx.HTTPError as exc:
+            raise _http_error(exc) from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Invalid provider stream", code="invalid_stream") from exc
 
     def capabilities(self):
         return {"text", "streaming", "vision", "tools"}
 
 
 class GeminiGenerateContentAdapter(HTTPAdapter):
-    """Google Gemini streamGenerateContent SSE adapter."""
-
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        base_url: str = "https://generativelanguage.googleapis.com/v1beta",
-    ):
+    def __init__(self, *, api_key: str, base_url: str = "https://generativelanguage.googleapis.com/v1beta"):
         if not api_key:
-            raise ProviderError(
-                "Provider credential is not configured",
-                code="credential_missing",
-                retryable=False,
-            )
+            raise ProviderError("Provider credential is not configured", code="credential_missing", retryable=False)
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
 
@@ -389,32 +442,23 @@ class GeminiGenerateContentAdapter(HTTPAdapter):
         return {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
 
     def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
-        system = "\n\n".join(
-            item["content"] for item in messages if item["role"] == "system"
-        )
+        system = "\n\n".join(_text_only(item["content"]) for item in messages if item["role"] == "system")
         contents = [
             {
                 "role": "model" if item["role"] == "assistant" else "user",
-                "parts": [{"text": item["content"]}],
+                "parts": _gemini_parts(item["content"]),
             }
-            for item in messages
-            if item["role"] in {"user", "assistant"}
+            for item in messages if item["role"] in {"user", "assistant"}
         ]
-        payload = {
-            "contents": contents,
-            "generationConfig": {"maxOutputTokens": max_output_tokens},
-        }
+        payload = {"contents": contents, "generationConfig": {"maxOutputTokens": max_output_tokens}}
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
         request_id = ""
         usage = {}
         try:
             with httpx.stream(
-                "POST",
-                f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse",
-                headers=self.headers,
-                json=payload,
-                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+                "POST", f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse",
+                headers=self.headers, json=payload, timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
             ) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
@@ -428,11 +472,7 @@ class GeminiGenerateContentAdapter(HTTPAdapter):
                     usage = event.get("usageMetadata") or usage
                     blocked = (event.get("promptFeedback") or {}).get("blockReason")
                     if blocked:
-                        raise ProviderError(
-                            "Provider blocked prompt",
-                            code=f"blocked_{blocked.lower()}",
-                            retryable=False,
-                        )
+                        raise ProviderError("Provider blocked prompt", code=f"blocked_{blocked.lower()}", retryable=False)
                     candidates = event.get("candidates") or []
                     if not candidates:
                         continue
@@ -441,10 +481,8 @@ class GeminiGenerateContentAdapter(HTTPAdapter):
                         if not part.get("thought") and part.get("text"):
                             yield ProviderStreamEvent(kind="delta", text_delta=part["text"])
                 yield ProviderStreamEvent(
-                    kind="completed",
-                    provider_request_id=request_id,
-                    input_tokens=usage.get("promptTokenCount", 0),
-                    output_tokens=usage.get("candidatesTokenCount", 0),
+                    kind="completed", provider_request_id=request_id,
+                    input_tokens=usage.get("promptTokenCount", 0), output_tokens=usage.get("candidatesTokenCount", 0),
                 )
         except httpx.HTTPError as exc:
             raise _http_error(exc) from exc
@@ -464,9 +502,7 @@ class GeminiGenerateContentAdapter(HTTPAdapter):
 def _collect(adapter, *, model: str, messages: list[dict], max_output_tokens: int):
     text = ""
     completed = None
-    for event in adapter.stream(
-        model=model, messages=messages, max_output_tokens=max_output_tokens
-    ):
+    for event in adapter.stream(model=model, messages=messages, max_output_tokens=max_output_tokens):
         if event.kind == "delta":
             text += event.text_delta
         else:
@@ -488,34 +524,27 @@ def adapter_for(model: AIModel):
     if provider.adapter_type == Provider.AdapterType.OPENAI_RESPONSES:
         return OpenAIResponsesAdapter(
             api_key=os.getenv(provider.credential_env or "OPENAI_API_KEY", ""),
-            base_url=provider.api_base_url
-            or os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1"),
+            base_url=provider.api_base_url or os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1"),
         )
     if provider.adapter_type == Provider.AdapterType.ANTHROPIC_MESSAGES:
         return AnthropicMessagesAdapter(
             api_key=os.getenv(provider.credential_env or "ANTHROPIC_API_KEY", ""),
-            base_url=provider.api_base_url
-            or os.getenv("ANTHROPIC_API_BASE_URL", "https://api.anthropic.com/v1"),
+            base_url=provider.api_base_url or os.getenv("ANTHROPIC_API_BASE_URL", "https://api.anthropic.com/v1"),
         )
     if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT:
         return DeepSeekChatAdapter(
             api_key=os.getenv(provider.credential_env or "DEEPSEEK_API_KEY", ""),
-            base_url=provider.api_base_url
-            or os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
+            base_url=provider.api_base_url or os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
         )
     if provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT:
         return GeminiGenerateContentAdapter(
             api_key=os.getenv(provider.credential_env or "GEMINI_API_KEY", ""),
-            base_url=provider.api_base_url
-            or os.getenv(
-                "GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"
-            ),
+            base_url=provider.api_base_url or os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
         )
     if provider.adapter_type == Provider.AdapterType.XAI_CHAT:
         return XAIChatAdapter(
             api_key=os.getenv(provider.credential_env or "XAI_API_KEY", ""),
-            base_url=provider.api_base_url
-            or os.getenv("XAI_API_BASE_URL", "https://api.x.ai/v1"),
+            base_url=provider.api_base_url or os.getenv("XAI_API_BASE_URL", "https://api.x.ai/v1"),
         )
     raise ProviderError(
         f"Unsupported adapter: {provider.adapter_type}", code="unsupported_adapter", retryable=False
