@@ -1,3 +1,4 @@
+import logging
 import os
 from decimal import Decimal
 from urllib.parse import urlencode
@@ -20,6 +21,7 @@ from apps.billing.services import credit
 
 from .models import User
 
+logger = logging.getLogger(__name__)
 VERIFY_SALT = "accounts.email.verify.v1"
 VERIFY_MAX_AGE = 60 * 60 * 24
 RESET_GENERATOR = PasswordResetTokenGenerator()
@@ -49,14 +51,23 @@ def _send(subject: str, body: str, recipient: str):
     ).send(fail_silently=False)
 
 
-def send_verification_email(user: User):
+def _safe_send(subject: str, body: str, recipient: str) -> bool:
+    try:
+        _send(subject, body, recipient)
+        return True
+    except Exception:
+        logger.exception("Account email delivery failed", extra={"recipient_domain": recipient.rsplit("@", 1)[-1] if "@" in recipient else "invalid"})
+        return False
+
+
+def send_verification_email(user: User) -> bool:
     token = signing.dumps(
         {"user_id": str(user.id), "email": user.email, "password": user.password[-12:]},
         salt=VERIFY_SALT,
         compress=True,
     )
     url = _frontend_url("/verify-email", {"token": token})
-    _send(
+    return _safe_send(
         "Подтвердите email",
         f"Подтвердите адрес электронной почты:\n\n{url}\n\nСсылка действует 24 часа.",
         user.email,
@@ -118,7 +129,7 @@ class PasswordResetRequestView(APIView):
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = RESET_GENERATOR.make_token(user)
             url = _frontend_url("/reset-password", {"uid": uid, "token": token})
-            _send(
+            _safe_send(
                 "Сброс пароля",
                 f"Для смены пароля откройте ссылку:\n\n{url}\n\nЕсли это были не вы, проигнорируйте письмо.",
                 user.email,
