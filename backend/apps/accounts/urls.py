@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .mfa_views import MFAConfirmView, MFASetupView, MFAStatusView, MFAVerifyView
 from .security_views import (
     EmailVerificationConfirmView,
     EmailVerificationRequestView,
@@ -41,4 +42,8 @@ urlpatterns = [
     path("password-reset/confirm/", PasswordResetConfirmView.as_view()),
     path("sessions/", SessionListView.as_view()),
     path("sessions/<str:session_key>/revoke/", SessionRevokeView.as_view()),
+    path("mfa/status/", MFAStatusView.as_view()),
+    path("mfa/setup/", MFASetupView.as_view()),
+    path("mfa/confirm/", MFAConfirmView.as_view()),
+    path("mfa/verify/", MFAVerifyView.as_view()),
 ] + router.urls
