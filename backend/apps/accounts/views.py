@@ -17,6 +17,7 @@ from apps.billing.services import credit
 from apps.memory_store.models import MemoryCandidate
 
 from .models import Notification, SupportRequest, UserPreference
+from .security_views import send_verification_email
 from .serializers import (
     ChangePasswordSerializer,
     LoginSerializer,
@@ -46,6 +47,7 @@ class RegisterView(APIView):
             bucket="promo",
         )
         login(request, user)
+        transaction.on_commit(lambda: send_verification_email(user))
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
