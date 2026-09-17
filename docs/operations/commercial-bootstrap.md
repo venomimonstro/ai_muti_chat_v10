@@ -43,9 +43,9 @@ Blank values do not create an active price. `commercial_config_check` requires p
 
 Staff-only endpoints:
 
-- `GET /api/v1/admin-ops/commercial-setup/` — setup status without secret values;
-- `POST /api/v1/admin-ops/commercial-setup/` with `{ "action": "bootstrap" }` — rerun idempotent bootstrap;
-- `POST /api/v1/admin-ops/commercial-setup/providers/<slug>/health/` — validate the configured provider credential and update provider health.
+- `GET /api/v1/admin/commercial-setup/` — setup status without secret values;
+- `POST /api/v1/admin/commercial-setup/` with `{ "action": "bootstrap" }` — rerun idempotent bootstrap;
+- `POST /api/v1/admin/commercial-setup/providers/<slug>/health/` — validate the configured provider credential and update provider health.
 
 ## Commercial gate
 
