@@ -10,8 +10,10 @@ from apps.files.models import FileAsset
 
 from .models import AIModel, Provider, RoutingPolicyVersion
 from .reliability import candidate_models, provider_available
+from .token_estimator import estimate_text_tokens
 
 OUTPUT_TOKENS = 1024
+CONTEXT_SAFETY_TOKENS = 64
 MODE_LABELS = {
     "manual": "Вручную",
     "economy": "Эконом",
@@ -39,10 +41,7 @@ RULES = [
     (EvalCase.Taxonomy.TRANSLATION, ("переведи", "перевод", "translate")),
     (EvalCase.Taxonomy.EXTRACTION, ("извлеки", "вытащи факт", "json", "распознай поля")),
     (EvalCase.Taxonomy.STRUCTURING, ("структурируй", "разбей по", "составь таблицу", "план")),
-    (
-        EvalCase.Taxonomy.COPYWRITING,
-        ("напиши текст", "напиши реклам", "оффер", "пост", "статью", "продающ"),
-    ),
+    (EvalCase.Taxonomy.COPYWRITING, ("напиши текст", "напиши реклам", "оффер", "пост", "статью", "продающ")),
     (EvalCase.Taxonomy.EDITING, ("исправь текст", "отредакт", "перепиши", "сократи")),
     (EvalCase.Taxonomy.RESEARCH, ("исследуй", "найди акту", "источник", "сравни рынок")),
     (EvalCase.Taxonomy.REASONING, ("почему", "рассчитай", "задач", "логик", "обоснуй")),
@@ -81,7 +80,8 @@ def classify_task(content, conversation):
     matches.sort(reverse=True)
     taxonomy = matches[0][1] if matches else EvalCase.Taxonomy.QA
     confidence = min(0.98, 0.58 + (matches[0][0] * 0.12)) if matches else 0.52
-    long_context = len(content) > 8000 or any(
+    content_tokens = estimate_text_tokens(content)
+    long_context = content_tokens > 2000 or any(
         token in normalized for token in ("длинный документ", "весь документ", "большой файл")
     )
     if long_context and not matches:
@@ -104,13 +104,10 @@ def classify_task(content, conversation):
             deleted_at__isnull=True,
         ).exists()
     )
-    image_request = any(
-        token in normalized for token in ("изображен", "фото", "картин", "скриншот")
-    )
+    image_request = any(token in normalized for token in ("изображен", "фото", "картин", "скриншот"))
     needs_vision = image_request and has_visual_files
     needs_tools = any(
-        token in normalized
-        for token in ("найди акту", "проверь в интернете", "сегодня", "последние новости")
+        token in normalized for token in ("найди акту", "проверь в интернете", "сегодня", "последние новости")
     )
     capabilities = ["text"]
     if needs_vision:
@@ -125,6 +122,7 @@ def classify_task(content, conversation):
             "has_visual_files": has_visual_files,
             "needs_vision": needs_vision,
             "needs_tools": needs_tools,
+            "content_tokens": content_tokens,
             "matched_rules": matches[:3],
         },
     )
@@ -150,10 +148,15 @@ def _quality(model, taxonomy, default):
 
 def _estimated_input(conversation, content):
     recent = list(conversation.messages.exclude(content="").order_by("-created_at")[:13])
-    total = sum(len(item.content) for item in recent)
+    total = sum(estimate_text_tokens(item.content) + 4 for item in recent)
     if not recent or recent[0].role != "user" or recent[0].content != content:
-        total += len(content)
-    return max(128, total + 32)
+        total += estimate_text_tokens(content) + 4
+    return max(32, total + 16)
+
+
+def _fits_context(model, input_tokens, output_tokens=OUTPUT_TOKENS):
+    allowed_output = min(output_tokens, model.max_output_tokens)
+    return input_tokens + allowed_output + CONTEXT_SAFETY_TOKENS <= model.context_window
 
 
 def _health_score(provider):
@@ -175,11 +178,7 @@ def _active_policy():
     if not policy:
         policy, _created = RoutingPolicyVersion.objects.get_or_create(
             version="router-v1",
-            defaults={
-                "active": True,
-                "mode_weights": DEFAULT_WEIGHTS,
-                "thresholds": DEFAULT_THRESHOLDS,
-            },
+            defaults={"active": True, "mode_weights": DEFAULT_WEIGHTS, "thresholds": DEFAULT_THRESHOLDS},
         )
         if not policy.active:
             raise ValidationError("Активная политика AUTO Router не настроена")
@@ -193,9 +192,7 @@ def select_route(*, conversation, content):
     mode = conversation.routing_mode
     if mode == "manual":
         try:
-            primary = AIModel.objects.select_related(
-                "provider", "fallback_model", "current_version"
-            ).get(
+            primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(
                 slug=conversation.selected_model, enabled=True
             )
         except AIModel.DoesNotExist as exc:
@@ -207,54 +204,56 @@ def select_route(*, conversation, content):
         primary_cost = None
         multiplier = Decimal(str(policy.thresholds.get("fallback_price_multiplier", 1.5)))
         for model in available:
+            reasons = []
+            if not _fits_context(model, input_tokens):
+                reasons.append("context_window_too_small")
             price = active_price(model.slug)
             price_quote = quote(
                 price,
                 input_tokens,
-                OUTPUT_TOKENS,
+                min(OUTPUT_TOKENS, model.max_output_tokens),
                 provider_slug=model.provider.slug,
                 model_slug=model.slug,
             )
             charge = price_quote.user_charge_rub
             if primary_cost is None:
                 primary_cost = charge
-            allowed = price_quote.margin_allowed and charge <= primary_cost * multiplier
-            reasons = []
             if not price_quote.margin_allowed:
                 reasons.append("margin_below_floor")
             if charge > primary_cost * multiplier:
                 reasons.append("fallback_price_requires_consent")
-            priced.append(
-                {
-                    "model": model.slug,
-                    "provider": model.provider.slug,
-                    "model_version": (
-                        model.current_version.version if model.current_version else None
-                    ),
-                    "exact_api_id": model.upstream_model,
-                    "status": "eligible" if allowed else "rejected",
-                    "reasons": reasons,
-                    "estimated_cost_rub": str(charge),
-                    "gross_margin_percent": str(price_quote.gross_margin_percent),
-                    "score": None,
-                }
-            )
+            allowed = not reasons
+            priced.append({
+                "model": model.slug,
+                "provider": model.provider.slug,
+                "model_version": model.current_version.version if model.current_version else None,
+                "exact_api_id": model.upstream_model,
+                "status": "eligible" if allowed else "rejected",
+                "reasons": reasons,
+                "estimated_input_tokens": input_tokens,
+                "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
+                "estimated_cost_rub": str(charge),
+                "gross_margin_percent": str(price_quote.gross_margin_percent),
+                "score": None,
+            })
         allowed_models = [
             model for model, item in zip(available, priced, strict=True) if item["status"] == "eligible"
         ]
         for rank, item in enumerate((item for item in priced if item["status"] == "eligible"), 1):
             item["rank"] = rank
             item["fallback_allowed"] = True
+        if not allowed_models:
+            raise ValidationError("Выбранная модель не помещает запрос в контекст или нарушает лимит стоимости")
         return RouteSelection(
             policy=policy,
             classification=classification,
-            selected=primary,
+            selected=allowed_models[0],
             ordered_models=allowed_models,
             candidates=priced,
-            explanation=f"Модель {primary.display_name} выбрана пользователем вручную.",
+            explanation=f"Модель {allowed_models[0].display_name} выбрана пользователем вручную.",
             estimated_input_tokens=input_tokens,
-            estimated_output_tokens=OUTPUT_TOKENS,
-            estimated_cost_rub=primary_cost,
+            estimated_output_tokens=min(OUTPUT_TOKENS, allowed_models[0].max_output_tokens),
+            estimated_cost_rub=Decimal(next(item["estimated_cost_rub"] for item in priced if item["status"] == "eligible")),
         )
 
     weights = policy.mode_weights.get(mode)
@@ -265,9 +264,7 @@ def select_route(*, conversation, content):
     unknown_latency = int(policy.thresholds.get("unknown_latency_ms", 1500))
     candidates = []
     model_lookup = {}
-    for model in AIModel.objects.filter(enabled=True).select_related(
-        "provider", "current_version"
-    ):
+    for model in AIModel.objects.filter(enabled=True).select_related("provider", "current_version"):
         model_lookup[model.slug] = model
         reasons = []
         capabilities = _capabilities(model)
@@ -276,14 +273,15 @@ def select_route(*, conversation, content):
             reasons.append("missing_capabilities:" + ",".join(sorted(missing)))
         if not provider_available(model.provider):
             reasons.append("provider_unavailable")
-        if len(content) + OUTPUT_TOKENS + 64 > model.context_window:
+        if not _fits_context(model, input_tokens):
             reasons.append("context_window_too_small")
+        price_quote = None
         try:
             price = active_price(model.slug)
             price_quote = quote(
                 price,
                 input_tokens,
-                OUTPUT_TOKENS,
+                min(OUTPUT_TOKENS, model.max_output_tokens),
                 provider_slug=model.provider.slug,
                 model_slug=model.slug,
             )
@@ -293,35 +291,29 @@ def select_route(*, conversation, content):
         except ValidationError:
             charge = None
             reasons.append("price_not_configured")
-        quality, quality_source, eval_run = _quality(
-            model, classification.taxonomy, default_quality
-        )
+        quality, quality_source, eval_run = _quality(model, classification.taxonomy, default_quality)
         if mode == "economy" and quality_source == "eval" and quality < economy_min:
             reasons.append("quality_below_economy_minimum")
         latency = model.provider.last_latency_ms or unknown_latency
-        candidates.append(
-            {
-                "model": model.slug,
-                "provider": model.provider.slug,
-                "model_version": (
-                    model.current_version.version if model.current_version else None
-                ),
-                "exact_api_id": model.upstream_model,
-                "status": "rejected" if reasons else "eligible",
-                "reasons": reasons,
-                "quality": quality,
-                "quality_source": quality_source,
-                "eval_run": eval_run,
-                "latency_ms": latency,
-                "health": model.provider.health_state,
-                "context_window": model.context_window,
-                "estimated_cost_rub": str(charge) if charge is not None else None,
-                "gross_margin_percent": (
-                    str(price_quote.gross_margin_percent) if charge is not None else None
-                ),
-                "score": None,
-            }
-        )
+        candidates.append({
+            "model": model.slug,
+            "provider": model.provider.slug,
+            "model_version": model.current_version.version if model.current_version else None,
+            "exact_api_id": model.upstream_model,
+            "status": "rejected" if reasons else "eligible",
+            "reasons": reasons,
+            "quality": quality,
+            "quality_source": quality_source,
+            "eval_run": eval_run,
+            "latency_ms": latency,
+            "health": model.provider.health_state,
+            "context_window": model.context_window,
+            "estimated_input_tokens": input_tokens,
+            "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
+            "estimated_cost_rub": str(charge) if charge is not None else None,
+            "gross_margin_percent": str(price_quote.gross_margin_percent) if price_quote else None,
+            "score": None,
+        })
     eligible = [item for item in candidates if item["status"] == "eligible"]
     if not eligible:
         raise ValidationError("AUTO Router не нашёл подходящую доступную модель")
@@ -333,31 +325,24 @@ def select_route(*, conversation, content):
         latency_score = _normalize_inverse(item["latency_ms"], min(latencies), max(latencies))
         context_score = (
             (math.log2(item["context_window"]) - min(contexts)) / (max(contexts) - min(contexts))
-            if max(contexts) > min(contexts)
-            else 1.0
+            if max(contexts) > min(contexts) else 1.0
         )
         health_score = _health_score(model_lookup[item["model"]].provider)
         tag_bonus = 0.05 if classification.taxonomy in model_lookup[item["model"]].routing_tags else 0
         needs_bonus = 0.03 if classification.signals["needs_tools"] and "tools" in _capabilities(model_lookup[item["model"]]) else 0
         long_bonus = 0.05 * context_score if classification.signals["long_context"] else 0
         item["score_components"] = {
-            "quality": round(item["quality"], 4),
-            "cost": round(cost_score, 4),
-            "latency": round(latency_score, 4),
-            "health": round(health_score, 4),
-            "context": round(context_score, 4),
-            "tag_bonus": tag_bonus,
-            "needs_bonus": needs_bonus,
-            "long_context_bonus": round(long_bonus, 4),
+            "quality": round(item["quality"], 4), "cost": round(cost_score, 4),
+            "latency": round(latency_score, 4), "health": round(health_score, 4),
+            "context": round(context_score, 4), "tag_bonus": tag_bonus,
+            "needs_bonus": needs_bonus, "long_context_bonus": round(long_bonus, 4),
         }
         item["score"] = round(
             item["quality"] * float(weights.get("quality", 0))
             + cost_score * float(weights.get("cost", 0))
             + latency_score * float(weights.get("latency", 0))
             + health_score * float(weights.get("health", 0))
-            + tag_bonus
-            + needs_bonus
-            + long_bonus,
+            + tag_bonus + needs_bonus + long_bonus,
             6,
         )
     eligible.sort(key=lambda item: (-item["score"], item["model"]))
@@ -375,13 +360,11 @@ def select_route(*, conversation, content):
     label = TASK_LABELS.get(classification.taxonomy, classification.taxonomy)
     quality_note = (
         f"eval-оценка {selected_item['quality']:.0%}"
-        if selected_item["quality_source"] == "eval"
-        else "базовая оценка до накопления eval"
+        if selected_item["quality_source"] == "eval" else "базовая оценка до накопления eval"
     )
     explanation = (
-        f"AUTO определил задачу «{label}» и выбрал {selected.display_name}: "
-        f"{quality_note}, провайдер {selected.provider.get_health_state_display().lower()}, "
-        f"режим «{MODE_LABELS[mode]}»."
+        f"AUTO определил задачу «{label}» и выбрал {selected.display_name}: {quality_note}, "
+        f"провайдер {selected.provider.get_health_state_display().lower()}, режим «{MODE_LABELS[mode]}»."
     )
     return RouteSelection(
         policy=policy,
@@ -391,6 +374,6 @@ def select_route(*, conversation, content):
         candidates=candidates,
         explanation=explanation,
         estimated_input_tokens=input_tokens,
-        estimated_output_tokens=OUTPUT_TOKENS,
+        estimated_output_tokens=min(OUTPUT_TOKENS, selected.max_output_tokens),
         estimated_cost_rub=selected_cost,
     )
