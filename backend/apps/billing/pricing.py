@@ -4,6 +4,8 @@ from decimal import ROUND_UP, Decimal
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+from apps.ai_registry.token_estimator import estimate_message_tokens
+
 from .models import FxRateSnapshot, MarginPolicyVersion, MarkupRuleVersion, PriceVersion
 
 MILLION = Decimal("1000000")
@@ -135,9 +137,7 @@ def _effective_rules(
                 "id": str(rule.id),
                 "scope_type": rule.scope_type,
                 "scope_key": rule.scope_key,
-                "markup_percent": (
-                    str(rule.markup_percent) if rule.markup_percent is not None else None
-                ),
+                "markup_percent": str(rule.markup_percent) if rule.markup_percent is not None else None,
                 "price_multiplier": str(rule.price_multiplier),
             }
         )
@@ -316,6 +316,5 @@ def require_margin(value: PriceQuote):
 
 
 def conservative_token_budget(messages: list[dict], max_output_tokens: int):
-    # One Unicode character per token is deliberately conservative until a model tokenizer is added.
-    input_budget = sum(len(item.get("content", "")) for item in messages) + 32
-    return input_budget, max_output_tokens
+    input_budget = estimate_message_tokens(messages) + 16
+    return max(32, input_budget), max_output_tokens
