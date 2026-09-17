@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .growth_views import GrowthFunnelView
 from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .views import (
@@ -33,6 +34,7 @@ from .views import (
 urlpatterns = [
     path("overview/", ExecutiveOverviewView.as_view(), name="admin-overview"),
     path("metrics/", OperationalMetricsView.as_view(), name="admin-metrics"),
+    path("growth/", GrowthFunnelView.as_view(), name="admin-growth"),
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
     path("ledger/", LedgerInspectorView.as_view(), name="admin-ledger"),
@@ -46,53 +48,21 @@ urlpatterns = [
         CommercialProviderHealthView.as_view(),
         name="admin-commercial-provider-health",
     ),
-    path(
-        "providers/bulk-action/",
-        ProviderBulkActionView.as_view(),
-        name="admin-provider-bulk-action",
-    ),
+    path("providers/bulk-action/", ProviderBulkActionView.as_view(), name="admin-provider-bulk-action"),
     path("requests/", RequestInspectorView.as_view(), name="admin-requests"),
     path("users-organizations/", UserOrganizationView.as_view(), name="admin-users-orgs"),
     path("security/", SecurityEventView.as_view(), name="admin-security"),
-    path(
-        "security/<uuid:event_id>/action/",
-        SecurityEventActionView.as_view(),
-        name="admin-security-action",
-    ),
+    path("security/<uuid:event_id>/action/", SecurityEventActionView.as_view(), name="admin-security-action"),
     path("releases/", ReleaseView.as_view(), name="admin-releases"),
-    path(
-        "releases/<uuid:release_id>/rollout/",
-        ReleaseRolloutView.as_view(),
-        name="admin-release-rollout",
-    ),
+    path("releases/<uuid:release_id>/rollout/", ReleaseRolloutView.as_view(), name="admin-release-rollout"),
     path("backups/", BackupView.as_view(), name="admin-backups"),
-    path(
-        "backups/<uuid:backup_id>/action/",
-        BackupActionView.as_view(),
-        name="admin-backup-action",
-    ),
+    path("backups/<uuid:backup_id>/action/", BackupActionView.as_view(), name="admin-backup-action"),
     path("support/", SupportControlView.as_view(), name="admin-support"),
-    path(
-        "support/<uuid:support_id>/status/",
-        SupportStatusView.as_view(),
-        name="admin-support-status",
-    ),
+    path("support/<uuid:support_id>/status/", SupportStatusView.as_view(), name="admin-support-status"),
     path("feature-flags/", FeatureFlagView.as_view(), name="admin-feature-flags"),
-    path(
-        "feature-flags/<slug:key>/",
-        FeatureFlagDetailView.as_view(),
-        name="admin-feature-flag-detail",
-    ),
+    path("feature-flags/<slug:key>/", FeatureFlagDetailView.as_view(), name="admin-feature-flag-detail"),
     path("audit/", AuditView.as_view(), name="admin-audit"),
     path("signoffs/", ComplianceSignoffView.as_view(), name="admin-signoffs"),
-    path(
-        "status-incidents/",
-        StatusIncidentControlView.as_view(),
-        name="admin-status-incidents",
-    ),
-    path(
-        "status-incidents/<uuid:incident_id>/",
-        StatusIncidentUpdateView.as_view(),
-        name="admin-status-incident-update",
-    ),
+    path("status-incidents/", StatusIncidentControlView.as_view(), name="admin-status-incidents"),
+    path("status-incidents/<uuid:incident_id>/", StatusIncidentUpdateView.as_view(), name="admin-status-incident-update"),
 ]
