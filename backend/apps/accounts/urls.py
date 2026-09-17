@@ -1,6 +1,14 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .security_views import (
+    EmailVerificationConfirmView,
+    EmailVerificationRequestView,
+    PasswordResetConfirmView,
+    PasswordResetRequestView,
+    SessionListView,
+    SessionRevokeView,
+)
 from .views import (
     ChangePasswordView,
     CsrfView,
@@ -27,4 +35,10 @@ urlpatterns = [
     path("preferences/", PreferenceView.as_view()),
     path("change-password/", ChangePasswordView.as_view()),
     path("logout-all/", LogoutAllView.as_view()),
+    path("verify-email/request/", EmailVerificationRequestView.as_view()),
+    path("verify-email/confirm/", EmailVerificationConfirmView.as_view()),
+    path("password-reset/request/", PasswordResetRequestView.as_view()),
+    path("password-reset/confirm/", PasswordResetConfirmView.as_view()),
+    path("sessions/", SessionListView.as_view()),
+    path("sessions/<str:session_key>/revoke/", SessionRevokeView.as_view()),
 ] + router.urls
