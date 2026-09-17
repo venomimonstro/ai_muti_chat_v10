@@ -1,0 +1,8 @@
+"use client";
+
+import Link from "next/link";
+import {FormEvent,useState} from "react";
+import {api} from "../../lib/api";
+import styles from "../commercial.module.css";
+
+export default function ResetPasswordPage(){const [done,setDone]=useState(false);const [error,setError]=useState("");const [busy,setBusy]=useState(false);const submit=async(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();setBusy(true);setError("");const data=new FormData(event.currentTarget);const params=new URLSearchParams(window.location.search);try{await api("/auth/password-reset/confirm/",{method:"POST",body:JSON.stringify({uid:params.get("uid")||"",token:params.get("token")||"",new_password:data.get("password")})});setDone(true);}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось сменить пароль");}finally{setBusy(false);}};return <main className={styles.page}><div className={styles.shell}><section className={styles.hero}><h1>{done?"Пароль изменён":"Новый пароль"}</h1><p>{done?"Все старые сессии завершены. Войдите снова с новым паролем.":"Задайте новый пароль для аккаунта."}</p></section>{done?<Link className={styles.cta} href="/">Перейти ко входу</Link>:<form className={styles.card} onSubmit={submit} style={{maxWidth:520}}><label>Новый пароль<input name="password" type="password" minLength={8} required autoComplete="new-password" style={{display:"block",width:"100%",marginTop:8,padding:12}}/></label>{error&&<p>{error}</p>}<button className={styles.cta} style={{border:0,marginTop:16}} disabled={busy}>{busy?"Сохраняем…":"Сменить пароль"}</button></form>}</div></main>}
