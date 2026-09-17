@@ -1,0 +1,8 @@
+"use client";
+
+import Link from "next/link";
+import {FormEvent,useState} from "react";
+import {api} from "../../lib/api";
+import styles from "../commercial.module.css";
+
+export default function ForgotPasswordPage(){const [sent,setSent]=useState(false);const [error,setError]=useState("");const [busy,setBusy]=useState(false);const submit=async(e:FormEvent<HTMLFormElement>)=>{e.preventDefault();setBusy(true);setError("");const f=new FormData(e.currentTarget);try{await api("/auth/password-reset/request/",{method:"POST",body:JSON.stringify({email:f.get("email")})});setSent(true);}catch(r){setError(r instanceof Error?r.message:"Не удалось отправить запрос");}finally{setBusy(false);}};return <main className={styles.page}><div className={styles.shell}><section className={styles.hero}><h1>Восстановление доступа</h1><p>{sent?"Если аккаунт с таким адресом существует, письмо со ссылкой отправлено.":"Введите email аккаунта. Ответ не раскрывает, зарегистрирован ли такой адрес."}</p></section>{sent?<div className={styles.actions}><Link className={styles.cta} href="/">Вернуться ко входу</Link></div>:<form className={styles.card} onSubmit={submit} style={{maxWidth:520}}><label>Email<input name="email" type="email" required autoComplete="email" style={{display:"block",width:"100%",padding:12,marginTop:8}}/></label>{error&&<p>{error}</p>}<button className={styles.cta} style={{border:0,marginTop:16}} disabled={busy}>{busy?"Отправляем…":"Отправить ссылку"}</button></form>}</div></main>}
