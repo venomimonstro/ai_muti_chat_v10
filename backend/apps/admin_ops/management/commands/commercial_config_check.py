@@ -1,8 +1,10 @@
 import json
+from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.admin_ops.commercial_bootstrap import commercial_setup_status
+from apps.billing.models import PriceVersion
 
 
 class Command(BaseCommand):
@@ -62,10 +64,18 @@ class Command(BaseCommand):
                     model["has_active_version"],
                     "active version required",
                 )
+                price = PriceVersion.objects.filter(
+                    model_slug=model["slug"], active=True
+                ).order_by("-effective_from", "-created_at").first()
+                positive_price = bool(
+                    price
+                    and price.input_rub_per_million > Decimal("0")
+                    and price.output_rub_per_million > Decimal("0")
+                )
                 add(
                     f"model:{model['slug']}:price",
-                    model["has_active_price"],
-                    "active price required",
+                    positive_price,
+                    "positive active input/output price required",
                 )
 
         add("enabled_model", enabled_models > 0, f"enabled models: {enabled_models}")
