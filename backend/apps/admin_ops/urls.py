@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .views import (
     AuditView,
     BackupActionView,
@@ -37,6 +38,12 @@ urlpatterns = [
     path("quality/", QualityControlView.as_view(), name="admin-quality"),
     path("incidents/", IncidentControlView.as_view(), name="admin-incidents"),
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
+    path("commercial-setup/", CommercialSetupView.as_view(), name="admin-commercial-setup"),
+    path(
+        "commercial-setup/providers/<slug:provider_slug>/health/",
+        CommercialProviderHealthView.as_view(),
+        name="admin-commercial-provider-health",
+    ),
     path(
         "providers/bulk-action/",
         ProviderBulkActionView.as_view(),
