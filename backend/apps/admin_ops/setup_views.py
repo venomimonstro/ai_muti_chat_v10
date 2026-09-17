@@ -1,5 +1,6 @@
 from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.ai_registry.models import Provider
 
@@ -8,10 +9,12 @@ from .commercial_bootstrap import (
     check_provider_health,
     commercial_setup_status,
 )
-from .views import AdminAPIView
+from .permissions import IsPlatformAdmin
 
 
-class CommercialSetupView(AdminAPIView):
+class CommercialSetupView(APIView):
+    permission_classes = [IsPlatformAdmin]
+
     def get(self, request):
         return Response(commercial_setup_status())
 
@@ -22,7 +25,9 @@ class CommercialSetupView(AdminAPIView):
         return Response({"created": bootstrap_commercial_catalog(), "status": commercial_setup_status()})
 
 
-class CommercialProviderHealthView(AdminAPIView):
+class CommercialProviderHealthView(APIView):
+    permission_classes = [IsPlatformAdmin]
+
     def post(self, request, provider_slug):
         provider = get_object_or_404(Provider, slug=provider_slug)
         result = check_provider_health(provider)
