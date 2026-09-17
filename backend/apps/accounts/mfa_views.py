@@ -3,6 +3,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .mfa import (
@@ -34,35 +35,45 @@ class MFAStatusView(APIView):
 
     def get(self, request):
         profile = _profile(request.user)
-        return Response({
-            "available": _admin(request.user),
-            "enabled": profile.mfa_enabled,
-            "session_verified": session_verified(request),
-            "recovery_codes_remaining": len(profile.recovery_code_hashes or []),
-        })
+        return Response(
+            {
+                "available": _admin(request.user),
+                "enabled": profile.mfa_enabled,
+                "session_verified": session_verified(request),
+                "recovery_codes_remaining": len(profile.recovery_code_hashes or []),
+            }
+        )
 
 
 class MFASetupView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
 
     def post(self, request):
         if not _admin(request.user):
             return Response({"detail": "MFA setup is available for administrators"}, status=403)
+        profile = _profile(request.user)
+        if profile.mfa_enabled and not session_verified(request):
+            return Response({"detail": "Сначала подтвердите текущую MFA-сессию"}, status=403)
         password = str(request.data.get("password", ""))
         if authenticate(username=request.user.username, password=password) is None:
             return Response({"detail": "Неверный пароль"}, status=400)
         secret = new_secret()
-        profile = _profile(request.user)
         profile.totp_secret_encrypted = encrypt_secret(secret)
         profile.mfa_enabled = False
         profile.recovery_code_hashes = []
         profile.mfa_enabled_at = None
         profile.save()
-        return Response({"secret": secret, "otpauth_uri": otpauth_uri(secret=secret, email=request.user.email)})
+        return Response(
+            {"secret": secret, "otpauth_uri": otpauth_uri(secret=secret, email=request.user.email)}
+        )
 
 
 class MFAConfirmView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
 
     @transaction.atomic
     def post(self, request):
@@ -87,10 +98,16 @@ class MFAConfirmView(APIView):
 
 class MFAVerifyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
 
     @transaction.atomic
     def post(self, request):
-        profile = UserSecurityProfile.objects.select_for_update().filter(user=request.user, mfa_enabled=True).first()
+        profile = (
+            UserSecurityProfile.objects.select_for_update()
+            .filter(user=request.user, mfa_enabled=True)
+            .first()
+        )
         if not profile:
             return Response({"detail": "MFA не настроена"}, status=400)
         code = str(request.data.get("code", ""))
