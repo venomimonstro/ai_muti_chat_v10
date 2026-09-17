@@ -29,6 +29,7 @@ from .branches import ensure_active_branch
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 from .vision import attach_vision_to_messages, resolve_vision_assets, vision_metadata
+from .web_context import enrich_snapshot_with_web
 
 MAX_OUTPUT_TOKENS = 1024
 FLUSH_CHARS = 400
@@ -180,6 +181,13 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
             output_tokens=MAX_OUTPUT_TOKENS,
             include_memory=not suppress_memory,
         )
+        snapshot = enrich_snapshot_with_web(
+            snapshot,
+            content,
+            required=bool(route.classification.signals.get("needs_tools")),
+        )
+        if snapshot.get("budget", {}).get("remaining", 0) < 0:
+            raise ValidationError("Веб-контекст превышает доступное окно модели")
         snapshot.update(memory_metadata)
         snapshot["vision_assets"] = vision_metadata(vision_assets)
         snapshot["routing"] = {
@@ -342,6 +350,11 @@ def run(generation, *, adapter=None):
             )
     except RoutingDecision.DoesNotExist:
         pass
+    if generation.context_snapshot.get("web_search", {}).get("used"):
+        yield sse(
+            "web_search",
+            {"sources": generation.context_snapshot.get("web_sources", [])},
+        )
     if generation.context_snapshot.get("memory_action"):
         yield sse("memory", generation.context_snapshot["memory_action"])
     if generation.context_snapshot.get("memory_candidates"):
