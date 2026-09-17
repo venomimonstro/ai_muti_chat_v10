@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .views import (
     AuditView,
@@ -31,6 +32,7 @@ from .views import (
 
 urlpatterns = [
     path("overview/", ExecutiveOverviewView.as_view(), name="admin-overview"),
+    path("metrics/", OperationalMetricsView.as_view(), name="admin-metrics"),
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
     path("ledger/", LedgerInspectorView.as_view(), name="admin-ledger"),
