@@ -42,6 +42,8 @@ class MessageSerializer(serializers.ModelSerializer):
                 "components": generation.context_snapshot.get("components", []),
                 "citations": generation.context_snapshot.get("citations", []),
                 "vision_assets": generation.context_snapshot.get("vision_assets", []),
+                "web_sources": generation.context_snapshot.get("web_sources", []),
+                "web_search": generation.context_snapshot.get("web_search"),
                 "dropped_or_deduplicated": generation.context_snapshot.get("dropped_or_deduplicated", 0),
                 "routing": generation.context_snapshot.get("routing"),
             },
