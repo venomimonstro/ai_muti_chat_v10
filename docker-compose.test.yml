@@ -1,0 +1,30 @@
+name: ai-workspace-release-test
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: aiworkspace_test
+      POSTGRES_USER: aiworkspace_test
+      POSTGRES_PASSWORD: release-test-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiworkspace_test -d aiworkspace_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  backend-test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+    environment:
+      DJANGO_SECRET_KEY: release-check-secret-key-release-check
+      DJANGO_DEBUG: "true"
+      DATABASE_URL: postgresql://aiworkspace_test:release-test-password@postgres:5432/aiworkspace_test
+      CACHE_URL: ""
+      REDIS_URL: redis://localhost:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
