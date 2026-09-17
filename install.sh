@@ -127,7 +127,11 @@ if [[ "${RESUME}" != true ]]; then
   printf 'PAYMENTS_ENABLED=false\n'
   printf 'PAYMENTS_LIVE_ENABLED=false\n'
   printf 'PAYMENTS_FISCALIZATION_MODE=disabled\n'
-  printf 'OPENAI_API_KEY=\nANTHROPIC_API_KEY=\nDEEPSEEK_API_KEY=\nGEMINI_API_KEY=\nXAI_API_KEY=\n'
+  printf 'OPENAI_API_KEY=\nOPENAI_DEFAULT_MODEL=\n'
+  printf 'ANTHROPIC_API_KEY=\nANTHROPIC_DEFAULT_MODEL=\n'
+  printf 'DEEPSEEK_API_KEY=\nDEEPSEEK_DEFAULT_MODEL=\n'
+  printf 'GEMINI_API_KEY=\nGEMINI_DEFAULT_MODEL=\n'
+  printf 'XAI_API_KEY=\nXAI_DEFAULT_MODEL=\n'
   } >"${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
 fi
@@ -141,6 +145,7 @@ compose build --pull
 compose up -d postgres redis
 compose run --rm backend python manage.py migrate --noinput
 compose run --rm backend python manage.py collectstatic --noinput
+compose run --rm backend python manage.py bootstrap_catalog
 compose run --rm \
   -e "AIWORKSPACE_ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
   backend python manage.py bootstrap_admin \
@@ -167,10 +172,11 @@ if [[ "${READY}" == true ]]; then
   printf '\nУстановка завершена.\n'
   printf 'Сайт: https://%s\n' "${APP_DOMAIN}"
   printf 'Админка: https://%s/admin/\n' "${APP_DOMAIN}"
+  printf 'Проверка коммерческой конфигурации: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py commercial_config_check\n'
 else
   printf '\nКонтейнеры запущены, но HTTPS пока не готов. Установка не помечена завершённой.\n' >&2
   printf 'Проверьте DNS и журнал: sudo docker compose --env-file .env.production -f docker-compose.prod.yml logs caddy\n' >&2
   printf 'После исправления повторите: sudo ./install.sh\n' >&2
   exit 1
 fi
-printf 'Платежи и внешние AI-провайдеры выключены до заполнения ключей и ручной проверки.\n'
+printf 'Платежи и внешние AI-провайдеры выключены до заполнения ключей, моделей, цен и ручной проверки.\n'
