@@ -1,36 +1,109 @@
 "use client";
 
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {Fragment, ReactNode} from "react";
 
-function safeUrl(url: string) {
+function safeHref(value: string) {
   try {
-    const parsed = new URL(url, window.location.origin);
-    if (!["http:", "https:", "mailto:"].includes(parsed.protocol)) return "";
-    return url;
+    const parsed = new URL(value, "https://local.invalid");
+    return ["http:", "https:", "mailto:"].includes(parsed.protocol) ? value : "";
   } catch {
     return "";
   }
 }
 
+function inline(value: string): ReactNode[] {
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
+  const parts = value.split(pattern).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={index}>{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (link) {
+      const href = safeHref(link[2]);
+      return href ? <a key={index} href={href} target="_blank" rel="noreferrer noopener">{link[1]}</a> : <Fragment key={index}>{link[1]}</Fragment>;
+    }
+    return <Fragment key={index}>{part}</Fragment>;
+  });
+}
+
+function isSeparator(row: string[]) {
+  return row.length > 0 && row.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function tableRows(lines: string[], start: number) {
+  const rows: string[][] = [];
+  let index = start;
+  while (index < lines.length && lines[index].includes("|")) {
+    rows.push(lines[index].replace(/^\||\|$/g, "").split("|").map((item) => item.trim()));
+    index += 1;
+  }
+  return {rows, next: index};
+}
+
 export function MarkdownMessage({content}: {content: string}) {
-  return (
-    <div className="markdownMessage">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        skipHtml
-        urlTransform={safeUrl}
-        components={{
-          a: ({children, href}) => (
-            <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>
-          ),
-          pre: ({children}) => <pre className="codeBlock">{children}</pre>,
-          code: ({children, className}) => <code className={className}>{children}</code>,
-          table: ({children}) => <div className="tableScroll"><table>{children}</table></div>,
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  const nodes: ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.startsWith("```")) {
+      const language = line.slice(3).trim();
+      const body: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].startsWith("```")) {
+        body.push(lines[index]); index += 1;
+      }
+      if (index < lines.length) index += 1;
+      nodes.push(<pre className="codeBlock" key={`code-${index}`}><code data-language={language || undefined}>{body.join("\n")}</code></pre>);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const children = inline(heading[2]);
+      nodes.push(level === 1 ? <h1 key={index}>{children}</h1> : level === 2 ? <h2 key={index}>{children}</h2> : level === 3 ? <h3 key={index}>{children}</h3> : <h4 key={index}>{children}</h4>);
+      index += 1; continue;
+    }
+    if (line.includes("|") && index + 1 < lines.length && lines[index + 1].includes("|")) {
+      const candidate = tableRows(lines, index);
+      if (candidate.rows.length >= 2 && isSeparator(candidate.rows[1])) {
+        const [head, _separator, ...body] = candidate.rows;
+        nodes.push(<div className="tableScroll" key={`table-${index}`}><table><thead><tr>{head.map((cell, i) => <th key={i}>{inline(cell)}</th>)}</tr></thead><tbody>{body.map((row, r) => <tr key={r}>{row.map((cell, c) => <td key={c}>{inline(cell)}</td>)}</tr>)}</tbody></table></div>);
+        index = candidate.next; continue;
+      }
+    }
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^[-*]\s+/, "")); index += 1;
+      }
+      nodes.push(<ul key={`ul-${index}`}>{items.map((item, i) => <li key={i}>{inline(item)}</li>)}</ul>); continue;
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\d+\.\s+/, "")); index += 1;
+      }
+      nodes.push(<ol key={`ol-${index}`}>{items.map((item, i) => <li key={i}>{inline(item)}</li>)}</ol>); continue;
+    }
+    if (line.startsWith("> ")) {
+      const quote: string[] = [];
+      while (index < lines.length && lines[index].startsWith("> ")) {
+        quote.push(lines[index].slice(2)); index += 1;
+      }
+      nodes.push(<blockquote key={`q-${index}`}>{quote.map((item, i) => <p key={i}>{inline(item)}</p>)}</blockquote>); continue;
+    }
+    if (!line.trim()) { nodes.push(<br key={`br-${index}`}/>); index += 1; continue; }
+    const paragraph = [line];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !/^(#{1,6})\s+/.test(lines[index]) && !lines[index].startsWith("```") && !/^[-*]\s+/.test(lines[index]) && !/^\d+\.\s+/.test(lines[index]) && !lines[index].startsWith("> ")) {
+      paragraph.push(lines[index]); index += 1;
+    }
+    nodes.push(<p key={`p-${index}`}>{inline(paragraph.join("\n"))}</p>);
+  }
+  return <div className="markdownMessage">{nodes}</div>;
 }
