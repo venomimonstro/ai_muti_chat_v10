@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import timedelta
 
 from django.conf import settings
@@ -61,6 +62,16 @@ class Command(BaseCommand):
         ]
 
     def _production_checks(self):
+        email_backend = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+        email_host = os.getenv("EMAIL_HOST", "").strip()
+        from_email = os.getenv("DEFAULT_FROM_EMAIL", "").strip()
+        frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "").strip()
+        email_ready = (
+            email_backend != "django.core.mail.backends.console.EmailBackend"
+            and bool(email_host)
+            and "@" in from_email
+            and frontend_url.startswith("https://")
+        )
         return [
             self._check("debug_disabled", not settings.DEBUG, "DJANGO_DEBUG=false"),
             self._check(
@@ -82,6 +93,11 @@ class Command(BaseCommand):
                 "https",
                 settings.SECURE_SSL_REDIRECT and settings.SECURE_HSTS_SECONDS >= 86400,
                 "HTTPS redirect and HSTS enabled",
+            ),
+            self._check(
+                "account_email_delivery",
+                email_ready,
+                f"backend={email_backend}, host={'configured' if email_host else 'missing'}, frontend={frontend_url or 'missing'}",
             ),
             self._check("admin_mfa_enforced", settings.ADMIN_MFA_ENFORCED, "ADMIN_MFA_ENFORCED=true"),
             self._check(
