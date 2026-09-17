@@ -1,4 +1,3 @@
-import hashlib
 import math
 import re
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from pgvector.django import CosineDistance
 from apps.projects.access import accessible_projects
 
 from .models import FileAsset, FileChunk
+from .semantic_embeddings import MODEL_VERSION, embed_passage, embed_query
 
 WORD_RE = re.compile(r"[a-zа-яё0-9]{2,}", re.IGNORECASE)
 INJECTION_PATTERNS = (
@@ -70,16 +70,8 @@ def lexical_score(value: str, query_terms: set[str]) -> float:
 
 
 def embed_text(value: str) -> list[float]:
-    """Deterministic, private hashing embedding used until a remote embedder is configured."""
-    dimensions = settings.RAG_EMBEDDING_DIMENSIONS
-    vector = [0.0] * dimensions
-    tokens = WORD_RE.findall(value.casefold())
-    for token in tokens:
-        digest = hashlib.sha256(token.encode()).digest()
-        index = int.from_bytes(digest[:4], "big") % dimensions
-        vector[index] += 1.0 if digest[4] & 1 else -1.0
-    norm = math.sqrt(sum(item * item for item in vector))
-    return [item / norm for item in vector] if norm else vector
+    """Backward-compatible passage embedding API."""
+    return embed_passage(value)
 
 
 def cosine_similarity(left, right) -> float:
@@ -113,21 +105,21 @@ def detect_prompt_injection(value: str) -> tuple[str, list[str]]:
 
 
 def prepare_chunk(chunk: FileChunk, asset: FileAsset) -> FileChunk:
+    import hashlib
+    from django.utils import timezone
+
     chunk.file = asset
     chunk.content_sha256 = hashlib.sha256(chunk.content.encode()).hexdigest()
-    chunk.embedding = embed_text(chunk.content)
-    chunk.embedding_model = settings.RAG_EMBEDDING_MODEL
+    chunk.embedding = embed_passage(chunk.content)
+    chunk.embedding_model = MODEL_VERSION
     chunk.acl_owner_id = asset.owner_id
     chunk.acl_project_id = asset.project_id
     chunk.injection_risk, chunk.injection_signals = detect_prompt_injection(chunk.content)
-    from django.utils import timezone
-
     chunk.indexed_at = timezone.now()
     return chunk
 
 
 def authorized_chunks(user, project_id) -> QuerySet:
-    """Apply tenant/project ACL before candidates reach vector or lexical ranking."""
     if not accessible_projects(user).filter(pk=project_id, archived_at__isnull=True).exists():
         return FileChunk.objects.none()
     return FileChunk.objects.select_related("file").filter(
@@ -166,7 +158,7 @@ def retrieve_project_chunks(*, user, project_id, query: str, limit: int = 4):
     queryset = authorized_chunks(user, project_id).exclude(
         injection_risk=FileChunk.InjectionRisk.BLOCKED
     )
-    query_embedding = embed_text(query)
+    query_embedding = embed_query(query)
     scan_limit = settings.SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT
     if connection.vendor == "postgresql":
         candidates = list(
