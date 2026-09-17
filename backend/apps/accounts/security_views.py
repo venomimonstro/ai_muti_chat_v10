@@ -1,12 +1,11 @@
 import os
 from urllib.parse import urlencode
 
-from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.contrib.sessions.models import Session
 from django.core import signing
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage, get_connection
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
@@ -28,13 +27,22 @@ def _frontend_url(path: str, params: dict) -> str:
 
 
 def _send(subject: str, body: str, recipient: str):
-    send_mail(
-        subject,
-        body,
-        getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@localhost"),
-        [recipient],
-        fail_silently=False,
+    backend = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+    connection = get_connection(
+        backend=backend,
+        host=os.getenv("EMAIL_HOST") or None,
+        port=int(os.getenv("EMAIL_PORT", "587")),
+        username=os.getenv("EMAIL_HOST_USER") or None,
+        password=os.getenv("EMAIL_HOST_PASSWORD") or None,
+        use_tls=os.getenv("EMAIL_USE_TLS", "true").lower() == "true",
     )
+    EmailMessage(
+        subject=subject,
+        body=body,
+        from_email=os.getenv("DEFAULT_FROM_EMAIL", "noreply@localhost"),
+        to=[recipient],
+        connection=connection,
+    ).send(fail_silently=False)
 
 
 def send_verification_email(user: User):
@@ -44,14 +52,18 @@ def send_verification_email(user: User):
         compress=True,
     )
     url = _frontend_url("/verify-email", {"token": token})
-    _send("Подтвердите email", f"Подтвердите адрес электронной почты:\n\n{url}\n\nСсылка действует 24 часа.", user.email)
+    _send(
+        "Подтвердите email",
+        f"Подтвердите адрес электронной почты:\n\n{url}\n\nСсылка действует 24 часа.",
+        user.email,
+    )
 
 
 class EmailVerificationRequestView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "account_recovery"
+    throttle_scope = "login"
 
     def post(self, request):
         email = str(request.data.get("email", "")).strip().casefold()
@@ -65,7 +77,7 @@ class EmailVerificationConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "account_recovery"
+    throttle_scope = "login"
 
     def post(self, request):
         token = str(request.data.get("token", ""))
@@ -86,7 +98,7 @@ class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "account_recovery"
+    throttle_scope = "login"
 
     def post(self, request):
         email = str(request.data.get("email", "")).strip().casefold()
@@ -95,7 +107,11 @@ class PasswordResetRequestView(APIView):
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = RESET_GENERATOR.make_token(user)
             url = _frontend_url("/reset-password", {"uid": uid, "token": token})
-            _send("Сброс пароля", f"Для смены пароля откройте ссылку:\n\n{url}\n\nЕсли это были не вы, проигнорируйте письмо.", user.email)
+            _send(
+                "Сброс пароля",
+                f"Для смены пароля откройте ссылку:\n\n{url}\n\nЕсли это были не вы, проигнорируйте письмо.",
+                user.email,
+            )
         return Response({"detail": "Если аккаунт существует, инструкция отправлена"})
 
 
@@ -103,7 +119,7 @@ class PasswordResetConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "account_recovery"
+    throttle_scope = "login"
 
     def post(self, request):
         uid = str(request.data.get("uid", ""))
