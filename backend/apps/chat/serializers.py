@@ -41,9 +41,8 @@ class MessageSerializer(serializers.ModelSerializer):
                 "budget": generation.context_snapshot.get("budget", {}),
                 "components": generation.context_snapshot.get("components", []),
                 "citations": generation.context_snapshot.get("citations", []),
-                "dropped_or_deduplicated": generation.context_snapshot.get(
-                    "dropped_or_deduplicated", 0
-                ),
+                "vision_assets": generation.context_snapshot.get("vision_assets", []),
+                "dropped_or_deduplicated": generation.context_snapshot.get("dropped_or_deduplicated", 0),
                 "routing": generation.context_snapshot.get("routing"),
             },
         }
@@ -56,25 +55,11 @@ class ConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Conversation
         fields = (
-            "id",
-            "title",
-            "selected_model",
-            "routing_mode",
-            "project",
-            "memory_enabled",
-            "active_branch",
-            "branches",
-            "created_at",
-            "updated_at",
-            "messages",
+            "id", "title", "selected_model", "routing_mode", "project", "memory_enabled",
+            "active_branch", "branches", "created_at", "updated_at", "messages",
         )
         read_only_fields = (
-            "id",
-            "active_branch",
-            "branches",
-            "created_at",
-            "updated_at",
-            "messages",
+            "id", "active_branch", "branches", "created_at", "updated_at", "messages",
         )
 
     def get_messages(self, obj):
@@ -115,6 +100,9 @@ class ConversationSerializer(serializers.ModelSerializer):
 class SendMessageSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=100_000)
     client_message_id = serializers.UUIDField()
+    file_ids = serializers.ListField(
+        child=serializers.UUIDField(), required=False, allow_empty=True, max_length=4
+    )
 
 
 class ConversationDraftSerializer(serializers.ModelSerializer):
