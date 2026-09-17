@@ -12,6 +12,7 @@ from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 
 from apps.memory_store.models import MemoryCandidate
 
+from .mfa import SESSION_MFA_KEY
 from .models import Notification, SupportRequest, UserPreference
 from .security_views import send_verification_email
 from .serializers import (
@@ -36,6 +37,7 @@ class RegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         login(request, user)
+        request.session.pop(SESSION_MFA_KEY, None)
         transaction.on_commit(lambda: send_verification_email(user))
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
@@ -50,6 +52,7 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         login(request, user)
+        request.session.pop(SESSION_MFA_KEY, None)
         return Response(UserSerializer(user).data)
 
 
@@ -57,6 +60,7 @@ class LogoutView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        request.session.pop(SESSION_MFA_KEY, None)
         logout(request)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -88,9 +92,7 @@ class PreferenceView(APIView):
         serializer = UserPreferenceSerializer(preference, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        candidates_are_enabled = (
-            serializer.instance.auto_memory_enabled and serializer.instance.memory_enabled
-        )
+        candidates_are_enabled = serializer.instance.auto_memory_enabled and serializer.instance.memory_enabled
         if candidates_were_enabled and not candidates_are_enabled:
             MemoryCandidate.objects.filter(
                 owner=request.user,
@@ -106,6 +108,7 @@ class ChangePasswordView(APIView):
         request.user.set_password(serializer.validated_data["new_password"])
         request.user.save(update_fields=["password"])
         update_session_auth_hash(request, request.user)
+        request.session.pop(SESSION_MFA_KEY, None)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
