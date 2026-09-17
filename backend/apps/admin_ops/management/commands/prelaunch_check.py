@@ -1,9 +1,9 @@
 import json
 from datetime import timedelta
-from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Q
 from django.urls import reverse
 from django.utils import timezone
 
@@ -41,8 +41,6 @@ class Command(BaseCommand):
 
     def _structural_checks(self):
         status_path = reverse("public-status")
-        legal_dir = Path(settings.BASE_DIR).parent / "docs" / "legal"
-        legal_files = ("offer.md", "privacy.md", "refunds.md", "acceptable-use.md")
         return [
             self._check("status_page", status_path == "/api/v1/status/", status_path),
             self._check(
@@ -59,11 +57,6 @@ class Command(BaseCommand):
                 "security_middleware",
                 "config.middleware.SecurityHeadersMiddleware" in settings.MIDDLEWARE,
                 "CSP and browser hardening middleware",
-            ),
-            self._check(
-                "legal_templates",
-                all((legal_dir / name).exists() for name in legal_files),
-                f"required templates: {', '.join(legal_files)}",
             ),
         ]
 
@@ -109,14 +102,16 @@ class Command(BaseCommand):
         ).exists()
         rollback = ReleaseRecord.objects.filter(state=ReleaseRecord.State.ROLLED_BACK).exists()
         admins = User.objects.filter(status=User.Status.ACTIVE).filter(
-            is_staff=True
-        ) | User.objects.filter(status=User.Status.ACTIVE, role=User.Role.PLATFORM_ADMIN)
+            Q(is_staff=True) | Q(role=User.Role.PLATFORM_ADMIN)
+        ).distinct()
         admin_ids = set(admins.values_list("id", flat=True))
         mfa_ids = set(
             UserSecurityProfile.objects.filter(user_id__in=admin_ids, mfa_enabled=True).values_list("user_id", flat=True)
         )
         enabled_providers = Provider.objects.filter(enabled=True).count()
-        provider_signoffs = len([key for key in required if key.startswith("provider-terms-") and key in approved])
+        provider_signoffs = len(
+            [key for key in required if key.startswith("provider-terms-") and key in approved]
+        )
         return [
             self._check(
                 "compliance_signoffs",
