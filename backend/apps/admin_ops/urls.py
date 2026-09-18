@@ -7,6 +7,7 @@ from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
 from .metrics_views import OperationalMetricsView
+from .provider_views import SafeProviderBulkActionView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView, SupportStatusReplyView
 from .system_views import SystemAnalysisView, SystemIssueActionView
@@ -22,7 +23,6 @@ from .views import (
     LedgerInspectorView,
     PaymentInspectorView,
     PricingControlView,
-    ProviderBulkActionView,
     ProviderControlView,
     QualityControlView,
     ReleaseRolloutView,
@@ -61,7 +61,7 @@ urlpatterns = [
         CommercialProviderHealthView.as_view(),
         name="admin-commercial-provider-health",
     ),
-    path("providers/bulk-action/", ProviderBulkActionView.as_view(), name="admin-provider-bulk-action"),
+    path("providers/bulk-action/", SafeProviderBulkActionView.as_view(), name="admin-provider-bulk-action"),
     path("requests/", RequestInspectorView.as_view(), name="admin-requests"),
     path("users-organizations/", UserOrganizationView.as_view(), name="admin-users-orgs"),
     path("users/<uuid:user_id>/", AdminUserDetailView.as_view(), name="admin-user-detail"),
