@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 from django.utils import timezone
@@ -28,11 +26,15 @@ class Command(BaseCommand):
         if username:
             user = queryset.filter(username=username).first()
             if not user:
-                raise CommandError("Requested evidence actor is not an active platform administrator")
+                raise CommandError(
+                    "Requested evidence actor is not an active platform administrator"
+                )
             return user
         user = queryset.order_by("date_joined", "id").first()
         if not user:
-            raise CommandError("No active platform administrator exists to own drill evidence")
+            raise CommandError(
+                "No active platform administrator exists to own drill evidence"
+            )
         return user
 
     def handle(self, *args, **options):
@@ -44,7 +46,11 @@ class Command(BaseCommand):
 
         if options["kind"] == "restore":
             checksum = options["checksum"].strip().lower()
-            if checksum and (len(checksum) != 64 or any(ch not in "0123456789abcdef" for ch in checksum)):
+            invalid_checksum = checksum and (
+                len(checksum) != 64
+                or any(ch not in "0123456789abcdef" for ch in checksum)
+            )
+            if invalid_checksum:
                 raise CommandError("--checksum must be a SHA256 hex digest")
             if options["size_bytes"] < 0:
                 raise CommandError("--size-bytes cannot be negative")
@@ -61,7 +67,9 @@ class Command(BaseCommand):
                 verified_at=now,
                 restored_at=now,
             )
-            self.stdout.write(self.style.SUCCESS(f"Recorded restore drill: {record.id}"))
+            self.stdout.write(
+                self.style.SUCCESS(f"Recorded restore drill: {record.id}")
+            )
             return
 
         commit_sha = options["commit_sha"].strip()
