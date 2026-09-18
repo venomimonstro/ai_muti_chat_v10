@@ -14,6 +14,7 @@ from apps.billing.services import release, reserve, settle
 
 from .adapters import ImageProviderError, _detect_mime, adapter_for
 from .models import GeneratedImage, ImageGeneration, ImageModel
+from .quality import record_image_quality_failure
 from .validation import validate_generated_image
 
 
@@ -191,4 +192,10 @@ def generate(
         generation.error_code = exc.code if isinstance(exc, ImageProviderError) else "internal_error"
         generation.completed_at = timezone.now()
         generation.save(update_fields=["state", "error_code", "completed_at"])
+        if isinstance(exc, ImageProviderError):
+            record_image_quality_failure(
+                model=model,
+                generation=generation,
+                code=exc.code,
+            )
     return generation
