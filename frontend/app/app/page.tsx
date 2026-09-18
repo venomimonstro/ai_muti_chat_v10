@@ -1,3 +1,3 @@
-import WorkspaceClient from "../WorkspaceClient";
+import WorkspaceV2 from "../workspace/WorkspaceV2";
 
-export default WorkspaceClient;
+export default WorkspaceV2;
