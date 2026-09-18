@@ -5,6 +5,3 @@ class AdminOpsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "apps.admin_ops"
     verbose_name = "Admin Operations"
-
-    def ready(self):
-        from . import analytics_models  # noqa: F401
