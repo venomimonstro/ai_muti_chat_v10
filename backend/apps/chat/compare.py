@@ -10,6 +10,7 @@ from django.utils import timezone
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
+from apps.ai_registry.token_estimator import estimate_text_tokens
 from apps.billing.pricing import active_price, calculate_from_snapshot, quote, require_margin
 from apps.billing.services import release, reserve, settle
 from apps.workspace_search.embeddings import index_message
@@ -44,7 +45,7 @@ def _one_model(slug):
 
 def compare_preview(*, prompt, model_slugs):
     models = _models(model_slugs)
-    input_tokens = len(prompt) + 64
+    input_tokens = estimate_text_tokens(prompt) + 4
     rows = []
     minimum = Decimal("0")
     maximum = Decimal("0")
@@ -248,13 +249,14 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
     prompt += f"Исходный запрос: {compare_run.prompt}\n\n"
     prompt += "\n\n".join(f"Вариант {item.position + 1}:\n{item.output}" for item in variants)
     max_output = min(settings.COMPARE_MAX_OUTPUT_TOKENS, model.max_output_tokens)
-    if len(prompt) + max_output + 32 > model.context_window:
+    input_tokens = estimate_text_tokens(prompt) + 4
+    if input_tokens + max_output + 32 > model.context_window:
         raise ValidationError("Ответы Compare не помещаются в контекст модели синтеза")
     price = active_price(model.slug)
     expected = require_margin(
         quote(
             price,
-            len(prompt) + 64,
+            input_tokens,
             max_output,
             provider_slug=model.provider.slug,
             model_slug=model.slug,
