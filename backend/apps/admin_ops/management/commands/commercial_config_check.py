@@ -1,9 +1,13 @@
 import json
+import os
+from datetime import timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from apps.admin_ops.commercial_bootstrap import commercial_setup_status
+from apps.ai_registry.models import Provider
 from apps.billing.models import PriceVersion
 
 
@@ -15,7 +19,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--require-healthy",
             action="store_true",
-            help="Also require every enabled provider to have a healthy last check",
+            help="Also require every enabled provider to have a recent healthy check",
         )
 
     def handle(self, *args, **options):
@@ -30,6 +34,17 @@ class Command(BaseCommand):
         add("margin_policy", status["margin_policy"], "Active margin guard policy")
         add("rub_fx_identity", status["rub_fx_identity"], "RUB/RUB identity FX snapshot")
 
+        health_max_age = max(
+            int(os.getenv("AI_PROVIDER_HEALTH_MAX_AGE_SECONDS", "900")), 60
+        )
+        health_cutoff = timezone.now() - timedelta(seconds=health_max_age)
+        provider_objects = {
+            item.slug: item
+            for item in Provider.objects.only(
+                "slug", "health_state", "last_checked_at", "enabled"
+            )
+        }
+
         enabled_models = 0
         for provider in status["providers"]:
             provider_enabled = provider["enabled"]
@@ -40,10 +55,22 @@ class Command(BaseCommand):
                     provider["credential_env"],
                 )
                 if options["require_healthy"]:
+                    record = provider_objects.get(provider["slug"])
+                    health_fresh = bool(
+                        record
+                        and record.health_state == Provider.HealthState.HEALTHY
+                        and record.last_checked_at
+                        and record.last_checked_at >= health_cutoff
+                    )
+                    checked_at = (
+                        record.last_checked_at.isoformat()
+                        if record and record.last_checked_at
+                        else "never"
+                    )
                     add(
                         f"provider:{provider['slug']}:health",
-                        provider["health_state"] == "healthy",
-                        provider["health_state"],
+                        health_fresh,
+                        f"state={provider['health_state']}, checked_at={checked_at}, max_age={health_max_age}s",
                     )
             for model in provider["models"]:
                 if not model["enabled"]:
@@ -64,9 +91,11 @@ class Command(BaseCommand):
                     model["has_active_version"],
                     "active version required",
                 )
-                price = PriceVersion.objects.filter(
-                    model_slug=model["slug"], active=True
-                ).order_by("-effective_from", "-created_at").first()
+                price = (
+                    PriceVersion.objects.filter(model_slug=model["slug"], active=True)
+                    .order_by("-effective_from", "-created_at")
+                    .first()
+                )
                 positive_price = bool(
                     price
                     and price.input_rub_per_million > Decimal("0")
@@ -85,11 +114,17 @@ class Command(BaseCommand):
             self.stdout.write(
                 json.dumps({"checks": checks, "passed": not failed}, ensure_ascii=False)
             )
-        else:
-            for item in checks:
-                marker = "PASS" if item["passed"] else "BLOCK"
-                self.stdout.write(f"[{marker}] {item['name']}: {item['detail']}")
+            if failed:
+                raise CommandError(
+                    f"Commercial configuration blocked by {len(failed)} check(s)"
+                )
+            return
 
+        for item in checks:
+            marker = "PASS" if item["passed"] else "BLOCK"
+            self.stdout.write(f"[{marker}] {item['name']}: {item['detail']}")
         if failed:
-            raise CommandError(f"Commercial configuration blocked by {len(failed)} check(s)")
+            raise CommandError(
+                f"Commercial configuration blocked by {len(failed)} check(s)"
+            )
         self.stdout.write(self.style.SUCCESS("Commercial configuration checks passed"))
