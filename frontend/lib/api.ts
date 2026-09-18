@@ -45,7 +45,6 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: "include",
   });
   if (["/auth/login/", "/auth/register/", "/auth/logout/", "/auth/logout-all/"].includes(path)) {
-    // Django rotates the CSRF secret on authentication state changes.
     csrfToken = "";
   }
   if (!response.ok) {
@@ -66,7 +65,7 @@ export type StreamEvent = {event: string; data: Record<string, unknown>};
 
 export async function streamMessage(
   conversationId: string,
-  payload: {content: string; client_message_id: string},
+  payload: {content: string; client_message_id: string; file_ids?: string[]},
   idempotencyKey: string,
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
