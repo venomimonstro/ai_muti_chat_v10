@@ -85,12 +85,53 @@ def test_expensive_stream_is_rejected_before_generation_or_reservation(expensive
 
 
 @pytest.mark.django_db(transaction=True)
-def test_confirmed_expensive_stream_runs_and_releases_reservation(expensive_chat):
+def test_confirmed_amount_below_preview_is_rejected_without_provider_call(expensive_chat):
     client, user, conversation = expensive_chat
     payload = {
         "content": "Сделай подробный анализ проекта",
+        "client_message_id": "a89cbb1c-131f-45b8-b30d-da705957cabe",
+    }
+    preview = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/preview/",
+        payload,
+        format="json",
+    )
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/stream/",
+        {
+            **payload,
+            "confirm_cost": True,
+            "confirmed_max_rub": "0.50",
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="expensive:too-low",
+    )
+
+    assert Decimal(preview.data["estimated_max_rub"]) > Decimal("0.50")
+    assert response.status_code == 409
+    assert response.data["code"] == "cost_confirmation_required"
+    assert Generation.objects.filter(owner=user).count() == 0
+    assert BalanceReservation.objects.filter(wallet=user.wallet).count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_confirmed_expensive_stream_runs_and_releases_reservation(expensive_chat):
+    client, user, conversation = expensive_chat
+    base_payload = {
+        "content": "Сделай подробный анализ проекта",
         "client_message_id": "76f9c7b4-f3b0-429e-abd7-9f6c9ebd973d",
+    }
+    preview = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/preview/",
+        base_payload,
+        format="json",
+    )
+    approved_ceiling = max(Decimal(preview.data["estimated_max_rub"]), Decimal("50"))
+    payload = {
+        **base_payload,
         "confirm_cost": True,
+        "confirmed_max_rub": str(approved_ceiling),
     }
 
     response = client.post(
