@@ -4,6 +4,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 
+from .issue_models import SystemIssue
 from .system_health import INDEX_KEY, list_issues
 
 
@@ -35,12 +36,20 @@ def test_authenticated_client_error_is_registered_without_request_body():
 
 
 @pytest.mark.django_db
-def test_anonymous_client_error_is_rejected():
+def test_anonymous_client_error_is_registered_without_user_data():
     cache.delete(INDEX_KEY)
     response = APIClient().post(
         "/api/v1/client-errors/",
-        {"error_name": "TypeError", "message": "ignored", "source_path": "/"},
+        {
+            "error_name": "TypeError",
+            "message": "Registration UI failed",
+            "stack": "TypeError: Registration UI failed\n at RegisterPage",
+            "source_path": "/register",
+        },
         format="json",
     )
-    assert response.status_code in {401, 403}
-    assert list_issues() == []
+    assert response.status_code == 202
+    issue = SystemIssue.objects.get(source="frontend:/register")
+    assert issue.exception_type == "Frontend:TypeError"
+    assert issue.user_reference == ""
+    assert issue.occurrences == 1
