@@ -7,6 +7,7 @@ from .growth_views import GrowthFunnelView
 from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView
+from .system_views import SystemAnalysisView, SystemIssueActionView
 from .user_views import AdminUserActionView, AdminUserDetailView
 from .views import (
     AuditView,
@@ -37,6 +38,12 @@ from .views import (
 urlpatterns = [
     path("overview/", ExecutiveOverviewView.as_view(), name="admin-overview"),
     path("metrics/", OperationalMetricsView.as_view(), name="admin-metrics"),
+    path("system-analysis/", SystemAnalysisView.as_view(), name="admin-system-analysis"),
+    path(
+        "system-issues/<str:fingerprint>/action/",
+        SystemIssueActionView.as_view(),
+        name="admin-system-issue-action",
+    ),
     path("growth/", GrowthFunnelView.as_view(), name="admin-growth"),
     path("analytics/", ProductAnalyticsView.as_view(), name="admin-analytics"),
     path("drills/", OperationalDrillStatusView.as_view(), name="admin-drills"),
