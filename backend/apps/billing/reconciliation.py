@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from django.utils import timezone
 
+from apps.ai_registry.models import Provider
+
 from .models import (
     BillingReconciliationItem,
     BillingReconciliationRun,
@@ -15,7 +17,18 @@ from .services import reconstruct, reconstruct_buckets
 ZERO = Decimal("0.0000")
 
 
-def _anomaly(*, kind, dedupe_key, request_cost=None, expected=None, actual=None, details=None):
+def _anomaly(
+    *,
+    kind,
+    dedupe_key,
+    request_cost=None,
+    expected=None,
+    actual=None,
+    details=None,
+    severity="warning",
+    model_slug="",
+    provider_slug="",
+):
     return CostAnomaly.objects.get_or_create(
         dedupe_key=dedupe_key,
         defaults={
@@ -24,8 +37,46 @@ def _anomaly(*, kind, dedupe_key, request_cost=None, expected=None, actual=None,
             "expected_rub": expected,
             "actual_rub": actual,
             "details": details or {},
+            "severity": severity,
+            "model_slug": model_slug,
+            "provider_slug": provider_slug,
         },
     )[0]
+
+
+def _trip_loss_circuit(request_cost, model):
+    provider_cost = request_cost.provider_cost_rub
+    charged = request_cost.charged_rub
+    negative_margin = (
+        request_cost.gross_margin_percent is not None
+        and request_cost.gross_margin_percent < ZERO
+    )
+    guaranteed_loss = provider_cost is not None and charged is not None and provider_cost > charged
+    if not (negative_margin or guaranteed_loss):
+        return False
+    _anomaly(
+        kind=CostAnomaly.Kind.MARGIN_FLOOR,
+        dedupe_key=f"critical-loss:{request_cost.id}",
+        request_cost=request_cost,
+        expected=charged,
+        actual=provider_cost,
+        severity="critical",
+        model_slug=model.slug,
+        provider_slug=model.provider.slug,
+        details={
+            "reason": "provider_cost_exceeds_customer_charge" if guaranteed_loss else "negative_gross_margin",
+            "gross_margin_percent": str(request_cost.gross_margin_percent),
+            "model": model.slug,
+            "provider": model.provider.slug,
+        },
+    )
+    Provider.objects.filter(pk=model.provider_id).update(
+        emergency_disabled=True,
+        health_state=Provider.HealthState.DISABLED,
+    )
+    model.provider.emergency_disabled = True
+    model.provider.health_state = Provider.HealthState.DISABLED
+    return True
 
 
 def record_cost_outcome(request_cost, *, model):
@@ -41,6 +92,8 @@ def record_cost_outcome(request_cost, *, model):
             expected=policy.minimum_gross_margin_percent,
             actual=request_cost.gross_margin_percent,
             details={"model": model.slug, "provider": model.provider.slug},
+            model_slug=model.slug,
+            provider_slug=model.provider.slug,
         )
     if request_cost.expected_provider_cost_rub is not None:
         ceiling = request_cost.expected_provider_cost_rub * (
@@ -58,7 +111,10 @@ def record_cost_outcome(request_cost, *, model):
                     "model": model.slug,
                     "provider": model.provider.slug,
                 },
+                model_slug=model.slug,
+                provider_slug=model.provider.slug,
             )
+    _trip_loss_circuit(request_cost, model)
 
 
 def _wallet_item(run, wallet):
