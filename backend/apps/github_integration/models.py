@@ -1,6 +1,7 @@
 import uuid
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -52,6 +53,15 @@ class GitHubRepositoryBinding(models.Model):
                 name="unique_github_installation_repository",
             )
         ]
+
+    def save(self, *args, **kwargs):
+        if self.write_enabled:
+            permissions = self.installation.permissions or {}
+            if permissions.get("contents") != "write":
+                raise ValidationError(
+                    "GitHub App не имеет разрешения contents: write для записи в репозиторий"
+                )
+        return super().save(*args, **kwargs)
 
 
 class GitHubOperationLog(models.Model):
