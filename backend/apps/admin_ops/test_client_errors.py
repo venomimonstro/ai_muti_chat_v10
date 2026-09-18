@@ -53,3 +53,18 @@ def test_anonymous_client_error_is_registered_without_user_data():
     assert issue.exception_type == "Frontend:TypeError"
     assert issue.user_reference == ""
     assert issue.occurrences == 1
+
+
+@pytest.mark.django_db
+def test_oversized_client_error_is_rejected_before_logging():
+    response = APIClient().post(
+        "/api/v1/client-errors/",
+        {
+            "error_name": "HugeError",
+            "message": "x" * 20000,
+            "source_path": "/register",
+        },
+        format="json",
+    )
+    assert response.status_code == 413
+    assert not SystemIssue.objects.filter(exception_type="Frontend:HugeError").exists()
