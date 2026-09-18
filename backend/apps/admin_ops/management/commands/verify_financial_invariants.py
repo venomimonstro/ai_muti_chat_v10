@@ -1,9 +1,13 @@
+from decimal import Decimal
+
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import F, Q
+from django.db.models import F, Q, Sum
 
 from apps.billing.models import BalanceReservation, RequestCost, Wallet
 from apps.chat.models import Generation
 from apps.payments.models import Payment
+
+ZERO = Decimal("0.0000")
 
 
 class Command(BaseCommand):
@@ -11,15 +15,47 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         failures = []
+
         negative_wallets = Wallet.objects.filter(
-            Q(available_rub__lt=0) | Q(reserved_rub__lt=0) | Q(paid_rub__lt=0) | Q(promo_rub__lt=0)
+            Q(available_rub__lt=0)
+            | Q(reserved_rub__lt=0)
+            | Q(paid_rub__lt=0)
+            | Q(promo_rub__lt=0)
         ).count()
         if negative_wallets:
             failures.append(f"negative_wallets={negative_wallets}")
 
-        over_reserved = Wallet.objects.filter(reserved_rub__gt=F("available_rub") + F("reserved_rub")).count()
-        if over_reserved:
-            failures.append(f"invalid_reservations={over_reserved}")
+        bucket_mismatch = Wallet.objects.exclude(
+            available_rub=F("paid_rub") + F("promo_rub")
+        ).count()
+        if bucket_mismatch:
+            failures.append(f"wallet_bucket_mismatch={bucket_mismatch}")
+
+        invalid_active_reservations = BalanceReservation.objects.filter(
+            state=BalanceReservation.State.ACTIVE
+        ).filter(
+            Q(amount_rub__lte=0)
+            | ~Q(amount_rub=F("paid_amount_rub") + F("promo_amount_rub"))
+        ).count()
+        if invalid_active_reservations:
+            failures.append(
+                f"invalid_active_reservations={invalid_active_reservations}"
+            )
+
+        active_totals = {
+            row["wallet_id"]: row["total"] or ZERO
+            for row in BalanceReservation.objects.filter(
+                state=BalanceReservation.State.ACTIVE
+            )
+            .values("wallet_id")
+            .annotate(total=Sum("amount_rub"))
+        }
+        reservation_mismatch = 0
+        for wallet in Wallet.objects.only("id", "reserved_rub").iterator():
+            if wallet.reserved_rub != active_totals.get(wallet.id, ZERO):
+                reservation_mismatch += 1
+        if reservation_mismatch:
+            failures.append(f"wallet_reservation_mismatch={reservation_mismatch}")
 
         completed_missing_cost = Generation.objects.filter(
             state=Generation.State.COMPLETED, actual_cost_rub__isnull=True
@@ -27,15 +63,20 @@ class Command(BaseCommand):
         if completed_missing_cost:
             failures.append(f"completed_missing_cost={completed_missing_cost}")
 
-        request_mismatch = RequestCost.objects.filter(
-            charged_rub__isnull=False,
-            generation_id__in=Generation.objects.filter(state=Generation.State.COMPLETED).values("id"),
-        ).exclude(charged_rub=F("generation_id__actual_cost_rub") if False else F("charged_rub")).count()
-        # Cross-model equality is validated below without unsupported cross-table F joins.
+        generation_costs = {
+            item.id: item.actual_cost_rub
+            for item in Generation.objects.filter(
+                id__in=RequestCost.objects.filter(charged_rub__isnull=False).values(
+                    "generation_id"
+                )
+            ).only("id", "actual_cost_rub")
+        }
         mismatch = 0
-        for cost in RequestCost.objects.filter(charged_rub__isnull=False).iterator():
-            generation = Generation.objects.filter(pk=cost.generation_id).only("actual_cost_rub").first()
-            if generation and generation.actual_cost_rub != cost.charged_rub:
+        for cost in RequestCost.objects.filter(charged_rub__isnull=False).only(
+            "generation_id", "charged_rub"
+        ):
+            generation_cost = generation_costs.get(cost.generation_id)
+            if generation_cost is not None and generation_cost != cost.charged_rub:
                 mismatch += 1
         if mismatch:
             failures.append(f"generation_request_cost_mismatch={mismatch}")
@@ -45,12 +86,6 @@ class Command(BaseCommand):
         ).count()
         if succeeded_uncredited:
             failures.append(f"succeeded_uncredited={succeeded_uncredited}")
-
-        active_without_amount = BalanceReservation.objects.filter(
-            state=BalanceReservation.State.ACTIVE, amount_rub__lte=0
-        ).count()
-        if active_without_amount:
-            failures.append(f"invalid_active_reservations={active_without_amount}")
 
         if failures:
             for item in failures:
