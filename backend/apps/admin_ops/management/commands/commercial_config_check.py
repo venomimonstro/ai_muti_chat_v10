@@ -34,39 +34,39 @@ class Command(BaseCommand):
         add("margin_policy", status["margin_policy"], "Active margin guard policy")
         add("rub_fx_identity", status["rub_fx_identity"], "RUB/RUB identity FX snapshot")
 
-        health_max_age = max(
-            int(os.getenv("AI_PROVIDER_HEALTH_MAX_AGE_SECONDS", "900")), 60
-        )
-        health_cutoff = timezone.now() - timedelta(seconds=health_max_age)
+        now = timezone.now()
+        health_max_age = max(int(os.getenv("AI_PROVIDER_HEALTH_MAX_AGE_SECONDS", "900")), 60)
+        health_cutoff = now - timedelta(seconds=health_max_age)
         provider_objects = {
             item.slug: item
             for item in Provider.objects.only(
-                "slug", "health_state", "last_checked_at", "enabled"
+                "slug", "health_state", "last_checked_at", "enabled", "emergency_disabled"
             )
         }
 
         enabled_models = 0
         for provider in status["providers"]:
             provider_enabled = provider["enabled"]
+            record = provider_objects.get(provider["slug"])
             if provider_enabled:
                 add(
                     f"provider:{provider['slug']}:credential",
                     provider["credential_configured"],
                     provider["credential_env"],
                 )
+                add(
+                    f"provider:{provider['slug']}:emergency_state",
+                    bool(record and not record.emergency_disabled),
+                    "provider must not be emergency-disabled",
+                )
                 if options["require_healthy"]:
-                    record = provider_objects.get(provider["slug"])
                     health_fresh = bool(
                         record
                         and record.health_state == Provider.HealthState.HEALTHY
                         and record.last_checked_at
                         and record.last_checked_at >= health_cutoff
                     )
-                    checked_at = (
-                        record.last_checked_at.isoformat()
-                        if record and record.last_checked_at
-                        else "never"
-                    )
+                    checked_at = record.last_checked_at.isoformat() if record and record.last_checked_at else "never"
                     add(
                         f"provider:{provider['slug']}:health",
                         health_fresh,
@@ -78,7 +78,7 @@ class Command(BaseCommand):
                 enabled_models += 1
                 add(
                     f"model:{model['slug']}:provider_enabled",
-                    provider_enabled,
+                    provider_enabled and bool(record and not record.emergency_disabled),
                     provider["slug"],
                 )
                 add(
@@ -92,7 +92,11 @@ class Command(BaseCommand):
                     "active version required",
                 )
                 price = (
-                    PriceVersion.objects.filter(model_slug=model["slug"], active=True)
+                    PriceVersion.objects.filter(
+                        model_slug=model["slug"],
+                        active=True,
+                        effective_from__lte=now,
+                    )
                     .order_by("-effective_from", "-created_at")
                     .first()
                 )
@@ -104,27 +108,21 @@ class Command(BaseCommand):
                 add(
                     f"model:{model['slug']}:price",
                     positive_price,
-                    "positive active input/output price required",
+                    "positive price effective now is required",
                 )
 
         add("enabled_model", enabled_models > 0, f"enabled models: {enabled_models}")
         failed = [item for item in checks if not item["passed"]]
 
         if options["as_json"]:
-            self.stdout.write(
-                json.dumps({"checks": checks, "passed": not failed}, ensure_ascii=False)
-            )
+            self.stdout.write(json.dumps({"checks": checks, "passed": not failed}, ensure_ascii=False))
             if failed:
-                raise CommandError(
-                    f"Commercial configuration blocked by {len(failed)} check(s)"
-                )
+                raise CommandError(f"Commercial configuration blocked by {len(failed)} check(s)")
             return
 
         for item in checks:
             marker = "PASS" if item["passed"] else "BLOCK"
             self.stdout.write(f"[{marker}] {item['name']}: {item['detail']}")
         if failed:
-            raise CommandError(
-                f"Commercial configuration blocked by {len(failed)} check(s)"
-            )
+            raise CommandError(f"Commercial configuration blocked by {len(failed)} check(s)")
         self.stdout.write(self.style.SUCCESS("Commercial configuration checks passed"))
