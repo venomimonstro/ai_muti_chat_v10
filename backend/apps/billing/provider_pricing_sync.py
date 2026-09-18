@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_UP, Decimal, InvalidOperation
 
 from django.db import transaction
 from django.utils import timezone
@@ -7,6 +7,8 @@ from django.utils import timezone
 from apps.ai_registry.models import AIModel
 
 from .models import CostAnomaly, FxRateSnapshot, PriceVersion
+
+RUB_STEP = Decimal("0.0001")
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,24 @@ def _percent(old, new):
     if old is None or old == 0:
         return Decimal("100")
     return abs((new - old) / old * Decimal("100"))
+
+
+def _active_fx_rate(currency: str, at_time) -> Decimal:
+    currency = currency.upper()
+    if currency == "RUB":
+        return Decimal("1")
+    snapshot = (
+        FxRateSnapshot.objects.filter(
+            base_currency=currency,
+            quote_currency="RUB",
+            effective_at__lte=at_time,
+        )
+        .order_by("-effective_at", "-created_at")
+        .first()
+    )
+    if snapshot is None:
+        raise ValueError(f"Missing FX snapshot {currency}/RUB")
+    return snapshot.rate
 
 
 @transaction.atomic
@@ -103,11 +123,15 @@ def sync_pricing_catalog(payload: dict, *, apply=False, anomaly_threshold_percen
             )
         applied = False
         if changed and apply:
-            # Immutable price history: create a new effective version; never mutate the previous one.
+            fx_rate = _active_fx_rate(currency, now)
+            input_rub = (input_native * fx_rate).quantize(RUB_STEP, rounding=ROUND_UP)
+            output_rub = (output_native * fx_rate).quantize(RUB_STEP, rounding=ROUND_UP)
+            if current is not None:
+                PriceVersion.objects.filter(pk=current.pk).update(active=False)
             PriceVersion.objects.create(
                 model_slug=model_slug,
-                input_rub_per_million=Decimal("0"),
-                output_rub_per_million=Decimal("0"),
+                input_rub_per_million=input_rub,
+                output_rub_per_million=output_rub,
                 provider_currency=currency,
                 input_price_per_million=input_native,
                 output_price_per_million=output_native,
