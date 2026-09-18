@@ -53,7 +53,12 @@ def _b64url(raw):
 def app_jwt():
     now = int(time.time())
     header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
-    payload = _b64url(json.dumps({"iat": now - 60, "exp": now + 540, "iss": _env("GITHUB_APP_ID")}, separators=(",", ":")).encode())
+    payload = _b64url(
+        json.dumps(
+            {"iat": now - 60, "exp": now + 540, "iss": _env("GITHUB_APP_ID")},
+            separators=(",", ":"),
+        ).encode()
+    )
     signing_input = f"{header}.{payload}".encode()
     try:
         private_key = serialization.load_pem_private_key(
@@ -165,6 +170,41 @@ def _safe_directory_path(path):
     return _safe_path(value)
 
 
+def _contents_url(binding, path=""):
+    suffix = f"/{quote(path, safe='/')}" if path else ""
+    return f"{GITHUB_API}/repos/{binding.full_name}/contents{suffix}"
+
+
+def _assert_regular_file(binding, path, *, ref, token):
+    parent, _, basename = path.rpartition("/")
+    payload = _json_request(
+        "GET",
+        _contents_url(binding, parent),
+        headers=_headers(token),
+        params={"ref": ref},
+    )
+    if not isinstance(payload, list):
+        raise ValidationError("Repository parent path is not a directory")
+    entry = next(
+        (
+            item
+            for item in payload
+            if str(item.get("name") or "") == basename
+            and str(item.get("path") or "") == path
+        ),
+        None,
+    )
+    if entry is None:
+        raise ValidationError("Repository file does not exist")
+    if (
+        entry.get("type") != "file"
+        or entry.get("target")
+        or entry.get("submodule_git_url")
+    ):
+        raise ValidationError("Symlinks and submodules are not available in AI workspace")
+    return entry
+
+
 def list_repository_directory(binding, path="", *, ref=None):
     path = _safe_directory_path(path)
     token = installation_token(
@@ -172,10 +212,9 @@ def list_repository_directory(binding, path="", *, ref=None):
         repository_ids=[binding.repository_id],
         permissions={"contents": "read"},
     )
-    suffix = f"/{quote(path, safe='/')}" if path else ""
     payload = _json_request(
         "GET",
-        f"{GITHUB_API}/repos/{binding.full_name}/contents{suffix}",
+        _contents_url(binding, path),
         headers=_headers(token),
         params={"ref": ref or binding.default_branch},
     )
@@ -189,39 +228,43 @@ def list_repository_directory(binding, path="", *, ref=None):
         item_type = item.get("type")
         if item_type not in {"file", "dir"}:
             continue
+        if item.get("target") or item.get("submodule_git_url"):
+            continue
         item_path = str(item.get("path") or "")
         if not item_path or len(item_path) > 1024:
             continue
-        items.append({
-            "name": str(item.get("name") or "")[:255],
-            "path": item_path,
-            "type": item_type,
-            "size": int(item.get("size") or 0),
-            "sha": str(item.get("sha") or "")[:64],
-        })
+        items.append(
+            {
+                "name": str(item.get("name") or "")[:255],
+                "path": item_path,
+                "type": item_type,
+                "size": int(item.get("size") or 0),
+                "sha": str(item.get("sha") or "")[:64],
+            }
+        )
     items.sort(key=lambda item: (item["type"] != "dir", item["name"].casefold()))
-    return {
-        "path": path,
-        "ref": ref or binding.default_branch,
-        "items": items,
-    }
+    return {"path": path, "ref": ref or binding.default_branch, "items": items}
 
 
 def read_repository_file(binding, path, *, ref=None):
     path = _safe_path(path)
+    target_ref = ref or binding.default_branch
     token = installation_token(
         binding.installation.installation_id,
         repository_ids=[binding.repository_id],
         permissions={"contents": "read"},
     )
+    _assert_regular_file(binding, path, ref=target_ref, token=token)
     payload = _json_request(
         "GET",
-        f"{GITHUB_API}/repos/{binding.full_name}/contents/{quote(path, safe='/')}",
+        _contents_url(binding, path),
         headers=_headers(token),
-        params={"ref": ref or binding.default_branch},
+        params={"ref": target_ref},
     )
     if not isinstance(payload, dict) or payload.get("type") != "file":
         raise ValidationError("Path is not a file")
+    if payload.get("target") or payload.get("submodule_git_url"):
+        raise ValidationError("Symlinks and submodules are not available in AI workspace")
     if payload.get("encoding") != "base64":
         raise ValidationError("Unsupported GitHub content encoding")
     try:
@@ -241,7 +284,7 @@ def read_repository_file(binding, path, *, ref=None):
         "sha": payload.get("sha"),
         "size": len(raw),
         "content": text,
-        "ref": ref or binding.default_branch,
+        "ref": target_ref,
     }
 
 
@@ -263,9 +306,13 @@ def write_repository_file(binding, path, *, content, expected_sha, message, bran
         repository_ids=[binding.repository_id],
         permissions={"contents": "write"},
     )
+    entry = _assert_regular_file(binding, path, ref=target_branch, token=token)
+    current_sha = str(entry.get("sha") or "")
+    if current_sha and current_sha != expected_sha:
+        raise ValidationError("GitHub file changed after it was opened; reload before writing")
     payload = _json_request(
         "PUT",
-        f"{GITHUB_API}/repos/{binding.full_name}/contents/{quote(path, safe='/')}",
+        _contents_url(binding, path),
         headers=_headers(token),
         json={
             "message": commit_message,
