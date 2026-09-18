@@ -26,10 +26,6 @@ def _profile(user):
     return profile
 
 
-def _admin(user):
-    return bool(user.is_staff or user.role == user.Role.PLATFORM_ADMIN)
-
-
 class MFAStatusView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -37,7 +33,7 @@ class MFAStatusView(APIView):
         profile = _profile(request.user)
         return Response(
             {
-                "available": _admin(request.user),
+                "available": True,
                 "enabled": profile.mfa_enabled,
                 "session_verified": session_verified(request),
                 "recovery_codes_remaining": len(profile.recovery_code_hashes or []),
@@ -51,8 +47,6 @@ class MFASetupView(APIView):
     throttle_scope = "login"
 
     def post(self, request):
-        if not _admin(request.user):
-            return Response({"detail": "MFA setup is available for administrators"}, status=403)
         profile = _profile(request.user)
         if profile.mfa_enabled and not session_verified(request):
             return Response({"detail": "Сначала подтвердите текущую MFA-сессию"}, status=403)
