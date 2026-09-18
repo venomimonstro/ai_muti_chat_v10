@@ -43,7 +43,11 @@ def _chat_file_ids(user, conversation):
         owner=user, user_message__conversation=conversation
     ).values_list("context_snapshot", flat=True)
     for snapshot in generations.iterator():
-        for item in (snapshot or {}).get("vision_assets", []):
+        payload = snapshot or {}
+        items = payload.get("attached_files")
+        if items is None:
+            items = payload.get("vision_assets", [])
+        for item in items:
             value = item.get("file_id")
             if value:
                 ids.add(str(value))
