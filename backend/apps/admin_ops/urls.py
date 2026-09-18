@@ -7,6 +7,7 @@ from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
 from .metrics_views import OperationalMetricsView
+from .pricing_views import PricingManagementView
 from .provider_views import SafeProviderBulkActionView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView, SupportStatusReplyView
@@ -22,7 +23,6 @@ from .views import (
     IncidentControlView,
     LedgerInspectorView,
     PaymentInspectorView,
-    PricingControlView,
     ProviderControlView,
     QualityControlView,
     ReleaseRolloutView,
@@ -51,7 +51,7 @@ urlpatterns = [
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
     path("ledger/", LedgerInspectorView.as_view(), name="admin-ledger"),
-    path("pricing/", PricingControlView.as_view(), name="admin-pricing"),
+    path("pricing/", PricingManagementView.as_view(), name="admin-pricing"),
     path("quality/", QualityControlView.as_view(), name="admin-quality"),
     path("incidents/", IncidentControlView.as_view(), name="admin-incidents"),
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
