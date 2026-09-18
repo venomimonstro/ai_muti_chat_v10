@@ -5,6 +5,8 @@ from rest_framework.views import APIView
 
 from .client_errors import record_client_error
 
+MAX_CLIENT_ERROR_BODY_BYTES = 16 * 1024
+
 
 class ClientErrorThrottle(SimpleRateThrottle):
     scope = "client_error"
@@ -23,6 +25,13 @@ class ClientErrorReportView(APIView):
     throttle_classes = [ClientErrorThrottle]
 
     def post(self, request):
+        try:
+            content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length > MAX_CLIENT_ERROR_BODY_BYTES:
+            return Response({"detail": "Отчёт об ошибке слишком большой"}, status=413)
+
         error_name = str(request.data.get("error_name", "JavaScriptError"))[:120]
         message = str(request.data.get("message", ""))[:500]
         stack = str(request.data.get("stack", ""))[-8000:]
