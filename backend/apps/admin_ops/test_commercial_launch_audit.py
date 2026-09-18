@@ -22,14 +22,15 @@ def test_commercial_launch_audit_runs_all_required_gates():
 
     assert [name for name, _kwargs in seen] == [
         "check",
+        "semantic_model_check",
         "commercial_config_check",
         "payment_commercial_check",
         "verify_financial_invariants",
         "prelaunch_check",
     ]
-    assert seen[1][1]["require_healthy"] is True
-    assert seen[2][1]["require_reconciliation"] is True
-    assert seen[4][1]["strict"] is True
+    assert seen[2][1]["require_healthy"] is True
+    assert seen[3][1]["require_reconciliation"] is True
+    assert seen[5][1]["strict"] is True
 
 
 @pytest.mark.django_db
@@ -63,7 +64,7 @@ def test_commercial_launch_audit_json_is_single_valid_document():
 
     payload = json.loads(output.getvalue())
     assert payload["passed"] is True
-    assert len(payload["gates"]) == 5
+    assert len(payload["gates"]) == 6
 
 
 @pytest.mark.django_db
