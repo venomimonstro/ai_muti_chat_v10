@@ -14,6 +14,7 @@ from apps.billing.services import release, reserve, settle
 
 from .adapters import ImageProviderError, _detect_mime, adapter_for
 from .models import GeneratedImage, ImageGeneration, ImageModel
+from .validation import validate_generated_image
 
 
 def _trip_image_provider(*, model, generation, reason, expected=None, actual=None):
@@ -147,6 +148,7 @@ def generate(
             mime = _detect_mime(item.content)
             if mime != item.mime_type or len(item.content) > settings.IMAGE_MAX_RESULT_BYTES:
                 raise ImageProviderError("Unsafe image payload", code="invalid_image")
+            validate_generated_image(item.content)
             validated_images.append((item, mime))
         for position, (item, mime) in enumerate(validated_images):
             extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime]
