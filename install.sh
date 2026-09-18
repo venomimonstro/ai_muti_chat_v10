@@ -58,7 +58,7 @@ check_server() {
     fail "нужно минимум около 10 ГБ свободного диска"
   fi
   if [[ "${RESUME}" != true ]]; then
-    if ss -ltn '( sport = :80 or sport = :443 )' 2>/dev/null | tail -n +2 | grep -q .; then
+    if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)(80|443)$'; then
       fail "порты 80/443 уже заняты. Освободите их перед установкой Caddy"
     fi
   fi
@@ -126,7 +126,7 @@ if [[ "${RESUME}" != true ]]; then
     printf 'DATABASE_URL=postgresql://aiworkspace:%s@postgres:5432/aiworkspace\n' "${POSTGRES_PASSWORD}"
     printf 'REDIS_URL=redis://:%s@redis:6379/0\nCACHE_URL=redis://:%s@redis:6379/1\n' "${REDIS_PASSWORD}" "${REDIS_PASSWORD}"
     printf 'DJANGO_SECRET_KEY=%s\nB2B_API_KEY_PEPPER=%s\nMFA_ENCRYPTION_KEY=%s\nMFA_RECOVERY_PEPPER=%s\n' "${DJANGO_SECRET_KEY}" "${B2B_API_KEY_PEPPER}" "${MFA_ENCRYPTION_KEY}" "${MFA_RECOVERY_PEPPER}"
-    printf 'SYSTEM_ISSUE_LOG_FILE=/app/logs/system_issues.jsonl\n'
+    printf 'SYSTEM_ISSUE_LOG_FILE=/app/logs/system_issues.jsonl\nSYSTEM_ISSUE_LOG_MAX_BYTES=20971520\n'
     printf 'LEGAL_DOC_VERSION=2026-09-18\nLEGAL_NAME=\nLEGAL_TAX_ID=\nLEGAL_ADDRESS=\nLEGAL_CONTACT_EMAIL=\nLEGAL_EFFECTIVE_DATE=\n'
     printf 'DJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=%s\n' "${APP_DOMAIN}"
     printf 'DJANGO_SECURE_SSL_REDIRECT=true\nDJANGO_SESSION_COOKIE_SECURE=true\nDJANGO_CSRF_COOKIE_SECURE=true\nDJANGO_SECURE_HSTS_SECONDS=31536000\nDJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=false\nDJANGO_SECURE_HSTS_PRELOAD=false\nDJANGO_TRUST_PROXY_SSL_HEADER=true\n'
