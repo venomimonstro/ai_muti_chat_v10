@@ -112,11 +112,19 @@ class SupportRequest(models.Model):
         IN_PROGRESS = "in_progress", "В работе"
         RESOLVED = "resolved", "Решён"
 
+    class Category(models.TextChoices):
+        BILLING = "billing", "Оплата и баланс"
+        GENERATION = "generation", "Ответы AI"
+        FILES = "files", "Файлы и проекты"
+        ACCOUNT = "account", "Аккаунт"
+        OTHER = "other", "Другое"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="support_requests"
     )
     subject = models.CharField(max_length=160)
+    category = models.CharField(max_length=20, choices=Category.choices, default=Category.OTHER)
     message = models.TextField()
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     created_at = models.DateTimeField(auto_now_add=True)
