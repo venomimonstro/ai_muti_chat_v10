@@ -1,4 +1,6 @@
+import os
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import ROUND_UP, Decimal
 
 from django.core.exceptions import ValidationError
@@ -44,11 +46,12 @@ def active_price(model_slug: str) -> PriceVersion:
 
 def active_fx_snapshot(currency: str) -> FxRateSnapshot | None:
     currency = currency.upper()
+    now = timezone.now()
     snapshot = (
         FxRateSnapshot.objects.filter(
             base_currency=currency,
             quote_currency="RUB",
-            effective_at__lte=timezone.now(),
+            effective_at__lte=now,
         )
         .order_by("-effective_at", "-created_at")
         .first()
@@ -59,10 +62,16 @@ def active_fx_snapshot(currency: str) -> FxRateSnapshot | None:
             quote_currency="RUB",
             rate=Decimal("1"),
             source="system_identity",
-            effective_at=timezone.now(),
+            effective_at=now,
         )
     if not snapshot:
         raise ValidationError(f"Не настроен FX snapshot {currency}/RUB")
+    if currency != "RUB":
+        max_age_hours = max(1, int(os.getenv("FX_RATE_MAX_AGE_HOURS", "36")))
+        if snapshot.effective_at < now - timedelta(hours=max_age_hours):
+            raise ValidationError(
+                f"FX snapshot {currency}/RUB устарел; обновите курс перед платными запросами"
+            )
     return snapshot
 
 
@@ -222,7 +231,6 @@ def quote_flat(
     model_slug,
     operation_type,
 ):
-    """Price a non-token operation while retaining the normal margin hierarchy."""
     price_config = type("FlatPriceConfig", (), {"markup_percent": base_markup_percent})()
     fx = active_fx_snapshot(provider_currency)
     provider_cost = (Decimal(provider_cost_native) * fx.rate).quantize(
