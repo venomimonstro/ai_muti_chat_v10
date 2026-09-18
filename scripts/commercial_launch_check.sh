@@ -11,8 +11,22 @@ mkdir -p "${EVIDENCE_DIR}"
 umask 077
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT="${EVIDENCE_DIR}/commercial-launch-${STAMP}.json"
+RELEASE_LOG="${EVIDENCE_DIR}/release-check-${STAMP}.log"
 
 compose(){ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"; }
+
+printf 'Running immutable release gate...\n'
+set +e
+"${PROJECT_DIR}/scripts/release_check.sh" >"${RELEASE_LOG}.tmp" 2>&1
+RELEASE_STATUS=$?
+set -e
+mv "${RELEASE_LOG}.tmp" "${RELEASE_LOG}"
+sha256sum "${RELEASE_LOG}" >"${RELEASE_LOG}.sha256"
+if [[ ${RELEASE_STATUS} -ne 0 ]]; then
+  echo "COMMERCIAL LAUNCH: BLOCKED BY RELEASE CHECK"
+  echo "Evidence: ${RELEASE_LOG}"
+  exit ${RELEASE_STATUS}
+fi
 
 compose exec -T backend python manage.py bootstrap_compliance >/dev/null
 set +e
@@ -24,9 +38,11 @@ sha256sum "${REPORT}" >"${REPORT}.sha256"
 
 if [[ ${STATUS} -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED"
-  echo "Evidence: ${REPORT}"
+  echo "Release evidence: ${RELEASE_LOG}"
+  echo "Audit evidence: ${REPORT}"
   exit ${STATUS}
 fi
 
 echo "COMMERCIAL LAUNCH: PASS"
-echo "Evidence: ${REPORT}"
+echo "Release evidence: ${RELEASE_LOG}"
+echo "Audit evidence: ${REPORT}"
