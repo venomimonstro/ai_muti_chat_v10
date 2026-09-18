@@ -6,6 +6,7 @@ from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
 from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
+from .support_views import CategorizedSupportControlView
 from .user_views import AdminUserActionView, AdminUserDetailView
 from .views import (
     AuditView,
@@ -29,7 +30,6 @@ from .views import (
     SecurityEventView,
     StatusIncidentControlView,
     StatusIncidentUpdateView,
-    SupportControlView,
     SupportStatusView,
     UserOrganizationView,
 )
@@ -64,7 +64,7 @@ urlpatterns = [
     path("releases/<uuid:release_id>/rollout/", ReleaseRolloutView.as_view(), name="admin-release-rollout"),
     path("backups/", BackupView.as_view(), name="admin-backups"),
     path("backups/<uuid:backup_id>/action/", BackupActionView.as_view(), name="admin-backup-action"),
-    path("support/", SupportControlView.as_view(), name="admin-support"),
+    path("support/", CategorizedSupportControlView.as_view(), name="admin-support"),
     path("support/<uuid:support_id>/status/", SupportStatusView.as_view(), name="admin-support-status"),
     path("feature-flags/", FeatureFlagView.as_view(), name="admin-feature-flags"),
     path("feature-flags/<slug:key>/", FeatureFlagDetailView.as_view(), name="admin-feature-flag-detail"),
