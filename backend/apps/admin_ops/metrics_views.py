@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.core.cache import cache
 from django.db.models import Avg, Count
 from django.utils import timezone
@@ -15,10 +17,13 @@ class OperationalMetricsView(APIView):
     permission_classes = [IsPlatformAdmin]
 
     def get(self, request):
-        hour = timezone.now() - timezone.timedelta(hours=1)
+        hour = timezone.now() - timedelta(hours=1)
         generations = Generation.objects.filter(created_at__gte=hour)
-        generation_stats = generations.aggregate(total=Count("id"), average_cost=Avg("actual_cost_rub"))
+        generation_stats = generations.aggregate(
+            total=Count("id"), average_cost=Avg("actual_cost_rub")
+        )
         failed = generations.filter(state=Generation.State.FAILED).count()
+        total = generation_stats["total"] or 0
         return Response(
             {
                 "http": {
@@ -27,11 +32,9 @@ class OperationalMetricsView(APIView):
                     "latency_ms_total": cache.get("metric:http_latency_ms_total", 0),
                 },
                 "ai_last_hour": {
-                    "requests": generation_stats["total"],
+                    "requests": total,
                     "failed": failed,
-                    "error_rate_percent": round(failed / generation_stats["total"] * 100, 3)
-                    if generation_stats["total"]
-                    else 0,
+                    "error_rate_percent": round(failed / total * 100, 3) if total else 0,
                     "average_cost_rub": generation_stats["average_cost"],
                 },
                 "providers": [
