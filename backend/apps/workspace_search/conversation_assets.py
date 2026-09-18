@@ -90,38 +90,48 @@ class ConversationAssetsView(APIView):
             raise ValidationError({"kind": "Допустимо: all, images, files, links"})
         query = request.query_params.get("q", "").strip()[:200]
 
+        image_queryset = ImageGeneration.objects.filter(
+            owner=request.user,
+            conversation=conversation,
+            state=ImageGeneration.State.COMPLETED,
+        ).select_related("model", "model__provider", "conversation").prefetch_related("images")
+        if query:
+            image_queryset = image_queryset.filter(
+                Q(prompt__icontains=query) | Q(model__display_name__icontains=query)
+            )
+
+        file_ids = _chat_file_ids(request.user, conversation)
+        file_queryset = FileAsset.objects.filter(
+            owner=request.user,
+            pk__in=file_ids,
+        ).exclude(status=FileAsset.Status.DELETED).prefetch_related("jobs")
+        if query:
+            file_queryset = file_queryset.filter(original_name__icontains=query)
+
+        link_items = _chat_links(conversation, query=query)
+        counts = {
+            "images": image_queryset.count(),
+            "files": file_queryset.count(),
+            "links": len(link_items),
+        }
+
         images = []
         files = []
         links = []
-
         if kind in {"all", "images"}:
-            queryset = ImageGeneration.objects.filter(
-                owner=request.user,
-                conversation=conversation,
-                state=ImageGeneration.State.COMPLETED,
-            ).select_related("model", "model__provider", "conversation").prefetch_related("images")
-            if query:
-                queryset = queryset.filter(Q(prompt__icontains=query) | Q(model__display_name__icontains=query))
-            images = ImageGenerationSerializer(queryset[:100], many=True, context={"request": request}).data
-
+            images = ImageGenerationSerializer(
+                image_queryset[:100], many=True, context={"request": request}
+            ).data
         if kind in {"all", "files"}:
-            file_ids = _chat_file_ids(request.user, conversation)
-            queryset = FileAsset.objects.filter(
-                owner=request.user,
-                pk__in=file_ids,
-            ).exclude(status=FileAsset.Status.DELETED).prefetch_related("jobs")
-            if query:
-                queryset = queryset.filter(original_name__icontains=query)
-            files = FileAssetSerializer(queryset[:100], many=True).data
-
+            files = FileAssetSerializer(file_queryset[:100], many=True).data
         if kind in {"all", "links"}:
-            links = _chat_links(conversation, query=query)[:200]
+            links = link_items[:200]
 
         return Response({
             "conversation": str(conversation.id),
             "kind": kind,
             "query": query,
-            "counts": {"images": len(images), "files": len(files), "links": len(links)},
+            "counts": counts,
             "images": images,
             "files": files,
             "links": links,
