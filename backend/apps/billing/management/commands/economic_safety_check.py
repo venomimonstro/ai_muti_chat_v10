@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from apps.ai_registry.models import Provider
 from apps.b2b_api.models import APIKey, APIUsage, Organization
+from apps.chat.models import CompareVariant
 from apps.image_studio.models import ImageGeneration
 
 from ...models import BalanceReservation, CostAnomaly, RequestCost, Wallet
@@ -73,9 +74,54 @@ class Command(BaseCommand):
             charged_rub__gt=F("estimated_rub"),
         ).count()
         if loss_requests:
-            blockers.append(f"provider_cost_above_customer_charge={loss_requests}")
+            warnings.append(f"historical_provider_cost_above_customer_charge={loss_requests}")
         if charge_over_reserved_estimate:
             blockers.append(f"customer_charge_above_preflight_reserve={charge_over_reserved_estimate}")
+
+        b2b_losses = APIUsage.objects.filter(
+            state=APIUsage.State.COMPLETED,
+            provider_cost_rub__gt=F("charged_rub"),
+        )
+        compare_losses = CompareVariant.objects.filter(
+            state=CompareVariant.State.COMPLETED,
+            provider_cost_rub__gt=F("actual_cost_rub"),
+        )
+        image_losses = ImageGeneration.objects.filter(
+            state=ImageGeneration.State.COMPLETED,
+            provider_cost_rub__isnull=False,
+            actual_cost_rub__isnull=False,
+            provider_cost_rub__gt=F("actual_cost_rub"),
+        )
+        if b2b_losses.exists():
+            warnings.append(f"historical_b2b_negative_margin={b2b_losses.count()}")
+        if compare_losses.exists():
+            warnings.append(f"historical_compare_negative_margin={compare_losses.count()}")
+        if image_losses.exists():
+            warnings.append(f"historical_image_negative_margin={image_losses.count()}")
+
+        loss_provider_ids = set(
+            b2b_losses.values_list("model__provider_id", flat=True)
+        )
+        loss_provider_ids.update(
+            compare_losses.values_list("model__provider_id", flat=True)
+        )
+        loss_provider_ids.update(
+            image_losses.values_list("model__provider_id", flat=True)
+        )
+        unsafe_loss_providers = Provider.objects.filter(
+            id__in=loss_provider_ids,
+            enabled=True,
+            emergency_disabled=False,
+        ).count()
+        if unsafe_loss_providers:
+            blockers.append(f"loss_provider_still_enabled={unsafe_loss_providers}")
+
+        open_critical = CostAnomaly.objects.filter(
+            status=CostAnomaly.Status.OPEN,
+            severity="critical",
+        ).count()
+        if open_critical:
+            blockers.append(f"unresolved_critical_cost_anomalies={open_critical}")
 
         exposed_loss_providers = set(
             CostAnomaly.objects.filter(status=CostAnomaly.Status.OPEN, severity="critical")
@@ -90,8 +136,14 @@ class Command(BaseCommand):
         if unsafe_enabled:
             blockers.append(f"critical_cost_anomaly_provider_still_enabled={unsafe_enabled}")
 
-        running_b2b = APIUsage.objects.filter(state=APIUsage.State.RUNNING, created_at__lt=stale_before).count()
-        active_org_without_limit = Organization.objects.filter(active=True, monthly_limit_rub__isnull=True).count()
+        running_b2b = APIUsage.objects.filter(
+            state=APIUsage.State.RUNNING,
+            created_at__lt=stale_before,
+        ).count()
+        active_org_without_limit = Organization.objects.filter(
+            active=True,
+            monthly_limit_rub__isnull=True,
+        ).count()
         active_keys_without_limit = APIKey.objects.filter(
             revoked_at__isnull=True,
             organization__active=True,
