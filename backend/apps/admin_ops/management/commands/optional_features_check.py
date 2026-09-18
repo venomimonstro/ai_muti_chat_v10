@@ -68,11 +68,15 @@ class Command(BaseCommand):
         if not web_ready:
             blockers.append("Не настроен WEB_SEARCH_BASE_URL, хотя web-поиск заявлен в продукте")
 
+        if not settings.B2B_API_ENABLED:
+            blockers.append("B2B OpenAI-compatible API выключен, хотя заявлен в продукте")
+
         payload = {
             "ok": not blockers,
             "compare_models": compare_models,
             "image_models": image_models,
             "web_search_configured": web_ready,
+            "b2b_api_enabled": settings.B2B_API_ENABLED,
             "blockers": blockers,
         }
         if options["as_json"]:
@@ -80,7 +84,8 @@ class Command(BaseCommand):
         else:
             self.stdout.write(
                 f"Compare моделей: {len(compare_models)}; image-моделей: {len(image_models)}; "
-                f"web-search: {'готов' if web_ready else 'не настроен'}"
+                f"web-search: {'готов' if web_ready else 'не настроен'}; "
+                f"B2B API: {'включён' if settings.B2B_API_ENABLED else 'выключен'}"
             )
         if blockers:
             raise CommandError("; ".join(blockers))
