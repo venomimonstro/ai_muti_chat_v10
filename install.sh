@@ -96,6 +96,8 @@ if [[ "${RESUME}" != true ]]; then
   REDIS_PASSWORD="$(openssl rand -hex 32)"
   DJANGO_SECRET_KEY="$(openssl rand -base64 64 | tr -d '\n')"
   B2B_API_KEY_PEPPER="$(openssl rand -base64 64 | tr -d '\n')"
+  MFA_ENCRYPTION_KEY="$(openssl rand -base64 64 | tr -d '\n')"
+  MFA_RECOVERY_PEPPER="$(openssl rand -base64 64 | tr -d '\n')"
 
   umask 077
   {
@@ -110,6 +112,8 @@ if [[ "${RESUME}" != true ]]; then
   printf 'CACHE_URL=redis://:%s@redis:6379/1\n' "${REDIS_PASSWORD}"
   printf 'DJANGO_SECRET_KEY=%s\n' "${DJANGO_SECRET_KEY}"
   printf 'B2B_API_KEY_PEPPER=%s\n' "${B2B_API_KEY_PEPPER}"
+  printf 'MFA_ENCRYPTION_KEY=%s\n' "${MFA_ENCRYPTION_KEY}"
+  printf 'MFA_RECOVERY_PEPPER=%s\n' "${MFA_RECOVERY_PEPPER}"
   printf 'DJANGO_DEBUG=false\n'
   printf 'DJANGO_ALLOWED_HOSTS=%s\n' "${APP_DOMAIN}"
   printf 'DJANGO_SECURE_SSL_REDIRECT=true\n'
