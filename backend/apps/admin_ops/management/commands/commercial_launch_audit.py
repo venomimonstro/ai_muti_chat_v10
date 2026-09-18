@@ -24,8 +24,14 @@ class Command(BaseCommand):
             buffer = io.StringIO()
             try:
                 call_command(command, stdout=buffer, stderr=buffer, **kwargs)
-                results.append({"gate": name, "passed": True, "output": buffer.getvalue().strip()[-4000:]})
-            except (CommandError, SystemExit, Exception) as exc:
+                results.append(
+                    {
+                        "gate": name,
+                        "passed": True,
+                        "output": buffer.getvalue().strip()[-4000:],
+                    }
+                )
+            except Exception as exc:
                 results.append(
                     {
                         "gate": name,
@@ -34,14 +40,20 @@ class Command(BaseCommand):
                         "output": buffer.getvalue().strip()[-4000:],
                     }
                 )
+
         passed = all(item["passed"] for item in results)
         if options["as_json"]:
-            self.stdout.write(json.dumps({"passed": passed, "gates": results}, ensure_ascii=False))
-        else:
-            for item in results:
-                self.stdout.write(f"[{'PASS' if item['passed'] else 'BLOCK'}] {item['gate']}")
-                if item.get("error"):
-                    self.stdout.write(f"  {item['error']}")
+            self.stdout.write(
+                json.dumps({"passed": passed, "gates": results}, ensure_ascii=False)
+            )
+            if not passed:
+                raise CommandError("Commercial launch is BLOCKED; resolve every failed gate")
+            return
+
+        for item in results:
+            self.stdout.write(f"[{'PASS' if item['passed'] else 'BLOCK'}] {item['gate']}")
+            if item.get("error"):
+                self.stdout.write(f"  {item['error']}")
         if not passed:
             raise CommandError("Commercial launch is BLOCKED; resolve every failed gate")
         self.stdout.write(self.style.SUCCESS("COMMERCIAL LAUNCH AUDIT: PASS"))
