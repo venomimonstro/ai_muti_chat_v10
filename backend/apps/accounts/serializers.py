@@ -29,7 +29,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return User.objects.create_user(
             **validated_data,
             legal_accepted_at=timezone.now(),
-            legal_version=settings.LEGAL_DOC_VERSION,
+            legal_version=getattr(settings, "LEGAL_DOC_VERSION", "2026-09-18"),
         )
 
     def validate_password(self, value):
