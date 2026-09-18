@@ -75,11 +75,15 @@ def main():
         if organization is None:
             created = client.post(
                 "/api/v1/organizations/",
-                json={"name": ORG_NAME, "monthly_limit_rub": "100.00"},
+                json={"name": ORG_NAME},
                 headers=headers,
             )
             created.raise_for_status()
             organization = created.json()
+        if organization.get("monthly_limit_rub") not in {None, ""}:
+            raise RuntimeError(
+                "Dedicated B2B E2E organization has a cumulative monthly limit; recreate it without an organization limit"
+            )
         organization_id = organization["id"]
 
         key_response = client.post(
