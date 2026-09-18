@@ -8,6 +8,8 @@ from rest_framework.exceptions import ValidationError as APIValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.chat.models import Conversation
+
 from .models import GeneratedImage, ImageGeneration, ImageModel
 from .serializers import ImageGenerationSerializer, ImageModelSerializer
 from .services import generate, preview
@@ -21,6 +23,16 @@ def _payload(request):
         "quality": request.data.get("quality", ""),
         "count": request.data.get("count", 1),
     }
+
+
+def _conversation(request):
+    conversation_id = request.data.get("conversation")
+    if not conversation_id:
+        return None
+    conversation = Conversation.objects.filter(pk=conversation_id, owner=request.user).first()
+    if conversation is None:
+        raise APIValidationError({"conversation": ["Чат не найден или недоступен"]})
+    return conversation
 
 
 class ImageModelView(APIView):
@@ -55,14 +67,17 @@ class ImageGenerationViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = ImageGeneration.objects.filter(owner=self.request.user).select_related(
-            "model", "model__provider"
+            "model", "model__provider", "conversation"
         ).prefetch_related("images")
         model = self.request.query_params.get("model")
         state_filter = self.request.query_params.get("state")
+        conversation_id = self.request.query_params.get("conversation")
         if model:
             queryset = queryset.filter(model__slug=model)
         if state_filter:
             queryset = queryset.filter(state=state_filter)
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -74,6 +89,7 @@ class ImageGenerationViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             generation = generate(
                 user=request.user,
+                conversation=_conversation(request),
                 idempotency_key=key,
                 confirmed=request.data.get("confirm_cost") is True,
                 **_payload(request),
