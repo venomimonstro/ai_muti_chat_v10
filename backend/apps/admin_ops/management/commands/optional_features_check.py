@@ -93,9 +93,12 @@ class Command(BaseCommand):
         if not settings.B2B_API_ENABLED:
             blockers.append("B2B OpenAI-compatible API выключен, хотя заявлен в продукте")
 
+        github_required = os.getenv("GITHUB_REQUIRED_FOR_LAUNCH", "true").lower() == "true"
         github_is_enabled = github_enabled()
         github_is_configured = github_configured()
         github_key_valid = False
+        if github_required and not github_is_enabled:
+            blockers.append("GitHub интеграция выключена, хотя заявлена в коммерческом продукте")
         if github_is_enabled:
             if not github_is_configured:
                 blockers.append("GitHub интеграция включена, но GitHub App настроен не полностью")
@@ -104,6 +107,7 @@ class Command(BaseCommand):
                     github_key_valid = bool(app_jwt())
                 except ImproperlyConfigured as exc:
                     blockers.append(f"GitHub App private key не прошёл проверку: {exc}")
+
         payload = {
             "ok": not blockers,
             "compare_models": compare_models,
@@ -112,6 +116,7 @@ class Command(BaseCommand):
             "web_search_probe_ok": web_probe_ok,
             "web_search_probe_results": web_probe_results,
             "b2b_api_enabled": settings.B2B_API_ENABLED,
+            "github_required_for_launch": github_required,
             "github_enabled": github_is_enabled,
             "github_configured": github_is_configured,
             "github_private_key_valid": github_key_valid,
