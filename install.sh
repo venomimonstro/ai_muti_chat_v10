@@ -150,6 +150,7 @@ if [[ "${RESUME}" != true ]]; then
     printf 'IMAGES_ENABLED=true\nIMAGE_MAX_PROMPT_CHARS=4000\nIMAGE_MAX_RESULT_BYTES=20971520\nIMAGE_CONFIRM_THRESHOLD_RUB=20.00\n'
     printf 'OPENAI_IMAGE_MODEL=\nOPENAI_IMAGE_PRICE_RUB=\nOPENAI_IMAGE_SIZES=1024x1024\nOPENAI_IMAGE_QUALITIES=standard\nOPENAI_IMAGE_MAX_IMAGES=1\nOPENAI_IMAGE_MARKUP_PERCENT=100\n'
     printf 'B2B_API_ENABLED=true\nB2B_API_MAX_OUTPUT_TOKENS=4096\nB2B_API_MAX_MESSAGE_CHARS=100000\nB2B_API_RUNNING_TIMEOUT_SECONDS=600\nB2B_TRUST_PROXY_IP_HEADER=true\n'
+    printf 'GITHUB_INTEGRATION_ENABLED=false\nGITHUB_APP_ID=\nGITHUB_APP_SLUG=\nGITHUB_APP_CLIENT_ID=\nGITHUB_APP_CLIENT_SECRET=\nGITHUB_APP_PRIVATE_KEY=\nGITHUB_MAX_FILE_BYTES=2097152\nGITHUB_MAX_WRITE_BYTES=1048576\nGITHUB_MAX_DIRECTORY_ITEMS=1000\n'
     printf 'API_ANON_RATE=60/min\nAPI_USER_RATE=300/min\nAPI_LOGIN_RATE=10/min\nAPI_REGISTER_RATE=5/hour\nAPI_CLIENT_ERROR_RATE=10/min\n'
     printf 'PAYMENTS_ENABLED=false\nPAYMENTS_LIVE_ENABLED=false\nPAYMENT_RECONCILIATION_MAX_AGE_SECONDS=86400\n'
     printf 'PAYMENT_RETURN_URL=https://%s/app/wallet/return\n' "${APP_DOMAIN}"
@@ -200,6 +201,6 @@ else
   exit 1
 fi
 
-printf '\nДо коммерческого запуска заполните SMTP, реквизиты продавца, AI API-ключи, модели и себестоимость, image-модель, YooKassa, WEB_SEARCH_BASE_URL, включите MFA и закройте юридические проверки/drills.\n'
+printf '\nДо коммерческого запуска заполните SMTP, реквизиты продавца, AI API-ключи, модели и себестоимость, image-модель, YooKassa, WEB_SEARCH_BASE_URL; при использовании GitHub включите GITHUB_INTEGRATION_ENABLED и заполните GitHub App credentials; включите MFA и закройте юридические проверки/drills.\n'
 printf 'После изменения AI-моделей/цен повторите: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py bootstrap_catalog\n'
 printf 'После настройки image-модели повторите: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py bootstrap_optional_features\n'
