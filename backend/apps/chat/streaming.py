@@ -441,6 +441,7 @@ def run(generation, *, adapter=None):
         if selected_model is None or completed is None:
             raise last_error
 
+        over_reservation = False
         with transaction.atomic():
             request_cost = RequestCost.objects.select_for_update().select_related("price_version").get(generation_id=generation.id)
             if request_cost.pricing_snapshot:
@@ -453,32 +454,53 @@ def run(generation, *, adapter=None):
                 gross_margin = gross_profit / charge * 100 if charge else 100
             reservation_amount = generation.user_message.conversation.owner.wallet.reservations.get(id=generation.reservation_id).amount_rub
             if charge > reservation_amount:
-                raise ValidationError("Provider usage exceeded reserved maximum")
-            settle(generation.reservation_id, charge)
-            request_cost.provider_cost_rub = provider_cost
-            request_cost.charged_rub = charge
-            request_cost.input_tokens = completed.input_tokens
-            request_cost.output_tokens = completed.output_tokens
-            request_cost.gross_profit_rub = gross_profit
-            request_cost.gross_margin_percent = gross_margin
-            request_cost.save(update_fields=[
-                "provider_cost_rub", "charged_rub", "input_tokens", "output_tokens", "gross_profit_rub", "gross_margin_percent"
-            ])
-            record_cost_outcome(request_cost, model=selected_model)
-            assistant.content = full_text
-            assistant.status = Message.Status.COMPLETED
-            assistant.save(update_fields=["content", "status"])
-            generation.state = Generation.State.COMPLETED
-            generation.provider_request_id = completed.provider_request_id
-            generation.input_tokens = completed.input_tokens
-            generation.output_tokens = completed.output_tokens
-            generation.actual_cost_rub = charge
-            generation.routed_model = selected_model.slug
-            generation.provider_slug = selected_model.provider.slug
-            generation.completed_at = timezone.now()
-            generation.save(update_fields=[
-                "state", "provider_request_id", "input_tokens", "output_tokens", "actual_cost_rub", "routed_model", "provider_slug", "completed_at"
-            ])
+                over_reservation = True
+                request_cost.provider_cost_rub = provider_cost
+                request_cost.charged_rub = charge * 0
+                request_cost.input_tokens = completed.input_tokens
+                request_cost.output_tokens = completed.output_tokens
+                request_cost.gross_profit_rub = -provider_cost
+                request_cost.gross_margin_percent = -100
+                request_cost.save(update_fields=[
+                    "provider_cost_rub", "charged_rub", "input_tokens", "output_tokens", "gross_profit_rub", "gross_margin_percent"
+                ])
+                record_cost_outcome(request_cost, model=selected_model)
+                generation.provider_request_id = completed.provider_request_id
+                generation.input_tokens = completed.input_tokens
+                generation.output_tokens = completed.output_tokens
+                generation.routed_model = selected_model.slug
+                generation.provider_slug = selected_model.provider.slug
+                generation.save(update_fields=[
+                    "provider_request_id", "input_tokens", "output_tokens", "routed_model", "provider_slug"
+                ])
+            else:
+                settle(generation.reservation_id, charge)
+                request_cost.provider_cost_rub = provider_cost
+                request_cost.charged_rub = charge
+                request_cost.input_tokens = completed.input_tokens
+                request_cost.output_tokens = completed.output_tokens
+                request_cost.gross_profit_rub = gross_profit
+                request_cost.gross_margin_percent = gross_margin
+                request_cost.save(update_fields=[
+                    "provider_cost_rub", "charged_rub", "input_tokens", "output_tokens", "gross_profit_rub", "gross_margin_percent"
+                ])
+                record_cost_outcome(request_cost, model=selected_model)
+                assistant.content = full_text
+                assistant.status = Message.Status.COMPLETED
+                assistant.save(update_fields=["content", "status"])
+                generation.state = Generation.State.COMPLETED
+                generation.provider_request_id = completed.provider_request_id
+                generation.input_tokens = completed.input_tokens
+                generation.output_tokens = completed.output_tokens
+                generation.actual_cost_rub = charge
+                generation.routed_model = selected_model.slug
+                generation.provider_slug = selected_model.provider.slug
+                generation.completed_at = timezone.now()
+                generation.save(update_fields=[
+                    "state", "provider_request_id", "input_tokens", "output_tokens", "actual_cost_rub", "routed_model", "provider_slug", "completed_at"
+                ])
+        if over_reservation:
+            raise ValidationError("Provider usage exceeded reserved maximum")
         _index_history(assistant)
         refresh_rolling_summary(generation.user_message.conversation)
         yield sse(
