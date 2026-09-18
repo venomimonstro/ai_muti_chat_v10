@@ -106,8 +106,25 @@ class NotificationSerializer(serializers.ModelSerializer):
 class SupportRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupportRequest
-        fields = ("id", "subject", "category", "message", "status", "created_at", "updated_at")
-        read_only_fields = ("id", "status", "created_at", "updated_at")
+        fields = (
+            "id",
+            "subject",
+            "category",
+            "message",
+            "status",
+            "admin_reply",
+            "replied_at",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "id",
+            "status",
+            "admin_reply",
+            "replied_at",
+            "created_at",
+            "updated_at",
+        )
 
 
 class ChangePasswordSerializer(serializers.Serializer):
