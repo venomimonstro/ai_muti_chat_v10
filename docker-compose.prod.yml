@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
     env_file: .env.production
     command: uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers
-    volumes: [media_data:/app/media, static_data:/app/staticfiles]
+    volumes: [media_data:/app/media, static_data:/app/staticfiles, logs_data:/app/logs]
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=3)"], interval: 15s, timeout: 5s, retries: 5}
     depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
     networks: [private, edge]
@@ -44,7 +44,7 @@ services:
     restart: unless-stopped
     env_file: .env.production
     command: celery -A config worker -l INFO --concurrency=2
-    volumes: [media_data:/app/media]
+    volumes: [media_data:/app/media, logs_data:/app/logs]
     depends_on: {backend: {condition: service_healthy}}
     networks: [private]
     init: true
@@ -55,6 +55,7 @@ services:
     restart: unless-stopped
     env_file: .env.production
     command: celery -A config beat -l INFO
+    volumes: [logs_data:/app/logs]
     depends_on: {backend: {condition: service_healthy}}
     networks: [private]
     init: true
@@ -98,5 +99,6 @@ volumes:
   redis_data:
   media_data:
   static_data:
+  logs_data:
   caddy_data:
   caddy_config:
