@@ -15,8 +15,16 @@ class Command(BaseCommand):
         gates = [
             ("django_deploy_check", "check", {"deploy": True}),
             ("semantic_model", "semantic_model_check", {}),
-            ("commercial_config", "commercial_config_check", {"require_healthy": True}),
-            ("payment_commercial", "payment_commercial_check", {"require_reconciliation": True}),
+            (
+                "commercial_config",
+                "commercial_config_check",
+                {"require_healthy": True},
+            ),
+            (
+                "payment_commercial",
+                "payment_commercial_check",
+                {"require_reconciliation": True},
+            ),
             ("financial_invariants", "verify_financial_invariants", {}),
             ("operational_drills", "operational_drills_check", {}),
             ("public_legal", "public_legal_check", {}),
@@ -27,16 +35,40 @@ class Command(BaseCommand):
             buffer = io.StringIO()
             try:
                 call_command(command, stdout=buffer, stderr=buffer, **kwargs)
-                results.append({"gate": name, "passed": True, "output": buffer.getvalue().strip()[-4000:]})
+                results.append(
+                    {
+                        "gate": name,
+                        "passed": True,
+                        "output": buffer.getvalue().strip()[-4000:],
+                    }
+                )
             except Exception as exc:
-                results.append({"gate": name, "passed": False, "error": str(exc), "output": buffer.getvalue().strip()[-4000:]})
+                results.append(
+                    {
+                        "gate": name,
+                        "passed": False,
+                        "error": str(exc),
+                        "output": buffer.getvalue().strip()[-4000:],
+                    }
+                )
         passed = all(item["passed"] for item in results)
         if options["as_json"]:
-            self.stdout.write(json.dumps({"passed": passed, "gates": results}, ensure_ascii=False))
-            if not passed: raise CommandError("Commercial launch is BLOCKED; resolve every failed gate")
+            self.stdout.write(
+                json.dumps({"passed": passed, "gates": results}, ensure_ascii=False)
+            )
+            if not passed:
+                raise CommandError(
+                    "Commercial launch is BLOCKED; resolve every failed gate"
+                )
             return
         for item in results:
-            self.stdout.write(f"[{'PASS' if item['passed'] else 'BLOCK'}] {item['gate']}")
-            if item.get("error"): self.stdout.write(f"  {item['error']}")
-        if not passed: raise CommandError("Commercial launch is BLOCKED; resolve every failed gate")
+            self.stdout.write(
+                f"[{'PASS' if item['passed'] else 'BLOCK'}] {item['gate']}"
+            )
+            if item.get("error"):
+                self.stdout.write(f"  {item['error']}")
+        if not passed:
+            raise CommandError(
+                "Commercial launch is BLOCKED; resolve every failed gate"
+            )
         self.stdout.write(self.style.SUCCESS("COMMERCIAL LAUNCH AUDIT: PASS"))
