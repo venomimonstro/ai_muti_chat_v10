@@ -1,5 +1,6 @@
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import serializers, status, viewsets
 from rest_framework.response import Response
@@ -9,6 +10,12 @@ from .branches import visible_messages
 from .models import Conversation
 from .serializers import ConversationSerializer, MessageSerializer
 from .ux_models import ConversationFolder, ConversationUIState
+
+
+def active_conversations(user):
+    return Conversation.objects.filter(owner=user).filter(
+        Q(ui_state__isnull=True) | Q(ui_state__deleted_at__isnull=True)
+    )
 
 
 class ConversationFolderSerializer(serializers.ModelSerializer):
@@ -21,7 +28,7 @@ class ConversationFolderSerializer(serializers.ModelSerializer):
 
     def get_conversation_count(self, obj):
         annotated = getattr(obj, "conversation_count_value", None)
-        return annotated if annotated is not None else obj.conversation_states.count()
+        return annotated if annotated is not None else obj.conversation_states.filter(deleted_at__isnull=True).count()
 
 
 class ConversationFolderViewSet(viewsets.ModelViewSet):
@@ -29,7 +36,10 @@ class ConversationFolderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return ConversationFolder.objects.filter(owner=self.request.user).annotate(
-            conversation_count_value=Count("conversation_states")
+            conversation_count_value=Count(
+                "conversation_states",
+                filter=Q(conversation_states__deleted_at__isnull=True),
+            )
         )
 
     def perform_create(self, serializer):
@@ -43,7 +53,7 @@ class ConversationSummaryListView(APIView):
         except (TypeError, ValueError):
             limit = 80
         rows = (
-            Conversation.objects.filter(owner=request.user)
+            active_conversations(request.user)
             .select_related("ui_state")
             .order_by("-updated_at")[:limit]
         )
@@ -72,7 +82,8 @@ class ConversationSummaryListView(APIView):
 class ConversationWorkspaceView(APIView):
     def get(self, request, conversation_id):
         conversation = (
-            Conversation.objects.filter(pk=conversation_id, owner=request.user)
+            active_conversations(request.user)
+            .filter(pk=conversation_id)
             .select_related("active_branch")
             .prefetch_related("branches")
             .first()
@@ -144,8 +155,9 @@ class ConversationSettingsView(APIView):
     @transaction.atomic
     def patch(self, request, conversation_id):
         conversation = (
-            Conversation.objects.select_for_update()
-            .filter(pk=conversation_id, owner=request.user)
+            active_conversations(request.user)
+            .select_for_update()
+            .filter(pk=conversation_id)
             .first()
         )
         if conversation is None:
@@ -177,7 +189,7 @@ class ConversationSettingsView(APIView):
 
 class ConversationUIStateViewSet(viewsets.ViewSet):
     def list(self, request):
-        rows = ConversationUIState.objects.filter(owner=request.user).values(
+        rows = ConversationUIState.objects.filter(owner=request.user, deleted_at__isnull=True).values(
             "conversation_id", "folder_id", "is_pinned"
         )
         return Response(
@@ -193,11 +205,7 @@ class ConversationUIStateViewSet(viewsets.ViewSet):
 
     @transaction.atomic
     def partial_update(self, request, pk=None):
-        conversation = (
-            Conversation.objects.select_for_update()
-            .filter(pk=pk, owner=request.user)
-            .first()
-        )
+        conversation = Conversation.objects.select_for_update().filter(pk=pk, owner=request.user).first()
         if conversation is None:
             return Response({"detail": "Чат не найден"}, status=status.HTTP_404_NOT_FOUND)
         state, _ = ConversationUIState.objects.select_for_update().get_or_create(
@@ -220,12 +228,21 @@ class ConversationUIStateViewSet(viewsets.ViewSet):
             else:
                 state.folder = None
             fields.append("folder")
+        if "deleted" in request.data:
+            state.deleted_at = timezone.now() if bool(request.data.get("deleted")) else None
+            if state.deleted_at:
+                state.is_pinned = False
+                state.folder = None
+                fields.extend(["deleted_at", "is_pinned", "folder"])
+            else:
+                fields.append("deleted_at")
         if fields:
-            state.save(update_fields=[*fields, "updated_at"])
+            state.save(update_fields=[*dict.fromkeys(fields), "updated_at"])
         return Response(
             {
                 "conversation_id": str(conversation.id),
                 "folder": str(state.folder_id) if state.folder_id else None,
                 "is_pinned": state.is_pinned,
+                "deleted": state.deleted_at is not None,
             }
         )
