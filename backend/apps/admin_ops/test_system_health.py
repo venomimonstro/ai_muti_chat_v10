@@ -74,3 +74,29 @@ def test_background_failure_is_visible_in_analysis():
     assert issue["path"] == "celery:files.extract"
     assert issue["task_id"] == "task-123"
     assert result["state"] in {"healthy", "warning", "critical"}
+
+
+@pytest.mark.django_db
+def test_issue_log_redacts_common_credentials():
+    request = RequestFactory().get("/api/v1/secret-test/")
+    request.user = User.objects.create_user(
+        username="redaction-user",
+        email="redaction@example.test",
+        password="password123!",
+    )
+    request.correlation_id = "87b6b27b-4ef9-4cab-a914-f6c54c05bcad"
+    secret = "sk-super-secret-token-123456789"
+    try:
+        raise RuntimeError(
+            f"authorization=Bearer {secret} password=my-password "
+            "postgresql://dbuser:db-password@postgres:5432/app"
+        )
+    except RuntimeError as exc:
+        issue = record_exception(request, exc)
+
+    stored = SystemIssue.objects.get(pk=issue["fingerprint"])
+    combined = f"{stored.summary}\n{stored.sample_traceback}"
+    assert secret not in combined
+    assert "my-password" not in combined
+    assert "db-password" not in combined
+    assert "[REDACTED]" in combined or "[REDACTED_KEY]" in combined
