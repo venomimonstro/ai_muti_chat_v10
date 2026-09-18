@@ -7,6 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.ai_registry.models import AIModel
+from apps.ai_registry.web_tools import WebToolError, search_web
 from apps.billing.models import PriceVersion
 from apps.image_studio.models import ImageModel
 
@@ -16,6 +17,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--json", action="store_true", dest="as_json")
+        parser.add_argument(
+            "--skip-live-web-probe",
+            action="store_true",
+            help="Пропустить внешний web-search probe; допустимо только для изолированных тестов.",
+        )
 
     def handle(self, *args, **options):
         blockers = []
@@ -64,9 +70,22 @@ class Command(BaseCommand):
 
         web_url = os.getenv("WEB_SEARCH_BASE_URL", "").strip()
         parsed = urlparse(web_url) if web_url else None
-        web_ready = bool(parsed and parsed.scheme in {"http", "https"} and parsed.hostname)
-        if not web_ready:
+        web_configured = bool(parsed and parsed.scheme in {"http", "https"} and parsed.hostname)
+        web_probe_ok = False
+        web_probe_results = 0
+        if not web_configured:
             blockers.append("Не настроен WEB_SEARCH_BASE_URL, хотя web-поиск заявлен в продукте")
+        elif options["skip_live_web_probe"]:
+            web_probe_ok = True
+        else:
+            try:
+                probe_results = search_web("OpenAI", limit=1)
+                web_probe_results = len(probe_results)
+                web_probe_ok = bool(probe_results)
+                if not web_probe_ok:
+                    blockers.append("Web-search отвечает, но production probe не вернул ни одного результата")
+            except WebToolError as exc:
+                blockers.append(f"Web-search production probe не прошёл: {exc}")
 
         if not settings.B2B_API_ENABLED:
             blockers.append("B2B OpenAI-compatible API выключен, хотя заявлен в продукте")
@@ -75,7 +94,9 @@ class Command(BaseCommand):
             "ok": not blockers,
             "compare_models": compare_models,
             "image_models": image_models,
-            "web_search_configured": web_ready,
+            "web_search_configured": web_configured,
+            "web_search_probe_ok": web_probe_ok,
+            "web_search_probe_results": web_probe_results,
             "b2b_api_enabled": settings.B2B_API_ENABLED,
             "blockers": blockers,
         }
@@ -84,7 +105,7 @@ class Command(BaseCommand):
         else:
             self.stdout.write(
                 f"Compare моделей: {len(compare_models)}; image-моделей: {len(image_models)}; "
-                f"web-search: {'готов' if web_ready else 'не настроен'}; "
+                f"web-search: {'готов' if web_probe_ok else 'не готов'}; "
                 f"B2B API: {'включён' if settings.B2B_API_ENABLED else 'выключен'}"
             )
         if blockers:
