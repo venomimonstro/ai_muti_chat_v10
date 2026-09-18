@@ -161,6 +161,8 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
             "false" if settings.DEBUG else "true",
         ).lower() == "true"
         if async_processing:
+            asset.status = FileAsset.Status.UPLOADED
+            asset.save(update_fields=["status", "updated_at"])
             try:
                 process_file_task.delay(str(asset.id))
             except Exception as exc:
@@ -169,8 +171,6 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
                 finally:
                     asset.delete()
                 raise FileProcessingUnavailable() from exc
-            asset.status = FileAsset.Status.UPLOADED
-            asset.save(update_fields=["status", "updated_at"])
         else:
             process_file(asset)
         return Response(self.get_serializer(asset).data, status=status.HTTP_201_CREATED)
