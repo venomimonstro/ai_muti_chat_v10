@@ -22,6 +22,13 @@ done
 
 printf '[3/9] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
+APP_DOMAIN=release-check.example.test \
+ACME_EMAIL=ops@example.test \
+POSTGRES_DB=release_check \
+POSTGRES_USER=release_check \
+POSTGRES_PASSWORD=release-check-password \
+REDIS_PASSWORD=release-check-redis-password \
+PUBLIC_API_URL=https://release-check.example.test/api/v1 \
 docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 
 printf '[4/9] Build isolated test stack\n'
