@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Notification, SupportRequest, User, UserPreference
@@ -17,13 +18,19 @@ class UserSerializer(serializers.ModelSerializer):
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
+    accepted_terms = serializers.BooleanField(write_only=True)
 
     class Meta:
         model = User
-        fields = ("username", "email", "password")
+        fields = ("username", "email", "password", "accepted_terms")
 
     def create(self, validated_data):
-        return User.objects.create_user(**validated_data)
+        validated_data.pop("accepted_terms", None)
+        return User.objects.create_user(
+            **validated_data,
+            legal_accepted_at=timezone.now(),
+            legal_version=settings.LEGAL_DOC_VERSION,
+        )
 
     def validate_password(self, value):
         validate_password(value)
@@ -31,6 +38,11 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         return value.strip().casefold()
+
+    def validate_accepted_terms(self, value):
+        if value is not True:
+            raise serializers.ValidationError("Необходимо принять оферту и политику конфиденциальности")
+        return value
 
 
 class LoginSerializer(serializers.Serializer):
