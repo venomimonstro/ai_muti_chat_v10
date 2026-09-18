@@ -1,4 +1,5 @@
 import type {Metadata} from "next";
+import "./workspace.css";
 
 export const metadata: Metadata = {
   title: "AI Workspace — рабочее пространство",
