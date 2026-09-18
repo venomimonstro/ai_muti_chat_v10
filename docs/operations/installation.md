@@ -3,70 +3,118 @@
 ## Что потребуется
 
 - чистый сервер Ubuntu 22.04/24.04 или актуальный Debian;
-- минимум 2 vCPU, 4 ГБ RAM и 30 ГБ SSD для небольшого старта;
+- минимум 2 ГБ RAM, рекомендуется 4 ГБ и выше;
+- минимум 10 ГБ свободного диска, для коммерческой эксплуатации рекомендуется 30 ГБ и выше;
 - домен с A/AAAA-записью на IP сервера;
-- открытые входящие порты 80 и 443;
-- исходный код проекта на сервере.
+- свободные входящие порты 80 и 443.
 
-## Установка
+## Установка одной командой
+
+На чистом сервере выполните:
 
 ```bash
-git clone https://github.com/venomimonstro/ai_muti_chat_v10.git ai-workspace
-cd ai-workspace
-chmod +x install.sh
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/venomimonstro/ai_muti_chat_v10/main/scripts/one_click_install.sh | sudo bash
 ```
 
-Мастер спросит домен, email для TLS и данные первого администратора. Если пароль оставить
-пустым, будет создан случайный пароль. Секреты сохраняются только в `.env.production` с
-правами `0600`; файл исключён из Git.
+Bootstrap сам установит `git/curl/openssl`, скачает проект в `/opt/ai-workspace` и запустит мастер production-установки.
 
-Установщик выполняет:
+Мастер спросит только данные, которые нельзя безопасно придумать автоматически:
+- домен;
+- email для HTTPS-сертификата;
+- логин и email первого администратора;
+- пароль администратора или предложит безопасно сгенерировать его.
 
-1. установку и запуск Docker Compose v2, если он отсутствует;
-2. генерацию отдельных секретов Django, PostgreSQL, Redis и B2B API;
-3. production-сборку backend и frontend;
-4. запуск PostgreSQL и Redis;
-5. применение миграций и сбор static-файлов;
-6. безопасное создание первого platform administrator;
-7. запуск worker, beat, frontend и Caddy;
-8. автоматическое получение и продление HTTPS-сертификата;
-9. проверку `/api/v1/health/`.
+Установщик автоматически:
 
-Если установка прервалась, повторный запуск `sudo ./install.sh` продолжит её с теми же
-секретами. После успешной установки повторный запуск блокируется.
+1. проверяет Ubuntu/Debian, RAM, свободный диск и занятость портов 80/443;
+2. устанавливает Docker и Docker Compose v2, если их нет;
+3. генерирует отдельные секреты Django, PostgreSQL, Redis, MFA и B2B API;
+4. создаёт `.env.production` с правами `0600`;
+5. собирает production backend/frontend;
+6. запускает PostgreSQL и Redis и ждёт их readiness;
+7. применяет миграции и выполняет Django system check;
+8. создаёт начальный каталог моделей и первого platform administrator;
+9. запускает backend, worker, beat, frontend и Caddy;
+10. выпускает HTTPS-сертификат и проверяет публичный `/api/v1/readiness/`;
+11. создаёт persistent volume для системного журнала ошибок;
+12. выводит ссылки на ЛК, Admin Console, MFA и диагностику.
+
+Если bootstrap или установка прерваны, повтор той же команды безопасно восстанавливает checkout и продолжает установку без удаления существующих volumes и секретов.
+
+## Полностью non-interactive установка
+
+Для автоматического provisioning можно передать обязательные значения через окружение после того, как репозиторий уже размещён на сервере:
+
+```bash
+sudo AIWS_NONINTERACTIVE=true \
+  AIWS_DOMAIN=ai.example.ru \
+  AIWS_ACME_EMAIL=admin@example.ru \
+  AIWS_ADMIN_USERNAME=admin \
+  AIWS_ADMIN_EMAIL=admin@example.ru \
+  AIWS_ADMIN_PASSWORD='СИЛЬНЫЙ-ПАРОЛЬ-НЕ-МЕНЕЕ-12-СИМВОЛОВ' \
+  bash /opt/ai-workspace/install.sh
+```
+
+Не храните production-пароль в shell history на рабочем сервере; этот режим предназначен прежде всего для защищённого provisioning/secret manager.
+
+## После установки
+
+Обычная установка поднимает инфраструктуру, но намеренно **не включает коммерческие платежи и реальные AI-провайдеры автоматически**. Перед продажами необходимо заполнить `.env.production` реальными SMTP, AI API, ценами, YooKassa и юридическими реквизитами.
+
+Проверка состояния:
+
+```bash
+cd /opt/ai-workspace
+sudo bash scripts/system_diagnostics.sh
+```
+
+Проверка полной готовности к продажам:
+
+```bash
+cd /opt/ai-workspace
+sudo bash scripts/commercial_launch_check.sh
+```
+
+Commercial gate проверяет код, миграции, frontend build, системные ошибки, production E2E, платежи, провайдеров, backup/restore/rollback drills и обязательные sign-off. Известная незакрытая системная ошибка блокирует `PASS`.
 
 ## Обновление
 
 ```bash
-sudo ./scripts/update.sh
+cd /opt/ai-workspace
+sudo bash scripts/update.sh
 ```
 
-Перед обновлением создаётся PostgreSQL dump и SHA-256 checksum в `backups/`. Затем выполняются
-fast-forward обновление `main`, production-сборка, миграции, collectstatic и перезапуск сервисов.
-Если каталог не является Git clone, скрипт обновит уже размещённый исходный код без `git pull`.
+Перед обновлением создаются backup/evidence и запускаются release gates. Destructive migration блокируется обычным deploy-процессом; такие изменения должны проходить отдельный expand/contract цикл.
 
-## Где менять настройки
+## Где менять production-настройки
 
 ```bash
-sudo nano .env.production
-sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+sudo nano /opt/ai-workspace/.env.production
+sudo docker compose --env-file /opt/ai-workspace/.env.production \
+  -f /opt/ai-workspace/docker-compose.prod.yml up -d
 ```
 
-По умолчанию платежи и реальные AI-провайдеры выключены. После добавления ключей необходимо
-выполнить юридические/фискальные проверки и строгий gate:
+## Диагностика ошибок
 
-```bash
-sudo docker compose --env-file .env.production -f docker-compose.prod.yml \
-  exec backend python manage.py prelaunch_check --strict
+В Admin Console доступен раздел:
+
+```text
+/admin-console/system
 ```
 
-## Диагностика
+Он показывает:
+- состояние AI-запросов;
+- проблемных провайдеров;
+- сбои платежей;
+- backend HTTP 5xx;
+- Celery/worker exceptions;
+- JavaScript errors авторизованных клиентов;
+- correlation ID;
+- число повторений;
+- первое и последнее появление;
+- статус «открыта / разбираемся / исправлена / игнорируется»;
+- безопасную трассировку с маскированием распространённых секретов.
 
-```bash
-sudo docker compose --env-file .env.production -f docker-compose.prod.yml ps
-sudo docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=200
-curl -fsS https://ВАШ-ДОМЕН/api/v1/readiness/
-```
+Основной реестр багов хранится в PostgreSQL. Дополнительно ведётся ротационный JSONL-журнал в Docker volume `/app/logs` как независимый диагностический канал.
 
-Нельзя публиковать `.env.production`, передавать его в поддержку или копировать в issue.
+Нельзя публиковать `.env.production`, передавать его в поддержку или копировать в issue/чат.
