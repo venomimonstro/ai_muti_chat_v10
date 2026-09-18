@@ -119,11 +119,11 @@ if [[ "${RESUME}" != true ]]; then
   MFA_RECOVERY_PEPPER="$(openssl rand -base64 64 | tr -d '\n')"
   umask 077
   {
-    printf 'APP_DOMAIN=%s\n' "${APP_DOMAIN}"
-    printf 'ACME_EMAIL=%s\n' "${ACME_EMAIL}"
+    printf '# AI Workspace production configuration. Секреты не коммитить.\n'
+    printf 'APP_DOMAIN=%s\nACME_EMAIL=%s\n' "${APP_DOMAIN}" "${ACME_EMAIL}"
     printf 'POSTGRES_DB=aiworkspace\nPOSTGRES_USER=aiworkspace\n'
     printf 'POSTGRES_PASSWORD=%s\nREDIS_PASSWORD=%s\n' "${POSTGRES_PASSWORD}" "${REDIS_PASSWORD}"
-    printf 'DATABASE_URL=postgresql://aiworkspace:%s@postgres:5432/aiworkspace\n' "${POSTGRES_PASSWORD}"
+    printf 'DATABASE_URL=postgresql://aiworkspace:%s@postgres:5432/aiworkspace\nDATABASE_CONN_MAX_AGE=60\n' "${POSTGRES_PASSWORD}"
     printf 'REDIS_URL=redis://:%s@redis:6379/0\nCACHE_URL=redis://:%s@redis:6379/1\n' "${REDIS_PASSWORD}" "${REDIS_PASSWORD}"
     printf 'DJANGO_SECRET_KEY=%s\nB2B_API_KEY_PEPPER=%s\nMFA_ENCRYPTION_KEY=%s\nMFA_RECOVERY_PEPPER=%s\n' "${DJANGO_SECRET_KEY}" "${B2B_API_KEY_PEPPER}" "${MFA_ENCRYPTION_KEY}" "${MFA_RECOVERY_PEPPER}"
     printf 'SYSTEM_ISSUE_LOG_FILE=/app/logs/system_issues.jsonl\nSYSTEM_ISSUE_LOG_MAX_BYTES=20971520\n'
@@ -131,10 +131,29 @@ if [[ "${RESUME}" != true ]]; then
     printf 'DJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=%s\n' "${APP_DOMAIN}"
     printf 'DJANGO_SECURE_SSL_REDIRECT=true\nDJANGO_SESSION_COOKIE_SECURE=true\nDJANGO_CSRF_COOKIE_SECURE=true\nDJANGO_SECURE_HSTS_SECONDS=31536000\nDJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=false\nDJANGO_SECURE_HSTS_PRELOAD=false\nDJANGO_TRUST_PROXY_SSL_HEADER=true\n'
     printf 'CORS_ALLOWED_ORIGINS=https://%s\nPUBLIC_API_URL=https://%s/api/v1\nNEXT_PUBLIC_API_URL=https://%s/api/v1\nNEXT_PUBLIC_SITE_URL=https://%s\nFRONTEND_PUBLIC_URL=https://%s\n' "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}"
-    printf 'PAYMENT_RETURN_URL=https://%s/app/wallet/return\n' "${APP_DOMAIN}"
     printf 'EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend\nEMAIL_HOST=\nEMAIL_PORT=587\nEMAIL_HOST_USER=\nEMAIL_HOST_PASSWORD=\nEMAIL_USE_TLS=true\nEMAIL_USE_SSL=false\nDEFAULT_FROM_EMAIL=noreply@%s\n' "${APP_DOMAIN}"
-    printf 'B2B_TRUST_PROXY_IP_HEADER=true\nADMIN_MFA_ENFORCED=false\nPAYMENTS_ENABLED=false\nPAYMENTS_LIVE_ENABLED=false\nPAYMENTS_FISCALIZATION_MODE=disabled\n'
-    printf 'OPENAI_API_KEY=\nOPENAI_DEFAULT_MODEL=\nANTHROPIC_API_KEY=\nANTHROPIC_DEFAULT_MODEL=\nDEEPSEEK_API_KEY=\nDEEPSEEK_DEFAULT_MODEL=\nGEMINI_API_KEY=\nGEMINI_DEFAULT_MODEL=\nXAI_API_KEY=\nXAI_DEFAULT_MODEL=\n'
+    printf 'SIGNUP_PROMO_RUB=25.00\nADMIN_MFA_ENFORCED=false\n'
+    printf 'AI_PROVIDER_TIMEOUT_SECONDS=120\nAI_PROVIDER_MAX_ATTEMPTS=2\nAI_CIRCUIT_FAILURE_THRESHOLD=3\nAI_CIRCUIT_COOLDOWN_SECONDS=60\nAI_PROVIDER_HEALTH_MAX_AGE_SECONDS=900\n'
+    printf 'OPENAI_API_KEY=\nOPENAI_API_BASE_URL=https://api.openai.com/v1\nOPENAI_DEFAULT_MODEL=\n'
+    printf 'ANTHROPIC_API_KEY=\nANTHROPIC_API_BASE_URL=https://api.anthropic.com/v1\nANTHROPIC_DEFAULT_MODEL=\n'
+    printf 'DEEPSEEK_API_KEY=\nDEEPSEEK_API_BASE_URL=https://api.deepseek.com\nDEEPSEEK_DEFAULT_MODEL=\n'
+    printf 'GEMINI_API_KEY=\nGEMINI_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta\nGEMINI_DEFAULT_MODEL=\n'
+    printf 'XAI_API_KEY=\nXAI_API_BASE_URL=https://api.x.ai/v1\nXAI_DEFAULT_MODEL=\n'
+    printf 'AI_PRICE_OPENAI_DEFAULT_INPUT_RUB_PER_MILLION=\nAI_PRICE_OPENAI_DEFAULT_OUTPUT_RUB_PER_MILLION=\n'
+    printf 'AI_PRICE_ANTHROPIC_DEFAULT_INPUT_RUB_PER_MILLION=\nAI_PRICE_ANTHROPIC_DEFAULT_OUTPUT_RUB_PER_MILLION=\n'
+    printf 'AI_PRICE_DEEPSEEK_DEFAULT_INPUT_RUB_PER_MILLION=\nAI_PRICE_DEEPSEEK_DEFAULT_OUTPUT_RUB_PER_MILLION=\n'
+    printf 'AI_PRICE_GEMINI_DEFAULT_INPUT_RUB_PER_MILLION=\nAI_PRICE_GEMINI_DEFAULT_OUTPUT_RUB_PER_MILLION=\n'
+    printf 'AI_PRICE_XAI_DEFAULT_INPUT_RUB_PER_MILLION=\nAI_PRICE_XAI_DEFAULT_OUTPUT_RUB_PER_MILLION=\n'
+    printf 'RAG_SEMANTIC_MODEL=intfloat/multilingual-e5-small\nRAG_VECTOR_WEIGHT=0.65\nRAG_LEXICAL_WEIGHT=0.35\n'
+    printf 'WEB_SEARCH_BASE_URL=\nWEB_TOOL_TIMEOUT_SECONDS=12\nWEB_SEARCH_MAX_RESULTS=8\n'
+    printf 'COMPARE_ENABLED=true\nCOMPARE_MAX_MODELS=4\nCOMPARE_MAX_OUTPUT_TOKENS=1024\nCOMPARE_CONFIRM_THRESHOLD_RUB=20.00\n'
+    printf 'IMAGES_ENABLED=true\nIMAGE_CONFIRM_THRESHOLD_RUB=20.00\n'
+    printf 'B2B_API_ENABLED=true\nB2B_API_MAX_OUTPUT_TOKENS=4096\nB2B_API_MAX_MESSAGE_CHARS=100000\nB2B_API_RUNNING_TIMEOUT_SECONDS=600\nB2B_TRUST_PROXY_IP_HEADER=true\n'
+    printf 'API_ANON_RATE=60/min\nAPI_USER_RATE=300/min\nAPI_LOGIN_RATE=10/min\nAPI_REGISTER_RATE=5/hour\n'
+    printf 'PAYMENTS_ENABLED=false\nPAYMENTS_LIVE_ENABLED=false\nPAYMENT_RECONCILIATION_MAX_AGE_SECONDS=86400\n'
+    printf 'PAYMENT_RETURN_URL=https://%s/app/wallet/return\n' "${APP_DOMAIN}"
+    printf 'YOOKASSA_SHOP_ID=\nYOOKASSA_SECRET_KEY=\nYOOKASSA_API_BASE_URL=https://api.yookassa.ru/v3\n'
+    printf 'PAYMENTS_FISCALIZATION_MODE=disabled\nPAYMENTS_VAT_CODE=1\nPAYMENT_MIN_RUB=100.00\nPAYMENT_MAX_RUB=100000.00\n'
   } >"${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
 fi
@@ -179,4 +198,5 @@ else
   exit 1
 fi
 
-printf '\nДо коммерческого запуска обязательно заполните SMTP, реквизиты продавца, AI API-ключи и цены, YooKassa, включите MFA и закройте юридические проверки/drills.\n'
+printf '\nДо коммерческого запуска заполните SMTP, реквизиты продавца, AI API-ключи, модели и себестоимость, YooKassa, web-search при необходимости, включите MFA и закройте юридические проверки/drills.\n'
+printf 'После изменения AI-моделей/цен повторите: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py bootstrap_catalog\n'
