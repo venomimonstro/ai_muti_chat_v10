@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.db.models import Count
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
@@ -65,7 +66,10 @@ class ProductAnalyticsView(APIView):
             days = 30
         since = timezone.now() - timedelta(days=days)
         queryset = ProductEvent.objects.filter(created_at__gte=since)
-        counts = {item["event_name"]: item["count"] for item in queryset.values("event_name").annotate(count=Count("id"))}
+        counts = {
+            item["event_name"]: item["count"]
+            for item in queryset.values("event_name").annotate(count=Count("id"))
+        }
         landing = counts.get("landing_view", 0)
         registered = counts.get("register_complete", 0)
         verified = counts.get("email_verified", 0)
@@ -75,6 +79,12 @@ class ProductAnalyticsView(APIView):
         def rate(value, base):
             return round(value / base * 100, 2) if base else 0
 
+        daily = list(
+            queryset.annotate(day=TruncDate("created_at"))
+            .values("day", "event_name")
+            .annotate(count=Count("id"))
+            .order_by("day", "event_name")
+        )
         return Response(
             {
                 "period_days": days,
@@ -92,11 +102,6 @@ class ProductAnalyticsView(APIView):
                         "first_chat_to_payment": rate(payment, first_chat),
                     },
                 },
-                "daily": list(
-                    queryset.extra(select={"day": "DATE(created_at)"})
-                    .values("day", "event_name")
-                    .annotate(count=Count("id"))
-                    .order_by("day", "event_name")
-                ),
+                "daily": daily,
             }
         )
