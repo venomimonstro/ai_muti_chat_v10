@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, time
 from decimal import Decimal
 
@@ -24,7 +25,15 @@ def grant_signup_promo(user):
     amount = Decimal(str(settings.SIGNUP_PROMO_RUB))
     if amount <= 0:
         return None
-    cap = Decimal(str(getattr(settings, "SIGNUP_PROMO_DAILY_CAP_RUB", "1000")))
+    cap = Decimal(
+        str(
+            getattr(
+                settings,
+                "SIGNUP_PROMO_DAILY_CAP_RUB",
+                os.getenv("SIGNUP_PROMO_DAILY_CAP_RUB", "1000.00"),
+            )
+        )
+    )
     if cap <= 0:
         return None
     existing = LedgerEntry.objects.filter(
