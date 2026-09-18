@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from apps.accounts.models import Notification, User
@@ -19,7 +20,7 @@ def _money(value):
         raise ValidationError("Invalid provider refund amount") from exc
 
 
-def _notify_financial_incident(*, user, payment, refund_id, amount):
+def _notify_financial_incident(*, payment, refund_id, amount):
     admins = User.objects.filter(
         role=User.Role.PLATFORM_ADMIN,
         status=User.Status.ACTIVE,
@@ -87,10 +88,11 @@ def register_unknown_succeeded_refund(payload, *, client):
     amount = _money(amount_data.get("value"))
     if amount <= 0 or amount_data.get("currency") != "RUB":
         raise ValidationError("Provider refund amount mismatch")
-    known = payment.refunds.filter(status=Refund.Status.SUCCEEDED).aggregate_total if False else None
-    successful_total = sum(
-        (item.amount_rub for item in payment.refunds.filter(status=Refund.Status.SUCCEEDED)),
-        Decimal("0"),
+    successful_total = (
+        payment.refunds.filter(status=Refund.Status.SUCCEEDED).aggregate(total=Sum("amount_rub"))[
+            "total"
+        ]
+        or Decimal("0")
     )
     if successful_total + amount > payment.amount_rub:
         raise ValidationError("Provider refunds exceed original payment")
@@ -104,7 +106,6 @@ def register_unknown_succeeded_refund(payload, *, client):
     except ValidationError:
         _freeze_user_spend(payment.user)
         _notify_financial_incident(
-            user=payment.user,
             payment=payment,
             refund_id=refund_id,
             amount=amount,
