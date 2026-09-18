@@ -22,11 +22,14 @@ def _record_exception(request, exc):
         from apps.admin_ops.system_health import record_exception
 
         record_exception(request, exc)
+        request._aiws_exception_logged = True
     except Exception:
         logger.exception("Не удалось зарегистрировать системную ошибку")
 
 
 def _record_5xx(request, status_code):
+    if getattr(request, "_aiws_exception_logged", False):
+        return
     try:
         from apps.admin_ops.system_health import record_http_5xx
 
@@ -38,6 +41,10 @@ def _record_5xx(request, status_code):
 class SecurityHeadersMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
+
+    def process_exception(self, request, exception):
+        _record_exception(request, exception)
+        return None
 
     def __call__(self, request):
         started = time.monotonic()
@@ -52,7 +59,8 @@ class SecurityHeadersMiddleware:
         except Exception as exc:
             _metric("http_requests_total")
             _metric("http_5xx_total")
-            _record_exception(request, exc)
+            if not getattr(request, "_aiws_exception_logged", False):
+                _record_exception(request, exc)
             raise
 
         latency_ms = int((time.monotonic() - started) * 1000)
