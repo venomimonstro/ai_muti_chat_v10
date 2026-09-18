@@ -99,15 +99,9 @@ class Command(BaseCommand):
         if image_losses.exists():
             warnings.append(f"historical_image_negative_margin={image_losses.count()}")
 
-        loss_provider_ids = set(
-            b2b_losses.values_list("model__provider_id", flat=True)
-        )
-        loss_provider_ids.update(
-            compare_losses.values_list("model__provider_id", flat=True)
-        )
-        loss_provider_ids.update(
-            image_losses.values_list("model__provider_id", flat=True)
-        )
+        loss_provider_ids = set(b2b_losses.values_list("model__provider_id", flat=True))
+        loss_provider_ids.update(compare_losses.values_list("model__provider_id", flat=True))
+        loss_provider_ids.update(image_losses.values_list("model__provider_id", flat=True))
         unsafe_loss_providers = Provider.objects.filter(
             id__in=loss_provider_ids,
             enabled=True,
@@ -158,7 +152,7 @@ class Command(BaseCommand):
             blockers.append(f"b2b_keys_without_any_spend_limit={active_keys_without_limit}")
 
         zombie_images = ImageGeneration.objects.filter(
-            state=ImageGeneration.State.RUNNING,
+            state__in=[ImageGeneration.State.QUEUED, ImageGeneration.State.RUNNING],
             created_at__lt=stale_before,
         ).count()
         failed_with_active_reservation = ImageGeneration.objects.filter(
@@ -166,7 +160,7 @@ class Command(BaseCommand):
             reservation__state=BalanceReservation.State.ACTIVE,
         ).count()
         if zombie_images:
-            warnings.append(f"stale_running_image_generations={zombie_images}")
+            warnings.append(f"stale_queued_or_running_image_generations={zombie_images}")
         if failed_with_active_reservation:
             blockers.append(f"failed_images_with_active_reservation={failed_with_active_reservation}")
 
