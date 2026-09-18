@@ -53,14 +53,11 @@ def _validate_markup_scope(scope_type, scope_key):
         raise ValueError("Провайдер не найден")
     if scope_type == MarkupRuleVersion.Scope.MODEL and not AIModel.objects.filter(slug=scope_key).exists():
         raise ValueError("Модель не найдена")
-    if scope_type == MarkupRuleVersion.Scope.OPERATION and scope_key not in {
-        "chat",
-        "compare",
-        "compare_synthesis",
-        "image",
-        "public_api",
-    }:
-        raise ValueError("Неизвестный тип операции")
+    if scope_type == MarkupRuleVersion.Scope.OPERATION:
+        if scope_key == "b2b_api":
+            scope_key = "public_api"
+        if scope_key not in {"chat", "compare", "compare_synthesis", "image", "public_api"}:
+            raise ValueError("Неизвестный тип операции")
     return scope_key
 
 
@@ -88,21 +85,9 @@ class PricingManagementView(PricingControlView):
         if model is None:
             return Response({"detail": "Модель не найдена"}, status=404)
         try:
-            input_cost = _decimal(
-                request.data.get("input_rub_per_million"),
-                "Себестоимость входных токенов",
-                minimum=Decimal("0.0001"),
-            )
-            output_cost = _decimal(
-                request.data.get("output_rub_per_million"),
-                "Себестоимость выходных токенов",
-                minimum=Decimal("0.0001"),
-            )
-            base_markup = _decimal(
-                request.data.get("markup_percent", "100"),
-                "Базовая наценка",
-                minimum=Decimal("0"),
-            )
+            input_cost = _decimal(request.data.get("input_rub_per_million"), "Себестоимость входных токенов", minimum=Decimal("0.0001"))
+            output_cost = _decimal(request.data.get("output_rub_per_million"), "Себестоимость выходных токенов", minimum=Decimal("0.0001"))
+            base_markup = _decimal(request.data.get("markup_percent", "100"), "Базовая наценка", minimum=Decimal("0"))
             effective_from = _effective_datetime(request.data.get("effective_from"))
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
@@ -115,85 +100,21 @@ class PricingManagementView(PricingControlView):
             active=True,
             effective_from=effective_from,
         )
-        audit(
-            request,
-            "pricing.version_created",
-            "price_version",
-            version.id,
-            {
-                "model": model.slug,
-                "provider": model.provider.slug,
-                "input_rub_per_million": str(input_cost),
-                "output_rub_per_million": str(output_cost),
-                "base_markup_percent": str(base_markup),
-                "effective_from": effective_from.isoformat(),
-            },
-        )
-        return Response(
-            {
-                "id": version.id,
-                "model": version.model_slug,
-                "input_rub_per_million": version.input_rub_per_million,
-                "output_rub_per_million": version.output_rub_per_million,
-                "markup_percent": version.markup_percent,
-                "effective_from": version.effective_from,
-            },
-            status=201,
-        )
+        audit(request,"pricing.version_created","price_version",version.id,{"model":model.slug,"provider":model.provider.slug,"input_rub_per_million":str(input_cost),"output_rub_per_million":str(output_cost),"base_markup_percent":str(base_markup),"effective_from":effective_from.isoformat()})
+        return Response({"id":version.id,"model":version.model_slug,"input_rub_per_million":version.input_rub_per_million,"output_rub_per_million":version.output_rub_per_million,"markup_percent":version.markup_percent,"effective_from":version.effective_from},status=201)
 
     def _create_markup_rule(self, request):
         scope_type = str(request.data.get("scope_type", "")).strip()
         scope_key = str(request.data.get("scope_key", "")).strip()
         try:
             scope_key = _validate_markup_scope(scope_type, scope_key)
-            markup = _decimal(
-                request.data.get("markup_percent"),
-                "Наценка",
-                minimum=Decimal("0"),
-                allow_blank=True,
-            )
-            multiplier = _decimal(
-                request.data.get("price_multiplier", "1"),
-                "Множитель цены",
-                minimum=Decimal("0.0001"),
-            )
+            markup = _decimal(request.data.get("markup_percent"), "Наценка", minimum=Decimal("0"), allow_blank=True)
+            multiplier = _decimal(request.data.get("price_multiplier", "1"), "Множитель цены", minimum=Decimal("0.0001"))
             effective_from = _effective_datetime(request.data.get("effective_from"))
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         if markup is None and multiplier == Decimal("1"):
-            return Response(
-                {"detail": "Правило должно менять наценку или множитель цены"}, status=400
-            )
-        rule = MarkupRuleVersion.objects.create(
-            scope_type=scope_type,
-            scope_key=scope_key,
-            markup_percent=markup,
-            price_multiplier=multiplier,
-            active=True,
-            effective_from=effective_from,
-            reason=str(request.data.get("reason", "")).strip()[:300],
-        )
-        audit(
-            request,
-            "pricing.markup_rule_created",
-            "markup_rule_version",
-            rule.id,
-            {
-                "scope_type": rule.scope_type,
-                "scope_key": rule.scope_key,
-                "markup_percent": str(rule.markup_percent) if rule.markup_percent is not None else None,
-                "price_multiplier": str(rule.price_multiplier),
-                "effective_from": rule.effective_from.isoformat(),
-            },
-        )
-        return Response(
-            {
-                "id": rule.id,
-                "scope_type": rule.scope_type,
-                "scope_key": rule.scope_key,
-                "markup_percent": rule.markup_percent,
-                "price_multiplier": rule.price_multiplier,
-                "effective_from": rule.effective_from,
-            },
-            status=201,
-        )
+            return Response({"detail":"Правило должно менять наценку или множитель цены"},status=400)
+        rule = MarkupRuleVersion.objects.create(scope_type=scope_type,scope_key=scope_key,markup_percent=markup,price_multiplier=multiplier,active=True,effective_from=effective_from,reason=str(request.data.get("reason", "")).strip()[:300])
+        audit(request,"pricing.markup_rule_created","markup_rule_version",rule.id,{"scope_type":rule.scope_type,"scope_key":rule.scope_key,"markup_percent":str(rule.markup_percent) if rule.markup_percent is not None else None,"price_multiplier":str(rule.price_multiplier),"effective_from":rule.effective_from.isoformat()})
+        return Response({"id":rule.id,"scope_type":rule.scope_type,"scope_key":rule.scope_key,"markup_percent":rule.markup_percent,"price_multiplier":rule.price_multiplier,"effective_from":rule.effective_from},status=201)
