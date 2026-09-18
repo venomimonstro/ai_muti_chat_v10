@@ -110,6 +110,12 @@ class OverDeliveringImageAdapter:
         return ImageProviderResult(images=[image, image], provider_request_id="over-delivery")
 
 
+class UnderDeliveringImageAdapter:
+    def generate(self, **_kwargs):
+        image = ImageResult(EchoImageAdapter._PNG, "image/png", "partial")
+        return ImageProviderResult(images=[image], provider_request_id="under-delivery")
+
+
 @pytest.mark.django_db(transaction=True)
 def test_provider_failure_releases_full_image_reservation(image_context):
     user, model, _client = image_context
@@ -152,7 +158,7 @@ def test_image_provider_over_delivery_is_fail_closed_and_disables_provider(image
     model.provider.refresh_from_db()
     user.wallet.refresh_from_db()
     assert generation.state == ImageGeneration.State.FAILED
-    assert generation.error_code == "invalid_response"
+    assert generation.error_code == "image_count_mismatch"
     assert generation.images.count() == 0
     assert model.provider.emergency_disabled is True
     assert user.wallet.available_rub == Decimal("10.0000")
@@ -162,6 +168,32 @@ def test_image_provider_over_delivery_is_fail_closed_and_disables_provider(image
         provider_slug=model.provider.slug,
         details__reason="provider_returned_more_images_than_requested",
     ).exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_image_provider_partial_delivery_is_not_charged_as_success(image_context):
+    user, model, _client = image_context
+    from .services import generate
+
+    generation = generate(
+        user=user,
+        model_slug=model.slug,
+        prompt="Two images expected",
+        size="1024x1024",
+        quality="standard",
+        count=2,
+        idempotency_key="image:under-delivery",
+        adapter=UnderDeliveringImageAdapter(),
+    )
+
+    generation.refresh_from_db()
+    user.wallet.refresh_from_db()
+    assert generation.state == ImageGeneration.State.FAILED
+    assert generation.error_code == "image_count_mismatch"
+    assert generation.images.count() == 0
+    assert generation.actual_cost_rub is None
+    assert user.wallet.available_rub == Decimal("10.0000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
 
 
 @pytest.mark.django_db(transaction=True)
