@@ -4,20 +4,21 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.ai_registry.models import AIModel, Provider
 from apps.b2b_api.models import APIKey, Organization
 
-from .models import CostAnomaly, MarginPolicyVersion, PriceVersion, RequestCost
+from .models import CostAnomaly, MarginPolicyVersion, PriceVersion, RequestCost, Wallet
 from .reconciliation import record_cost_outcome
 from .services import credit, reserve, settle
 
 
 @pytest.mark.django_db(transaction=True)
 def test_user_cannot_spend_more_than_prefunded_wallet_even_with_multiple_reservations():
-    user = User.objects.create_user(username="solvency", password="password123")
+    user = User.objects.create_user(username="solvency", email="solvency@example.test", password="password123")
     credit(user, Decimal("1000"), "test", "prefund")
 
     first = reserve(user, Decimal("999"), "attack:first")
@@ -32,7 +33,7 @@ def test_user_cannot_spend_more_than_prefunded_wallet_even_with_multiple_reserva
 
 @pytest.mark.django_db(transaction=True)
 def test_settlement_can_never_charge_above_pre_authorized_reservation():
-    user = User.objects.create_user(username="settlement-cap", password="password123")
+    user = User.objects.create_user(username="settlement-cap", email="settlement@example.test", password="password123")
     credit(user, Decimal("1000"), "test", "settlement-cap")
     reservation = reserve(user, Decimal("10"), "attack:reserve")
 
@@ -42,6 +43,29 @@ def test_settlement_can_never_charge_above_pre_authorized_reservation():
     user.wallet.refresh_from_db()
     assert user.wallet.available_rub == Decimal("990.0000")
     assert user.wallet.reserved_rub == Decimal("10.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_database_rejects_negative_or_bucket_inconsistent_wallet_even_if_service_layer_is_bypassed():
+    user = User.objects.create_user(username="db-solvency", email="db-solvency@example.test", password="password123")
+    credit(user, Decimal("1000"), "test", "db-solvency")
+    wallet = Wallet.objects.get(user=user)
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Wallet.objects.filter(pk=wallet.pk).update(
+                available_rub=Decimal("-9000"),
+                paid_rub=Decimal("-9000"),
+                promo_rub=Decimal("0"),
+            )
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Wallet.objects.filter(pk=wallet.pk).update(available_rub=Decimal("9999"))
+
+    wallet.refresh_from_db()
+    assert wallet.available_rub == Decimal("1000.0000")
+    assert wallet.paid_rub + wallet.promo_rub == wallet.available_rub
 
 
 @pytest.mark.django_db
@@ -87,7 +111,7 @@ def test_guaranteed_negative_margin_trips_provider_circuit_immediately():
 
 @pytest.mark.django_db
 def test_economic_gate_blocks_unbounded_b2b_key():
-    user = User.objects.create_user(username="b2b-owner", password="password123")
+    user = User.objects.create_user(username="b2b-owner", email="b2b-owner@example.test", password="password123")
     org = Organization.objects.create(name="Unsafe", slug="unsafe", billing_user=user)
     APIKey.objects.create(
         organization=org,
