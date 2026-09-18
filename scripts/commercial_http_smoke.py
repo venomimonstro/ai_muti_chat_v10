@@ -27,6 +27,15 @@ def require(value, name):
         raise SystemExit(f"{name} is required")
 
 
+def csrf_headers(client, referer_path="/app"):
+    response = client.get("/api/v1/auth/csrf/")
+    response.raise_for_status()
+    return {
+        "X-CSRFToken": response.json()["csrf_token"],
+        "Referer": f"{BASE}{referer_path}",
+    }
+
+
 def main():
     require(BASE, "E2E_BASE_URL")
     require(USERNAME, "E2E_USERNAME")
@@ -34,16 +43,14 @@ def main():
     with httpx.Client(base_url=BASE, timeout=45.0, follow_redirects=False) as client:
         health = client.get("/api/v1/health/")
         health.raise_for_status()
-        csrf = client.get("/api/v1/auth/csrf/")
-        csrf.raise_for_status()
-        token = csrf.json()["csrf_token"]
-        headers = {"X-CSRFToken": token, "Referer": f"{BASE}/login"}
+        headers = csrf_headers(client, "/login")
         login = client.post(
             "/api/v1/auth/login/",
             json={"username": USERNAME, "password": PASSWORD},
             headers=headers,
         )
         login.raise_for_status()
+        headers = csrf_headers(client)
         me = client.get("/api/v1/auth/me/")
         me.raise_for_status()
         if not me.json().get("email_verified"):
@@ -109,7 +116,10 @@ def main():
         final = client.get(f"/api/v1/conversations/{conversation_id}/")
         final.raise_for_status()
         messages = final.json().get("messages", [])
-        if not any(item.get("role") == "assistant" and item.get("content") for item in messages):
+        if not any(
+            item.get("role") == "assistant" and item.get("content")
+            for item in messages
+        ):
             raise RuntimeError("Completed conversation has no assistant response")
         after_wallet = client.get("/api/v1/wallet/")
         after_wallet.raise_for_status()
@@ -131,5 +141,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(json.dumps({"passed": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        print(
+            json.dumps({"passed": False, "error": str(exc)}, ensure_ascii=False),
+            file=sys.stderr,
+        )
         raise
