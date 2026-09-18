@@ -143,6 +143,7 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
         "memory_candidates": [str(candidate.id) for candidate in memory_candidates],
     }
 
+    reservation = None
     try:
         routing_content = content
         if vision_assets:
@@ -254,6 +255,14 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
         generation.state = Generation.State.QUEUED
         generation.save(update_fields=["reservation_id", "route_price_snapshot", "state"])
     except Exception:
+        if reservation is not None:
+            try:
+                release(reservation.id)
+            except Exception:
+                logger.exception(
+                    "Failed to release generation preflight reservation id=%s",
+                    reservation.id,
+                )
         generation.state = Generation.State.FAILED
         generation.error_code = "preflight_failed"
         generation.completed_at = timezone.now()
