@@ -41,9 +41,7 @@ class SecurityEvent(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     category = models.CharField(max_length=80)
-    severity = models.CharField(
-        max_length=16, choices=Severity.choices, default=Severity.WARNING
-    )
+    severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.WARNING)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -123,9 +121,7 @@ class BackupRecord(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     kind = models.CharField(max_length=16, choices=Kind.choices)
-    status = models.CharField(
-        max_length=16, choices=Status.choices, default=Status.REQUESTED
-    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.REQUESTED)
     storage_reference = models.CharField(max_length=300, blank=True)
     size_bytes = models.PositiveBigIntegerField(null=True, blank=True)
     checksum_sha256 = models.CharField(max_length=64, blank=True)
@@ -212,9 +208,7 @@ class StatusIncident(models.Model):
     title = models.CharField(max_length=200)
     message = models.TextField()
     impact = models.CharField(max_length=16, choices=Impact.choices)
-    state = models.CharField(
-        max_length=20, choices=State.choices, default=State.INVESTIGATING
-    )
+    state = models.CharField(max_length=20, choices=State.choices, default=State.INVESTIGATING)
     affected_components = models.JSONField(default=list)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -227,3 +221,7 @@ class StatusIncident(models.Model):
 
     class Meta:
         ordering = ["-started_at"]
+
+
+# Keep analytics model registration inside Django's normal import_models phase.
+from .analytics_models import ProductEvent  # noqa: E402,F401
