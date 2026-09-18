@@ -4,6 +4,7 @@ from django.test import RequestFactory
 
 from apps.accounts.models import User
 
+from .issue_models import SystemIssue
 from .system_health import (
     INDEX_KEY,
     list_issues,
@@ -15,7 +16,7 @@ from .system_health import (
 
 
 @pytest.mark.django_db
-def test_http_exception_is_grouped_and_can_be_resolved():
+def test_http_exception_is_grouped_persisted_and_reopened_on_recurrence():
     cache.delete(INDEX_KEY)
     request = RequestFactory().get("/api/v1/example/")
     request.user = User.objects.create_user(
@@ -37,6 +38,8 @@ def test_http_exception_is_grouped_and_can_be_resolved():
     assert rows[0]["occurrences"] == 2
     assert rows[0]["path"] == "/api/v1/example/"
     assert rows[0]["correlation_id"] == request.correlation_id
+    stored = SystemIssue.objects.get(pk=issue["fingerprint"])
+    assert stored.occurrences == 2
 
     resolved = update_issue(
         issue["fingerprint"],
@@ -45,6 +48,16 @@ def test_http_exception_is_grouped_and_can_be_resolved():
     )
     assert resolved["status"] == "resolved"
     assert list_issues(status="open") == []
+
+    try:
+        raise RuntimeError("synthetic failure")
+    except RuntimeError as exc:
+        reopened = record_exception(request, exc)
+    assert reopened["status"] == "open"
+    assert reopened["occurrences"] == 3
+    stored.refresh_from_db()
+    assert stored.status == SystemIssue.Status.OPEN
+    assert stored.occurrences == 3
 
 
 @pytest.mark.django_db
