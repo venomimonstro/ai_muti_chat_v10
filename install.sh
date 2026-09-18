@@ -114,6 +114,7 @@ if [[ "${RESUME}" != true ]]; then
   printf 'B2B_API_KEY_PEPPER=%s\n' "${B2B_API_KEY_PEPPER}"
   printf 'MFA_ENCRYPTION_KEY=%s\n' "${MFA_ENCRYPTION_KEY}"
   printf 'MFA_RECOVERY_PEPPER=%s\n' "${MFA_RECOVERY_PEPPER}"
+  printf 'LEGAL_DOC_VERSION=2026-09-18\n'
   printf 'DJANGO_DEBUG=false\n'
   printf 'DJANGO_ALLOWED_HOSTS=%s\n' "${APP_DOMAIN}"
   printf 'DJANGO_SECURE_SSL_REDIRECT=true\n'
@@ -125,8 +126,10 @@ if [[ "${RESUME}" != true ]]; then
   printf 'DJANGO_TRUST_PROXY_SSL_HEADER=true\n'
   printf 'CORS_ALLOWED_ORIGINS=https://%s\n' "${APP_DOMAIN}"
   printf 'PUBLIC_API_URL=https://%s/api/v1\n' "${APP_DOMAIN}"
+  printf 'NEXT_PUBLIC_API_URL=https://%s/api/v1\n' "${APP_DOMAIN}"
+  printf 'NEXT_PUBLIC_SITE_URL=https://%s\n' "${APP_DOMAIN}"
   printf 'FRONTEND_PUBLIC_URL=https://%s\n' "${APP_DOMAIN}"
-  printf 'PAYMENT_RETURN_URL=https://%s/settings/billing/return\n' "${APP_DOMAIN}"
+  printf 'PAYMENT_RETURN_URL=https://%s/app/wallet/return\n' "${APP_DOMAIN}"
   printf 'EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend\n'
   printf 'EMAIL_HOST=\nEMAIL_PORT=587\nEMAIL_HOST_USER=\nEMAIL_HOST_PASSWORD=\nEMAIL_USE_TLS=true\n'
   printf 'DEFAULT_FROM_EMAIL=noreply@%s\n' "${APP_DOMAIN}"
@@ -179,7 +182,9 @@ if [[ "${READY}" == true ]]; then
   chmod 600 "${INSTALL_MARKER}"
   printf '\nУстановка завершена.\n'
   printf 'Сайт: https://%s\n' "${APP_DOMAIN}"
-  printf 'Админка: https://%s/admin/\n' "${APP_DOMAIN}"
+  printf 'Workspace: https://%s/app\n' "${APP_DOMAIN}"
+  printf 'Admin Console: https://%s/admin-console\n' "${APP_DOMAIN}"
+  printf 'Django admin: https://%s/admin/\n' "${APP_DOMAIN}"
   printf 'MFA администратора: https://%s/security/mfa\n' "${APP_DOMAIN}"
   printf 'Проверка коммерческого запуска: sudo bash scripts/commercial_launch_check.sh\n'
 else
