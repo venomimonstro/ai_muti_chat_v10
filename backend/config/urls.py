@@ -43,6 +43,7 @@ urlpatterns = [
     path("api/v1/", include("apps.evals.urls")),
     path("api/v1/", include("apps.image_studio.urls")),
     path("api/v1/", include("apps.b2b_api.management_urls")),
+    path("api/v1/", include("apps.github_integration.urls")),
     path("api/v1/admin/", include("apps.admin_ops.urls")),
     path("v1/", include("apps.b2b_api.public_urls")),
 ]
