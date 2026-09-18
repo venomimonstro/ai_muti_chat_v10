@@ -55,6 +55,10 @@ class GitHubRepositoryBinding(models.Model):
         ]
 
     def save(self, *args, **kwargs):
+        if (self.installation.account_type or "").casefold() == "organization":
+            raise ValidationError(
+                "GitHub-репозитории организаций временно заблокированы до user-scoped revalidation"
+            )
         if self.write_enabled:
             permissions = self.installation.permissions or {}
             if permissions.get("contents") != "write":
