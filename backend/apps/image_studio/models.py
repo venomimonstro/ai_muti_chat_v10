@@ -33,6 +33,7 @@ class ImageModel(models.Model):
     max_images = models.PositiveSmallIntegerField(default=4)
     provider_currency = models.CharField(max_length=3, default="RUB")
     provider_price_per_image = models.DecimalField(max_digits=14, decimal_places=6)
+    provider_price_matrix = models.JSONField(default=dict, blank=True)
     markup_percent = models.DecimalField(max_digits=7, decimal_places=3, default=100)
 
     class Meta:
