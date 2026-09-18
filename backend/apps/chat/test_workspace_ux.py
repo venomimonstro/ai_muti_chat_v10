@@ -147,6 +147,33 @@ def test_soft_deleted_chat_disappears_without_destroying_messages():
 
 
 @pytest.mark.django_db
+def test_deleted_chat_rejects_message_actions():
+    user = User.objects.create_user(
+        username="deleted-action-user",
+        email="deleted-action@example.test",
+        password="test-password-123",
+    )
+    conversation = Conversation.objects.create(owner=user, title="Удалённый чат")
+    message = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.USER,
+        content="Исходный запрос",
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+    assert client.delete(f"/api/v1/conversations/{conversation.id}/").status_code == 204
+
+    edited = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/{message.id}/edit/",
+        {"content": "Новый текст"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="deleted:edit",
+    )
+    assert edited.status_code == 404
+    assert Message.objects.filter(conversation=conversation).count() == 1
+
+
+@pytest.mark.django_db
 def test_workspace_page_rejects_foreign_conversation():
     owner = User.objects.create_user(
         username="owner-ux", email="owner@example.test", password="test-password-123"
