@@ -164,6 +164,49 @@ def test_image_provider_over_delivery_is_fail_closed_and_disables_provider(image
     ).exists()
 
 
+@pytest.mark.django_db(transaction=True)
+def test_image_charge_above_reserved_amount_never_overdraws_customer_and_trips_provider(
+    image_context, monkeypatch
+):
+    user, model, _client = image_context
+    from .services import generate
+
+    monkeypatch.setattr(
+        "apps.image_studio.services.calculate_flat_from_snapshot",
+        lambda *_args, **_kwargs: (
+            Decimal("100.0000"),
+            Decimal("100.0000"),
+            Decimal("0.0000"),
+            Decimal("0.0000"),
+        ),
+    )
+
+    generation = generate(
+        user=user,
+        model_slug=model.slug,
+        prompt="Cost contract mismatch",
+        size="1024x1024",
+        quality="standard",
+        count=1,
+        idempotency_key="image:cost-over-reserve",
+        adapter=EchoImageAdapter(),
+    )
+
+    generation.refresh_from_db()
+    model.provider.refresh_from_db()
+    user.wallet.refresh_from_db()
+    assert generation.state == ImageGeneration.State.FAILED
+    assert generation.images.count() == 0
+    assert model.provider.emergency_disabled is True
+    assert user.wallet.available_rub == Decimal("10.0000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert CostAnomaly.objects.filter(
+        severity="critical",
+        provider_slug=model.provider.slug,
+        details__reason="image_charge_exceeded_reserved_maximum",
+    ).exists()
+
+
 def test_openai_adapter_uses_current_response_format_contract(monkeypatch):
     calls = []
 
