@@ -8,9 +8,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError, adapter_for
-from apps.ai_registry.models import AIModel
+from apps.ai_registry.models import AIModel, Provider
 from apps.ai_registry.reliability import provider_available
 from apps.ai_registry.token_estimator import estimate_text_tokens
+from apps.billing.models import CostAnomaly
 from apps.billing.pricing import active_price, calculate_from_snapshot, quote, require_margin
 from apps.billing.services import release, reserve, settle
 from apps.workspace_search.embeddings import index_message
@@ -22,6 +23,31 @@ from .models import CompareRun, CompareVariant, Message
 def _require_enabled():
     if not settings.COMPARE_ENABLED:
         raise ValidationError("Compare временно отключён")
+
+
+def _trip_compare_cost_guard(*, model, expected_max, actual, source_id, operation):
+    CostAnomaly.objects.get_or_create(
+        dedupe_key=f"compare-over-reserve:{operation}:{source_id}",
+        defaults={
+            "kind": CostAnomaly.Kind.COST_DEVIATION,
+            "severity": "critical",
+            "model_slug": model.slug,
+            "provider_slug": model.provider.slug,
+            "expected_rub": expected_max,
+            "actual_rub": actual,
+            "details": {
+                "reason": "provider_usage_exceeded_reserved_maximum",
+                "operation": operation,
+                "source_id": str(source_id),
+            },
+        },
+    )
+    Provider.objects.filter(pk=model.provider_id).update(
+        emergency_disabled=True,
+        health_state=Provider.HealthState.DISABLED,
+    )
+    model.provider.emergency_disabled = True
+    model.provider.health_state = Provider.HealthState.DISABLED
 
 
 def _models(slugs):
@@ -180,6 +206,15 @@ def run_compare(*, user, conversation, prompt, model_slugs, idempotency_key, sou
                 provider_cost, charge, _profit, _margin = calculate_from_snapshot(
                     row["price"], usage.input_tokens, usage.output_tokens, variant.pricing_snapshot
                 )
+                if charge > variant.expected_max_rub:
+                    _trip_compare_cost_guard(
+                        model=row["model"],
+                        expected_max=variant.expected_max_rub,
+                        actual=charge,
+                        source_id=variant.id,
+                        operation="compare",
+                    )
+                    raise ValidationError("Фактическая стоимость Compare превысила зарезервированный максимум")
                 variant.state = CompareVariant.State.COMPLETED
                 variant.output = output
                 variant.provider_request_id = usage.provider_request_id
@@ -257,6 +292,15 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
         _provider_cost, charge, _profit, _margin = calculate_from_snapshot(
             price, usage.input_tokens, usage.output_tokens, expected.pricing_snapshot
         )
+        if charge > expected.user_charge_rub:
+            _trip_compare_cost_guard(
+                model=model,
+                expected_max=expected.user_charge_rub,
+                actual=charge,
+                source_id=compare_run.id,
+                operation="compare_synthesis",
+            )
+            raise ValidationError("Фактическая стоимость синтеза превысила зарезервированный максимум")
         settle(reservation.id, charge)
         compare_run.synthesis_output = output
         compare_run.synthesis_cost_rub = charge
