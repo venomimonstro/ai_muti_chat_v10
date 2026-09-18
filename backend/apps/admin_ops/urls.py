@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .analytics_views import ProductAnalyticsView
 from .compliance_views import ComplianceConsoleView
 from .growth_views import GrowthFunnelView
 from .metrics_views import OperationalMetricsView
@@ -36,6 +37,7 @@ urlpatterns = [
     path("overview/", ExecutiveOverviewView.as_view(), name="admin-overview"),
     path("metrics/", OperationalMetricsView.as_view(), name="admin-metrics"),
     path("growth/", GrowthFunnelView.as_view(), name="admin-growth"),
+    path("analytics/", ProductAnalyticsView.as_view(), name="admin-analytics"),
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
     path("ledger/", LedgerInspectorView.as_view(), name="admin-ledger"),
