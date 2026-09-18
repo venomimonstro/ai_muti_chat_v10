@@ -29,6 +29,7 @@ urlpatterns = [
     path("api/v1/health/", health),
     path("api/v1/readiness/", readiness),
     path("api/v1/status/", PublicStatusView.as_view(), name="public-status"),
+    path("api/v1/", include("apps.admin_ops.client_error_urls")),
     path("api/v1/analytics/", include("apps.admin_ops.analytics_urls")),
     path("api/v1/auth/", include("apps.accounts.urls")),
     path("api/v1/", include("apps.ai_registry.urls")),
