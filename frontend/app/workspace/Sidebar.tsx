@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import {useMemo,useState} from "react";
+import {useEffect,useMemo,useState} from "react";
 import type {Wallet} from "../../lib/types";
 import {Icon} from "./Icons";
 import type {ConversationFolder,ConversationSummary} from "./types";
@@ -16,6 +16,7 @@ type Props={
 export function Sidebar(props:Props){
  const {items,folders,activeId,wallet,collapsed}=props;const runningIds=props.runningIds??new Set<string>();
  const [openMenu,setOpenMenu]=useState<string|null>(null);const [folderInput,setFolderInput]=useState(false);const [folderName,setFolderName]=useState("");
+ useEffect(()=>{if(window.innerWidth<=820&&localStorage.getItem("aiws:sidebar-collapsed")===null&&!collapsed)props.onToggle();},[]); // initial mobile ergonomics only
  const pinned=useMemo(()=>items.filter(x=>x.is_pinned),[items]);
  const unfiled=useMemo(()=>items.filter(x=>!x.folder&&!x.is_pinned),[items]);
  const byFolder=(id:string)=>items.filter(x=>x.folder===id&&!x.is_pinned);
