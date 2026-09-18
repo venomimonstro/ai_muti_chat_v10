@@ -1,4 +1,6 @@
 import json
+import os
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
@@ -59,12 +61,23 @@ class Command(BaseCommand):
             "active YooKassa PaymentFeeVersion" if fee else "missing active fee version",
         )
         if options["require_reconciliation"]:
-            reconciliation = ReconciliationRun.objects.order_by("-started_at").first()
-            add(
-                "reconciliation",
-                bool(reconciliation and reconciliation.status == ReconciliationRun.Status.SUCCEEDED),
-                reconciliation.status if reconciliation else "never run",
+            max_age = max(
+                int(os.getenv("PAYMENT_RECONCILIATION_MAX_AGE_SECONDS", "86400")), 300
             )
+            cutoff = timezone.now() - timedelta(seconds=max_age)
+            reconciliation = ReconciliationRun.objects.order_by("-started_at").first()
+            reconciliation_ready = bool(
+                reconciliation
+                and reconciliation.status == ReconciliationRun.Status.SUCCEEDED
+                and reconciliation.finished_at
+                and reconciliation.finished_at >= cutoff
+            )
+            detail = (
+                f"status={reconciliation.status}, finished_at={reconciliation.finished_at}, max_age={max_age}s"
+                if reconciliation
+                else "never run"
+            )
+            add("reconciliation", reconciliation_ready, detail)
 
         failed = [item for item in checks if not item["passed"]]
         payload = {"checks": checks, "passed": not failed}
