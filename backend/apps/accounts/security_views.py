@@ -56,7 +56,14 @@ def _safe_send(subject: str, body: str, recipient: str) -> bool:
         _send(subject, body, recipient)
         return True
     except Exception:
-        logger.exception("Account email delivery failed", extra={"recipient_domain": recipient.rsplit("@", 1)[-1] if "@" in recipient else "invalid"})
+        logger.exception(
+            "Account email delivery failed",
+            extra={
+                "recipient_domain": recipient.rsplit("@", 1)[-1]
+                if "@" in recipient
+                else "invalid"
+            },
+        )
         return False
 
 
@@ -169,39 +176,3 @@ class PasswordResetConfirmView(APIView):
             except Exception:
                 continue
         return Response({"reset": True})
-
-
-class SessionListView(APIView):
-    def get(self, request):
-        user_id = str(request.user.id)
-        current_key = request.session.session_key
-        items = []
-        for session in Session.objects.filter(expire_date__gte=timezone.now()).order_by("-expire_date"):
-            try:
-                if session.get_decoded().get("_auth_user_id") != user_id:
-                    continue
-            except Exception:
-                continue
-            items.append(
-                {
-                    "session_key": session.session_key,
-                    "current": session.session_key == current_key,
-                    "expire_date": session.expire_date,
-                }
-            )
-        return Response(items)
-
-
-class SessionRevokeView(APIView):
-    def post(self, request, session_key):
-        session = Session.objects.filter(session_key=session_key).first()
-        if session is None:
-            return Response(status=204)
-        try:
-            owner = session.get_decoded().get("_auth_user_id")
-        except Exception:
-            owner = None
-        if owner != str(request.user.id):
-            return Response({"detail": "Сессия не найдена"}, status=404)
-        session.delete()
-        return Response(status=204)
