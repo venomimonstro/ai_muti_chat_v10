@@ -27,12 +27,18 @@ class Command(BaseCommand):
             results.extend(self._production_checks())
             results.extend(self._evidence_checks())
         failed = [item for item in results if not item["passed"]]
+
         if options["as_json"]:
-            self.stdout.write(json.dumps({"checks": results, "passed": not failed}, ensure_ascii=False))
-        else:
-            for item in results:
-                marker = "PASS" if item["passed"] else "BLOCK"
-                self.stdout.write(f"[{marker}] {item['name']}: {item['detail']}")
+            self.stdout.write(
+                json.dumps({"checks": results, "passed": not failed}, ensure_ascii=False)
+            )
+            if failed:
+                raise CommandError(f"Pre-launch blocked by {len(failed)} check(s)")
+            return
+
+        for item in results:
+            marker = "PASS" if item["passed"] else "BLOCK"
+            self.stdout.write(f"[{marker}] {item['name']}: {item['detail']}")
         if failed:
             raise CommandError(f"Pre-launch blocked by {len(failed)} check(s)")
         self.stdout.write(self.style.SUCCESS("Pre-launch checks passed"))
@@ -51,7 +57,8 @@ class Command(BaseCommand):
             ),
             self._check(
                 "cost_limits",
-                settings.B2B_API_MAX_OUTPUT_TOKENS > 0 and settings.COMPARE_MAX_OUTPUT_TOKENS > 0,
+                settings.B2B_API_MAX_OUTPUT_TOKENS > 0
+                and settings.COMPARE_MAX_OUTPUT_TOKENS > 0,
                 "B2B and Compare output caps are configured",
             ),
             self._check(
@@ -62,7 +69,9 @@ class Command(BaseCommand):
         ]
 
     def _production_checks(self):
-        email_backend = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+        email_backend = os.getenv(
+            "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
+        )
         email_host = os.getenv("EMAIL_HOST", "").strip()
         from_email = os.getenv("DEFAULT_FROM_EMAIL", "").strip()
         frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "").strip()
@@ -71,6 +80,15 @@ class Command(BaseCommand):
             and bool(email_host)
             and "@" in from_email
             and frontend_url.startswith("https://")
+        )
+        mfa_encryption_key = os.getenv("MFA_ENCRYPTION_KEY", "")
+        mfa_recovery_pepper = os.getenv("MFA_RECOVERY_PEPPER", "")
+        mfa_secrets_ready = (
+            len(mfa_encryption_key) >= 32
+            and len(mfa_recovery_pepper) >= 32
+            and mfa_encryption_key != mfa_recovery_pepper
+            and mfa_encryption_key != settings.SECRET_KEY
+            and mfa_recovery_pepper != settings.SECRET_KEY
         )
         return [
             self._check("debug_disabled", not settings.DEBUG, "DJANGO_DEBUG=false"),
@@ -99,10 +117,20 @@ class Command(BaseCommand):
                 email_ready,
                 f"backend={email_backend}, host={'configured' if email_host else 'missing'}, frontend={frontend_url or 'missing'}",
             ),
-            self._check("admin_mfa_enforced", settings.ADMIN_MFA_ENFORCED, "ADMIN_MFA_ENFORCED=true"),
+            self._check(
+                "mfa_secret_isolation",
+                mfa_secrets_ready,
+                "MFA_ENCRYPTION_KEY and MFA_RECOVERY_PEPPER are independent 32+ char secrets",
+            ),
+            self._check(
+                "admin_mfa_enforced",
+                settings.ADMIN_MFA_ENFORCED,
+                "ADMIN_MFA_ENFORCED=true",
+            ),
             self._check(
                 "payments_fiscalization",
-                not settings.PAYMENTS_LIVE_ENABLED or settings.PAYMENTS_FISCALIZATION_MODE != "disabled",
+                not settings.PAYMENTS_LIVE_ENABLED
+                or settings.PAYMENTS_FISCALIZATION_MODE != "disabled",
                 "Live payments require a reviewed fiscalization mode",
             ),
         ]
@@ -110,23 +138,35 @@ class Command(BaseCommand):
     def _evidence_checks(self):
         required = required_compliance_keys()
         approved = set(
-            ComplianceSignoff.objects.filter(status=ComplianceSignoff.Status.APPROVED).values_list("key", flat=True)
+            ComplianceSignoff.objects.filter(
+                status=ComplianceSignoff.Status.APPROVED
+            ).values_list("key", flat=True)
         )
         backup = BackupRecord.objects.filter(
             status=BackupRecord.Status.RESTORED,
             restored_at__gte=timezone.now() - timedelta(days=30),
         ).exists()
-        rollback = ReleaseRecord.objects.filter(state=ReleaseRecord.State.ROLLED_BACK).exists()
-        admins = User.objects.filter(status=User.Status.ACTIVE).filter(
-            Q(is_staff=True) | Q(role=User.Role.PLATFORM_ADMIN)
-        ).distinct()
+        rollback = ReleaseRecord.objects.filter(
+            state=ReleaseRecord.State.ROLLED_BACK
+        ).exists()
+        admins = (
+            User.objects.filter(status=User.Status.ACTIVE)
+            .filter(Q(is_staff=True) | Q(role=User.Role.PLATFORM_ADMIN))
+            .distinct()
+        )
         admin_ids = set(admins.values_list("id", flat=True))
         mfa_ids = set(
-            UserSecurityProfile.objects.filter(user_id__in=admin_ids, mfa_enabled=True).values_list("user_id", flat=True)
+            UserSecurityProfile.objects.filter(
+                user_id__in=admin_ids, mfa_enabled=True
+            ).values_list("user_id", flat=True)
         )
         enabled_providers = Provider.objects.filter(enabled=True).count()
         provider_signoffs = len(
-            [key for key in required if key.startswith("provider-terms-") and key in approved]
+            [
+                key
+                for key in required
+                if key.startswith("provider-terms-") and key in approved
+            ]
         )
         return [
             self._check(
@@ -144,6 +184,10 @@ class Command(BaseCommand):
                 bool(admin_ids) and admin_ids <= mfa_ids,
                 f"MFA enabled {len(admin_ids & mfa_ids)}/{len(admin_ids)} admins",
             ),
-            self._check("restore_drill", backup, "Successful restore drill within 30 days"),
-            self._check("rollback_drill", rollback, "At least one recorded rollback drill"),
+            self._check(
+                "restore_drill", backup, "Successful restore drill within 30 days"
+            ),
+            self._check(
+                "rollback_drill", rollback, "At least one recorded rollback drill"
+            ),
         ]
