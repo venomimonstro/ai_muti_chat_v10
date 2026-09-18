@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 from django.core.exceptions import ValidationError
 
-from apps.accounts.models import User
+from apps.accounts.models import User, UserPreference
 from apps.billing.services import credit, reserve
 
 
@@ -53,7 +53,7 @@ def test_user_limit_can_lower_but_not_raise_system_limit(monkeypatch):
         username="user-cap", email="user-cap@example.test", password="password123"
     )
     credit(user, Decimal("1000"), "test", "user-cap")
-    preference = user.preferences
+    preference, _ = UserPreference.objects.get_or_create(user=user)
     preference.daily_spend_limit_rub = Decimal("500")
     preference.save(update_fields=["daily_spend_limit_rub"])
 
