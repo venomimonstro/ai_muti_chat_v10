@@ -2,6 +2,7 @@ import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -48,6 +49,7 @@ class OwnedConversationAction(APIView):
             Conversation.objects.select_related("active_branch")
             .prefetch_related("branches")
             .filter(pk=conversation_id, owner=request.user)
+            .filter(Q(ui_state__isnull=True) | Q(ui_state__deleted_at__isnull=True))
             .first()
         )
 
