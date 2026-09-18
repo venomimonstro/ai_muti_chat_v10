@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import traceback
 from datetime import timedelta
 from pathlib import Path
@@ -25,6 +26,20 @@ MAX_ISSUES = 500
 TTL_SECONDS = 60 * 60 * 24 * 30
 LOG_FILE = Path(os.getenv("SYSTEM_ISSUE_LOG_FILE", "/app/logs/system_issues.jsonl"))
 LOG_MAX_BYTES = int(os.getenv("SYSTEM_ISSUE_LOG_MAX_BYTES", str(20 * 1024 * 1024)))
+
+_SECRET_PATTERNS = (
+    (re.compile(r"(?i)\b(authorization|api[_-]?key|secret|password|passwd|token|cookie)\b\s*[:=]\s*([^\s,;]+)"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer [REDACTED]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"), "[REDACTED_KEY]"),
+    (re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:\s/@]+:)[^@\s/]+@"), r"\1[REDACTED]@"),
+)
+
+
+def _redact(value: str) -> str:
+    result = value or ""
+    for pattern, replacement in _SECRET_PATTERNS:
+        result = pattern.sub(replacement, result)
+    return result
 
 
 def _fingerprint(*, exception_type: str, source: str, summary: str) -> str:
@@ -84,7 +99,10 @@ def _cache_issue(issue: dict):
     cache.set(INDEX_KEY, index[:MAX_ISSUES], timeout=TTL_SECONDS)
 
 
-def _fallback_issue(*, fingerprint, exception_type, summary, source, traceback_text, correlation_id, user_id, method, task_id):
+def _fallback_issue(
+    *, fingerprint, exception_type, summary, source, traceback_text,
+    correlation_id, user_id, method, task_id,
+):
     now = timezone.now().isoformat()
     current = cache.get(_issue_key(fingerprint)) or {}
     return {
@@ -117,6 +135,8 @@ def _store_issue(
     method: str = "",
     task_id: str = "",
 ):
+    summary = _redact(summary)
+    traceback_text = _redact(traceback_text)
     fingerprint = _fingerprint(exception_type=exception_type, source=source, summary=summary)
     now = timezone.now()
     issue = None
@@ -158,18 +178,9 @@ def _store_issue(
                 row.sample_traceback = traceback_text[-8000:]
                 row.save(
                     update_fields=[
-                        "status",
-                        "exception_type",
-                        "summary",
-                        "source",
-                        "method",
-                        "task_id",
-                        "correlation_id",
-                        "user_reference",
-                        "last_seen_at",
-                        "occurrences",
-                        "sample_traceback",
-                        "updated_at",
+                        "status", "exception_type", "summary", "source", "method",
+                        "task_id", "correlation_id", "user_reference", "last_seen_at",
+                        "occurrences", "sample_traceback", "updated_at",
                     ]
                 )
             issue = _serialize(row)
@@ -228,7 +239,10 @@ def record_http_5xx(request, status_code: int):
     class HTTPServerError(Exception):
         pass
 
-    return record_exception(request, HTTPServerError(f"HTTP {status_code} без перехваченного исключения"))
+    return record_exception(
+        request,
+        HTTPServerError(f"HTTP {status_code} без перехваченного исключения"),
+    )
 
 
 def _cached_issues(*, status: str | None, limit: int):
@@ -262,7 +276,7 @@ def update_issue(fingerprint: str, *, status: str, resolution_note: str = ""):
             row = SystemIssue.objects.select_for_update().filter(pk=fingerprint).first()
             if row is not None:
                 row.status = status
-                row.resolution_note = resolution_note[:2000]
+                row.resolution_note = _redact(resolution_note)[:2000]
                 row.save(update_fields=["status", "resolution_note", "updated_at"])
                 issue = _serialize(row)
     except Exception:
@@ -272,7 +286,7 @@ def update_issue(fingerprint: str, *, status: str, resolution_note: str = ""):
         if issue is None:
             return None
         issue["status"] = status
-        issue["resolution_note"] = resolution_note[:2000]
+        issue["resolution_note"] = _redact(resolution_note)[:2000]
         issue["updated_at"] = timezone.now().isoformat()
     _cache_issue(issue)
     _append_jsonl({**issue, "event": "status_changed"})
@@ -296,7 +310,10 @@ def system_analysis():
         .exclude(health_state=Provider.HealthState.HEALTHY)
         .values("slug", "name", "health_state", "last_latency_ms", "last_checked_at")
     )
-    payment_failures = Payment.objects.filter(created_at__gte=day, status=Payment.Status.CANCELED).count()
+    payment_failures = Payment.objects.filter(
+        created_at__gte=day,
+        status=Payment.Status.CANCELED,
+    ).count()
     top_errors = list(
         generation_day.filter(state=Generation.State.FAILED)
         .values("error_code")
