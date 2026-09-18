@@ -25,6 +25,8 @@ def _payload(request):
 
 class ImageModelView(APIView):
     def get(self, request):
+        if not settings.IMAGES_ENABLED:
+            return Response([])
         queryset = ImageModel.objects.select_related("provider").filter(
             enabled=True, provider__enabled=True, provider__emergency_disabled=False
         )
