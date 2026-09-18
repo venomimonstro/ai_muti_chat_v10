@@ -17,6 +17,24 @@ def _metric(name, value=1):
         return
 
 
+def _record_exception(request, exc):
+    try:
+        from apps.admin_ops.system_health import record_exception
+
+        record_exception(request, exc)
+    except Exception:
+        logger.exception("Не удалось зарегистрировать системную ошибку")
+
+
+def _record_5xx(request, status_code):
+    try:
+        from apps.admin_ops.system_health import record_http_5xx
+
+        record_http_5xx(request, status_code)
+    except Exception:
+        logger.exception("Не удалось зарегистрировать HTTP 5xx")
+
+
 class SecurityHeadersMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
@@ -29,9 +47,15 @@ class SecurityHeadersMiddleware:
         except (ValueError, TypeError):
             correlation_id = str(uuid.uuid4())
         request.correlation_id = correlation_id
-        response = self.get_response(request)
-        latency_ms = int((time.monotonic() - started) * 1000)
+        try:
+            response = self.get_response(request)
+        except Exception as exc:
+            _metric("http_requests_total")
+            _metric("http_5xx_total")
+            _record_exception(request, exc)
+            raise
 
+        latency_ms = int((time.monotonic() - started) * 1000)
         response.setdefault("X-Correlation-ID", correlation_id)
         response.setdefault(
             "Content-Security-Policy",
@@ -48,6 +72,7 @@ class SecurityHeadersMiddleware:
         _metric("http_latency_ms_total", latency_ms)
         if response.status_code >= 500:
             _metric("http_5xx_total")
+            _record_5xx(request, response.status_code)
         logger.info(
             json.dumps(
                 {
@@ -57,7 +82,9 @@ class SecurityHeadersMiddleware:
                     "path": request.path,
                     "status": response.status_code,
                     "latency_ms": latency_ms,
-                    "user_id": str(request.user.id) if getattr(request, "user", None) and request.user.is_authenticated else None,
+                    "user_id": str(request.user.id)
+                    if getattr(request, "user", None) and request.user.is_authenticated
+                    else None,
                 },
                 ensure_ascii=False,
             )
