@@ -19,10 +19,9 @@ if [[ -e "${TARGET_DIR}/.installed" ]]; then
 fi
 
 if [[ -d "${TARGET_DIR}/.git" ]]; then
-  printf 'Найден незавершённый checkout %s, обновляем файлы...\n' "${TARGET_DIR}"
+  printf 'Найден незавершённый checkout %s, восстанавливаем файлы...\n' "${TARGET_DIR}"
   git -C "${TARGET_DIR}" fetch --depth 1 origin "${BRANCH}"
-  git -C "${TARGET_DIR}" checkout -f "${BRANCH}"
-  git -C "${TARGET_DIR}" reset --hard "origin/${BRANCH}"
+  git -C "${TARGET_DIR}" checkout -B "${BRANCH}" "origin/${BRANCH}"
 elif [[ -e "${TARGET_DIR}" ]]; then
   fail "${TARGET_DIR} существует, но не является checkout проекта"
 else
