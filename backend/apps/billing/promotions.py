@@ -1,3 +1,4 @@
+from datetime import datetime, time
 from decimal import Decimal
 
 from django.conf import settings
@@ -35,7 +36,7 @@ def grant_signup_promo(user):
     _lock_signup_promo_budget()
     today = timezone.localdate()
     start = timezone.make_aware(
-        timezone.datetime.combine(today, timezone.datetime.min.time()),
+        datetime.combine(today, time.min),
         timezone.get_current_timezone(),
     )
     issued = (
