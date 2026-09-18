@@ -21,7 +21,7 @@ class YooKassaClient:
             base_url=settings.YOOKASSA_API_BASE_URL,
         )
 
-    def _request(self, method, path, *, key=None, payload=None):
+    def _request(self, method, path, *, key=None, payload=None, params=None):
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Idempotence-Key"] = key
@@ -32,13 +32,14 @@ class YooKassaClient:
                 auth=self.auth,
                 headers=headers,
                 json=payload,
+                params=params,
                 timeout=30,
             )
             response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
+            body = response.json()
+            if not isinstance(body, dict):
                 raise ValueError("Unexpected YooKassa response")
-            return payload
+            return body
         except (httpx.HTTPError, ValueError) as exc:
             raise PaymentProviderError("YooKassa request failed") from exc
 
@@ -47,6 +48,10 @@ class YooKassaClient:
 
     def get_payment(self, payment_id):
         return self._request("GET", f"/payments/{payment_id}")
+
+    def list_payments(self, *, limit=1):
+        limit = max(1, min(int(limit), 100))
+        return self._request("GET", "/payments", params={"limit": limit})
 
     def create_refund(self, payload, idempotency_key):
         return self._request("POST", "/refunds", key=idempotency_key, payload=payload)
