@@ -4,6 +4,7 @@ from .analytics_views import ProductAnalyticsView
 from .compliance_views import ComplianceConsoleView
 from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
+from .infrastructure_views import InfrastructureHealthView
 from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView
@@ -38,6 +39,7 @@ from .views import (
 urlpatterns = [
     path("overview/", ExecutiveOverviewView.as_view(), name="admin-overview"),
     path("metrics/", OperationalMetricsView.as_view(), name="admin-metrics"),
+    path("infrastructure/", InfrastructureHealthView.as_view(), name="admin-infrastructure"),
     path("system-analysis/", SystemAnalysisView.as_view(), name="admin-system-analysis"),
     path(
         "system-issues/<str:fingerprint>/action/",
