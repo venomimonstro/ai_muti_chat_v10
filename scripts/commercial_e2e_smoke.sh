@@ -12,14 +12,11 @@ email="e2e_${rand}@example.test"
 password="CommercialE2E-${rand}-A!"
 
 fail(){ printf 'E2E FAIL: %s\n' "$1" >&2; exit 1; }
-json(){ python3 - "$@" <<'PY'
-import json,sys
+json(){ python3 -c 'import json,sys
 obj=json.load(sys.stdin)
-for key in sys.argv[1].split('.'):
+for key in sys.argv[1].split("."):
     obj=obj[int(key)] if isinstance(obj,list) else obj[key]
-print(obj)
-PY
-}
+print(obj)' "$1"; }
 
 printf '[1/12] Public pages\n'
 for path in / /pricing /faq /login /register /forgot-password /api /use-cases/marketing /use-cases/coding /use-cases/documents; do curl -fsS --max-time 15 "${BASE_URL%/}${path}" >/dev/null || fail "public route ${path}"; done
