@@ -25,66 +25,11 @@ class ProviderTemplate:
 
 
 PROVIDER_TEMPLATES = (
-    ProviderTemplate(
-        slug="openai",
-        name="OpenAI",
-        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
-        credential_env="OPENAI_API_KEY",
-        base_url_env="OPENAI_API_BASE_URL",
-        default_base_url="https://api.openai.com/v1",
-        model_env="OPENAI_DEFAULT_MODEL",
-        model_slug="openai-default",
-        display_name="OpenAI default",
-        capabilities=("text", "streaming", "vision", "tools"),
-    ),
-    ProviderTemplate(
-        slug="anthropic",
-        name="Anthropic",
-        adapter_type=Provider.AdapterType.ANTHROPIC_MESSAGES,
-        credential_env="ANTHROPIC_API_KEY",
-        base_url_env="ANTHROPIC_API_BASE_URL",
-        default_base_url="https://api.anthropic.com/v1",
-        model_env="ANTHROPIC_DEFAULT_MODEL",
-        model_slug="anthropic-default",
-        display_name="Claude default",
-        capabilities=("text", "streaming", "vision", "tools"),
-    ),
-    ProviderTemplate(
-        slug="deepseek",
-        name="DeepSeek",
-        adapter_type=Provider.AdapterType.DEEPSEEK_CHAT,
-        credential_env="DEEPSEEK_API_KEY",
-        base_url_env="DEEPSEEK_API_BASE_URL",
-        default_base_url="https://api.deepseek.com",
-        model_env="DEEPSEEK_DEFAULT_MODEL",
-        model_slug="deepseek-default",
-        display_name="DeepSeek default",
-        capabilities=("text", "streaming"),
-    ),
-    ProviderTemplate(
-        slug="gemini",
-        name="Google Gemini",
-        adapter_type=Provider.AdapterType.GEMINI_GENERATE_CONTENT,
-        credential_env="GEMINI_API_KEY",
-        base_url_env="GEMINI_API_BASE_URL",
-        default_base_url="https://generativelanguage.googleapis.com/v1beta",
-        model_env="GEMINI_DEFAULT_MODEL",
-        model_slug="gemini-default",
-        display_name="Gemini default",
-        capabilities=("text", "streaming", "vision", "tools"),
-    ),
-    ProviderTemplate(
-        slug="xai",
-        name="xAI",
-        adapter_type=Provider.AdapterType.XAI_CHAT,
-        credential_env="XAI_API_KEY",
-        base_url_env="XAI_API_BASE_URL",
-        default_base_url="https://api.x.ai/v1",
-        model_env="XAI_DEFAULT_MODEL",
-        model_slug="xai-default",
-        display_name="Grok default",
-        capabilities=("text", "streaming", "vision", "tools"),
-    ),
+    ProviderTemplate("openai", "OpenAI", Provider.AdapterType.OPENAI_RESPONSES, "OPENAI_API_KEY", "OPENAI_API_BASE_URL", "https://api.openai.com/v1", "OPENAI_DEFAULT_MODEL", "openai-default", "OpenAI default", ("text", "streaming", "vision", "tools")),
+    ProviderTemplate("anthropic", "Anthropic", Provider.AdapterType.ANTHROPIC_MESSAGES, "ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE_URL", "https://api.anthropic.com/v1", "ANTHROPIC_DEFAULT_MODEL", "anthropic-default", "Claude default", ("text", "streaming", "vision", "tools")),
+    ProviderTemplate("deepseek", "DeepSeek", Provider.AdapterType.DEEPSEEK_CHAT, "DEEPSEEK_API_KEY", "DEEPSEEK_API_BASE_URL", "https://api.deepseek.com", "DEEPSEEK_DEFAULT_MODEL", "deepseek-default", "DeepSeek default", ("text", "streaming")),
+    ProviderTemplate("gemini", "Google Gemini", Provider.AdapterType.GEMINI_GENERATE_CONTENT, "GEMINI_API_KEY", "GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta", "GEMINI_DEFAULT_MODEL", "gemini-default", "Gemini default", ("text", "streaming", "vision", "tools")),
+    ProviderTemplate("xai", "xAI", Provider.AdapterType.XAI_CHAT, "XAI_API_KEY", "XAI_API_BASE_URL", "https://api.x.ai/v1", "XAI_DEFAULT_MODEL", "xai-default", "Grok default", ("text", "streaming", "vision", "tools")),
 )
 
 
@@ -107,7 +52,6 @@ def _decimal_env(name: str) -> Decimal | None:
 def bootstrap_commercial_catalog() -> dict:
     created = {"providers": 0, "models": 0, "versions": 0, "prices": 0, "policies": 0}
     now = timezone.now()
-
     for index, template in enumerate(PROVIDER_TEMPLATES, start=1):
         provider, was_created = Provider.objects.get_or_create(
             slug=template.slug,
@@ -124,11 +68,7 @@ def bootstrap_commercial_catalog() -> dict:
             created["providers"] += 1
         else:
             changed = False
-            for field, value in {
-                "name": template.name,
-                "adapter_type": template.adapter_type,
-                "credential_env": template.credential_env,
-            }.items():
+            for field, value in {"name": template.name, "adapter_type": template.adapter_type, "credential_env": template.credential_env}.items():
                 if getattr(provider, field) != value:
                     setattr(provider, field, value)
                     changed = True
@@ -152,7 +92,6 @@ def bootstrap_commercial_catalog() -> dict:
         )
         if model_created:
             created["models"] += 1
-
         if upstream_model and not model.current_version:
             version, version_created = ModelVersion.objects.get_or_create(
                 model=model,
@@ -173,7 +112,6 @@ def bootstrap_commercial_catalog() -> dict:
             model.upstream_model = upstream_model
             model.current_version = version
             model.save(update_fields=["upstream_model", "current_version"])
-
         if not PriceVersion.objects.filter(model_slug=model.slug, active=True).exists():
             input_price = _decimal_env(_price_env(model.slug, "INPUT"))
             output_price = _decimal_env(_price_env(model.slug, "OUTPUT"))
@@ -201,10 +139,7 @@ def bootstrap_commercial_catalog() -> dict:
             thresholds={"minimum_quality": 0, "maximum_fallback_cost_multiplier": 1.5},
         )
         created["policies"] += 1
-
-    if not MarkupRuleVersion.objects.filter(
-        scope_type=MarkupRuleVersion.Scope.GLOBAL, active=True
-    ).exists():
+    if not MarkupRuleVersion.objects.filter(scope_type=MarkupRuleVersion.Scope.GLOBAL, active=True).exists():
         MarkupRuleVersion.objects.create(
             scope_type=MarkupRuleVersion.Scope.GLOBAL,
             scope_key="",
@@ -215,7 +150,6 @@ def bootstrap_commercial_catalog() -> dict:
             reason="Sprint 27 commercial bootstrap default",
         )
         created["policies"] += 1
-
     if not MarginPolicyVersion.objects.filter(active=True).exists():
         MarginPolicyVersion.objects.create(
             minimum_gross_margin_percent=Decimal("25"),
@@ -225,10 +159,7 @@ def bootstrap_commercial_catalog() -> dict:
             effective_from=now,
         )
         created["policies"] += 1
-
-    if not FxRateSnapshot.objects.filter(
-        base_currency="RUB", quote_currency="RUB", source="identity"
-    ).exists():
+    if not FxRateSnapshot.objects.filter(base_currency="RUB", quote_currency="RUB", source="identity").exists():
         FxRateSnapshot.objects.create(
             base_currency="RUB",
             quote_currency="RUB",
@@ -238,24 +169,32 @@ def bootstrap_commercial_catalog() -> dict:
             effective_at=now,
         )
         created["policies"] += 1
-
     return created
 
 
 def provider_setup_status(provider: Provider) -> dict:
     configured = bool(provider.credential_env and os.getenv(provider.credential_env, "").strip())
+    now = timezone.now()
     models = []
     for model in provider.models.select_related("current_version").all():
-        price = PriceVersion.objects.filter(model_slug=model.slug, active=True).order_by(
-            "-effective_from", "-created_at"
-        ).first()
+        price = (
+            PriceVersion.objects.filter(
+                model_slug=model.slug,
+                active=True,
+                effective_from__lte=now,
+                input_rub_per_million__gt=0,
+                output_rub_per_million__gt=0,
+            )
+            .order_by("-effective_from", "-created_at")
+            .first()
+        )
         models.append(
             {
                 "slug": model.slug,
                 "enabled": model.enabled,
                 "upstream_model": model.upstream_model,
                 "has_active_version": bool(model.current_version_id),
-                "has_active_price": bool(price and price.input_rub_per_million >= 0 and price.output_rub_per_million >= 0),
+                "has_active_price": price is not None,
             }
         )
     return {
@@ -271,15 +210,18 @@ def provider_setup_status(provider: Provider) -> dict:
 
 def commercial_setup_status() -> dict:
     providers = [provider_setup_status(item) for item in Provider.objects.prefetch_related("models")]
+    now = timezone.now()
     return {
         "providers": providers,
         "routing_policy": RoutingPolicyVersion.objects.filter(active=True).exists(),
         "markup_policy": MarkupRuleVersion.objects.filter(
-            scope_type=MarkupRuleVersion.Scope.GLOBAL, active=True
+            scope_type=MarkupRuleVersion.Scope.GLOBAL,
+            active=True,
+            effective_from__lte=now,
         ).exists(),
-        "margin_policy": MarginPolicyVersion.objects.filter(active=True).exists(),
+        "margin_policy": MarginPolicyVersion.objects.filter(active=True, effective_from__lte=now).exists(),
         "rub_fx_identity": FxRateSnapshot.objects.filter(
-            base_currency="RUB", quote_currency="RUB", source="identity"
+            base_currency="RUB", quote_currency="RUB", source="identity", effective_at__lte=now
         ).exists(),
     }
 
@@ -292,9 +234,7 @@ def check_provider_health(provider: Provider) -> dict:
         return {"healthy": False, "latency_ms": None, "error_code": "model_missing"}
     try:
         health = adapter_for(model).health_check()
-        provider.health_state = (
-            Provider.HealthState.HEALTHY if health.healthy else Provider.HealthState.DEGRADED
-        )
+        provider.health_state = Provider.HealthState.HEALTHY if health.healthy else Provider.HealthState.DEGRADED
         provider.last_latency_ms = health.latency_ms
         provider.last_checked_at = timezone.now()
         provider.save(update_fields=["health_state", "last_latency_ms", "last_checked_at"])
@@ -304,18 +244,10 @@ def check_provider_health(provider: Provider) -> dict:
             latency_ms=health.latency_ms,
             error_code=health.error_code,
         )
-        return {
-            "healthy": health.healthy,
-            "latency_ms": health.latency_ms,
-            "error_code": health.error_code,
-        }
+        return {"healthy": health.healthy, "latency_ms": health.latency_ms, "error_code": health.error_code}
     except ProviderError as exc:
         provider.health_state = Provider.HealthState.DEGRADED
         provider.last_checked_at = timezone.now()
         provider.save(update_fields=["health_state", "last_checked_at"])
-        ProviderHealthSnapshot.objects.create(
-            provider=provider,
-            healthy=False,
-            error_code=exc.code,
-        )
+        ProviderHealthSnapshot.objects.create(provider=provider, healthy=False, error_code=exc.code)
         return {"healthy": False, "latency_ms": None, "error_code": exc.code}
