@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN addgroup --system --gid 10001 app \
     && adduser --system --uid 10001 --ingroup app --home /app app \
-    && mkdir -p /app/media /app/staticfiles \
+    && mkdir -p /app/media /app/staticfiles /app/logs \
     && chown -R app:app /app
 USER app
 EXPOSE 8000
