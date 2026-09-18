@@ -1,5 +1,6 @@
 import json
 
+from django.conf import settings
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from rest_framework import status
@@ -31,8 +32,16 @@ def error_response(error):
 class OpenAIAPIView(APIView):
     authentication_classes = [APIKeyAuthentication]
     permission_classes = [IsAuthenticated]
-    # Public API keys have transactional per-key rate/concurrency limits.
     throttle_classes = []
+
+    def initial(self, request, *args, **kwargs):
+        if not settings.B2B_API_ENABLED:
+            raise PublicAPIError(
+                "Public API is temporarily disabled",
+                code="api_disabled",
+                status_code=503,
+            )
+        return super().initial(request, *args, **kwargs)
 
     def handle_exception(self, exc):
         if isinstance(exc, PublicAPIError):
@@ -153,7 +162,6 @@ class ChatCompletionView(OpenAIAPIView):
         except PublicAPIError as exc:
             return error_response(exc)
         usage = result.usage
-        usage.model = usage.model
         if request.data.get("stream") is True:
             include_usage = bool((request.data.get("stream_options") or {}).get("include_usage"))
             response = StreamingHttpResponse(
