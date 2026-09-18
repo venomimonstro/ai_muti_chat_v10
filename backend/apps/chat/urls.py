@@ -6,6 +6,7 @@ from .ux_views import (
     ConversationFolderViewSet,
     ConversationSummaryListView,
     ConversationUIStateViewSet,
+    ConversationWorkspaceView,
 )
 from .views import ConversationViewSet
 
@@ -16,6 +17,7 @@ router.register("conversation-ui", ConversationUIStateViewSet, basename="convers
 
 urlpatterns = [
     path("conversation-summaries/", ConversationSummaryListView.as_view(), name="conversation-summaries"),
+    path("conversation-workspace/<uuid:conversation_id>/", ConversationWorkspaceView.as_view(), name="conversation-workspace"),
     path(
         "conversations/<uuid:conversation_id>/messages/<uuid:message_id>/edit/",
         EditMessageView.as_view(),
