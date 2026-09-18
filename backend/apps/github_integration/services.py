@@ -46,10 +46,13 @@ def app_jwt():
     header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
     payload = _b64url(json.dumps({"iat": now - 60, "exp": now + 540, "iss": _env("GITHUB_APP_ID")}, separators=(",", ":")).encode())
     signing_input = f"{header}.{payload}".encode()
-    private_key = serialization.load_pem_private_key(
-        _env("GITHUB_APP_PRIVATE_KEY").replace("\\n", "\n").encode(),
-        password=None,
-    )
+    try:
+        private_key = serialization.load_pem_private_key(
+            _env("GITHUB_APP_PRIVATE_KEY").replace("\\n", "\n").encode(),
+            password=None,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ImproperlyConfigured("GitHub App private key is invalid") from exc
     signature = private_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
     return f"{header}.{payload}.{_b64url(signature)}"
 
@@ -63,8 +66,18 @@ def _headers(token):
     }
 
 
+def _json_request(method, url, **kwargs):
+    try:
+        response = httpx.request(method, url, timeout=TIMEOUT, **kwargs)
+        response.raise_for_status()
+        return response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ValidationError("GitHub temporarily unavailable or returned an invalid response") from exc
+
+
 def exchange_user_code(code):
-    response = httpx.post(
+    payload = _json_request(
+        "POST",
         f"{GITHUB_WEB}/login/oauth/access_token",
         data={
             "client_id": _env("GITHUB_APP_CLIENT_ID"),
@@ -72,10 +85,7 @@ def exchange_user_code(code):
             "code": code,
         },
         headers={"Accept": "application/json", "User-Agent": "AIWorkspace-GitHubApp/1.0"},
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
-    payload = response.json()
     token = str(payload.get("access_token") or "")
     if not token:
         raise ValidationError("GitHub authorization failed")
@@ -83,14 +93,13 @@ def exchange_user_code(code):
 
 
 def verified_installation(user_token, installation_id):
-    response = httpx.get(
+    payload = _json_request(
+        "GET",
         f"{GITHUB_API}/user/installations",
         headers=_headers(user_token),
         params={"per_page": 100},
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
-    for installation in response.json().get("installations", []):
+    for installation in payload.get("installations", []):
         if int(installation.get("id", 0)) == int(installation_id):
             return installation
     raise ValidationError("GitHub installation is not owned by the authorized user")
@@ -102,14 +111,13 @@ def installation_token(installation_id, *, repository_ids=None, permissions=None
         body["repository_ids"] = [int(value) for value in repository_ids]
     if permissions:
         body["permissions"] = permissions
-    response = httpx.post(
+    payload = _json_request(
+        "POST",
         f"{GITHUB_API}/app/installations/{int(installation_id)}/access_tokens",
         headers=_headers(app_jwt()),
         json=body,
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
-    token = str(response.json().get("token") or "")
+    token = str(payload.get("token") or "")
     if not token:
         raise ValidationError("GitHub did not issue installation token")
     return token
@@ -117,14 +125,13 @@ def installation_token(installation_id, *, repository_ids=None, permissions=None
 
 def list_repositories(installation_id):
     token = installation_token(installation_id)
-    response = httpx.get(
+    payload = _json_request(
+        "GET",
         f"{GITHUB_API}/installation/repositories",
         headers=_headers(token),
         params={"per_page": 100},
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
-    return response.json().get("repositories", [])
+    return payload.get("repositories", [])
 
 
 def _safe_path(path):
@@ -144,28 +151,33 @@ def read_repository_file(binding, path, *, ref=None):
         repository_ids=[binding.repository_id],
         permissions={"contents": "read"},
     )
-    response = httpx.get(
+    payload = _json_request(
+        "GET",
         f"{GITHUB_API}/repos/{binding.full_name}/contents/{quote(path, safe='/')}",
         headers=_headers(token),
         params={"ref": ref or binding.default_branch},
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
-    payload = response.json()
     if not isinstance(payload, dict) or payload.get("type") != "file":
         raise ValidationError("Path is not a file")
     if payload.get("encoding") != "base64":
         raise ValidationError("Unsupported GitHub content encoding")
-    raw = base64.b64decode(payload.get("content") or "", validate=False)
+    try:
+        raw = base64.b64decode(payload.get("content") or "", validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValidationError("GitHub returned malformed file content") from exc
     if len(raw) > int(os.getenv("GITHUB_MAX_FILE_BYTES", str(2 * 1024 * 1024))):
         raise ValidationError("GitHub file exceeds configured size limit")
     if b"\x00" in raw:
         raise ValidationError("Binary files are not available in AI workspace")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("Only UTF-8 text files are available in AI workspace") from exc
     return {
         "path": path,
         "sha": payload.get("sha"),
         "size": len(raw),
-        "content": raw.decode("utf-8"),
+        "content": text,
         "ref": ref or binding.default_branch,
     }
 
@@ -181,14 +193,15 @@ def write_repository_file(binding, path, *, content, expected_sha, message, bran
         raise ValidationError("Expected file SHA is required for safe update")
     commit_message = str(message or "AI Workspace update").strip()[:240]
     target_branch = str(branch or binding.default_branch).strip()
-    if not target_branch or len(target_branch) > 255:
+    if not target_branch or len(target_branch) > 255 or "\x00" in target_branch:
         raise ValidationError("Invalid branch")
     token = installation_token(
         binding.installation.installation_id,
         repository_ids=[binding.repository_id],
         permissions={"contents": "write"},
     )
-    response = httpx.put(
+    payload = _json_request(
+        "PUT",
         f"{GITHUB_API}/repos/{binding.full_name}/contents/{quote(path, safe='/')}",
         headers=_headers(token),
         json={
@@ -197,10 +210,7 @@ def write_repository_file(binding, path, *, content, expected_sha, message, bran
             "sha": expected_sha,
             "branch": target_branch,
         },
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
-    payload = response.json()
     return {
         "path": path,
         "branch": target_branch,
