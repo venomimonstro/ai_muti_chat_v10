@@ -1,8 +1,8 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .client_views import ClientConversationViewSet
 from .message_actions import EditMessageView, RegenerateMessageView
+from .safe_views import SafeConversationViewSet
 from .ux_views import (
     ConversationFolderViewSet,
     ConversationSettingsView,
@@ -12,7 +12,7 @@ from .ux_views import (
 )
 
 router = DefaultRouter()
-router.register("conversations", ClientConversationViewSet, basename="conversation")
+router.register("conversations", SafeConversationViewSet, basename="conversation")
 router.register("conversation-folders", ConversationFolderViewSet, basename="conversation-folder")
 router.register("conversation-ui", ConversationUIStateViewSet, basename="conversation-ui")
 
