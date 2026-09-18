@@ -63,7 +63,24 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export type StreamEvent = {event: string; data: Record<string, unknown>};
 type StreamPayload = {content: string; client_message_id: string; file_ids?: string[]};
-type PendingStream = {payload: StreamPayload; idempotencyKey: string; createdAt: number};
+type PendingStream = {
+  payload: StreamPayload;
+  idempotencyKey: string;
+  createdAt: number;
+  confirmedCost?: boolean;
+};
+type ChatCostPreview = {
+  estimated_min_rub: string;
+  estimated_max_rub: string;
+  confirmation_required: boolean;
+  confirmation_threshold_rub: string;
+  selected_model: string;
+};
+
+type CostConfirmationError = ChatCostPreview & {
+  code?: string;
+  detail?: string;
+};
 
 const pendingKey = (conversationId: string) => `aiws:pending-stream:${conversationId}`;
 const fileIds = (value: StreamPayload) => value.file_ids ?? [];
@@ -108,6 +125,28 @@ export function clearPendingStream(conversationId: string) {
   clearPending(conversationId);
 }
 
+function formatRub(value: string | number) {
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? amount.toLocaleString("ru-RU", {minimumFractionDigits: 2, maximumFractionDigits: 2})
+    : String(value);
+}
+
+function askCostConfirmation(maximum: string) {
+  if (typeof window === "undefined") return false;
+  return window.confirm(
+    `Максимальная расчётная стоимость этого запроса — до ${formatRub(maximum)} ₽.\n\n` +
+      "Фактически будет списано только за выполненный запрос. Продолжить?",
+  );
+}
+
+async function previewChatCost(conversationId: string, payload: StreamPayload) {
+  return api<ChatCostPreview>(`/conversations/${conversationId}/messages/preview/`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function streamMessage(
   conversationId: string,
   payload: StreamPayload,
@@ -115,25 +154,59 @@ export async function streamMessage(
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
 ) {
-  const pending = readPending(conversationId, payload) ?? {
+  const restored = readPending(conversationId, payload);
+  const pending: PendingStream = restored ?? {
     payload,
     idempotencyKey,
     createdAt: Date.now(),
+    confirmedCost: false,
   };
+
+  if (!restored) {
+    const preview = await previewChatCost(conversationId, payload);
+    if (preview.confirmation_required) {
+      if (!askCostConfirmation(preview.estimated_max_rub)) {
+        throw new ApiError("Запрос отменён до списания средств", 499);
+      }
+      pending.confirmedCost = true;
+    }
+  }
   writePending(conversationId, pending);
   signal.addEventListener("abort", () => clearPending(conversationId), {once: true});
 
-  const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages/stream/`, {
-    method: "POST",
-    credentials: "include",
-    signal,
-    headers: {
-      "Content-Type": "application/json",
-      "Idempotency-Key": pending.idempotencyKey,
-      "X-CSRFToken": await ensureCsrf(),
-    },
-    body: JSON.stringify(pending.payload),
-  });
+  const send = (confirmCost: boolean) =>
+    fetch(`${API_BASE}/conversations/${conversationId}/messages/stream/`, {
+      method: "POST",
+      credentials: "include",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": pending.idempotencyKey,
+        "X-CSRFToken": csrfToken,
+      },
+      body: JSON.stringify({...pending.payload, confirm_cost: confirmCost}),
+    });
+
+  await ensureCsrf();
+  let response = await send(Boolean(pending.confirmedCost));
+  if (response.status === 409) {
+    let details: CostConfirmationError | null = null;
+    try {
+      details = (await response.json()) as CostConfirmationError;
+    } catch {
+      details = null;
+    }
+    if (details?.code === "cost_confirmation_required") {
+      if (!askCostConfirmation(details.estimated_max_rub)) {
+        clearPending(conversationId);
+        throw new ApiError("Запрос отменён до списания средств", 499);
+      }
+      pending.confirmedCost = true;
+      writePending(conversationId, pending);
+      response = await send(true);
+    }
+  }
+
   if (!response.ok || !response.body) {
     if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
       clearPending(conversationId);
