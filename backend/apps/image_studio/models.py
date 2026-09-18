@@ -49,6 +49,13 @@ class ImageGeneration(models.Model):
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="image_generations"
     )
+    conversation = models.ForeignKey(
+        "chat.Conversation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="image_generations",
+    )
     model = models.ForeignKey(ImageModel, on_delete=models.PROTECT, related_name="generations")
     prompt = models.TextField()
     size = models.CharField(max_length=32)
@@ -76,7 +83,10 @@ class ImageGeneration(models.Model):
                 fields=["owner", "idempotency_key"], name="unique_image_generation_idempotency"
             )
         ]
-        indexes = [models.Index(fields=["owner", "-created_at"])]
+        indexes = [
+            models.Index(fields=["owner", "-created_at"]),
+            models.Index(fields=["conversation", "-created_at"], name="imagegen_conv_created_idx"),
+        ]
 
 
 def image_upload_to(instance, filename):
