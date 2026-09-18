@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .compliance_views import ComplianceConsoleView
 from .growth_views import GrowthFunnelView
 from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
@@ -8,7 +9,6 @@ from .views import (
     AuditView,
     BackupActionView,
     BackupView,
-    ComplianceSignoffView,
     ExecutiveOverviewView,
     FeatureFlagDetailView,
     FeatureFlagView,
@@ -65,7 +65,7 @@ urlpatterns = [
     path("feature-flags/", FeatureFlagView.as_view(), name="admin-feature-flags"),
     path("feature-flags/<slug:key>/", FeatureFlagDetailView.as_view(), name="admin-feature-flag-detail"),
     path("audit/", AuditView.as_view(), name="admin-audit"),
-    path("signoffs/", ComplianceSignoffView.as_view(), name="admin-signoffs"),
+    path("signoffs/", ComplianceConsoleView.as_view(), name="admin-signoffs"),
     path("status-incidents/", StatusIncidentControlView.as_view(), name="admin-status-incidents"),
     path("status-incidents/<uuid:incident_id>/", StatusIncidentUpdateView.as_view(), name="admin-status-incident-update"),
 ]
