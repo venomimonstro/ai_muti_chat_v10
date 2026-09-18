@@ -1,5 +1,5 @@
 from django.urls import path
 
-from .views import WorkspaceSearchView
+from .safe_views import SafeWorkspaceSearchView
 
-urlpatterns = [path("search/", WorkspaceSearchView.as_view(), name="workspace-search")]
+urlpatterns = [path("search/", SafeWorkspaceSearchView.as_view(), name="workspace-search")]
