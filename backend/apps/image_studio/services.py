@@ -1,5 +1,5 @@
 import hashlib
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -16,6 +16,42 @@ from .adapters import ImageProviderError, _detect_mime, adapter_for
 from .models import GeneratedImage, ImageGeneration, ImageModel
 from .quality import record_image_quality_failure
 from .validation import validate_generated_image
+
+
+def provider_unit_price(model, size, quality):
+    """Return reviewed provider cost for an exact image variant.
+
+    A legacy scalar price is accepted only while the model exposes exactly one size and one
+    quality. As soon as the operator enables multiple variants every combination must be
+    explicitly priced, otherwise generation fails before a provider request is made.
+    """
+    matrix = model.provider_price_matrix or {}
+    key = f"{size}|{quality}"
+    raw = matrix.get(key)
+    if raw not in {None, ""}:
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError(f"Некорректная себестоимость варианта изображения {key}") from exc
+        if value <= 0:
+            raise ValidationError(f"Себестоимость варианта изображения {key} должна быть больше нуля")
+        return value
+    if len(model.supported_sizes or []) == 1 and len(model.supported_qualities or []) == 1:
+        if model.provider_price_per_image and model.provider_price_per_image > 0:
+            return Decimal(model.provider_price_per_image)
+    raise ValidationError(
+        f"Не настроена себестоимость изображения для размера {size} и качества {quality}"
+    )
+
+
+def image_price_matrix_complete(model):
+    try:
+        for size in model.supported_sizes or []:
+            for quality in model.supported_qualities or []:
+                provider_unit_price(model, size, quality)
+    except ValidationError:
+        return False
+    return bool(model.supported_sizes and model.supported_qualities)
 
 
 def _trip_image_provider(*, model, generation, reason, expected=None, actual=None):
@@ -88,9 +124,10 @@ def _validated(model_slug, prompt, size, quality, count):
 
 def preview(*, model_slug, prompt, size, quality, count):
     model, prompt, count = _validated(model_slug, prompt, size, quality, count)
+    unit_price = provider_unit_price(model, size, quality)
     value = require_margin(
         quote_flat(
-            provider_cost_native=model.provider_price_per_image * count,
+            provider_cost_native=unit_price * count,
             provider_currency=model.provider_currency,
             base_markup_percent=model.markup_percent,
             provider_slug=model.provider.slug,
@@ -143,13 +180,15 @@ def prepare_generation(
         quality=quality,
         count=count,
     )
+    unit_price = provider_unit_price(model, size, quality)
     if value.user_charge_rub >= Decimal(str(settings.IMAGE_CONFIRM_THRESHOLD_RUB)) and not confirmed:
         raise ValidationError("Подтвердите ожидаемую стоимость генерации")
     snapshot = {
         **value.pricing_snapshot,
         "model_slug": model.slug,
         "provider_slug": model.provider.slug,
-        "provider_price_per_image": str(model.provider_price_per_image),
+        "provider_price_per_image": str(unit_price),
+        "price_variant": f"{size}|{quality}",
         "requested_count": count,
         "size": size,
         "quality": quality,
