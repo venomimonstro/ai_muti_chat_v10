@@ -47,6 +47,56 @@ def test_write_is_disabled_by_default_and_requires_no_remote_call():
 
 
 @pytest.mark.django_db
+def test_binding_cannot_enable_write_without_github_contents_write_permission():
+    user = User.objects.create_user(
+        username="github-readonly", email="github-readonly@example.test", password="password123"
+    )
+    project = Project.objects.create(owner=user, name="Readonly project")
+    installation = GitHubInstallation.objects.create(
+        owner=user,
+        installation_id=1101,
+        account_login="readonly-user",
+        permissions={"contents": "read", "metadata": "read"},
+    )
+    binding = GitHubRepositoryBinding.objects.create(
+        project=project,
+        installation=installation,
+        repository_id=2202,
+        full_name="readonly-user/private-repo",
+        default_branch="main",
+    )
+    binding.write_enabled = True
+
+    with pytest.raises(ValidationError, match="contents: write"):
+        binding.save(update_fields=["write_enabled", "updated_at"])
+
+
+@pytest.mark.django_db
+def test_binding_may_enable_write_only_when_github_app_granted_contents_write():
+    user = User.objects.create_user(
+        username="github-writer", email="github-writer@example.test", password="password123"
+    )
+    project = Project.objects.create(owner=user, name="Writable project")
+    installation = GitHubInstallation.objects.create(
+        owner=user,
+        installation_id=1201,
+        account_login="writer-user",
+        permissions={"contents": "write", "metadata": "read"},
+    )
+    binding = GitHubRepositoryBinding.objects.create(
+        project=project,
+        installation=installation,
+        repository_id=2302,
+        full_name="writer-user/private-repo",
+        default_branch="main",
+    )
+    binding.write_enabled = True
+    binding.save(update_fields=["write_enabled", "updated_at"])
+    binding.refresh_from_db()
+    assert binding.write_enabled is True
+
+
+@pytest.mark.django_db
 def test_other_user_cannot_read_project_github_binding():
     owner = User.objects.create_user(
         username="github-owner", email="github-owner@example.test", password="password123"
