@@ -92,9 +92,11 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
+        NEXT_PUBLIC_SITE_URL: https://${APP_DOMAIN:?required}
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
+      NEXT_PUBLIC_SITE_URL: https://${APP_DOMAIN:?required}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/status').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
