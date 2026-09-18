@@ -32,8 +32,10 @@ class ImageProviderAdapter(Protocol):
 
 
 class EchoImageAdapter:
+    # Deterministic non-blank 64x64 PNG. It intentionally satisfies the same decoder/quality
+    # contract as production results so smoke tests do not bypass image validation.
     _PNG = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAcUlEQVR4nO3PwQ1AAAAEQTSlDbqhAuVog668aGEi2Xld7rfjtlzD6zjnb+/r/Yt/Gn6uAK0ArQCtAK0ArQCtAK0ArQCtAK0ArQCtAK0ArQCtAK0ArQCtAK0ArQCtAK0ArQCtAK0ArQCtAK0ArQCtAO0BWq0YfU3SNpUAAAAASUVORK5CYII="
     )
 
     def generate(self, *, model, prompt, size, quality, count):
