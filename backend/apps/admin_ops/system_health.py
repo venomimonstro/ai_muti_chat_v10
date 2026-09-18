@@ -21,6 +21,7 @@ ISSUE_PREFIX = "system_issues:item:v1:"
 MAX_ISSUES = 500
 TTL_SECONDS = 60 * 60 * 24 * 30
 LOG_FILE = Path(os.getenv("SYSTEM_ISSUE_LOG_FILE", "/app/logs/system_issues.jsonl"))
+LOG_MAX_BYTES = int(os.getenv("SYSTEM_ISSUE_LOG_MAX_BYTES", str(20 * 1024 * 1024)))
 
 
 def _fingerprint(*, exception_type: str, source: str, summary: str) -> str:
@@ -40,6 +41,10 @@ def _safe_user_id(request):
 def _append_jsonl(issue):
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size >= LOG_MAX_BYTES:
+            rotated = LOG_FILE.with_suffix(LOG_FILE.suffix + ".1")
+            rotated.unlink(missing_ok=True)
+            LOG_FILE.replace(rotated)
         with LOG_FILE.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(issue, ensure_ascii=False, default=str) + "\n")
     except OSError:
