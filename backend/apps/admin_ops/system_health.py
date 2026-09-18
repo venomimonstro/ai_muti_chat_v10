@@ -7,12 +7,15 @@ from datetime import timedelta
 from pathlib import Path
 
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 
 from apps.ai_registry.models import Provider
 from apps.chat.models import Generation
 from apps.payments.models import Payment
+
+from .issue_models import SystemIssue
 
 logger = logging.getLogger("aiworkspace.system")
 
@@ -38,6 +41,26 @@ def _safe_user_id(request):
     return str(user.id) if user is not None and user.is_authenticated else None
 
 
+def _serialize(row: SystemIssue) -> dict:
+    return {
+        "fingerprint": row.fingerprint,
+        "status": row.status,
+        "severity": row.severity,
+        "exception_type": row.exception_type,
+        "summary": row.summary,
+        "path": row.source,
+        "method": row.method,
+        "task_id": row.task_id,
+        "correlation_id": row.correlation_id,
+        "user_id": row.user_reference or None,
+        "first_seen_at": row.first_seen_at.isoformat(),
+        "last_seen_at": row.last_seen_at.isoformat(),
+        "occurrences": row.occurrences,
+        "resolution_note": row.resolution_note,
+        "sample_traceback": row.sample_traceback,
+    }
+
+
 def _append_jsonl(issue):
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -51,28 +74,22 @@ def _append_jsonl(issue):
         logger.exception("Не удалось записать системную ошибку в persistent-журнал")
 
 
-def _store_issue(
-    *,
-    exception_type: str,
-    summary: str,
-    source: str,
-    traceback_text: str,
-    correlation_id: str = "",
-    user_id: str | None = None,
-    method: str = "",
-    task_id: str = "",
-):
-    fingerprint = _fingerprint(
-        exception_type=exception_type,
-        source=source,
-        summary=summary,
-    )
-    key = _issue_key(fingerprint)
+def _cache_issue(issue: dict):
+    fingerprint = issue["fingerprint"]
+    cache.set(_issue_key(fingerprint), issue, timeout=TTL_SECONDS)
+    index = list(cache.get(INDEX_KEY) or [])
+    if fingerprint in index:
+        index.remove(fingerprint)
+    index.insert(0, fingerprint)
+    cache.set(INDEX_KEY, index[:MAX_ISSUES], timeout=TTL_SECONDS)
+
+
+def _fallback_issue(*, fingerprint, exception_type, summary, source, traceback_text, correlation_id, user_id, method, task_id):
     now = timezone.now().isoformat()
-    current = cache.get(key) or {}
-    issue = {
+    current = cache.get(_issue_key(fingerprint)) or {}
+    return {
         "fingerprint": fingerprint,
-        "status": current.get("status", "open"),
+        "status": "open" if current.get("status") in {None, "resolved", "ignored"} else current["status"],
         "severity": "critical",
         "exception_type": exception_type,
         "summary": summary[:500],
@@ -87,12 +104,88 @@ def _store_issue(
         "resolution_note": current.get("resolution_note", ""),
         "sample_traceback": traceback_text[-8000:],
     }
-    cache.set(key, issue, timeout=TTL_SECONDS)
-    index = list(cache.get(INDEX_KEY) or [])
-    if fingerprint in index:
-        index.remove(fingerprint)
-    index.insert(0, fingerprint)
-    cache.set(INDEX_KEY, index[:MAX_ISSUES], timeout=TTL_SECONDS)
+
+
+def _store_issue(
+    *,
+    exception_type: str,
+    summary: str,
+    source: str,
+    traceback_text: str,
+    correlation_id: str = "",
+    user_id: str | None = None,
+    method: str = "",
+    task_id: str = "",
+):
+    fingerprint = _fingerprint(exception_type=exception_type, source=source, summary=summary)
+    now = timezone.now()
+    issue = None
+    try:
+        with transaction.atomic():
+            row = SystemIssue.objects.select_for_update().filter(pk=fingerprint).first()
+            if row is None:
+                row = SystemIssue.objects.create(
+                    fingerprint=fingerprint,
+                    status=SystemIssue.Status.OPEN,
+                    severity="critical",
+                    exception_type=exception_type[:160],
+                    summary=summary[:500],
+                    source=source[:240],
+                    method=method[:16],
+                    task_id=task_id[:160],
+                    correlation_id=correlation_id[:160],
+                    user_reference=(user_id or "")[:64],
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    occurrences=1,
+                    sample_traceback=traceback_text[-8000:],
+                )
+            else:
+                row.status = (
+                    SystemIssue.Status.OPEN
+                    if row.status in {SystemIssue.Status.RESOLVED, SystemIssue.Status.IGNORED}
+                    else row.status
+                )
+                row.exception_type = exception_type[:160]
+                row.summary = summary[:500]
+                row.source = source[:240]
+                row.method = method[:16]
+                row.task_id = task_id[:160]
+                row.correlation_id = correlation_id[:160]
+                row.user_reference = (user_id or "")[:64]
+                row.last_seen_at = now
+                row.occurrences += 1
+                row.sample_traceback = traceback_text[-8000:]
+                row.save(
+                    update_fields=[
+                        "status",
+                        "exception_type",
+                        "summary",
+                        "source",
+                        "method",
+                        "task_id",
+                        "correlation_id",
+                        "user_reference",
+                        "last_seen_at",
+                        "occurrences",
+                        "sample_traceback",
+                        "updated_at",
+                    ]
+                )
+            issue = _serialize(row)
+    except Exception:
+        issue = _fallback_issue(
+            fingerprint=fingerprint,
+            exception_type=exception_type,
+            summary=summary,
+            source=source,
+            traceback_text=traceback_text,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            method=method,
+            task_id=task_id,
+        )
+    _cache_issue(issue)
     _append_jsonl(issue)
     logger.error(
         "Системная ошибка fingerprint=%s correlation_id=%s source=%s type=%s summary=%s",
@@ -115,9 +208,7 @@ def record_exception(request, exc: Exception):
         method=getattr(request, "method", ""),
         correlation_id=str(getattr(request, "correlation_id", "")),
         user_id=_safe_user_id(request),
-        traceback_text="".join(
-            traceback.format_exception(type(exc), exc, exc.__traceback__)
-        ),
+        traceback_text="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
     )
 
 
@@ -129,9 +220,7 @@ def record_background_exception(*, task_name: str, task_id: str, exc: Exception)
         summary=summary,
         source=f"celery:{task_name}",
         task_id=task_id,
-        traceback_text="".join(
-            traceback.format_exception(type(exc), exc, exc.__traceback__)
-        ),
+        traceback_text="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
     )
 
 
@@ -139,17 +228,14 @@ def record_http_5xx(request, status_code: int):
     class HTTPServerError(Exception):
         pass
 
-    error = HTTPServerError(f"HTTP {status_code} без перехваченного исключения")
-    return record_exception(request, error)
+    return record_exception(request, HTTPServerError(f"HTTP {status_code} без перехваченного исключения"))
 
 
-def list_issues(*, status: str | None = None, limit: int = 100):
+def _cached_issues(*, status: str | None, limit: int):
     result = []
     for fingerprint in list(cache.get(INDEX_KEY) or []):
         issue = cache.get(_issue_key(fingerprint))
-        if not issue:
-            continue
-        if status and issue.get("status") != status:
+        if not issue or (status and issue.get("status") != status):
             continue
         result.append(issue)
         if len(result) >= limit:
@@ -157,17 +243,38 @@ def list_issues(*, status: str | None = None, limit: int = 100):
     return result
 
 
+def list_issues(*, status: str | None = None, limit: int = 100):
+    try:
+        queryset = SystemIssue.objects.all()
+        if status:
+            queryset = queryset.filter(status=status)
+        return [_serialize(row) for row in queryset.order_by("-last_seen_at")[:limit]]
+    except Exception:
+        return _cached_issues(status=status, limit=limit)
+
+
 def update_issue(fingerprint: str, *, status: str, resolution_note: str = ""):
-    if status not in {"open", "investigating", "resolved", "ignored"}:
+    if status not in SystemIssue.Status.values:
         raise ValueError("Недопустимый статус")
-    key = _issue_key(fingerprint)
-    issue = cache.get(key)
-    if not issue:
-        return None
-    issue["status"] = status
-    issue["resolution_note"] = resolution_note[:2000]
-    issue["updated_at"] = timezone.now().isoformat()
-    cache.set(key, issue, timeout=TTL_SECONDS)
+    issue = None
+    try:
+        with transaction.atomic():
+            row = SystemIssue.objects.select_for_update().filter(pk=fingerprint).first()
+            if row is not None:
+                row.status = status
+                row.resolution_note = resolution_note[:2000]
+                row.save(update_fields=["status", "resolution_note", "updated_at"])
+                issue = _serialize(row)
+    except Exception:
+        issue = None
+    if issue is None:
+        issue = cache.get(_issue_key(fingerprint))
+        if issue is None:
+            return None
+        issue["status"] = status
+        issue["resolution_note"] = resolution_note[:2000]
+        issue["updated_at"] = timezone.now().isoformat()
+    _cache_issue(issue)
     _append_jsonl({**issue, "event": "status_changed"})
     return issue
 
@@ -185,31 +292,25 @@ def system_analysis():
     open_issues = list_issues(status="open", limit=MAX_ISSUES)
     investigating = list_issues(status="investigating", limit=MAX_ISSUES)
     unhealthy = list(
-        Provider.objects.filter(enabled=True).exclude(
-            health_state=Provider.HealthState.HEALTHY
-        ).values("slug", "name", "health_state", "last_latency_ms", "last_checked_at")
+        Provider.objects.filter(enabled=True)
+        .exclude(health_state=Provider.HealthState.HEALTHY)
+        .values("slug", "name", "health_state", "last_latency_ms", "last_checked_at")
     )
-    payment_failures = Payment.objects.filter(
-        created_at__gte=day, status=Payment.Status.CANCELED
-    ).count()
+    payment_failures = Payment.objects.filter(created_at__gte=day, status=Payment.Status.CANCELED).count()
     top_errors = list(
         generation_day.filter(state=Generation.State.FAILED)
         .values("error_code")
         .annotate(count=Count("id"))
         .order_by("-count")[:10]
     )
-    risk_score = 0
-    risk_score += min(40, len(open_issues) * 5)
-    risk_score += min(25, len(unhealthy) * 5)
-    risk_score += min(25, round((day_failed / day_total * 100) if day_total else 0))
-    risk_score += min(10, payment_failures)
-    risk_score = min(100, risk_score)
-    if risk_score >= 60:
-        state = "critical"
-    elif risk_score >= 25:
-        state = "warning"
-    else:
-        state = "healthy"
+    risk_score = min(
+        100,
+        min(40, len(open_issues) * 5)
+        + min(25, len(unhealthy) * 5)
+        + min(25, round((day_failed / day_total * 100) if day_total else 0))
+        + min(10, payment_failures),
+    )
+    state = "critical" if risk_score >= 60 else "warning" if risk_score >= 25 else "healthy"
     return {
         "state": state,
         "risk_score": risk_score,
