@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_COMPOSE="${PROJECT_DIR}/docker-compose.test.yml"
+PROD_COMPOSE="${PROJECT_DIR}/docker-compose.prod.yml"
 cd "$PROJECT_DIR"
 
 cleanup() {
@@ -10,27 +11,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf '[1/7] Secret scan\n'
+printf '[1/9] Secret scan\n'
 ./scripts/security_scan.sh
 
-printf '[2/7] Build isolated test stack\n'
+printf '[2/9] Shell syntax\n'
+bash -n install.sh
+for script in scripts/*.sh; do
+  bash -n "$script"
+done
+
+printf '[3/9] Compose syntax\n'
+docker compose -f "$TEST_COMPOSE" config >/dev/null
+docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
+
+printf '[4/9] Build isolated test stack\n'
 docker compose -f "$TEST_COMPOSE" build backend-test
 docker compose -f "$TEST_COMPOSE" up -d postgres
 
-printf '[3/7] Backend lint\n'
+printf '[5/9] Backend lint\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check .
 
-printf '[4/7] Backend tests on PostgreSQL/pgvector\n'
+printf '[6/9] Backend tests on PostgreSQL/pgvector\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q
 
-printf '[5/7] Django checks and migration drift\n'
+printf '[7/9] Django checks and migration drift\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
 
-printf '[6/7] Frontend production build\n'
+printf '[8/9] Frontend production build\n'
 docker build -t ai-workspace-frontend-test frontend
 
-printf '[7/7] Frontend lint\n'
+printf '[9/9] Frontend lint\n'
 docker run --rm ai-workspace-frontend-test sh -c 'npm run lint'
 
 printf 'RELEASE CHECK: PASS\n'
