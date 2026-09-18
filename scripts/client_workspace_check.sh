@@ -10,11 +10,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf '[1/5] Build backend test image\n'
+printf '[1/6] Build backend test image\n'
 docker compose -f "$TEST_COMPOSE" build backend-test
 docker compose -f "$TEST_COMPOSE" up -d postgres
 
-printf '[2/5] Workspace UX and client journey tests\n'
+printf '[2/6] Backend lint\n'
+docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check \
+  apps/chat apps/accounts apps/workspace_search apps/admin_ops/support_views.py
+
+printf '[3/6] Workspace UX and client journey tests\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q \
   apps/chat/test_workspace_ux.py \
   apps/chat/test_workspace_signals.py \
@@ -25,14 +29,14 @@ docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q \
   apps/accounts/test_usage.py \
   apps/accounts/test_support.py
 
-printf '[3/5] Django model and migration checks\n'
+printf '[4/6] Django model and migration checks\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
 
-printf '[4/5] Frontend production build\n'
+printf '[5/6] Frontend production build\n'
 docker build --target builder -t ai-workspace-client-builder frontend
 
-printf '[5/5] Frontend lint\n'
+printf '[6/6] Frontend lint\n'
 docker run --rm ai-workspace-client-builder sh -c 'npm run lint'
 
 printf 'CLIENT WORKSPACE CHECK: PASS\n'
