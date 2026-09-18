@@ -9,6 +9,10 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 app.conf.beat_schedule = {
     **(app.conf.beat_schedule or {}),
+    "system-worker-heartbeat": {
+        "task": "apps.admin_ops.tasks.system_heartbeat_task",
+        "schedule": 60.0,
+    },
     "detect-abuse-hourly": {
         "task": "apps.admin_ops.tasks.detect_abuse_task",
         "schedule": 3600.0,
