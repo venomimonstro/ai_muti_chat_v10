@@ -1,0 +1,10 @@
+"use client";
+
+import Link from "next/link";
+import {useEffect,useState} from "react";
+import {api} from "../../../../lib/api";
+import type {Wallet} from "../../../../lib/types";
+import styles from "../wallet.module.css";
+
+type Payment={id:string;amount_rub:string;status:string;receipt_status:string;created_at:string};
+export default function PaymentReturnPage(){const [payment,setPayment]=useState<Payment|null>(null);const [wallet,setWallet]=useState<Wallet|null>(null);const [error,setError]=useState("");useEffect(()=>{let cancelled=false;let tries=0;const check=async()=>{tries+=1;try{const[p,w]=await Promise.all([api<Payment[]>("/payments/"),api<Wallet>("/wallet/")]);if(cancelled)return;setPayment(p[0]??null);setWallet(w);if(p[0]?.status==="pending"&&tries<8)window.setTimeout(()=>void check(),1800);}catch(reason){if(!cancelled)setError(reason instanceof Error?reason.message:"Не удалось проверить платёж");}};void check();return()=>{cancelled=true};},[]);return <main className={styles.page}><div className={styles.shell}><header className={styles.top}><div><h1>Статус пополнения</h1><p>Проверяем подтверждение платёжной системы.</p></div><Link href="/app/wallet">← Баланс</Link></header>{error&&<div className={`${styles.notice} ${styles.error}`}>{error}</div>}<section className={styles.card}>{!payment?<p>Платёж пока не найден. Обновите страницу через несколько секунд.</p>:<><h2>{payment.status==="succeeded"?"Баланс пополнен":payment.status==="canceled"?"Платёж отменён":"Платёж обрабатывается"}</h2><div className={styles.row}><span>Сумма</span><b>{Number(payment.amount_rub).toFixed(2).replace(".",",")} ₽</b></div><div className={styles.row}><span>Статус</span><b>{payment.status}</b></div><div className={styles.row}><span>Чек</span><b>{payment.receipt_status}</b></div><div className={styles.row}><span>Текущий баланс</span><b>{Number(wallet?.available_rub??0).toFixed(2).replace(".",",")} ₽</b></div></>}<div style={{marginTop:18}}><Link className={`${styles.button} ${styles.primary}`} href="/app">Вернуться в Workspace</Link></div></section></div></main>}
