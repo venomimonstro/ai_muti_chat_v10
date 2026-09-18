@@ -93,7 +93,7 @@ def notify_low_balance(wallet):
             "title": "Баланс заканчивается",
             "body": f"Доступно {wallet.available_rub:.2f} ₽. Пополните баланс, чтобы работа не прервалась.",
             "level": Notification.Level.WARNING,
-            "action_url": "/?panel=wallet",
+            "action_url": "/app/wallet",
         },
     )
     return notification
