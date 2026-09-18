@@ -14,79 +14,52 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?required}
       POSTGRES_USER: ${POSTGRES_USER:?required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"], interval: 10s, timeout: 5s, retries: 10}
     networks: [private]
     logging: *default-logging
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    environment: {REDIS_PASSWORD: "${REDIS_PASSWORD:?required}"}
+    volumes: [redis_data:/data]
+    healthcheck: {test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"], interval: 10s, timeout: 5s, retries: 10}
     networks: [private]
     logging: *default-logging
-
   backend:
     build: ./backend
     restart: unless-stopped
     env_file: .env.production
     command: uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers
-    volumes:
-      - media_data:/app/media
-      - static_data:/app/staticfiles
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    depends_on:
-      postgres: {condition: service_healthy}
-      redis: {condition: service_healthy}
+    volumes: [media_data:/app/media, static_data:/app/staticfiles]
+    healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=3)"], interval: 15s, timeout: 5s, retries: 5}
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
     networks: [private, edge]
     init: true
     stop_grace_period: 30s
     logging: *default-logging
-
   worker:
     build: ./backend
     restart: unless-stopped
     env_file: .env.production
     command: celery -A config worker -l INFO --concurrency=2
-    volumes:
-      - media_data:/app/media
-    depends_on:
-      backend: {condition: service_healthy}
+    volumes: [media_data:/app/media]
+    depends_on: {backend: {condition: service_healthy}}
     networks: [private]
     init: true
     stop_grace_period: 45s
     logging: *default-logging
-
   beat:
     build: ./backend
     restart: unless-stopped
     env_file: .env.production
     command: celery -A config beat -l INFO
-    depends_on:
-      backend: {condition: service_healthy}
+    depends_on: {backend: {condition: service_healthy}}
     networks: [private]
     init: true
     stop_grace_period: 30s
     logging: *default-logging
-
   frontend:
     build:
       context: ./frontend
@@ -97,43 +70,29 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
       NEXT_PUBLIC_SITE_URL: https://${APP_DOMAIN:?required}
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/status').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-    depends_on:
-      backend: {condition: service_healthy}
+      LEGAL_NAME: ${LEGAL_NAME:-}
+      LEGAL_TAX_ID: ${LEGAL_TAX_ID:-}
+      LEGAL_ADDRESS: ${LEGAL_ADDRESS:-}
+      LEGAL_CONTACT_EMAIL: ${LEGAL_CONTACT_EMAIL:-}
+      LEGAL_EFFECTIVE_DATE: ${LEGAL_EFFECTIVE_DATE:-}
+    healthcheck: {test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/status').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"], interval: 15s, timeout: 5s, retries: 10}
+    depends_on: {backend: {condition: service_healthy}}
     networks: [edge]
     init: true
     logging: *default-logging
-
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped
-    environment:
-      APP_DOMAIN: ${APP_DOMAIN:?required}
-      ACME_EMAIL: ${ACME_EMAIL:?required}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - static_data:/srv/static:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      backend: {condition: service_healthy}
-      frontend: {condition: service_healthy}
+    environment: {APP_DOMAIN: "${APP_DOMAIN:?required}", ACME_EMAIL: "${ACME_EMAIL:?required}"}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes: ["./deploy/Caddyfile:/etc/caddy/Caddyfile:ro", "static_data:/srv/static:ro", "caddy_data:/data", "caddy_config:/config"]
+    depends_on: {backend: {condition: service_healthy}, frontend: {condition: service_healthy}}
     networks: [edge]
     logging: *default-logging
 
 networks:
-  private:
-    internal: true
+  private: {internal: true}
   edge:
-
 volumes:
   postgres_data:
   redis_data:
