@@ -44,11 +44,12 @@ def serialize_recent_conversation(conversation, limit=60):
 
 
 class OwnedConversationAction(APIView):
-    def conversation(self, request, conversation_id):
+    def conversation(self, request, conversation_id, *, lock=False):
+        queryset = Conversation.objects.select_related("active_branch").prefetch_related("branches")
+        if lock:
+            queryset = queryset.select_for_update()
         return (
-            Conversation.objects.select_related("active_branch")
-            .prefetch_related("branches")
-            .filter(pk=conversation_id, owner=request.user)
+            queryset.filter(pk=conversation_id, owner=request.user)
             .filter(Q(ui_state__isnull=True) | Q(ui_state__deleted_at__isnull=True))
             .first()
         )
@@ -87,17 +88,7 @@ class OwnedConversationAction(APIView):
 
 
 class EditMessageView(OwnedConversationAction):
-    @transaction.atomic
     def post(self, request, conversation_id, message_id):
-        conversation = self.conversation(request, conversation_id)
-        if conversation is None:
-            return Response({"detail": "Чат не найден"}, status=404)
-        message = visible_messages(conversation).filter(pk=message_id, role=Message.Role.USER).first()
-        if message is None:
-            return Response(
-                {"detail": "Редактировать можно только своё пользовательское сообщение"},
-                status=404,
-            )
         content = str(request.data.get("content", "")).strip()
         if not content or len(content) > 100_000:
             return Response(
@@ -106,13 +97,25 @@ class EditMessageView(OwnedConversationAction):
             )
         try:
             key = self.idempotency_key(request)
-            self._fork_before(
-                conversation=conversation,
-                user=request.user,
-                target=message,
-                title="Редактирование сообщения",
-            )
-            generate_reply(
+            with transaction.atomic():
+                conversation = self.conversation(request, conversation_id, lock=True)
+                if conversation is None:
+                    return Response({"detail": "Чат не найден"}, status=404)
+                message = visible_messages(conversation).filter(
+                    pk=message_id, role=Message.Role.USER
+                ).first()
+                if message is None:
+                    return Response(
+                        {"detail": "Редактировать можно только своё пользовательское сообщение"},
+                        status=404,
+                    )
+                self._fork_before(
+                    conversation=conversation,
+                    user=request.user,
+                    target=message,
+                    title="Редактирование сообщения",
+                )
+            generation = generate_reply(
                 user=request.user,
                 conversation=conversation,
                 content=content,
@@ -126,38 +129,39 @@ class EditMessageView(OwnedConversationAction):
 
 
 class RegenerateMessageView(OwnedConversationAction):
-    @transaction.atomic
     def post(self, request, conversation_id, message_id):
-        conversation = self.conversation(request, conversation_id)
-        if conversation is None:
-            return Response({"detail": "Чат не найден"}, status=404)
-        assistant = visible_messages(conversation).filter(
-            pk=message_id, role=Message.Role.ASSISTANT
-        ).first()
-        if assistant is None:
-            return Response({"detail": "Ответ не найден"}, status=404)
-        ordered = list(visible_messages(conversation).order_by("created_at", "id"))
-        assistant_index = next(
-            (i for i, item in enumerate(ordered) if item.id == assistant.id), -1
-        )
-        source = next(
-            (item for item in reversed(ordered[:assistant_index]) if item.role == Message.Role.USER),
-            None,
-        )
-        if source is None:
-            return Response({"detail": "Исходный запрос не найден"}, status=400)
         try:
             key = self.idempotency_key(request)
-            self._fork_before(
-                conversation=conversation,
-                user=request.user,
-                target=source,
-                title="Новый вариант ответа",
-            )
+            with transaction.atomic():
+                conversation = self.conversation(request, conversation_id, lock=True)
+                if conversation is None:
+                    return Response({"detail": "Чат не найден"}, status=404)
+                assistant = visible_messages(conversation).filter(
+                    pk=message_id, role=Message.Role.ASSISTANT
+                ).first()
+                if assistant is None:
+                    return Response({"detail": "Ответ не найден"}, status=404)
+                ordered = list(visible_messages(conversation).order_by("created_at", "id"))
+                assistant_index = next(
+                    (i for i, item in enumerate(ordered) if item.id == assistant.id), -1
+                )
+                source = next(
+                    (item for item in reversed(ordered[:assistant_index]) if item.role == Message.Role.USER),
+                    None,
+                )
+                if source is None:
+                    return Response({"detail": "Исходный запрос не найден"}, status=400)
+                source_content = source.content
+                self._fork_before(
+                    conversation=conversation,
+                    user=request.user,
+                    target=source,
+                    title="Новый вариант ответа",
+                )
             generate_reply(
                 user=request.user,
                 conversation=conversation,
-                content=source.content,
+                content=source_content,
                 client_message_id=uuid.uuid4(),
                 idempotency_key=key,
             )
