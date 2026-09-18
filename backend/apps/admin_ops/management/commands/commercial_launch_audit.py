@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 
 class Command(BaseCommand):
-    help = "Run the final commercial launch gates as one auditable command"
+    help = "Запускает финальные коммерческие проверки как единый аудируемый gate."
 
     def add_arguments(self, parser):
         parser.add_argument("--json", action="store_true", dest="as_json")
@@ -20,6 +20,7 @@ class Command(BaseCommand):
                 "commercial_config_check",
                 {"require_healthy": True},
             ),
+            ("advertised_features", "optional_features_check", {}),
             (
                 "payment_commercial",
                 "payment_commercial_check",
@@ -58,7 +59,7 @@ class Command(BaseCommand):
             )
             if not passed:
                 raise CommandError(
-                    "Commercial launch is BLOCKED; resolve every failed gate"
+                    "Коммерческий запуск заблокирован: устраните каждый непройденный gate"
                 )
             return
         for item in results:
@@ -69,6 +70,6 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {item['error']}")
         if not passed:
             raise CommandError(
-                "Commercial launch is BLOCKED; resolve every failed gate"
+                "Коммерческий запуск заблокирован: устраните каждый непройденный gate"
             )
         self.stdout.write(self.style.SUCCESS("COMMERCIAL LAUNCH AUDIT: PASS"))
