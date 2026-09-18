@@ -11,7 +11,7 @@ from apps.billing.models import BalanceReservation, PriceVersion
 from apps.billing.services import credit
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
-from .compare import branch_from_variant, run_compare, synthesize_compare
+from .compare import branch_from_variant, compare_preview, run_compare, synthesize_compare
 from .models import CompareRun, Conversation, Message
 
 
@@ -79,6 +79,25 @@ def test_compare_runs_models_and_settles_one_hard_reservation(settings):
     )
     assert replay.id == run.id
     assert CompareRun.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_compare_preview_uses_token_estimate_instead_of_character_count(settings):
+    settings.COMPARE_MAX_OUTPUT_TOKENS = 1024
+    models = compare_registry()
+    for model in models:
+        model.context_window = 8192
+        model.save(update_fields=["context_window"])
+
+    # 10k Cyrillic characters would be rejected by the historical len(prompt)==tokens logic,
+    # even though the calibrated token estimate fits comfortably in an 8k context window.
+    preview = compare_preview(
+        prompt="я" * 10_000,
+        model_slugs=[item.slug for item in models],
+    )
+
+    assert preview["expected_max_rub"] > 0
+    assert len(preview["models"]) == 2
 
 
 @pytest.mark.django_db(transaction=True)
