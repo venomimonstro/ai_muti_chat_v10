@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -52,6 +53,36 @@ def _storage_limits():
         "user_files": int(os.getenv("FILE_USER_MAX_FILES", "1000")),
         "project_files": int(os.getenv("FILE_PROJECT_MAX_FILES", "500")),
     }
+
+
+def _processing_limits():
+    return {
+        "per_minute": max(1, int(os.getenv("FILE_UPLOADS_PER_MINUTE", "10"))),
+        "per_day": max(1, int(os.getenv("FILE_UPLOADS_PER_DAY", "200"))),
+        "active": max(1, int(os.getenv("FILE_USER_MAX_ACTIVE_PROCESSING", "4"))),
+    }
+
+
+def _enforce_upload_velocity(user):
+    limits = _processing_limits()
+    now = timezone.now()
+    base = FileAsset.objects.filter(owner=user)
+    if base.filter(created_at__gte=now - timedelta(minutes=1)).count() >= limits["per_minute"]:
+        raise ValidationError({"file": "Слишком много загрузок за минуту. Попробуйте немного позже."})
+    if base.filter(created_at__gte=now - timedelta(days=1)).count() >= limits["per_day"]:
+        raise ValidationError({"file": "Достигнут суточный лимит обработки файлов."})
+    active = base.filter(
+        deleted_at__isnull=True,
+        status__in=[
+            FileAsset.Status.UPLOADED,
+            FileAsset.Status.QUARANTINE,
+            FileAsset.Status.PARSING,
+        ],
+    ).count()
+    if active >= limits["active"]:
+        raise ValidationError(
+            {"file": "Слишком много файлов уже обрабатывается. Дождитесь завершения текущих задач."}
+        )
 
 
 def _enforce_storage_quota(*, user, project, incoming_bytes):
@@ -109,11 +140,13 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
         )
         if project is None:
             raise ValidationError({"project": "Проект не найден или недоступен"})
+        existing = FileAsset.objects.filter(owner=request.user, idempotency_key=key).first()
+        if existing is None:
+            _enforce_upload_velocity(request.user)
         try:
             original_name, detected, digest = detect_and_validate(uploaded)
         except DjangoValidationError as exc:
             raise ValidationError({"file": exc.messages}) from exc
-        existing = FileAsset.objects.filter(owner=request.user, idempotency_key=key).first()
         if existing:
             _validate_idempotent_replay(existing, project, original_name, uploaded, digest)
             return Response(self.get_serializer(existing).data)
@@ -125,6 +158,7 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
                 if raced:
                     _validate_idempotent_replay(raced, project, original_name, uploaded, digest)
                     return Response(self.get_serializer(raced).data)
+                _enforce_upload_velocity(request.user)
                 _enforce_storage_quota(
                     user=request.user,
                     project=project,
