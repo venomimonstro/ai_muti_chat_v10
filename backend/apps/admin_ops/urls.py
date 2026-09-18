@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .analytics_views import ProductAnalyticsView
+from .backup_views import SafeBackupActionView
 from .compliance_views import ComplianceConsoleView
 from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
@@ -12,7 +13,6 @@ from .system_views import SystemAnalysisView, SystemIssueActionView
 from .user_views import AdminUserActionView, AdminUserDetailView
 from .views import (
     AuditView,
-    BackupActionView,
     BackupView,
     ExecutiveOverviewView,
     FeatureFlagDetailView,
@@ -71,7 +71,7 @@ urlpatterns = [
     path("releases/", ReleaseView.as_view(), name="admin-releases"),
     path("releases/<uuid:release_id>/rollout/", ReleaseRolloutView.as_view(), name="admin-release-rollout"),
     path("backups/", BackupView.as_view(), name="admin-backups"),
-    path("backups/<uuid:backup_id>/action/", BackupActionView.as_view(), name="admin-backup-action"),
+    path("backups/<uuid:backup_id>/action/", SafeBackupActionView.as_view(), name="admin-backup-action"),
     path("support/", CategorizedSupportControlView.as_view(), name="admin-support"),
     path("support/<uuid:support_id>/status/", SupportStatusReplyView.as_view(), name="admin-support-status"),
     path("feature-flags/", FeatureFlagView.as_view(), name="admin-feature-flags"),
