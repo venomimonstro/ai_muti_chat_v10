@@ -41,6 +41,9 @@ class SystemIssueActionView(APIView):
             "system_issue.status_changed",
             "system_issue",
             fingerprint,
-            {"status": new_status, "resolution_note": note[:500]},
+            {
+                "status": new_status,
+                "resolution_note": str(issue.get("resolution_note", ""))[:500],
+            },
         )
         return Response(issue)
