@@ -23,9 +23,9 @@ TTL_SECONDS = 60 * 60 * 24 * 30
 LOG_FILE = Path(os.getenv("SYSTEM_ISSUE_LOG_FILE", "/app/logs/system_issues.jsonl"))
 
 
-def _fingerprint(*, exception_type: str, path: str, summary: str) -> str:
-    source = f"{exception_type}|{path}|{summary[:180]}".encode("utf-8", errors="replace")
-    return hashlib.sha256(source).hexdigest()[:32]
+def _fingerprint(*, exception_type: str, source: str, summary: str) -> str:
+    raw = f"{exception_type}|{source}|{summary[:180]}".encode("utf-8", errors="replace")
+    return hashlib.sha256(raw).hexdigest()[:32]
 
 
 def _issue_key(fingerprint: str) -> str:
@@ -46,11 +46,22 @@ def _append_jsonl(issue):
         logger.exception("Не удалось записать системную ошибку в persistent-журнал")
 
 
-def record_exception(request, exc: Exception):
-    exception_type = type(exc).__name__
-    summary = str(exc).strip() or exception_type
-    path = getattr(request, "path", "")[:240]
-    fingerprint = _fingerprint(exception_type=exception_type, path=path, summary=summary)
+def _store_issue(
+    *,
+    exception_type: str,
+    summary: str,
+    source: str,
+    traceback_text: str,
+    correlation_id: str = "",
+    user_id: str | None = None,
+    method: str = "",
+    task_id: str = "",
+):
+    fingerprint = _fingerprint(
+        exception_type=exception_type,
+        source=source,
+        summary=summary,
+    )
     key = _issue_key(fingerprint)
     now = timezone.now().isoformat()
     current = cache.get(key) or {}
@@ -60,17 +71,16 @@ def record_exception(request, exc: Exception):
         "severity": "critical",
         "exception_type": exception_type,
         "summary": summary[:500],
-        "path": path,
-        "method": getattr(request, "method", ""),
-        "correlation_id": str(getattr(request, "correlation_id", "")),
-        "user_id": _safe_user_id(request),
+        "path": source[:240],
+        "method": method[:16],
+        "task_id": task_id[:160],
+        "correlation_id": correlation_id[:160],
+        "user_id": user_id,
         "first_seen_at": current.get("first_seen_at", now),
         "last_seen_at": now,
         "occurrences": int(current.get("occurrences", 0)) + 1,
         "resolution_note": current.get("resolution_note", ""),
-        "sample_traceback": "".join(
-            traceback.format_exception(type(exc), exc, exc.__traceback__)
-        )[-8000:],
+        "sample_traceback": traceback_text[-8000:],
     }
     cache.set(key, issue, timeout=TTL_SECONDS)
     index = list(cache.get(INDEX_KEY) or [])
@@ -80,14 +90,44 @@ def record_exception(request, exc: Exception):
     cache.set(INDEX_KEY, index[:MAX_ISSUES], timeout=TTL_SECONDS)
     _append_jsonl(issue)
     logger.error(
-        "Системная ошибка fingerprint=%s correlation_id=%s path=%s type=%s summary=%s",
+        "Системная ошибка fingerprint=%s correlation_id=%s source=%s type=%s summary=%s",
         fingerprint,
-        issue["correlation_id"],
-        path,
+        correlation_id,
+        source,
         exception_type,
         summary[:300],
     )
     return issue
+
+
+def record_exception(request, exc: Exception):
+    exception_type = type(exc).__name__
+    summary = str(exc).strip() or exception_type
+    return _store_issue(
+        exception_type=exception_type,
+        summary=summary,
+        source=getattr(request, "path", ""),
+        method=getattr(request, "method", ""),
+        correlation_id=str(getattr(request, "correlation_id", "")),
+        user_id=_safe_user_id(request),
+        traceback_text="".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        ),
+    )
+
+
+def record_background_exception(*, task_name: str, task_id: str, exc: Exception):
+    exception_type = type(exc).__name__
+    summary = str(exc).strip() or exception_type
+    return _store_issue(
+        exception_type=exception_type,
+        summary=summary,
+        source=f"celery:{task_name}",
+        task_id=task_id,
+        traceback_text="".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        ),
+    )
 
 
 def record_http_5xx(request, status_code: int):
