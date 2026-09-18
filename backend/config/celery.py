@@ -13,6 +13,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.system_heartbeat_task",
         "schedule": 60.0,
     },
+    "recover-stale-operations": {
+        "task": "apps.admin_ops.tasks.recover_stale_operations_task",
+        "schedule": 300.0,
+    },
     "detect-abuse-hourly": {
         "task": "apps.admin_ops.tasks.detect_abuse_task",
         "schedule": 3600.0,
