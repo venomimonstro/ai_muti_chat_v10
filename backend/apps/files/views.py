@@ -1,7 +1,9 @@
+import os
+
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -15,6 +17,7 @@ from .models import FileAsset
 from .rag import retrieve_project_chunks
 from .serializers import FileAssetSerializer, FileChunkSerializer
 from .services import process_file
+from .tasks import process_file_task
 from .validation import detect_and_validate
 
 
@@ -22,6 +25,12 @@ class FileStorageUnavailable(APIException):
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     default_detail = "Хранилище файлов временно недоступно"
     default_code = "file_storage_unavailable"
+
+
+class FileProcessingUnavailable(APIException):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "Обработка файлов временно недоступна. Попробуйте позже."
+    default_code = "file_processing_unavailable"
 
 
 def _validate_idempotent_replay(asset, project, original_name, uploaded, digest):
@@ -34,6 +43,40 @@ def _validate_idempotent_replay(asset, project, original_name, uploaded, digest)
         raise ValidationError(
             {"Idempotency-Key": "Ключ уже использован для другой загрузки"}
         )
+
+
+def _storage_limits():
+    return {
+        "user_bytes": int(os.getenv("FILE_USER_STORAGE_LIMIT_BYTES", str(512 * 1024 * 1024))),
+        "project_bytes": int(os.getenv("FILE_PROJECT_STORAGE_LIMIT_BYTES", str(256 * 1024 * 1024))),
+        "user_files": int(os.getenv("FILE_USER_MAX_FILES", "1000")),
+        "project_files": int(os.getenv("FILE_PROJECT_MAX_FILES", "500")),
+    }
+
+
+def _enforce_storage_quota(*, user, project, incoming_bytes):
+    limits = _storage_limits()
+    active = FileAsset.objects.filter(deleted_at__isnull=True).exclude(
+        status__in=[FileAsset.Status.DELETING, FileAsset.Status.DELETED]
+    )
+    user_usage = active.filter(owner=user).aggregate(
+        bytes=Sum("size_bytes"), files=Count("id")
+    )
+    project_usage = active.filter(project=project).aggregate(
+        bytes=Sum("size_bytes"), files=Count("id")
+    )
+    user_bytes = int(user_usage["bytes"] or 0)
+    project_bytes = int(project_usage["bytes"] or 0)
+    user_files = int(user_usage["files"] or 0)
+    project_files = int(project_usage["files"] or 0)
+    if user_files + 1 > limits["user_files"]:
+        raise ValidationError({"file": "Достигнут лимит количества файлов аккаунта"})
+    if project_files + 1 > limits["project_files"]:
+        raise ValidationError({"file": "Достигнут лимит количества файлов проекта"})
+    if user_bytes + incoming_bytes > limits["user_bytes"]:
+        raise ValidationError({"file": "Достигнут лимит хранилища аккаунта"})
+    if project_bytes + incoming_bytes > limits["project_bytes"]:
+        raise ValidationError({"file": "Достигнут лимит хранилища проекта"})
 
 
 class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
@@ -72,12 +115,21 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
             raise ValidationError({"file": exc.messages}) from exc
         existing = FileAsset.objects.filter(owner=request.user, idempotency_key=key).first()
         if existing:
-            _validate_idempotent_replay(
-                existing, project, original_name, uploaded, digest
-            )
+            _validate_idempotent_replay(existing, project, original_name, uploaded, digest)
             return Response(self.get_serializer(existing).data)
         try:
             with transaction.atomic():
+                request.user.__class__.objects.select_for_update().only("pk").get(pk=request.user.pk)
+                project = project.__class__.objects.select_for_update().get(pk=project.pk)
+                raced = FileAsset.objects.filter(owner=request.user, idempotency_key=key).first()
+                if raced:
+                    _validate_idempotent_replay(raced, project, original_name, uploaded, digest)
+                    return Response(self.get_serializer(raced).data)
+                _enforce_storage_quota(
+                    user=request.user,
+                    project=project,
+                    incoming_bytes=uploaded.size,
+                )
                 asset = FileAsset.objects.create(
                     owner=request.user,
                     project=project,
@@ -93,9 +145,7 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
                 )
         except IntegrityError:
             asset = FileAsset.objects.get(owner=request.user, idempotency_key=key)
-            _validate_idempotent_replay(
-                asset, project, original_name, uploaded, digest
-            )
+            _validate_idempotent_replay(asset, project, original_name, uploaded, digest)
             return Response(self.get_serializer(asset).data)
         try:
             asset.blob.save(original_name, uploaded, save=True)
@@ -105,7 +155,24 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
             finally:
                 asset.delete()
             raise FileStorageUnavailable() from exc
-        process_file(asset)
+
+        async_processing = os.getenv(
+            "FILE_PROCESSING_ASYNC",
+            "false" if settings.DEBUG else "true",
+        ).lower() == "true"
+        if async_processing:
+            try:
+                process_file_task.delay(str(asset.id))
+            except Exception as exc:
+                try:
+                    asset.blob.delete(save=False)
+                finally:
+                    asset.delete()
+                raise FileProcessingUnavailable() from exc
+            asset.status = FileAsset.Status.UPLOADED
+            asset.save(update_fields=["status", "updated_at"])
+        else:
+            process_file(asset)
         return Response(self.get_serializer(asset).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["get"])
