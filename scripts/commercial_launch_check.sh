@@ -45,18 +45,47 @@ if [[ $SYSTEM_STATUS -ne 0 ]]; then
   exit "$SYSTEM_STATUS"
 fi
 
-printf 'Running live commercial E2E...\n'
+printf 'Running commercial client-cabinet E2E...\n'
 set +e
 E2E_BASE_URL="https://${APP_DOMAIN}" bash "$PROJECT_DIR/scripts/commercial_e2e_smoke.sh" >"${E2E_LOG}.tmp" 2>&1
-E2E_STATUS=$?
+CABINET_E2E_STATUS=$?
+set -e
+if [[ $CABINET_E2E_STATUS -ne 0 ]]; then
+  mv "${E2E_LOG}.tmp" "$E2E_LOG"
+  echo "COMMERCIAL LAUNCH: BLOCKED BY CLIENT E2E"; echo "Evidence: $E2E_LOG"; exit "$CABINET_E2E_STATUS"
+fi
+
+printf 'Running live paid AI provider/billing E2E...\n'
+if [[ -z "${E2E_USERNAME:-}" || -z "${E2E_PASSWORD:-}" ]]; then
+  {
+    echo
+    echo 'LIVE AI E2E: BLOCKED'
+    echo 'Set E2E_USERNAME and E2E_PASSWORD in .env.production for a dedicated verified test account with a small positive balance.'
+  } >>"${E2E_LOG}.tmp"
+  mv "${E2E_LOG}.tmp" "$E2E_LOG"
+  sha256sum "$E2E_LOG" >"${E2E_LOG}.sha256"
+  echo "COMMERCIAL LAUNCH: BLOCKED BY LIVE AI E2E CREDENTIALS"
+  echo "Evidence: $E2E_LOG"
+  exit 2
+fi
+set +e
+compose run --rm -T \
+  -v "${PROJECT_DIR}/scripts:/opt/aiws-scripts:ro" \
+  -e "E2E_BASE_URL=https://${APP_DOMAIN}" \
+  -e "E2E_USERNAME=${E2E_USERNAME}" \
+  -e "E2E_PASSWORD=${E2E_PASSWORD}" \
+  backend python /opt/aiws-scripts/commercial_http_smoke.py >>"${E2E_LOG}.tmp" 2>&1
+LIVE_AI_STATUS=$?
 set -e
 mv "${E2E_LOG}.tmp" "$E2E_LOG"
 E2E_SHA="$(sha256sum "$E2E_LOG" | awk '{print $1}')"
 printf '%s  %s\n' "$E2E_SHA" "$E2E_LOG" >"${E2E_LOG}.sha256"
-if [[ $E2E_STATUS -ne 0 ]]; then
-  echo "COMMERCIAL LAUNCH: BLOCKED BY E2E"; echo "Evidence: $E2E_LOG"; exit "$E2E_STATUS"
+if [[ $LIVE_AI_STATUS -ne 0 ]]; then
+  echo "COMMERCIAL LAUNCH: BLOCKED BY LIVE AI E2E"; echo "Evidence: $E2E_LOG"; exit "$LIVE_AI_STATUS"
 fi
-compose exec -T backend python manage.py record_commercial_drill commercial_e2e --evidence "$E2E_LOG" --checksum "$E2E_SHA" >/dev/null
+compose exec -T backend python manage.py record_commercial_drill commercial_e2e \
+  --evidence "$E2E_LOG" --checksum "$E2E_SHA" \
+  --notes "Client cabinet plus real paid provider/billing request passed" >/dev/null
 
 compose exec -T backend python manage.py bootstrap_compliance >/dev/null
 set +e
