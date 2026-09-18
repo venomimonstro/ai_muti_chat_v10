@@ -22,17 +22,26 @@ def _env(name):
     return value
 
 
+def integration_enabled():
+    return os.getenv("GITHUB_INTEGRATION_ENABLED", "false").strip().lower() == "true"
+
+
 def configured():
-    return all(os.getenv(name, "").strip() for name in (
-        "GITHUB_APP_ID",
-        "GITHUB_APP_SLUG",
-        "GITHUB_APP_PRIVATE_KEY",
-        "GITHUB_APP_CLIENT_ID",
-        "GITHUB_APP_CLIENT_SECRET",
-    ))
+    return integration_enabled() and all(
+        os.getenv(name, "").strip()
+        for name in (
+            "GITHUB_APP_ID",
+            "GITHUB_APP_SLUG",
+            "GITHUB_APP_PRIVATE_KEY",
+            "GITHUB_APP_CLIENT_ID",
+            "GITHUB_APP_CLIENT_SECRET",
+        )
+    )
 
 
 def install_url(state):
+    if not integration_enabled():
+        raise ImproperlyConfigured("GitHub integration is disabled")
     slug = _env("GITHUB_APP_SLUG")
     return f"{GITHUB_WEB}/apps/{quote(slug, safe='')}/installations/new?state={quote(state, safe='')}"
 
@@ -92,14 +101,19 @@ def exchange_user_code(code):
     return token
 
 
-def verified_installation(user_token, installation_id):
+def user_installations(user_token):
     payload = _json_request(
         "GET",
         f"{GITHUB_API}/user/installations",
         headers=_headers(user_token),
         params={"per_page": 100},
     )
-    for installation in payload.get("installations", []):
+    installations = payload.get("installations", [])
+    return installations if isinstance(installations, list) else []
+
+
+def verified_installation(user_token, installation_id):
+    for installation in user_installations(user_token):
         if int(installation.get("id", 0)) == int(installation_id):
             return installation
     raise ValidationError("GitHub installation is not owned by the authorized user")
