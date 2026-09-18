@@ -121,6 +121,7 @@ export async function streamMessage(
     createdAt: Date.now(),
   };
   writePending(conversationId, pending);
+  signal.addEventListener("abort", () => clearPending(conversationId), {once: true});
 
   const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages/stream/`, {
     method: "POST",
