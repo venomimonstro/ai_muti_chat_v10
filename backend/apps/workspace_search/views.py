@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from django.db.models import Q
 from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -30,7 +31,7 @@ class WorkspaceSearchView(APIView):
             if project_id:
                 UUID(project_id)
         except (TypeError, ValueError) as exc:
-            raise ValidationError({"project": "Некорректный идентификатор проекта"}) from exc
+            raise ValidationError({"project": "Некорректный идентификатор"}) from exc
         if project_id and not accessible_projects(request.user).filter(pk=project_id).exists():
             raise ValidationError({"project": "Проект не найден или недоступен"})
         conversation_id = request.query_params.get("conversation") or None
@@ -39,10 +40,10 @@ class WorkspaceSearchView(APIView):
                 UUID(conversation_id)
         except (TypeError, ValueError) as exc:
             raise ValidationError({"conversation": "Некорректный идентификатор чата"}) from exc
-        if (
-            conversation_id
-            and not Conversation.objects.filter(pk=conversation_id, owner=request.user).exists()
-        ):
+        active_conversations = Conversation.objects.filter(owner=request.user).filter(
+            Q(ui_state__isnull=True) | Q(ui_state__deleted_at__isnull=True)
+        )
+        if conversation_id and not active_conversations.filter(pk=conversation_id).exists():
             raise ValidationError({"conversation": "Чат не найден или недоступен"})
         date_from = parse_date(request.query_params.get("date_from", ""))
         date_to = parse_date(request.query_params.get("date_to", ""))
@@ -64,6 +65,21 @@ class WorkspaceSearchView(APIView):
             date_from=date_from,
             date_to=date_to,
         )
+        results = search_workspace(user=request.user, query=query, filters=filters, limit=limit)
+        conversation_ids = {
+            item.get("conversation_id")
+            for item in results
+            if item.get("conversation_id")
+        }
+        allowed_ids = {
+            str(value)
+            for value in active_conversations.filter(pk__in=conversation_ids).values_list("id", flat=True)
+        }
+        filtered = [
+            item
+            for item in results
+            if not item.get("conversation_id") or item.get("conversation_id") in allowed_ids
+        ]
         return Response(
             {
                 "query": query,
@@ -75,8 +91,6 @@ class WorkspaceSearchView(APIView):
                     "date_from": date_from,
                     "date_to": date_to,
                 },
-                "results": search_workspace(
-                    user=request.user, query=query, filters=filters, limit=limit
-                ),
+                "results": filtered,
             }
         )
