@@ -11,5 +11,5 @@ def record_client_error(*, user, source_path, error_name, message, stack, correl
         source=f"frontend:{safe_path}",
         traceback_text=(stack or "")[-8000:],
         correlation_id=(correlation_id or "")[:160],
-        user_id=str(user.id),
+        user_id=str(user.id) if user is not None else None,
     )
