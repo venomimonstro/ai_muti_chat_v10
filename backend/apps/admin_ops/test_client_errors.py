@@ -33,6 +33,7 @@ def test_authenticated_client_error_is_registered_without_request_body():
     assert issue["exception_type"] == "Frontend:TypeError"
     assert issue["path"] == "frontend:/app"
     assert issue["user_id"] == str(user.id)
+    assert issue["severity"] == "warning"
 
 
 @pytest.mark.django_db
@@ -53,6 +54,7 @@ def test_anonymous_client_error_is_registered_without_user_data():
     assert issue.exception_type == "Frontend:TypeError"
     assert issue.user_reference == ""
     assert issue.occurrences == 1
+    assert issue.severity == "warning"
 
 
 @pytest.mark.django_db
