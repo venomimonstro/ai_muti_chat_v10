@@ -1,5 +1,5 @@
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from django.core.management import call_command
@@ -70,16 +70,24 @@ def test_operational_drills_gate_blocks_stale_evidence():
         call_command("operational_drills_check", max_age_hours=24)
 
 
+def _httpx_context(response):
+    client = Mock()
+    client.get.return_value = response
+    context = MagicMock()
+    context.__enter__.return_value = client
+    context.__exit__.return_value = False
+    return context
+
+
 def test_public_legal_gate_accepts_complete_published_pages(settings):
     settings.FRONTEND_PUBLIC_URL = "https://ai.example.com"
     response = Mock(status_code=200, text="Юридический документ " * 80)
-    client = Mock()
-    client.get.return_value = response
-    context = Mock()
-    context.__enter__ = Mock(return_value=client)
-    context.__exit__ = Mock(return_value=False)
+    context = _httpx_context(response)
 
-    with patch("apps.admin_ops.management.commands.public_legal_check.httpx.Client", return_value=context):
+    with patch(
+        "apps.admin_ops.management.commands.public_legal_check.httpx.Client",
+        return_value=context,
+    ):
         call_command("public_legal_check")
 
 
@@ -89,12 +97,11 @@ def test_public_legal_gate_blocks_placeholder(settings):
         status_code=200,
         text=("Юридический документ " * 40) + "Реквизиты продавца не настроены",
     )
-    client = Mock()
-    client.get.return_value = response
-    context = Mock()
-    context.__enter__ = Mock(return_value=client)
-    context.__exit__ = Mock(return_value=False)
+    context = _httpx_context(response)
 
-    with patch("apps.admin_ops.management.commands.public_legal_check.httpx.Client", return_value=context):
+    with patch(
+        "apps.admin_ops.management.commands.public_legal_check.httpx.Client",
+        return_value=context,
+    ):
         with pytest.raises(CommandError):
             call_command("public_legal_check")
