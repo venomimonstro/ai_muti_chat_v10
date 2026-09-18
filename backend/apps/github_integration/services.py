@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import time
 from urllib.parse import quote
 
@@ -13,6 +14,15 @@ GITHUB_API = "https://api.github.com"
 GITHUB_WEB = "https://github.com"
 API_VERSION = "2022-11-28"
 TIMEOUT = 15.0
+SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{24,}\b"),
+    re.compile(r"\bsk_live_[A-Za-z0-9]{20,}\b"),
+)
 
 
 def _env(name):
@@ -170,6 +180,17 @@ def _safe_directory_path(path):
     return _safe_path(value)
 
 
+def _assert_no_high_risk_secret(text):
+    if os.getenv("GITHUB_ALLOW_SECRET_CONTENT", "false").strip().lower() == "true":
+        return
+    for pattern in SECRET_PATTERNS:
+        if pattern.search(text):
+            raise ValidationError(
+                "Файл содержит данные, похожие на действующий секрет или приватный ключ; "
+                "передача AI заблокирована"
+            )
+
+
 def _contents_url(binding, path=""):
     suffix = f"/{quote(path, safe='/')}" if path else ""
     return f"{GITHUB_API}/repos/{binding.full_name}/contents{suffix}"
@@ -279,6 +300,7 @@ def read_repository_file(binding, path, *, ref=None):
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValidationError("Only UTF-8 text files are available in AI workspace") from exc
+    _assert_no_high_risk_secret(text)
     return {
         "path": path,
         "sha": payload.get("sha"),
@@ -292,7 +314,9 @@ def write_repository_file(binding, path, *, content, expected_sha, message, bran
     if not binding.write_enabled:
         raise ValidationError("GitHub write access is disabled for this project")
     path = _safe_path(path)
-    raw = str(content).encode("utf-8")
+    text = str(content)
+    _assert_no_high_risk_secret(text)
+    raw = text.encode("utf-8")
     if len(raw) > int(os.getenv("GITHUB_MAX_WRITE_BYTES", str(1024 * 1024))):
         raise ValidationError("GitHub write exceeds configured size limit")
     if not expected_sha or len(expected_sha) > 64:
