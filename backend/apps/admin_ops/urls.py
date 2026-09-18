@@ -7,7 +7,7 @@ from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
 from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
-from .support_views import CategorizedSupportControlView
+from .support_views import CategorizedSupportControlView, SupportStatusReplyView
 from .system_views import SystemAnalysisView, SystemIssueActionView
 from .user_views import AdminUserActionView, AdminUserDetailView
 from .views import (
@@ -32,7 +32,6 @@ from .views import (
     SecurityEventView,
     StatusIncidentControlView,
     StatusIncidentUpdateView,
-    SupportStatusView,
     UserOrganizationView,
 )
 
@@ -74,7 +73,7 @@ urlpatterns = [
     path("backups/", BackupView.as_view(), name="admin-backups"),
     path("backups/<uuid:backup_id>/action/", BackupActionView.as_view(), name="admin-backup-action"),
     path("support/", CategorizedSupportControlView.as_view(), name="admin-support"),
-    path("support/<uuid:support_id>/status/", SupportStatusView.as_view(), name="admin-support-status"),
+    path("support/<uuid:support_id>/status/", SupportStatusReplyView.as_view(), name="admin-support-status"),
     path("feature-flags/", FeatureFlagView.as_view(), name="admin-feature-flags"),
     path("feature-flags/<slug:key>/", FeatureFlagDetailView.as_view(), name="admin-feature-flag-detail"),
     path("audit/", AuditView.as_view(), name="admin-audit"),
