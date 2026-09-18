@@ -9,9 +9,8 @@ from .security_views import (
     EmailVerificationRequestView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
-    SessionListView,
-    SessionRevokeView,
 )
+from .session_views import SafeSessionListView, SafeSessionRevokeView
 from .usage_views import UsageSummaryView
 from .views import (
     ChangePasswordView,
@@ -45,8 +44,8 @@ urlpatterns = [
     path("verify-email/confirm/", EmailVerificationConfirmView.as_view()),
     path("password-reset/request/", PasswordResetRequestView.as_view()),
     path("password-reset/confirm/", PasswordResetConfirmView.as_view()),
-    path("sessions/", SessionListView.as_view()),
-    path("sessions/<str:session_key>/revoke/", SessionRevokeView.as_view()),
+    path("sessions/", SafeSessionListView.as_view()),
+    path("sessions/<str:session_id>/revoke/", SafeSessionRevokeView.as_view()),
     path("mfa/status/", MFAStatusView.as_view()),
     path("mfa/setup/", MFASetupView.as_view()),
     path("mfa/confirm/", MFAConfirmView.as_view()),
