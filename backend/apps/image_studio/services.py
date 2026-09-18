@@ -51,8 +51,10 @@ def preview(*, model_slug, prompt, size, quality, count):
 
 def generate(
     *, user, model_slug, prompt, size, quality, count, idempotency_key,
-    confirmed=False, adapter=None
+    confirmed=False, adapter=None, conversation=None
 ):
+    if conversation is not None and conversation.owner_id != user.id:
+        raise ValidationError("Чат не найден или недоступен")
     if not idempotency_key or len(idempotency_key) > 160:
         raise ValidationError("Корректный Idempotency-Key обязателен")
     existing = ImageGeneration.objects.filter(owner=user, idempotency_key=idempotency_key).first()
@@ -68,6 +70,7 @@ def generate(
             or existing.size != size
             or existing.quality != quality
             or existing.requested_count != normalized_count
+            or existing.conversation_id != (conversation.id if conversation else None)
         ):
             raise ValidationError("Idempotency-Key уже использован для другого запроса")
         return existing
@@ -84,11 +87,12 @@ def generate(
         "requested_count": count,
         "size": size,
         "quality": quality,
+        "conversation_id": str(conversation.id) if conversation else None,
     }
     try:
         with transaction.atomic():
             generation = ImageGeneration.objects.create(
-                owner=user, model=model, prompt=prompt, size=size, quality=quality,
+                owner=user, conversation=conversation, model=model, prompt=prompt, size=size, quality=quality,
                 requested_count=count, idempotency_key=idempotency_key,
                 price_snapshot=snapshot, estimated_cost_rub=value.user_charge_rub,
             )
