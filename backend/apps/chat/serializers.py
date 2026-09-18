@@ -65,7 +65,10 @@ class ConversationSerializer(serializers.ModelSerializer):
         )
 
     def get_messages(self, obj):
-        return MessageSerializer(visible_messages(obj).order_by("created_at"), many=True).data
+        return MessageSerializer(
+            visible_messages(obj).select_related("generation_response").order_by("created_at", "id"),
+            many=True,
+        ).data
 
     def get_branches(self, obj):
         return [
