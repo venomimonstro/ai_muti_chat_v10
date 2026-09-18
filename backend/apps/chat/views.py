@@ -16,6 +16,7 @@ from .compare import (
     serialize_compare,
     synthesize_compare,
 )
+from .managed_stream import managed_run
 from .models import CompareVariant, Conversation, ConversationDraft
 from .serializers import (
     ConversationDraftSerializer,
@@ -24,7 +25,7 @@ from .serializers import (
     SendMessageSerializer,
 )
 from .services import generate_reply
-from .streaming import prepare, run
+from .streaming import prepare
 
 
 class ConversationViewSet(viewsets.ModelViewSet):
@@ -271,7 +272,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         except (ValidationError, AIModel.DoesNotExist) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         response = StreamingHttpResponse(
-            run(generation), content_type="text/event-stream; charset=utf-8"
+            managed_run(generation), content_type="text/event-stream; charset=utf-8"
         )
         response["Cache-Control"] = "no-cache, no-transform"
         response["X-Accel-Buffering"] = "no"
