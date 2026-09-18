@@ -6,7 +6,7 @@ from apps.accounts.models import User, UserSecurityProfile
 
 
 class IsPlatformAdmin(BasePermission):
-    message = "Administrator access requires an active account and MFA verification"
+    message = "Для административного доступа требуется активный аккаунт и подтверждённая MFA-сессия."
 
     def has_permission(self, request, view):
         user = request.user
