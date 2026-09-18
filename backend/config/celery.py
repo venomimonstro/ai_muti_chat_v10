@@ -21,6 +21,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.detect_abuse_task",
         "schedule": 3600.0,
     },
+    "support-sla-watch": {
+        "task": "apps.admin_ops.tasks.support_sla_watch_task",
+        "schedule": 900.0,
+    },
 }
 
 
