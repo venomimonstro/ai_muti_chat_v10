@@ -1,10 +1,12 @@
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from django.db import connection
+from django.utils import timezone
 
 from apps.accounts.models import Notification, User
-from apps.billing.services import credit
+from apps.billing.models import BalanceReservation
+from apps.billing.services import credit, reserve
 
 from .tasks import economic_safety_watch_task
 
@@ -27,39 +29,35 @@ def test_economic_watchdog_passes_without_creating_admin_warning():
     result = economic_safety_watch_task()
 
     assert "ECONOMIC SAFETY: PASS" in result
-    assert not Notification.objects.filter(user=admin, dedupe_key__startswith="economic-safety:").exists()
+    assert not Notification.objects.filter(
+        user=admin,
+        dedupe_key__startswith="economic-safety:",
+    ).exists()
 
 
 @pytest.mark.django_db(transaction=True)
-def test_economic_watchdog_alerts_admin_when_database_wallet_invariant_is_corrupted():
+def test_economic_watchdog_reports_stale_reservation_as_warning_without_false_page():
     admin = User.objects.create_user(
-        username="economic-admin-bad",
-        email="economic-admin-bad@example.test",
+        username="economic-admin-stale",
+        email="economic-admin-stale@example.test",
         password="password123",
         role=User.Role.PLATFORM_ADMIN,
     )
     user = User.objects.create_user(
-        username="economic-user-bad",
-        email="economic-user-bad@example.test",
+        username="economic-user-stale",
+        email="economic-user-stale@example.test",
         password="password123",
     )
-    credit(user, Decimal("100"), "test", "economic-bad")
-
-    # PostgreSQL constraints normally prevent this state. Temporarily defer to a raw SQL
-    # corruption simulation only when the backend permits constraint disabling is unsafe,
-    # so instead create a stale active reservation through the public service invariant.
-    from apps.billing.services import reserve
-
+    credit(user, Decimal("100"), "test", "economic-stale")
     reserve(user, Decimal("10"), "economic-watchdog:stale")
-    from apps.billing.models import BalanceReservation
-    from django.utils import timezone
-    from datetime import timedelta
-
     BalanceReservation.objects.filter(idempotency_key="economic-watchdog:stale").update(
         created_at=timezone.now() - timedelta(hours=2)
     )
 
-    # Stale reservations are warnings, not blockers; watchdog must not page admins for them.
     result = economic_safety_watch_task()
+
     assert "WARN: stale_active_reservations=1" in result
-    assert not Notification.objects.filter(user=admin, dedupe_key__startswith="economic-safety:").exists()
+    assert not Notification.objects.filter(
+        user=admin,
+        dedupe_key__startswith="economic-safety:",
+    ).exists()
