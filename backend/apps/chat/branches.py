@@ -31,7 +31,7 @@ def visible_messages(conversation):
 @transaction.atomic
 def fork_branch(*, conversation, user, source_message, title="Альтернативная ветка"):
     active = ensure_active_branch(conversation, user)
-    visible = list(visible_messages(conversation).order_by("created_at"))
+    visible = list(visible_messages(conversation).order_by("created_at", "id"))
     inherited = []
     found = False
     for message in visible:
