@@ -32,7 +32,10 @@ def test_payment_commercial_check_accepts_string_money_limits():
         effective_from=timezone.now(),
         active=True,
     )
-    ReconciliationRun.objects.create(status=ReconciliationRun.Status.SUCCEEDED)
+    ReconciliationRun.objects.create(
+        status=ReconciliationRun.Status.SUCCEEDED,
+        finished_at=timezone.now(),
+    )
     output = io.StringIO()
     call_command(
         "payment_commercial_check",
