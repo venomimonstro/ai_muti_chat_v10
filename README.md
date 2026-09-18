@@ -1,109 +1,66 @@
 # AI Workspace / Universal AI Gateway
 
-Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память и прозрачный рублёвый баланс.
+Единое рабочее пространство для GPT, Claude, Gemini, Grok, DeepSeek и других моделей: одна история, проекты, файлы, память, AUTO Router и прозрачный рублёвый баланс.
 
-Репозиторий создаётся по master-spec **AI Workspace FINAL v8**. Завершены Sprint 0–26.
+Проект прошёл инженерные и коммерческие спринты до production-hardening. Технический запуск разрешается только после прохождения release/commercial gates и реальных production sign-off.
 
-## Что уже заложено
+## Основные возможности
 
 - Django API с собственной моделью пользователя и session-auth;
 - persistent chat: пользовательское сообщение сохраняется до inference;
 - идемпотентная отправка по `Idempotency-Key`;
-- независимый `ProviderAdapter` и тестовый `EchoProviderAdapter`;
-- реальный OpenAI Responses API adapter и серверный SSE streaming;
-- Anthropic Messages и DeepSeek Chat adapters с единым контрактом;
-- capabilities, ручной выбор модели и API версионированных цен;
-- retries до первого токена, fallback-цепочки и circuit breaker;
-- provider health snapshots, incident correlation и emergency kill switch;
-- проекты с ACL, архивом и версионируемыми инструкциями;
-- изолированные загрузки файлов, безопасная проверка MIME/magic и extraction statuses;
-- извлечение и chunking для TXT/MD/CSV/DOCX/XLSX, vision-assets и честный partial для PDF;
-- сохранение partial output во время генерации;
-- versioned pricing и фактическая стоимость по provider usage;
+- OpenAI, Anthropic, DeepSeek, Gemini и xAI adapters;
+- AUTO Router: Быстро / Баланс / Максимум;
+- capability/context/provider-health routing и controlled fallback;
+- проекты, файлы, память, PDF/RAG, vision и web search;
+- локальный multilingual semantic retrieval через pgvector;
+- versioned pricing, FX, markup и margin guard;
 - immutable ledger, reservation → settlement → release;
-- раздельные paid/promo-бакеты кошелька и возвраты только из paid-баланса;
-- идемпотентный lifecycle платежей и возвратов YooKassa;
-- webhook с обязательной серверной перепроверкой статуса, суммы и metadata;
-- запрет отрицательного доступного баланса;
-- изолированный поиск по чатам, сообщениям, проектам и файлам;
-- серверные и локальные черновики сообщений;
-- настройки лимитов расходов, low-balance уведомления и центр уведомлений;
-- смена пароля, завершение всех сессий и обращения в поддержку;
-- полноценный responsive Next.js интерфейс с историей, drawers и стоимостью ответа;
-- keyboard flows, доступные состояния loading/empty/error/recovery и reduced motion;
-- устанавливаемый PWA shell с offline fallback;
-- Universal Memory v1 explicit-first с областями пользователь / проект / чат;
-- ручные команды «Запомни», «Не запоминай» и «Забудь» без скрытого автосбора;
-- редактирование, архив, закрепление и отключение памяти;
-- неизменяемый snapshot памяти и Context Inspector для каждого ответа;
-- auto-memory candidates за серверным feature flag и пользовательским opt-in;
-- локальное извлечение только из прямых сообщений пользователя без дополнительных AI-затрат;
-- trust/confidence, фильтрация секретов, дедупликация и подтверждаемая замена конфликтов;
-- Smart Context Engine со строгим бюджетом окна модели и резервом ответа;
-- релевантный retrieval памяти, старых сообщений и изолированных file chunks;
-- rolling summary без удаления исходной истории и immutable Context Snapshot;
-- дедупликация источников и подробный Context Inspector для каждого ответа;
-- русскоязычный Eval Harness с полной taxonomy из 15 классов задач;
-- versioned eval datasets, deterministic rubric judge и model scorecards;
-- сбор качества, галлюцинаций, latency, токенов и provider cost;
-- regression gates и запрет promotion модели при падении качества;
-- explainable AUTO Router без дополнительного LLM-запроса на классификацию;
-- режимы Эконом, Баланс и Максимум с разными весами quality/cost/latency;
-- capability, context-window и provider-health filters перед маршрутизацией;
-- immutable Routing Decision и защита от неожиданно дорогого fallback;
-- Gemini и Grok/xAI adapters; пять основных AI families имеют единый streaming contract;
-- immutable ModelVersion с exact API id и candidate → eval → promote процессом;
-- атомарный promotion, аудит переходов и rollback на зарегистрированную версию;
-- version-aware Router/Context Snapshot и межпровайдерный failover contract suite;
-- versioned markup hierarchy global → provider → model → operation → organization → contract;
-- immutable FX и полный Price Snapshot для воспроизводимого settlement;
-- Margin Guard, исключающий убыточные маршруты до provider request;
-- deduplicated cost anomalies и ежедневная ledger/request reconciliation;
-- staff-only Finance Summary с revenue, provider cost, gross profit/margin и liabilities;
-- paragraph-aware chunking и приватные воспроизводимые embeddings в pgvector;
-- project/tenant ACL до vector ranking, provenance citations и удаление vector lineage вместе с файлом;
-- prompt-injection scanning и жёсткая untrusted-data граница для файлового RAG;
-- history embeddings с HNSW index и приватным локальным индексатором;
-- hybrid Workspace Search: keyword + vector + recency, ACL-first filters и точная навигация к сообщению;
-- Compare для 2–4 моделей с cost preview, единым hard reserve, параллельными ответами и synthesis;
-- ветвление от любого сообщения или Compare-варианта без изменения исходной истории;
-- отдельный image provider contract с Echo и OpenAI Images adapters;
-- генерация изображений с cost preview, hard reserve, фактическим settlement и идемпотентностью;
-- приватная галерея, история визуальных результатов и защищённые source links оригиналов;
-- OpenAI-совместимый B2B API для models, chat completions, SSE и usage;
-- организации, серверные membership ACL и ключи с одноразовым показом секрета;
-- scopes, model/endpoint/IP allowlists, RPM, concurrency и месячные hard budgets;
-- B2B reservation/settlement, идемпотентность, аналитика использования и audit log;
-- единый staff-only Admin Ops API: executive, finance, payments, ledger и pricing;
-- quality, incidents, request inspector, users/organizations, support и immutable audit;
-- массовые model/provider controls, feature flags и безопасный canary/rolling rollout;
-- security containment и контролируемый backup verification/restore drill lifecycle;
-- production security headers, secure-cookie/HSTS controls и автоматический secrets scan;
-- публичная status page, incident publishing и доказуемые compliance sign-offs;
-- bounded load smoke runner, изолированный PostgreSQL restore drill и launch gate;
-- production Docker Compose, support/incident runbooks и полный pre-launch checklist;
-- однокомандный production installer с HTTPS, секретами, миграциями и созданием администратора;
-- Caddy reverse proxy, автоматический TLS, private network и ограничение Docker-логов;
-- автоматическое восстановление зависших резервов и операций после аварийного завершения;
-- Docker Compose: PostgreSQL, Redis, backend, worker, frontend и Caddy;
-- ADR и implementation brief для текущего этапа.
+- paid/promo balance и YooKassa lifecycle;
+- OpenAI-compatible B2B API, API keys, ACL, budgets, RPM/concurrency limits;
+- публичный коммерческий сайт, auth/recovery, клиентский workspace и Admin Console;
+- русскоязычный Admin Console: пользователи, провайдеры, цены, финансы, платежи, безопасность, поддержка, операции, аналитика, проверки запуска;
+- автоматический системный анализ и журнал багов: HTTP 5xx, worker/Celery, frontend JavaScript errors, provider/payment/AI health;
+- persistent bug registry в PostgreSQL, correlation IDs, группировка повторов и lifecycle «открыта → разбираемся → исправлена»;
+- ротационный JSONL аварийный журнал с маскированием распространённых секретов;
+- backups, restore/rollback drills, chaos/load/E2E gates;
+- production Docker Compose, Caddy HTTPS и однокомандный installer.
 
-## Быстрый запуск
+## Установка production одной командой
 
-### Production на чистом Ubuntu/Debian сервере
-
-После настройки DNS на сервер:
+Сначала направьте A/AAAA DNS-запись домена на сервер, затем на чистом Ubuntu/Debian выполните:
 
 ```bash
-chmod +x install.sh
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/venomimonstro/ai_muti_chat_v10/main/scripts/one_click_install.sh | sudo bash
 ```
 
-Установщик сам проверит Docker, спросит домен и администратора, создаст секреты, поднимет
-PostgreSQL/Redis, применит миграции, соберёт static-файлы и выпустит HTTPS-сертификат.
-Подробности: `docs/operations/installation.md`.
+Bootstrap сам:
 
-### Локальная разработка
+- установит необходимые системные пакеты;
+- скачает проект в `/opt/ai-workspace`;
+- проверит RAM, диск и порты;
+- установит Docker Compose v2 при необходимости;
+- создаст production secrets;
+- соберёт контейнеры;
+- применит миграции;
+- создаст администратора;
+- запустит PostgreSQL, Redis, backend, Celery worker/beat, frontend и Caddy;
+- получит HTTPS;
+- проверит readiness.
+
+Повтор той же команды после прерванной установки безопасно продолжает процесс. Подробности: `docs/operations/installation.md`.
+
+После установки:
+
+```bash
+cd /opt/ai-workspace
+sudo bash scripts/system_diagnostics.sh
+sudo bash scripts/commercial_launch_check.sh
+```
+
+`commercial_launch_check.sh` не выдаст `PASS`, пока не пройдены кодовые тесты, production E2E, системный health gate, платежные/провайдерские проверки, backups/drills и обязательные compliance sign-offs.
+
+## Локальная разработка
 
 ```bash
 cp .env.example .env
@@ -113,12 +70,6 @@ docker compose up --build
 - приложение: http://localhost:3000
 - API: http://localhost:8000/api/v1/
 - Django admin: http://localhost:8000/admin/
-
-Создать администратора:
-
-```bash
-docker compose exec backend python manage.py createsuperuser
-```
 
 ## Локальная разработка backend
 
@@ -138,7 +89,8 @@ pytest
 3. Ledger entries не изменяются и не удаляются.
 4. Баланс реконструируется суммой ledger entries.
 5. Ни один запрос не имеет неограниченную стоимость.
-6. Секреты провайдеров не передаются во frontend и не пишутся в логи.
-
-Инженерный roadmap Sprint 0–26 завершён. Production-запуск разрешается только после закрытия
-ручных юридических, фискальных, MFA и договорных sign-off из launch checklist.
+6. Секреты провайдеров не передаются во frontend и маскируются в диагностике.
+7. Сбой одного AI-запроса или UI-модуля не должен ронять весь пользовательский workspace.
+8. Известная незакрытая production-ошибка блокирует коммерческий launch gate.
+9. Destructive migration не проходит обычный production deploy.
+10. Коммерческий запуск считается разрешённым только после `COMMERCIAL LAUNCH: PASS`.
