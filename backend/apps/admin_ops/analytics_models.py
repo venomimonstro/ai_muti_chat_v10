@@ -23,4 +23,9 @@ class ProductEvent(models.Model):
     class Meta:
         app_label = "admin_ops"
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["event_name", "created_at"])]
+        indexes = [
+            models.Index(
+                fields=["event_name", "created_at"],
+                name="admin_ops_p_event_n_7bf562_idx",
+            )
+        ]
