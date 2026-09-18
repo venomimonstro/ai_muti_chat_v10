@@ -27,11 +27,10 @@ printf '[3/5] Django model and migration checks\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
 
-printf '[4/5] Frontend lint\n'
-docker build -t ai-workspace-client-check frontend
-docker run --rm ai-workspace-client-check sh -c 'npm run lint'
+printf '[4/5] Frontend production build\n'
+docker build --target builder -t ai-workspace-client-builder frontend
 
-printf '[5/5] Frontend production build\n'
-docker run --rm ai-workspace-client-check sh -c 'npm run build'
+printf '[5/5] Frontend lint\n'
+docker run --rm ai-workspace-client-builder sh -c 'npm run lint'
 
 printf 'CLIENT WORKSPACE CHECK: PASS\n'
