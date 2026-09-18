@@ -27,6 +27,7 @@ class Command(BaseCommand):
                 "payment_commercial_check",
                 {"require_reconciliation": True},
             ),
+            ("economic_safety", "economic_safety_check", {}),
             ("financial_invariants", "verify_financial_invariants", {}),
             ("operational_drills", "operational_drills_check", {}),
             ("public_legal", "public_legal_check", {}),
