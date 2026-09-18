@@ -18,6 +18,20 @@ def active_conversations(user):
     )
 
 
+def _decode_workspace_cursor(raw):
+    if not raw:
+        return None, None
+    timestamp_raw, separator, message_id = raw.partition("|")
+    timestamp = parse_datetime(timestamp_raw)
+    if timestamp is None:
+        return None, None
+    return timestamp, message_id if separator and message_id else None
+
+
+def _encode_workspace_cursor(message):
+    return f"{message.created_at.isoformat()}|{message.id}"
+
+
 class ConversationFolderSerializer(serializers.ModelSerializer):
     conversation_count = serializers.SerializerMethodField()
 
@@ -55,7 +69,7 @@ class ConversationSummaryListView(APIView):
         rows = (
             active_conversations(request.user)
             .select_related("ui_state")
-            .order_by("-updated_at")[:limit]
+            .order_by("-updated_at", "-id")[:limit]
         )
         result = []
         for item in rows:
@@ -95,16 +109,21 @@ class ConversationWorkspaceView(APIView):
         except (TypeError, ValueError):
             limit = 60
         queryset = visible_messages(conversation).select_related("generation_response")
-        before_raw = request.query_params.get("before")
-        if before_raw:
-            before = parse_datetime(before_raw)
-            if before is not None:
-                queryset = queryset.filter(created_at__lt=before)
-        page = list(queryset.order_by("-created_at")[:limit])
+        before_time, before_id = _decode_workspace_cursor(request.query_params.get("before"))
+        if before_time is not None:
+            older = Q(created_at__lt=before_time)
+            if before_id:
+                older |= Q(created_at=before_time, id__lt=before_id)
+            queryset = queryset.filter(older)
+        page = list(queryset.order_by("-created_at", "-id")[:limit])
         page.reverse()
         has_more = False
         if page:
-            has_more = visible_messages(conversation).filter(created_at__lt=page[0].created_at).exists()
+            first = page[0]
+            has_more = visible_messages(conversation).filter(
+                Q(created_at__lt=first.created_at)
+                | Q(created_at=first.created_at, id__lt=first.id)
+            ).exists()
         return Response(
             {
                 "conversation": {
@@ -138,7 +157,7 @@ class ConversationWorkspaceView(APIView):
                     "messages": MessageSerializer(page, many=True).data,
                 },
                 "has_more": has_more,
-                "next_before": page[0].created_at.isoformat() if page and has_more else None,
+                "next_before": _encode_workspace_cursor(page[0]) if page and has_more else None,
             }
         )
 
