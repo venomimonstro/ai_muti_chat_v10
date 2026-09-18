@@ -46,6 +46,7 @@ class ConversationUIState(models.Model):
         related_name="conversation_states",
     )
     is_pinned = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
