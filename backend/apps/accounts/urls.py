@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .account_data_views import AccountDeleteView, AccountExportView
 from .mfa_views import MFAConfirmView, MFASetupView, MFAStatusView, MFAVerifyView
 from .onboarding_views import OnboardingStatusView
 from .security_views import (
@@ -48,4 +49,6 @@ urlpatterns = [
     path("mfa/setup/", MFASetupView.as_view()),
     path("mfa/confirm/", MFAConfirmView.as_view()),
     path("mfa/verify/", MFAVerifyView.as_view()),
+    path("export/", AccountExportView.as_view()),
+    path("delete-account/", AccountDeleteView.as_view()),
 ] + router.urls
