@@ -5,7 +5,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.projects.access import accessible_projects
+from apps.projects.models import Project
 
 from .models import GitHubInstallation, GitHubOperationLog, GitHubRepositoryBinding
 from .services import (
@@ -15,6 +15,7 @@ from .services import (
     list_repositories,
     list_repository_directory,
     read_repository_file,
+    user_installations,
     verified_installation,
     write_repository_file,
 )
@@ -23,14 +24,47 @@ STATE_SALT = "github.integration.install.v1"
 STATE_MAX_AGE = 15 * 60
 
 
-def _binding_for(user, project_id, *, write=False):
-    project = accessible_projects(user, write=write).filter(pk=project_id).first()
+def _owned_project(user, project_id):
+    project = Project.objects.filter(pk=project_id, owner=user, archived_at__isnull=True).first()
     if project is None:
         raise NotFound("Проект не найден")
+    return project
+
+
+def _binding_for(user, project_id):
+    project = _owned_project(user, project_id)
     try:
         return project.github_repository
     except GitHubRepositoryBinding.DoesNotExist as exc:
         raise NotFound("GitHub repository не подключён к проекту") from exc
+
+
+def _select_callback_installation(user, user_token, requested_id):
+    if requested_id not in {None, ""}:
+        try:
+            normalized = int(requested_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("GitHub installation id is invalid") from exc
+        return normalized, verified_installation(user_token, normalized)
+
+    candidates = []
+    for installation in user_installations(user_token):
+        try:
+            installation_id = int(installation.get("id", 0))
+        except (TypeError, ValueError):
+            continue
+        if not installation_id:
+            continue
+        existing = GitHubInstallation.objects.filter(installation_id=installation_id).first()
+        if existing is not None and existing.owner_id != user.id:
+            continue
+        candidates.append((installation_id, installation))
+    if len(candidates) != 1:
+        raise ValidationError(
+            "Не удалось однозначно определить GitHub installation. "
+            "Оставьте одну новую установку или повторите подключение из проекта."
+        )
+    return candidates[0]
 
 
 class GitHubConnectView(APIView):
@@ -45,8 +79,8 @@ class GitHubCallbackView(APIView):
     def get(self, request):
         code = str(request.query_params.get("code") or "").strip()
         state = str(request.query_params.get("state") or "").strip()
-        installation_id = request.query_params.get("installation_id")
-        if not code or not state or not installation_id:
+        requested_installation_id = request.query_params.get("installation_id")
+        if not code or not state:
             raise ValidationError("GitHub callback is incomplete")
         try:
             payload = signing.loads(state, salt=STATE_SALT, max_age=STATE_MAX_AGE)
@@ -55,43 +89,46 @@ class GitHubCallbackView(APIView):
         if payload.get("user_id") != str(request.user.id):
             raise ValidationError("GitHub state belongs to another user")
         try:
-            normalized_installation_id = int(installation_id)
-        except (TypeError, ValueError) as exc:
-            raise ValidationError("GitHub installation id is invalid") from exc
-        existing = GitHubInstallation.objects.filter(installation_id=normalized_installation_id).first()
-        if existing is not None and existing.owner_id != request.user.id:
-            raise ValidationError("Эта GitHub installation уже привязана к другому аккаунту сервиса")
-        try:
             user_token = exchange_user_code(code)
-            installation = verified_installation(user_token, normalized_installation_id)
+            normalized_installation_id, installation = _select_callback_installation(
+                request.user,
+                user_token,
+                requested_installation_id,
+            )
         except (DjangoValidationError, ImproperlyConfigured) as exc:
             raise ValidationError(str(exc)) from exc
+
+        existing = GitHubInstallation.objects.filter(
+            installation_id=normalized_installation_id
+        ).first()
+        if existing is not None and existing.owner_id != request.user.id:
+            raise ValidationError("Эта GitHub installation уже привязана к другому аккаунту сервиса")
+
         account = installation.get("account") or {}
+        defaults = {
+            "account_login": str(account.get("login") or "")[:255],
+            "account_type": str(account.get("type") or "")[:40],
+            "repository_selection": str(installation.get("repository_selection") or "")[:24],
+            "permissions": installation.get("permissions") or {},
+            "active": True,
+        }
         if existing is None:
             record = GitHubInstallation.objects.create(
                 installation_id=normalized_installation_id,
                 owner=request.user,
-                account_login=str(account.get("login") or "")[:255],
-                account_type=str(account.get("type") or "")[:40],
-                repository_selection=str(installation.get("repository_selection") or "")[:24],
-                permissions=installation.get("permissions") or {},
-                active=True,
+                **defaults,
             )
         else:
             record = existing
-            record.account_login = str(account.get("login") or "")[:255]
-            record.account_type = str(account.get("type") or "")[:40]
-            record.repository_selection = str(installation.get("repository_selection") or "")[:24]
-            record.permissions = installation.get("permissions") or {}
-            record.active = True
-            record.save(update_fields=[
-                "account_login", "account_type", "repository_selection", "permissions", "active", "updated_at"
-            ])
+            for field, value in defaults.items():
+                setattr(record, field, value)
+            record.save(update_fields=[*defaults.keys(), "updated_at"])
         return Response({
             "connected": True,
             "installation": str(record.id),
             "account": record.account_login,
             "repository_selection": record.repository_selection,
+            "permissions": record.permissions,
         })
 
 
@@ -104,6 +141,7 @@ class GitHubInstallationListView(APIView):
                 "installation_id": installation.installation_id,
                 "account": installation.account_login,
                 "repository_selection": installation.repository_selection,
+                "permissions": installation.permissions,
             })
         return Response(items)
 
@@ -144,9 +182,7 @@ class GitHubProjectBindingView(APIView):
         })
 
     def post(self, request, project_id):
-        project = accessible_projects(request.user, write=True).filter(pk=project_id).first()
-        if project is None:
-            raise NotFound("Проект не найден")
+        project = _owned_project(request.user, project_id)
         installation = GitHubInstallation.objects.filter(
             pk=request.data.get("installation"), owner=request.user, active=True
         ).first()
@@ -160,7 +196,10 @@ class GitHubProjectBindingView(APIView):
             requested_id = int(request.data.get("repository_id"))
         except (TypeError, ValueError) as exc:
             raise ValidationError({"repository_id": "Некорректный repository_id"}) from exc
-        repository = next((item for item in repositories if int(item.get("id", 0)) == requested_id), None)
+        repository = next(
+            (item for item in repositories if int(item.get("id", 0)) == requested_id),
+            None,
+        )
         if repository is None:
             raise ValidationError({"repository_id": "Репозиторий не доступен этой установке"})
         binding, _ = GitHubRepositoryBinding.objects.update_or_create(
@@ -190,11 +229,14 @@ class GitHubProjectBindingView(APIView):
         })
 
     def patch(self, request, project_id):
-        binding = _binding_for(request.user, project_id, write=True)
+        binding = _binding_for(request.user, project_id)
         if "write_enabled" not in request.data:
             raise ValidationError({"write_enabled": "Поле обязательно"})
         binding.write_enabled = request.data.get("write_enabled") is True
-        binding.save(update_fields=["write_enabled", "updated_at"])
+        try:
+            binding.save(update_fields=["write_enabled", "updated_at"])
+        except DjangoValidationError as exc:
+            raise ValidationError({"write_enabled": exc.messages}) from exc
         GitHubOperationLog.objects.create(
             actor=request.user,
             binding=binding,
@@ -236,13 +278,17 @@ class GitHubFileView(APIView):
         except (DjangoValidationError, ImproperlyConfigured) as exc:
             raise ValidationError(str(exc)) from exc
         GitHubOperationLog.objects.create(
-            actor=request.user, binding=binding, action="read_file", path=payload["path"],
-            branch=payload["ref"], success=True,
+            actor=request.user,
+            binding=binding,
+            action="read_file",
+            path=payload["path"],
+            branch=payload["ref"],
+            success=True,
         )
         return Response(payload)
 
     def put(self, request, project_id):
-        binding = _binding_for(request.user, project_id, write=True)
+        binding = _binding_for(request.user, project_id)
         if request.data.get("confirm_write") is not True:
             raise ValidationError({"confirm_write": "Явное подтверждение записи обязательно"})
         try:
