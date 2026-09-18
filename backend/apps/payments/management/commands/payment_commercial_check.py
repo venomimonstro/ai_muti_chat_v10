@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.payments.models import PaymentFeeVersion, ReconciliationRun
+from apps.payments.provider import PaymentProviderError, YooKassaClient
 
 
 class Command(BaseCommand):
@@ -48,6 +49,17 @@ class Command(BaseCommand):
             limits_valid = False
         add("payment_limits", limits_valid, f"{minimum}..{maximum}")
 
+        provider_ready = False
+        provider_detail = "skipped until live payment credentials are configured"
+        if settings.PAYMENTS_LIVE_ENABLED and settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY:
+            try:
+                payload = YooKassaClient.from_settings().list_payments(limit=1)
+                provider_ready = payload.get("type") == "list" and isinstance(payload.get("items"), list)
+                provider_detail = "authenticated GET /payments?limit=1 succeeded" if provider_ready else "unexpected provider response"
+            except PaymentProviderError as exc:
+                provider_detail = str(exc)
+        add("provider_credentials_live", provider_ready, provider_detail)
+
         fee = (
             PaymentFeeVersion.objects.filter(
                 provider="yookassa", active=True, effective_from__lte=timezone.now()
@@ -73,7 +85,7 @@ class Command(BaseCommand):
                 and reconciliation.finished_at >= cutoff
             )
             detail = (
-                f"status={reconciliation.status}, finished_at={reconciliation.finished_at}, max_age={max_age}s"
+                f"status={reconciliation.status}, checked={reconciliation.checked_count}, errors={reconciliation.error_count}, finished_at={reconciliation.finished_at}, max_age={max_age}s"
                 if reconciliation
                 else "never run"
             )
