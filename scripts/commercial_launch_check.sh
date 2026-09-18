@@ -14,6 +14,7 @@ REPORT="${EVIDENCE_DIR}/commercial-launch-${STAMP}.json"
 RELEASE_LOG="${EVIDENCE_DIR}/release-check-${STAMP}.log"
 E2E_LOG="${EVIDENCE_DIR}/commercial-e2e-${STAMP}.log"
 SYSTEM_LOG="${EVIDENCE_DIR}/system-health-${STAMP}.json"
+ECONOMIC_LOG="${EVIDENCE_DIR}/economic-safety-${STAMP}.json"
 
 set -a
 # shellcheck disable=SC1090
@@ -43,6 +44,19 @@ if [[ $SYSTEM_STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED BY SYSTEM HEALTH"
   echo "Evidence: $SYSTEM_LOG"
   exit "$SYSTEM_STATUS"
+fi
+
+printf 'Running production economic safety gate...\n'
+set +e
+compose exec -T backend python manage.py economic_safety_check --json >"${ECONOMIC_LOG}.tmp"
+ECONOMIC_STATUS=$?
+set -e
+mv "${ECONOMIC_LOG}.tmp" "$ECONOMIC_LOG"
+sha256sum "$ECONOMIC_LOG" >"${ECONOMIC_LOG}.sha256"
+if [[ $ECONOMIC_STATUS -ne 0 ]]; then
+  echo "COMMERCIAL LAUNCH: BLOCKED BY ECONOMIC SAFETY"
+  echo "Evidence: $ECONOMIC_LOG"
+  exit "$ECONOMIC_STATUS"
 fi
 
 printf 'Running commercial client-cabinet E2E...\n'
@@ -116,6 +130,7 @@ if [[ $STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED"
   echo "Release evidence: $RELEASE_LOG"
   echo "System health evidence: $SYSTEM_LOG"
+  echo "Economic safety evidence: $ECONOMIC_LOG"
   echo "E2E evidence: $E2E_LOG"
   echo "Audit evidence: $REPORT"
   exit "$STATUS"
@@ -124,5 +139,6 @@ fi
 echo "COMMERCIAL LAUNCH: PASS"
 echo "Release evidence: $RELEASE_LOG"
 echo "System health evidence: $SYSTEM_LOG"
+echo "Economic safety evidence: $ECONOMIC_LOG"
 echo "E2E evidence: $E2E_LOG"
 echo "Audit evidence: $REPORT"
