@@ -1,6 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers, status, viewsets
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import Conversation
 from .ux_models import ConversationFolder, ConversationUIState
@@ -26,6 +27,38 @@ class ConversationFolderViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
+
+
+class ConversationSummaryListView(APIView):
+    def get(self, request):
+        try:
+            limit = min(max(int(request.query_params.get("limit", 80)), 10), 200)
+        except (TypeError, ValueError):
+            limit = 80
+        rows = (
+            Conversation.objects.filter(owner=request.user)
+            .select_related("ui_state")
+            .only("id", "title", "routing_mode", "selected_model", "project_id", "updated_at", "created_at")
+            .order_by("-updated_at")[:limit]
+        )
+        result = []
+        for item in rows:
+            try:
+                ui = item.ui_state
+            except ConversationUIState.DoesNotExist:
+                ui = None
+            result.append({
+                "id": str(item.id),
+                "title": item.title,
+                "routing_mode": item.routing_mode,
+                "selected_model": item.selected_model,
+                "project": str(item.project_id) if item.project_id else None,
+                "folder": str(ui.folder_id) if ui and ui.folder_id else None,
+                "is_pinned": bool(ui and ui.is_pinned),
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+            })
+        return Response(result)
 
 
 class ConversationUIStateViewSet(viewsets.ViewSet):
