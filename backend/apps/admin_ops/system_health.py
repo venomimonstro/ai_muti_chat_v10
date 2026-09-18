@@ -26,6 +26,7 @@ MAX_ISSUES = 500
 TTL_SECONDS = 60 * 60 * 24 * 30
 LOG_FILE = Path(os.getenv("SYSTEM_ISSUE_LOG_FILE", "/app/logs/system_issues.jsonl"))
 LOG_MAX_BYTES = int(os.getenv("SYSTEM_ISSUE_LOG_MAX_BYTES", str(20 * 1024 * 1024)))
+VALID_SEVERITIES = {"warning", "critical"}
 
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)\b(authorization|api[_-]?key|secret|password|passwd|token|cookie)\b\s*[:=]\s*([^\s,;]+)"), r"\1=[REDACTED]"),
@@ -100,7 +101,7 @@ def _cache_issue(issue: dict):
 
 
 def _fallback_issue(
-    *, fingerprint, exception_type, summary, source, traceback_text,
+    *, fingerprint, severity, exception_type, summary, source, traceback_text,
     correlation_id, user_id, method, task_id,
 ):
     now = timezone.now().isoformat()
@@ -108,7 +109,7 @@ def _fallback_issue(
     return {
         "fingerprint": fingerprint,
         "status": "open" if current.get("status") in {None, "resolved", "ignored"} else current["status"],
-        "severity": "critical",
+        "severity": severity,
         "exception_type": exception_type,
         "summary": summary[:500],
         "path": source[:240],
@@ -134,7 +135,9 @@ def _store_issue(
     user_id: str | None = None,
     method: str = "",
     task_id: str = "",
+    severity: str = "critical",
 ):
+    severity = severity if severity in VALID_SEVERITIES else "critical"
     summary = _redact(summary)
     traceback_text = _redact(traceback_text)
     fingerprint = _fingerprint(exception_type=exception_type, source=source, summary=summary)
@@ -147,7 +150,7 @@ def _store_issue(
                 row = SystemIssue.objects.create(
                     fingerprint=fingerprint,
                     status=SystemIssue.Status.OPEN,
-                    severity="critical",
+                    severity=severity,
                     exception_type=exception_type[:160],
                     summary=summary[:500],
                     source=source[:240],
@@ -166,6 +169,7 @@ def _store_issue(
                     if row.status in {SystemIssue.Status.RESOLVED, SystemIssue.Status.IGNORED}
                     else row.status
                 )
+                row.severity = severity
                 row.exception_type = exception_type[:160]
                 row.summary = summary[:500]
                 row.source = source[:240]
@@ -178,7 +182,7 @@ def _store_issue(
                 row.sample_traceback = traceback_text[-8000:]
                 row.save(
                     update_fields=[
-                        "status", "exception_type", "summary", "source", "method",
+                        "status", "severity", "exception_type", "summary", "source", "method",
                         "task_id", "correlation_id", "user_reference", "last_seen_at",
                         "occurrences", "sample_traceback", "updated_at",
                     ]
@@ -187,6 +191,7 @@ def _store_issue(
     except Exception:
         issue = _fallback_issue(
             fingerprint=fingerprint,
+            severity=severity,
             exception_type=exception_type,
             summary=summary,
             source=source,
@@ -199,7 +204,8 @@ def _store_issue(
     _cache_issue(issue)
     _append_jsonl(issue)
     logger.error(
-        "Системная ошибка fingerprint=%s correlation_id=%s source=%s type=%s summary=%s",
+        "Системная ошибка severity=%s fingerprint=%s correlation_id=%s source=%s type=%s summary=%s",
+        severity,
         fingerprint,
         correlation_id,
         source,
@@ -220,6 +226,7 @@ def record_exception(request, exc: Exception):
         correlation_id=str(getattr(request, "correlation_id", "")),
         user_id=_safe_user_id(request),
         traceback_text="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        severity="critical",
     )
 
 
@@ -232,6 +239,7 @@ def record_background_exception(*, task_name: str, task_id: str, exc: Exception)
         source=f"celery:{task_name}",
         task_id=task_id,
         traceback_text="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        severity="critical",
     )
 
 
@@ -245,11 +253,13 @@ def record_http_5xx(request, status_code: int):
     )
 
 
-def _cached_issues(*, status: str | None, limit: int):
+def _cached_issues(*, status: str | None, limit: int, severity: str | None = None):
     result = []
     for fingerprint in list(cache.get(INDEX_KEY) or []):
         issue = cache.get(_issue_key(fingerprint))
         if not issue or (status and issue.get("status") != status):
+            continue
+        if severity and issue.get("severity") != severity:
             continue
         result.append(issue)
         if len(result) >= limit:
@@ -257,14 +267,16 @@ def _cached_issues(*, status: str | None, limit: int):
     return result
 
 
-def list_issues(*, status: str | None = None, limit: int = 100):
+def list_issues(*, status: str | None = None, limit: int = 100, severity: str | None = None):
     try:
         queryset = SystemIssue.objects.all()
         if status:
             queryset = queryset.filter(status=status)
+        if severity:
+            queryset = queryset.filter(severity=severity)
         return [_serialize(row) for row in queryset.order_by("-last_seen_at")[:limit]]
     except Exception:
-        return _cached_issues(status=status, limit=limit)
+        return _cached_issues(status=status, limit=limit, severity=severity)
 
 
 def update_issue(fingerprint: str, *, status: str, resolution_note: str = ""):
@@ -305,6 +317,9 @@ def system_analysis():
     hour_failed = generation_hour.filter(state=Generation.State.FAILED).count()
     open_issues = list_issues(status="open", limit=MAX_ISSUES)
     investigating = list_issues(status="investigating", limit=MAX_ISSUES)
+    critical_open = [item for item in open_issues if item.get("severity") == "critical"]
+    critical_investigating = [item for item in investigating if item.get("severity") == "critical"]
+    warning_open = [item for item in open_issues if item.get("severity") == "warning"]
     unhealthy = list(
         Provider.objects.filter(enabled=True)
         .exclude(health_state=Provider.HealthState.HEALTHY)
@@ -322,7 +337,7 @@ def system_analysis():
     )
     risk_score = min(
         100,
-        min(40, len(open_issues) * 5)
+        min(40, len(critical_open) * 8 + len(critical_investigating) * 4 + len(warning_open))
         + min(25, len(unhealthy) * 5)
         + min(25, round((day_failed / day_total * 100) if day_total else 0))
         + min(10, payment_failures),
@@ -335,6 +350,9 @@ def system_analysis():
         "issues": {
             "open": len(open_issues),
             "investigating": len(investigating),
+            "critical_open": len(critical_open),
+            "critical_investigating": len(critical_investigating),
+            "warning_open": len(warning_open),
             "recent": list_issues(limit=20),
         },
         "ai": {
