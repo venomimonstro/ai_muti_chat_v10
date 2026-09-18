@@ -7,14 +7,14 @@ import {Icon} from "./Icons";
 import type {ConversationFolder,ConversationSummary} from "./types";
 
 type Props={
- items:ConversationSummary[];folders:ConversationFolder[];activeId:string|null;wallet:Wallet|null;collapsed:boolean;
+ items:ConversationSummary[];folders:ConversationFolder[];activeId:string|null;wallet:Wallet|null;collapsed:boolean;runningIds:Set<string>;
  onToggle:()=>void;onCreate:()=>void;onSelect:(id:string)=>void;onSearch:()=>void;
  onCreateFolder:(name:string)=>Promise<void>;onRenameFolder:(id:string,name:string)=>Promise<void>;onPinFolder:(id:string,pinned:boolean)=>Promise<void>;onDeleteFolder:(id:string)=>Promise<void>;
  onRenameChat:(id:string,title:string)=>Promise<void>;onPinChat:(id:string,pinned:boolean)=>Promise<void>;onMoveChat:(id:string,folder:string|null)=>Promise<void>;onDeleteChat:(id:string)=>Promise<void>;
 };
 
 export function Sidebar(props:Props){
- const {items,folders,activeId,wallet,collapsed}=props;
+ const {items,folders,activeId,wallet,collapsed,runningIds}=props;
  const [openMenu,setOpenMenu]=useState<string|null>(null);const [folderInput,setFolderInput]=useState(false);const [folderName,setFolderName]=useState("");
  const pinned=useMemo(()=>items.filter(x=>x.is_pinned),[items]);
  const unfiled=useMemo(()=>items.filter(x=>!x.folder&&!x.is_pinned),[items]);
@@ -22,7 +22,7 @@ export function Sidebar(props:Props){
  const askRename=async(id:string,current:string)=>{const value=window.prompt("Новое название",current)?.trim();if(value&&value!==current)await props.onRenameChat(id,value);setOpenMenu(null)};
  const askFolderRename=async(id:string,current:string)=>{const value=window.prompt("Название папки",current)?.trim();if(value&&value!==current)await props.onRenameFolder(id,value);setOpenMenu(null)};
  const createFolder=async()=>{const name=folderName.trim();if(!name)return;await props.onCreateFolder(name);setFolderName("");setFolderInput(false)};
- const ChatRow=({item}:{item:ConversationSummary})=><div className={`sideRow ${item.id===activeId?"active":""}`}><button className="sideRowMain" onClick={()=>props.onSelect(item.id)} title={item.title}>{item.is_pinned&&<Icon name="pin" size={13}/>}<span>{item.title||"Новый чат"}</span></button><button className="sideMore" aria-label="Меню чата" onClick={()=>setOpenMenu(openMenu===`chat:${item.id}`?null:`chat:${item.id}`)}><Icon name="more"/></button>{openMenu===`chat:${item.id}`&&<div className="contextMenu"><button onClick={()=>void askRename(item.id,item.title)}><Icon name="pencil"/>Переименовать</button><button onClick={()=>void props.onPinChat(item.id,!item.is_pinned).then(()=>setOpenMenu(null))}><Icon name="pin"/>{item.is_pinned?"Открепить":"Закрепить"}</button><div className="contextSubLabel">Папка</div><button onClick={()=>void props.onMoveChat(item.id,null).then(()=>setOpenMenu(null))}><Icon name="folder"/>Без папки</button>{folders.map(folder=><button key={folder.id} onClick={()=>void props.onMoveChat(item.id,folder.id).then(()=>setOpenMenu(null))}><Icon name="folder"/>{folder.name}</button>)}<div className="contextDivider"/><button className="danger" onClick={()=>void props.onDeleteChat(item.id).then(()=>setOpenMenu(null))}><Icon name="trash"/>Удалить</button></div>}</div>;
+ const ChatRow=({item}:{item:ConversationSummary})=><div className={`sideRow ${item.id===activeId?"active":""} ${runningIds.has(item.id)?"running":""}`}><button className="sideRowMain" onClick={()=>props.onSelect(item.id)} title={runningIds.has(item.id)?`${item.title} · ответ формируется`:item.title}>{item.is_pinned&&<Icon name="pin" size={13}/>}<span>{item.title||"Новый чат"}</span></button><button className="sideMore" aria-label="Меню чата" onClick={()=>setOpenMenu(openMenu===`chat:${item.id}`?null:`chat:${item.id}`)}><Icon name="more"/></button>{openMenu===`chat:${item.id}`&&<div className="contextMenu"><button onClick={()=>void askRename(item.id,item.title)}><Icon name="pencil"/>Переименовать</button><button onClick={()=>void props.onPinChat(item.id,!item.is_pinned).then(()=>setOpenMenu(null))}><Icon name="pin"/>{item.is_pinned?"Открепить":"Закрепить"}</button><div className="contextSubLabel">Папка</div><button onClick={()=>void props.onMoveChat(item.id,null).then(()=>setOpenMenu(null))}><Icon name="folder"/>Без папки</button>{folders.map(folder=><button key={folder.id} onClick={()=>void props.onMoveChat(item.id,folder.id).then(()=>setOpenMenu(null))}><Icon name="folder"/>{folder.name}</button>)}<div className="contextDivider"/><button className="danger" onClick={()=>void props.onDeleteChat(item.id).then(()=>setOpenMenu(null))}><Icon name="trash"/>Удалить</button></div>}</div>;
  return <aside className={`workspaceSidebar ${collapsed?"collapsed":""}`}>
   <div className="sideTop"><button className="iconButton" onClick={props.onToggle} aria-label={collapsed?"Развернуть панель":"Скрыть панель"}><Icon name="panel"/></button>{!collapsed&&<Link className="workspaceBrand" href="/">AI Workspace</Link>}</div>
   <button className="newChatButton" onClick={props.onCreate}><Icon name="plus"/><span>Новый чат</span></button>
