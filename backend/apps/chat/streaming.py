@@ -30,6 +30,7 @@ from .attachments import attachment_metadata, resolve_chat_attachments
 from .branches import ensure_active_branch
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
+from .partial_billing import settle_delivered_partial
 from .vision import attach_vision_to_messages, resolve_vision_assets, vision_metadata
 from .web_context import enrich_snapshot_with_web
 
@@ -543,15 +544,21 @@ def run(generation, *, adapter=None):
             },
         )
     except GeneratorExit:
-        release(generation.reservation_id)
+        try:
+            partial_charge = settle_delivered_partial(generation, full_text)
+        except Exception:
+            logger.exception("Partial settlement failed for cancelled generation id=%s", generation.id)
+            release(generation.reservation_id)
+            partial_charge = 0
         assistant.content = full_text
         assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
         assistant.save(update_fields=["content", "status"])
         _index_history(assistant)
         generation.state = Generation.State.CANCELLED
         generation.error_code = "client_cancelled"
+        generation.actual_cost_rub = partial_charge
         generation.completed_at = timezone.now()
-        generation.save(update_fields=["state", "error_code", "completed_at"])
+        generation.save(update_fields=["state", "error_code", "actual_cost_rub", "completed_at"])
         return
     except Exception as exc:
         release(generation.reservation_id)
