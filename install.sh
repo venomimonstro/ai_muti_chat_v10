@@ -147,9 +147,10 @@ if [[ "${RESUME}" != true ]]; then
     printf 'RAG_SEMANTIC_MODEL=intfloat/multilingual-e5-small\nRAG_VECTOR_WEIGHT=0.65\nRAG_LEXICAL_WEIGHT=0.35\n'
     printf 'WEB_SEARCH_BASE_URL=\nWEB_TOOL_TIMEOUT_SECONDS=12\nWEB_SEARCH_MAX_RESULTS=8\n'
     printf 'COMPARE_ENABLED=true\nCOMPARE_MAX_MODELS=4\nCOMPARE_MAX_OUTPUT_TOKENS=1024\nCOMPARE_CONFIRM_THRESHOLD_RUB=20.00\n'
-    printf 'IMAGES_ENABLED=true\nIMAGE_CONFIRM_THRESHOLD_RUB=20.00\n'
+    printf 'IMAGES_ENABLED=true\nIMAGE_MAX_PROMPT_CHARS=4000\nIMAGE_MAX_RESULT_BYTES=20971520\nIMAGE_CONFIRM_THRESHOLD_RUB=20.00\n'
+    printf 'OPENAI_IMAGE_MODEL=\nOPENAI_IMAGE_PRICE_RUB=\nOPENAI_IMAGE_SIZES=1024x1024\nOPENAI_IMAGE_QUALITIES=standard\nOPENAI_IMAGE_MAX_IMAGES=1\nOPENAI_IMAGE_MARKUP_PERCENT=100\n'
     printf 'B2B_API_ENABLED=true\nB2B_API_MAX_OUTPUT_TOKENS=4096\nB2B_API_MAX_MESSAGE_CHARS=100000\nB2B_API_RUNNING_TIMEOUT_SECONDS=600\nB2B_TRUST_PROXY_IP_HEADER=true\n'
-    printf 'API_ANON_RATE=60/min\nAPI_USER_RATE=300/min\nAPI_LOGIN_RATE=10/min\nAPI_REGISTER_RATE=5/hour\n'
+    printf 'API_ANON_RATE=60/min\nAPI_USER_RATE=300/min\nAPI_LOGIN_RATE=10/min\nAPI_REGISTER_RATE=5/hour\nAPI_CLIENT_ERROR_RATE=10/min\n'
     printf 'PAYMENTS_ENABLED=false\nPAYMENTS_LIVE_ENABLED=false\nPAYMENT_RECONCILIATION_MAX_AGE_SECONDS=86400\n'
     printf 'PAYMENT_RETURN_URL=https://%s/app/wallet/return\n' "${APP_DOMAIN}"
     printf 'YOOKASSA_SHOP_ID=\nYOOKASSA_SECRET_KEY=\nYOOKASSA_API_BASE_URL=https://api.yookassa.ru/v3\n'
@@ -171,6 +172,7 @@ compose run --rm backend python manage.py check --fail-level ERROR
 compose run --rm backend python manage.py collectstatic --noinput
 printf '[5/7] Начальная конфигурация каталога и администратора...\n'
 compose run --rm backend python manage.py bootstrap_catalog
+compose run --rm backend python manage.py bootstrap_optional_features
 compose run --rm -e "AIWORKSPACE_ADMIN_PASSWORD=${ADMIN_PASSWORD}" backend python manage.py bootstrap_admin --username "${ADMIN_USERNAME}" --email "${ADMIN_EMAIL}" --reset-password
 printf '[6/7] Запуск приложения...\n'
 compose up -d --remove-orphans
@@ -198,5 +200,6 @@ else
   exit 1
 fi
 
-printf '\nДо коммерческого запуска заполните SMTP, реквизиты продавца, AI API-ключи, модели и себестоимость, YooKassa, web-search при необходимости, включите MFA и закройте юридические проверки/drills.\n'
+printf '\nДо коммерческого запуска заполните SMTP, реквизиты продавца, AI API-ключи, модели и себестоимость, image-модель, YooKassa, WEB_SEARCH_BASE_URL, включите MFA и закройте юридические проверки/drills.\n'
 printf 'После изменения AI-моделей/цен повторите: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py bootstrap_catalog\n'
+printf 'После настройки image-модели повторите: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py bootstrap_optional_features\n'
