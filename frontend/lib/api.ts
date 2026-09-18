@@ -68,6 +68,7 @@ type PendingStream = {
   idempotencyKey: string;
   createdAt: number;
   confirmedCost?: boolean;
+  confirmedMaxRub?: string;
 };
 type ChatCostPreview = {
   estimated_min_rub: string;
@@ -135,8 +136,8 @@ function formatRub(value: string | number) {
 function askCostConfirmation(maximum: string) {
   if (typeof window === "undefined") return false;
   return window.confirm(
-    `Максимальная расчётная стоимость этого запроса — до ${formatRub(maximum)} ₽.\n\n` +
-      "Фактически будет списано только за выполненный запрос. Продолжить?",
+    `Максимальная подтверждаемая стоимость этого запроса — ${formatRub(maximum)} ₽.\n\n` +
+      "Сервис не запустит модель, если фактический preflight окажется дороже. Продолжить?",
   );
 }
 
@@ -169,6 +170,7 @@ export async function streamMessage(
         throw new ApiError("Запрос отменён до списания средств", 499);
       }
       pending.confirmedCost = true;
+      pending.confirmedMaxRub = preview.estimated_max_rub;
     }
   }
   writePending(conversationId, pending);
@@ -184,7 +186,13 @@ export async function streamMessage(
         "Idempotency-Key": pending.idempotencyKey,
         "X-CSRFToken": csrfToken,
       },
-      body: JSON.stringify({...pending.payload, confirm_cost: confirmCost}),
+      body: JSON.stringify({
+        ...pending.payload,
+        confirm_cost: confirmCost,
+        ...(confirmCost && pending.confirmedMaxRub
+          ? {confirmed_max_rub: pending.confirmedMaxRub}
+          : {}),
+      }),
     });
 
   await ensureCsrf();
@@ -202,8 +210,15 @@ export async function streamMessage(
         throw new ApiError("Запрос отменён до списания средств", 499);
       }
       pending.confirmedCost = true;
+      pending.confirmedMaxRub = details.estimated_max_rub;
       writePending(conversationId, pending);
       response = await send(true);
+    } else if (details?.code === "cost_confirmation_changed") {
+      clearPending(conversationId);
+      throw new ApiError(
+        `Стоимость контекста изменилась до ${formatRub(details.estimated_max_rub)} ₽. Деньги не списаны — отправьте запрос ещё раз для нового подтверждения.`,
+        409,
+      );
     }
   }
 
