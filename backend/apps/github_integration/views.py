@@ -13,6 +13,7 @@ from .services import (
     exchange_user_code,
     install_url,
     list_repositories,
+    list_repository_directory,
     read_repository_file,
     verified_installation,
     write_repository_file,
@@ -116,7 +117,7 @@ class GitHubRepositoryListView(APIView):
             raise NotFound("GitHub installation не найдена")
         try:
             repositories = list_repositories(installation.installation_id)
-        except (DjangoValidationError, ImproperlyConfigured) as exc:
+        except (DjangoValidationError, ImproperConfigured) as exc:
             raise ValidationError(str(exc)) from exc
         return Response([
             {
@@ -202,6 +203,27 @@ class GitHubProjectBindingView(APIView):
             metadata={"write_enabled": binding.write_enabled},
         )
         return Response({"write_enabled": binding.write_enabled})
+
+
+class GitHubDirectoryView(APIView):
+    def get(self, request, project_id):
+        binding = _binding_for(request.user, project_id)
+        path = request.query_params.get("path", "")
+        ref = request.query_params.get("ref") or None
+        try:
+            payload = list_repository_directory(binding, path, ref=ref)
+        except (DjangoValidationError, ImproperlyConfigured) as exc:
+            raise ValidationError(str(exc)) from exc
+        GitHubOperationLog.objects.create(
+            actor=request.user,
+            binding=binding,
+            action="list_directory",
+            path=payload["path"],
+            branch=payload["ref"],
+            success=True,
+            metadata={"items": len(payload["items"])},
+        )
+        return Response(payload)
 
 
 class GitHubFileView(APIView):
