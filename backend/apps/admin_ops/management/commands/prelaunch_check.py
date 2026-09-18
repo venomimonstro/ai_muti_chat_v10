@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -12,6 +13,14 @@ from apps.accounts.models import User, UserSecurityProfile
 from apps.admin_ops.compliance_manifest import required_compliance_keys
 from apps.admin_ops.models import BackupRecord, ComplianceSignoff, ReleaseRecord
 from apps.ai_registry.models import Provider
+
+
+def _positive_money_env(name, default):
+    try:
+        value = Decimal(os.getenv(name, default))
+    except (InvalidOperation, TypeError):
+        return None
+    return value if value > 0 else None
 
 
 class Command(BaseCommand):
@@ -90,6 +99,20 @@ class Command(BaseCommand):
             and mfa_encryption_key != settings.SECRET_KEY
             and mfa_recovery_pepper != settings.SECRET_KEY
         )
+        single_cap = _positive_money_env("CONSUMER_MAX_SINGLE_REQUEST_RUB", "5000")
+        daily_cap = _positive_money_env("CONSUMER_MAX_DAILY_SPEND_RUB", "20000")
+        monthly_cap = _positive_money_env("CONSUMER_MAX_MONTHLY_SPEND_RUB", "100000")
+        try:
+            chat_confirmation = Decimal(str(settings.CHAT_CONFIRM_THRESHOLD_RUB))
+        except (InvalidOperation, TypeError):
+            chat_confirmation = Decimal("0")
+        spend_guards_ready = (
+            single_cap is not None
+            and daily_cap is not None
+            and monthly_cap is not None
+            and single_cap <= daily_cap <= monthly_cap
+            and chat_confirmation > 0
+        )
         return [
             self._check("debug_disabled", not settings.DEBUG, "DJANGO_DEBUG=false"),
             self._check(
@@ -126,6 +149,14 @@ class Command(BaseCommand):
                 "admin_mfa_enforced",
                 settings.ADMIN_MFA_ENFORCED,
                 "ADMIN_MFA_ENFORCED=true",
+            ),
+            self._check(
+                "consumer_spend_guards",
+                spend_guards_ready,
+                (
+                    f"single={single_cap}, daily={daily_cap}, monthly={monthly_cap}, "
+                    f"chat_confirm={chat_confirmation}"
+                ),
             ),
             self._check(
                 "payments_fiscalization",
