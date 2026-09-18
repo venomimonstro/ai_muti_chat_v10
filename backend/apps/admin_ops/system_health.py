@@ -1,7 +1,10 @@
 import hashlib
+import json
 import logging
+import os
 import traceback
 from datetime import timedelta
+from pathlib import Path
 
 from django.core.cache import cache
 from django.db.models import Count
@@ -17,6 +20,7 @@ INDEX_KEY = "system_issues:index:v1"
 ISSUE_PREFIX = "system_issues:item:v1:"
 MAX_ISSUES = 500
 TTL_SECONDS = 60 * 60 * 24 * 30
+LOG_FILE = Path(os.getenv("SYSTEM_ISSUE_LOG_FILE", "/app/logs/system_issues.jsonl"))
 
 
 def _fingerprint(*, exception_type: str, path: str, summary: str) -> str:
@@ -31,6 +35,15 @@ def _issue_key(fingerprint: str) -> str:
 def _safe_user_id(request):
     user = getattr(request, "user", None)
     return str(user.id) if user is not None and user.is_authenticated else None
+
+
+def _append_jsonl(issue):
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(issue, ensure_ascii=False, default=str) + "\n")
+    except OSError:
+        logger.exception("Не удалось записать системную ошибку в persistent-журнал")
 
 
 def record_exception(request, exc: Exception):
@@ -55,7 +68,9 @@ def record_exception(request, exc: Exception):
         "last_seen_at": now,
         "occurrences": int(current.get("occurrences", 0)) + 1,
         "resolution_note": current.get("resolution_note", ""),
-        "sample_traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-8000:],
+        "sample_traceback": "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )[-8000:],
     }
     cache.set(key, issue, timeout=TTL_SECONDS)
     index = list(cache.get(INDEX_KEY) or [])
@@ -63,11 +78,14 @@ def record_exception(request, exc: Exception):
         index.remove(fingerprint)
     index.insert(0, fingerprint)
     cache.set(INDEX_KEY, index[:MAX_ISSUES], timeout=TTL_SECONDS)
-    logger.exception(
-        "Системная ошибка fingerprint=%s correlation_id=%s path=%s",
+    _append_jsonl(issue)
+    logger.error(
+        "Системная ошибка fingerprint=%s correlation_id=%s path=%s type=%s summary=%s",
         fingerprint,
         issue["correlation_id"],
         path,
+        exception_type,
+        summary[:300],
     )
     return issue
 
@@ -105,6 +123,7 @@ def update_issue(fingerprint: str, *, status: str, resolution_note: str = ""):
     issue["resolution_note"] = resolution_note[:2000]
     issue["updated_at"] = timezone.now().isoformat()
     cache.set(key, issue, timeout=TTL_SECONDS)
+    _append_jsonl({**issue, "event": "status_changed"})
     return issue
 
 
@@ -121,9 +140,9 @@ def system_analysis():
     open_issues = list_issues(status="open", limit=MAX_ISSUES)
     investigating = list_issues(status="investigating", limit=MAX_ISSUES)
     unhealthy = list(
-        Provider.objects.exclude(health_state=Provider.HealthState.HEALTHY).values(
-            "slug", "name", "health_state", "last_latency_ms", "last_checked_at"
-        )
+        Provider.objects.filter(enabled=True).exclude(
+            health_state=Provider.HealthState.HEALTHY
+        ).values("slug", "name", "health_state", "last_latency_ms", "last_checked_at")
     )
     payment_failures = Payment.objects.filter(
         created_at__gte=day, status=Payment.Status.CANCELED
