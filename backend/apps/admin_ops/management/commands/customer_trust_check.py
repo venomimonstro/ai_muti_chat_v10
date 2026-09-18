@@ -4,6 +4,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Count, F
 from django.utils import timezone
 
 from apps.accounts.models import SupportRequest
@@ -94,10 +95,33 @@ class Command(BaseCommand):
             state=ImageGeneration.State.FAILED,
             reservation__state=BalanceReservation.State.ACTIVE,
         ).count()
+        completed_images = ImageGeneration.objects.filter(
+            state=ImageGeneration.State.COMPLETED
+        ).annotate(stored_images=Count("images"))
+        completed_images_without_output = completed_images.filter(
+            actual_count__lte=0
+        ).count()
+        completed_images_without_output += completed_images.filter(
+            stored_images=0
+        ).exclude(actual_count__lte=0).count()
+        completed_images_count_mismatch = completed_images.exclude(
+            stored_images=F("actual_count")
+        ).count()
+        completed_images_without_cost_record = completed_images.filter(
+            actual_cost_rub__isnull=True
+        ).count()
         if failed_images_charged:
             blockers.append(f"failed_images_were_charged={failed_images_charged}")
         if failed_images_reserved:
             blockers.append(f"failed_images_have_active_reservation={failed_images_reserved}")
+        if completed_images_without_output:
+            blockers.append(f"completed_images_without_output={completed_images_without_output}")
+        if completed_images_count_mismatch:
+            blockers.append(f"completed_image_asset_count_mismatch={completed_images_count_mismatch}")
+        if completed_images_without_cost_record:
+            blockers.append(
+                f"completed_images_without_cost_record={completed_images_without_cost_record}"
+            )
 
         failed_compare_charged = CompareRun.objects.filter(
             state=CompareRun.State.FAILED,
