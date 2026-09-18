@@ -5,6 +5,7 @@ from datetime import timedelta
 from celery import shared_task
 from django.core.cache import cache
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.utils import timezone
 
 from apps.accounts.models import Notification, SupportRequest, User
@@ -30,6 +31,50 @@ def recover_stale_operations_task():
 def detect_abuse_task():
     output = io.StringIO()
     call_command("detect_abuse", stdout=output)
+    return output.getvalue().strip()
+
+
+def _notify_platform_admins(*, dedupe_key, title, body, action_url, level=Notification.Level.WARNING):
+    created = 0
+    admins = User.objects.filter(
+        role=User.Role.PLATFORM_ADMIN,
+        status=User.Status.ACTIVE,
+    ).only("id")
+    for admin in admins.iterator():
+        _item, was_created = Notification.objects.get_or_create(
+            user=admin,
+            dedupe_key=dedupe_key,
+            defaults={
+                "title": title,
+                "body": body,
+                "level": level,
+                "action_url": action_url,
+            },
+        )
+        created += int(was_created)
+    return created
+
+
+@shared_task
+def economic_safety_watch_task():
+    output = io.StringIO()
+    try:
+        call_command("economic_safety_check", stdout=output)
+    except CommandError as exc:
+        bucket = timezone.now().strftime("%Y-%m-%d-%H")
+        _notify_platform_admins(
+            dedupe_key=f"economic-safety:{bucket}",
+            title="Критическая проверка экономики не пройдена",
+            body=(
+                "Обнаружен риск отрицательного баланса, зависших резервов, "
+                "убыточного провайдера или неограниченного API. "
+                "Новые расходы необходимо проверить немедленно."
+            ),
+            action_url="/admin-console/finance",
+            level=Notification.Level.WARNING,
+        )
+        # Повторно поднимаем исключение: общий task_failure-контур зарегистрирует SystemIssue.
+        raise RuntimeError(f"economic_safety_check failed: {exc}") from exc
     return output.getvalue().strip()
 
 
