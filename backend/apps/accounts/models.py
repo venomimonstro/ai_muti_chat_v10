@@ -127,6 +127,15 @@ class SupportRequest(models.Model):
     category = models.CharField(max_length=20, choices=Category.choices, default=Category.OTHER)
     message = models.TextField()
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
+    admin_reply = models.TextField(blank=True)
+    replied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="support_replies",
+    )
+    replied_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
