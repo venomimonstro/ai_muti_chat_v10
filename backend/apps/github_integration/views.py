@@ -54,22 +54,38 @@ class GitHubCallbackView(APIView):
         if payload.get("user_id") != str(request.user.id):
             raise ValidationError("GitHub state belongs to another user")
         try:
+            normalized_installation_id = int(installation_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("GitHub installation id is invalid") from exc
+        existing = GitHubInstallation.objects.filter(installation_id=normalized_installation_id).first()
+        if existing is not None and existing.owner_id != request.user.id:
+            raise ValidationError("Эта GitHub installation уже привязана к другому аккаунту сервиса")
+        try:
             user_token = exchange_user_code(code)
-            installation = verified_installation(user_token, installation_id)
+            installation = verified_installation(user_token, normalized_installation_id)
         except (DjangoValidationError, ImproperlyConfigured) as exc:
             raise ValidationError(str(exc)) from exc
         account = installation.get("account") or {}
-        record, _ = GitHubInstallation.objects.update_or_create(
-            installation_id=int(installation_id),
-            defaults={
-                "owner": request.user,
-                "account_login": str(account.get("login") or "")[:255],
-                "account_type": str(account.get("type") or "")[:40],
-                "repository_selection": str(installation.get("repository_selection") or "")[:24],
-                "permissions": installation.get("permissions") or {},
-                "active": True,
-            },
-        )
+        if existing is None:
+            record = GitHubInstallation.objects.create(
+                installation_id=normalized_installation_id,
+                owner=request.user,
+                account_login=str(account.get("login") or "")[:255],
+                account_type=str(account.get("type") or "")[:40],
+                repository_selection=str(installation.get("repository_selection") or "")[:24],
+                permissions=installation.get("permissions") or {},
+                active=True,
+            )
+        else:
+            record = existing
+            record.account_login = str(account.get("login") or "")[:255]
+            record.account_type = str(account.get("type") or "")[:40]
+            record.repository_selection = str(installation.get("repository_selection") or "")[:24]
+            record.permissions = installation.get("permissions") or {}
+            record.active = True
+            record.save(update_fields=[
+                "account_login", "account_type", "repository_selection", "permissions", "active", "updated_at"
+            ])
         return Response({
             "connected": True,
             "installation": str(record.id),
