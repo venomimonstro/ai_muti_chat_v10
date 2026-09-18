@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Count
 from django.utils.dateparse import parse_datetime
 from rest_framework import serializers, status, viewsets
 from rest_framework.response import Response
@@ -19,14 +20,17 @@ class ConversationFolderSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "conversation_count", "created_at", "updated_at")
 
     def get_conversation_count(self, obj):
-        return obj.conversation_states.count()
+        annotated = getattr(obj, "conversation_count_value", None)
+        return annotated if annotated is not None else obj.conversation_states.count()
 
 
 class ConversationFolderViewSet(viewsets.ModelViewSet):
     serializer_class = ConversationFolderSerializer
 
     def get_queryset(self):
-        return ConversationFolder.objects.filter(owner=self.request.user)
+        return ConversationFolder.objects.filter(owner=self.request.user).annotate(
+            conversation_count_value=Count("conversation_states")
+        )
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
@@ -41,7 +45,6 @@ class ConversationSummaryListView(APIView):
         rows = (
             Conversation.objects.filter(owner=request.user)
             .select_related("ui_state")
-            .only("id", "title", "routing_mode", "selected_model", "project_id", "updated_at", "created_at")
             .order_by("-updated_at")[:limit]
         )
         result = []
