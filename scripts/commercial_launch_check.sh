@@ -17,7 +17,7 @@ compose(){ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"; }
 
 printf 'Running immutable release gate...\n'
 set +e
-"${PROJECT_DIR}/scripts/release_check.sh" >"${RELEASE_LOG}.tmp" 2>&1
+bash "${PROJECT_DIR}/scripts/release_check.sh" >"${RELEASE_LOG}.tmp" 2>&1
 RELEASE_STATUS=$?
 set -e
 mv "${RELEASE_LOG}.tmp" "${RELEASE_LOG}"
