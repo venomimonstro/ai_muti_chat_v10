@@ -26,7 +26,8 @@ run_check "Redis отвечает" compose exec -T redis sh -lc 'redis-cli -a "$
 run_check "Django system check" compose exec -T backend python manage.py check --fail-level ERROR
 run_check "Миграции применены" compose exec -T backend python manage.py migrate --check
 run_check "Backend readiness" compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
-run_check "Celery worker отвечает" compose exec -T worker celery -A config inspect ping --timeout=5
+run_check "Celery worker отвечает" compose exec -T worker sh -lc 'celery -A config inspect ping --timeout=5 | grep -qi pong'
+run_check "Системный анализ выполняется" compose exec -T backend python manage.py system_health_check --json
 
 APP_DOMAIN="$(sed -n 's/^APP_DOMAIN=//p' "${ENV_FILE}" | head -n1)"
 if [[ -n "${APP_DOMAIN}" ]]; then
