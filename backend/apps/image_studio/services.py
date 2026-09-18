@@ -19,12 +19,7 @@ from .validation import validate_generated_image
 
 
 def provider_unit_price(model, size, quality):
-    """Return reviewed provider cost for an exact image variant.
-
-    A legacy scalar price is accepted only while the model exposes exactly one size and one
-    quality. As soon as the operator enables multiple variants every combination must be
-    explicitly priced, otherwise generation fails before a provider request is made.
-    """
+    """Return reviewed provider cost for an exact image variant."""
     matrix = model.provider_price_matrix or {}
     key = f"{size}|{quality}"
     raw = matrix.get(key)
@@ -139,46 +134,23 @@ def preview(*, model_slug, prompt, size, quality, count):
 
 
 def prepare_generation(
-    *,
-    user,
-    model_slug,
-    prompt,
-    size,
-    quality,
-    count,
-    idempotency_key,
-    confirmed=False,
-    conversation=None,
-    deferred=False,
+    *, user, model_slug, prompt, size, quality, count, idempotency_key,
+    confirmed=False, conversation=None, deferred=False,
 ):
     if conversation is not None and conversation.owner_id != user.id:
         raise ValidationError("Чат не найден или недоступен")
     if not idempotency_key or len(idempotency_key) > 160:
         raise ValidationError("Корректный Idempotency-Key обязателен")
-    existing = (
-        ImageGeneration.objects.filter(owner=user, idempotency_key=idempotency_key)
-        .select_related("model")
-        .first()
-    )
+    existing = ImageGeneration.objects.filter(
+        owner=user, idempotency_key=idempotency_key
+    ).select_related("model").first()
     if existing:
-        return (
-            _validate_existing(
-                existing,
-                model_slug=model_slug,
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                count=count,
-                conversation=conversation,
-            ),
-            False,
-        )
+        return _validate_existing(
+            existing, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
+            count=count, conversation=conversation,
+        ), False
     model, value, prompt, count = preview(
-        model_slug=model_slug,
-        prompt=prompt,
-        size=size,
-        quality=quality,
-        count=count,
+        model_slug=model_slug, prompt=prompt, size=size, quality=quality, count=count,
     )
     unit_price = provider_unit_price(model, size, quality)
     if value.user_charge_rub >= Decimal(str(settings.IMAGE_CONFIRM_THRESHOLD_RUB)) and not confirmed:
@@ -197,17 +169,11 @@ def prepare_generation(
     try:
         with transaction.atomic():
             generation = ImageGeneration.objects.create(
-                owner=user,
-                conversation=conversation,
-                model=model,
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                requested_count=count,
-                idempotency_key=idempotency_key,
-                price_snapshot=snapshot,
+                owner=user, conversation=conversation, model=model, prompt=prompt,
+                size=size, quality=quality, requested_count=count,
+                idempotency_key=idempotency_key, price_snapshot=snapshot,
                 estimated_cost_rub=value.user_charge_rub,
-                state=(ImageGeneration.State.QUEUED if deferred else ImageGeneration.State.RUNNING),
+                state=ImageGeneration.State.QUEUED if deferred else ImageGeneration.State.RUNNING,
             )
             reservation = reserve(user, value.user_charge_rub, f"image:{generation.id}")
             generation.reservation = reservation
@@ -215,27 +181,17 @@ def prepare_generation(
             return generation, True
     except IntegrityError:
         raced = ImageGeneration.objects.select_related("model").get(
-            owner=user,
-            idempotency_key=idempotency_key,
+            owner=user, idempotency_key=idempotency_key
         )
-        return (
-            _validate_existing(
-                raced,
-                model_slug=model_slug,
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                count=count,
-                conversation=conversation,
-            ),
-            False,
-        )
+        return _validate_existing(
+            raced, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
+            count=count, conversation=conversation,
+        ), False
 
 
 def _claim_queued_generation(generation):
     claimed = ImageGeneration.objects.filter(
-        pk=generation.pk,
-        state=ImageGeneration.State.QUEUED,
+        pk=generation.pk, state=ImageGeneration.State.QUEUED
     ).update(state=ImageGeneration.State.RUNNING)
     if claimed:
         generation.state = ImageGeneration.State.RUNNING
@@ -246,13 +202,8 @@ def _claim_queued_generation(generation):
 
 def fail_queued_generation(generation, code="queue_unavailable"):
     failed = ImageGeneration.objects.filter(
-        pk=generation.pk,
-        state=ImageGeneration.State.QUEUED,
-    ).update(
-        state=ImageGeneration.State.FAILED,
-        error_code=code,
-        completed_at=timezone.now(),
-    )
+        pk=generation.pk, state=ImageGeneration.State.QUEUED
+    ).update(state=ImageGeneration.State.FAILED, error_code=code, completed_at=timezone.now())
     if failed and generation.reservation_id:
         release(generation.reservation_id)
     generation.refresh_from_db()
@@ -261,9 +212,7 @@ def fail_queued_generation(generation, code="queue_unavailable"):
 
 def execute_generation(generation, *, adapter=None, claim_queued=True):
     generation = ImageGeneration.objects.select_related(
-        "model",
-        "model__provider",
-        "reservation",
+        "model", "model__provider", "reservation"
     ).get(pk=generation.pk)
     if generation.state in {ImageGeneration.State.COMPLETED, ImageGeneration.State.FAILED}:
         return generation
@@ -283,15 +232,17 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
             quality=generation.quality,
             count=generation.requested_count,
         )
-        if not result.images:
-            raise ImageProviderError("Invalid number of images", code="invalid_response")
-        if len(result.images) > generation.requested_count:
-            _trip_image_provider(
-                model=model,
-                generation=generation,
-                reason="provider_returned_more_images_than_requested",
+        if len(result.images) != generation.requested_count:
+            if len(result.images) > generation.requested_count:
+                _trip_image_provider(
+                    model=model,
+                    generation=generation,
+                    reason="provider_returned_more_images_than_requested",
+                )
+            raise ImageProviderError(
+                "Provider returned a partial or invalid image count",
+                code="image_count_mismatch",
             )
-            raise ImageProviderError("Invalid number of images", code="invalid_response")
         validated_images = []
         for item in result.images:
             mime = _detect_mime(item.content)
@@ -300,11 +251,7 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
             validate_generated_image(item.content)
             validated_images.append((item, mime))
         for position, (item, mime) in enumerate(validated_images):
-            extension = {
-                "image/png": "png",
-                "image/jpeg": "jpg",
-                "image/webp": "webp",
-            }[mime]
+            extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime]
             image = GeneratedImage(
                 generation=generation,
                 position=position,
@@ -319,11 +266,9 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
         provider_cost, charge, _profit, _margin = calculate_flat_from_snapshot(native, snapshot)
         if charge > generation.reservation.amount_rub:
             _trip_image_provider(
-                model=model,
-                generation=generation,
+                model=model, generation=generation,
                 reason="image_charge_exceeded_reserved_maximum",
-                expected=generation.reservation.amount_rub,
-                actual=charge,
+                expected=generation.reservation.amount_rub, actual=charge,
             )
             raise ValidationError("Фактическая стоимость изображения превысила зарезервированный максимум")
         with transaction.atomic():
@@ -334,16 +279,10 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
             generation.provider_cost_rub = provider_cost
             generation.actual_cost_rub = charge
             generation.completed_at = timezone.now()
-            generation.save(
-                update_fields=[
-                    "state",
-                    "actual_count",
-                    "provider_request_id",
-                    "provider_cost_rub",
-                    "actual_cost_rub",
-                    "completed_at",
-                ]
-            )
+            generation.save(update_fields=[
+                "state", "actual_count", "provider_request_id", "provider_cost_rub",
+                "actual_cost_rub", "completed_at",
+            ])
     except Exception as exc:
         if generation.reservation_id:
             release(generation.reservation_id)
@@ -355,38 +294,18 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
         generation.completed_at = timezone.now()
         generation.save(update_fields=["state", "error_code", "completed_at"])
         if isinstance(exc, ImageProviderError):
-            record_image_quality_failure(
-                model=model,
-                generation=generation,
-                code=exc.code,
-            )
+            record_image_quality_failure(model=model, generation=generation, code=exc.code)
     return generation
 
 
 def generate(
-    *,
-    user,
-    model_slug,
-    prompt,
-    size,
-    quality,
-    count,
-    idempotency_key,
-    confirmed=False,
-    adapter=None,
-    conversation=None,
+    *, user, model_slug, prompt, size, quality, count, idempotency_key,
+    confirmed=False, adapter=None, conversation=None,
 ):
     generation, created = prepare_generation(
-        user=user,
-        model_slug=model_slug,
-        prompt=prompt,
-        size=size,
-        quality=quality,
-        count=count,
-        idempotency_key=idempotency_key,
-        confirmed=confirmed,
-        conversation=conversation,
-        deferred=False,
+        user=user, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
+        count=count, idempotency_key=idempotency_key, confirmed=confirmed,
+        conversation=conversation, deferred=False,
     )
     if not created:
         return generation
