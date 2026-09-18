@@ -4,12 +4,16 @@ from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.chat.models import Conversation
+from apps.b2b_api.models import APIKey, OrganizationMembership
+from apps.billing.models import LedgerEntry, Wallet
+from apps.chat.models import Conversation, Message
 from apps.files.models import FileAsset
-from apps.payments.models import Payment
+from apps.image_studio.models import ImageGeneration
+from apps.memory_store.models import MemoryItem
+from apps.payments.models import Payment, Refund
 from apps.projects.models import Project
 
-from .models import User, UserPreference
+from .models import Notification, SupportRequest, User, UserPreference
 
 
 def _revoke_user_sessions(user_id: str):
@@ -25,6 +29,88 @@ class AccountExportView(APIView):
     def get(self, request):
         user = request.user
         preference = UserPreference.objects.filter(user=user).values().first()
+        conversations = list(
+            Conversation.objects.filter(owner=user)
+            .order_by("created_at")
+            .values(
+                "id",
+                "title",
+                "routing_mode",
+                "selected_model",
+                "project_id",
+                "memory_enabled",
+                "created_at",
+                "updated_at",
+            )
+        )
+        messages = list(
+            Message.objects.filter(conversation__owner=user)
+            .order_by("created_at")
+            .values(
+                "id",
+                "conversation_id",
+                "branch_id",
+                "role",
+                "content",
+                "status",
+                "created_at",
+            )
+        )
+        memberships = list(
+            OrganizationMembership.objects.filter(user=user)
+            .select_related("organization")
+            .order_by("created_at")
+            .values(
+                "organization_id",
+                "organization__name",
+                "organization__slug",
+                "role",
+                "status",
+                "created_at",
+            )
+        )
+        # Export API-key metadata only. Bearer secrets and secret hashes are deliberately excluded.
+        api_keys = list(
+            APIKey.objects.filter(created_by=user)
+            .order_by("created_at")
+            .values(
+                "id",
+                "organization_id",
+                "name",
+                "prefix",
+                "scopes",
+                "allowed_models",
+                "allowed_endpoints",
+                "monthly_limit_rub",
+                "rate_limit_per_minute",
+                "max_concurrency",
+                "ip_allowlist",
+                "expires_at",
+                "revoked_at",
+                "last_used_at",
+                "created_at",
+            )
+        )
+        wallet = Wallet.objects.filter(user=user).first()
+        ledger = []
+        if wallet:
+            ledger = list(
+                LedgerEntry.objects.filter(wallet=wallet)
+                .order_by("created_at")
+                .values(
+                    "id",
+                    "kind",
+                    "amount_rub",
+                    "available_delta_rub",
+                    "reserved_delta_rub",
+                    "paid_delta_rub",
+                    "promo_delta_rub",
+                    "available_after_rub",
+                    "reserved_after_rub",
+                    "source_type",
+                    "created_at",
+                )
+            )
         return Response(
             {
                 "generated_at": timezone.now(),
@@ -39,26 +125,134 @@ class AccountExportView(APIView):
                     "status": user.status,
                 },
                 "preferences": preference,
-                "conversations": list(
-                    Conversation.objects.filter(owner=user)
-                    .order_by("created_at")
-                    .values("id", "title", "routing_mode", "created_at", "updated_at")
-                ),
+                "conversations": conversations,
+                "messages": messages,
                 "projects": list(
                     Project.objects.filter(owner=user)
                     .order_by("created_at")
-                    .values("id", "name", "description", "created_at", "updated_at", "archived_at")
+                    .values(
+                        "id",
+                        "name",
+                        "description",
+                        "created_at",
+                        "updated_at",
+                        "archived_at",
+                    )
                 ),
                 "files": list(
                     FileAsset.objects.filter(owner=user)
                     .order_by("created_at")
-                    .values("id", "original_name", "detected_type", "size_bytes", "status", "created_at", "deleted_at")
+                    .values(
+                        "id",
+                        "project_id",
+                        "original_name",
+                        "detected_type",
+                        "size_bytes",
+                        "status",
+                        "created_at",
+                        "deleted_at",
+                    )
+                ),
+                "memory": list(
+                    MemoryItem.objects.filter(owner=user)
+                    .order_by("created_at")
+                    .values(
+                        "id",
+                        "project_id",
+                        "conversation_id",
+                        "scope",
+                        "memory_type",
+                        "content",
+                        "status",
+                        "pinned",
+                        "enabled",
+                        "created_at",
+                        "updated_at",
+                    )
+                ),
+                "image_generations": list(
+                    ImageGeneration.objects.filter(owner=user)
+                    .order_by("created_at")
+                    .values(
+                        "id",
+                        "model_id",
+                        "prompt",
+                        "size",
+                        "quality",
+                        "requested_count",
+                        "actual_count",
+                        "state",
+                        "actual_cost_rub",
+                        "created_at",
+                        "completed_at",
+                    )
                 ),
                 "payments": list(
                     Payment.objects.filter(user=user)
                     .order_by("created_at")
-                    .values("id", "amount_rub", "currency", "status", "created_at", "updated_at")
+                    .values(
+                        "id",
+                        "amount_rub",
+                        "currency",
+                        "status",
+                        "receipt_status",
+                        "credited_at",
+                        "created_at",
+                        "updated_at",
+                    )
                 ),
+                "refunds": list(
+                    Refund.objects.filter(payment__user=user)
+                    .order_by("created_at")
+                    .values(
+                        "id",
+                        "payment_id",
+                        "amount_rub",
+                        "status",
+                        "wallet_debited_at",
+                        "created_at",
+                        "updated_at",
+                    )
+                ),
+                "wallet": {
+                    "available_rub": wallet.available_rub,
+                    "reserved_rub": wallet.reserved_rub,
+                    "paid_rub": wallet.paid_rub,
+                    "promo_rub": wallet.promo_rub,
+                }
+                if wallet
+                else None,
+                "ledger": ledger,
+                "support_requests": list(
+                    SupportRequest.objects.filter(user=user)
+                    .order_by("created_at")
+                    .values(
+                        "id",
+                        "subject",
+                        "category",
+                        "message",
+                        "status",
+                        "admin_reply",
+                        "replied_at",
+                        "created_at",
+                        "updated_at",
+                    )
+                ),
+                "notifications": list(
+                    Notification.objects.filter(user=user)
+                    .order_by("created_at")
+                    .values(
+                        "id",
+                        "title",
+                        "body",
+                        "level",
+                        "action_url",
+                        "read_at",
+                        "created_at",
+                    )
+                ),
+                "organization_memberships": memberships,
+                "api_keys": api_keys,
             }
         )
 
