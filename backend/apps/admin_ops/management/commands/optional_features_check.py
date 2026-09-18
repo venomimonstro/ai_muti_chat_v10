@@ -13,6 +13,7 @@ from apps.billing.models import PriceVersion
 from apps.github_integration.services import app_jwt, configured as github_configured
 from apps.github_integration.services import integration_enabled as github_enabled
 from apps.image_studio.models import ImageModel
+from apps.image_studio.services import image_price_matrix_complete
 
 
 class Command(BaseCommand):
@@ -55,6 +56,7 @@ class Command(BaseCommand):
             compare_models = []
 
         image_models = []
+        incomplete_image_prices = []
         if settings.IMAGES_ENABLED:
             for model in ImageModel.objects.filter(
                 enabled=True,
@@ -65,10 +67,18 @@ class Command(BaseCommand):
                 credential_env = model.provider.credential_env
                 if credential_env and not os.getenv(credential_env, "").strip():
                     continue
+                if not image_price_matrix_complete(model):
+                    incomplete_image_prices.append(model.slug)
+                    continue
                 image_models.append(model.slug)
+            if incomplete_image_prices:
+                blockers.append(
+                    "Не заданы цены для всех вариантов size×quality image-моделей: "
+                    + ", ".join(sorted(incomplete_image_prices))
+                )
             if not image_models:
                 blockers.append(
-                    "Генерация изображений включена, но нет готовой активной image-модели с ключом и себестоимостью"
+                    "Генерация изображений включена, но нет готовой активной image-модели с ключом и полной себестоимостью"
                 )
 
         web_url = os.getenv("WEB_SEARCH_BASE_URL", "").strip()
@@ -112,6 +122,7 @@ class Command(BaseCommand):
             "ok": not blockers,
             "compare_models": compare_models,
             "image_models": image_models,
+            "incomplete_image_prices": incomplete_image_prices,
             "web_search_configured": web_configured,
             "web_search_probe_ok": web_probe_ok,
             "web_search_probe_results": web_probe_results,
