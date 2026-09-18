@@ -1,5 +1,6 @@
+import os
 from datetime import datetime, time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -19,7 +20,31 @@ def _period_start(*, monthly=False):
     return timezone.make_aware(datetime.combine(day, time.min))
 
 
+def _positive_env_limit(name, default):
+    try:
+        value = Decimal(os.getenv(name, default))
+    except (InvalidOperation, TypeError):
+        value = Decimal(default)
+    return value if value > 0 else None
+
+
+def _effective_limit(user_limit, system_limit):
+    if user_limit is None:
+        return system_limit
+    if system_limit is None:
+        return user_limit
+    return min(user_limit, system_limit)
+
+
 def enforce_spend_limits(wallet, next_reservation):
+    next_reservation = Decimal(next_reservation)
+    single_limit = _positive_env_limit("CONSUMER_MAX_SINGLE_REQUEST_RUB", "5000")
+    daily_system_limit = _positive_env_limit("CONSUMER_MAX_DAILY_SPEND_RUB", "20000")
+    monthly_system_limit = _positive_env_limit("CONSUMER_MAX_MONTHLY_SPEND_RUB", "100000")
+
+    if single_limit is not None and next_reservation > single_limit:
+        raise ValidationError("Запрос превышает системный лимит стоимости одной операции")
+
     preference, _ = UserPreference.objects.get_or_create(user=wallet.user)
     preference = UserPreference.objects.select_for_update().get(pk=preference.pk)
     active_reserved = (
@@ -29,9 +54,13 @@ def enforce_spend_limits(wallet, next_reservation):
         or ZERO
     )
     checks = (
-        (preference.daily_spend_limit_rub, _period_start(), "Достигнут дневной лимит расходов"),
         (
-            preference.monthly_spend_limit_rub,
+            _effective_limit(preference.daily_spend_limit_rub, daily_system_limit),
+            _period_start(),
+            "Достигнут дневной лимит расходов",
+        ),
+        (
+            _effective_limit(preference.monthly_spend_limit_rub, monthly_system_limit),
             _period_start(monthly=True),
             "Достигнут месячный лимит расходов",
         ),
