@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -35,11 +36,16 @@ class Command(BaseCommand):
             settings.PAYMENTS_FISCALIZATION_MODE,
         )
         add("vat_code", 1 <= int(settings.PAYMENTS_VAT_CODE) <= 6, str(settings.PAYMENTS_VAT_CODE))
-        add(
-            "payment_limits",
-            settings.PAYMENT_MIN_RUB > 0 and settings.PAYMENT_MAX_RUB >= settings.PAYMENT_MIN_RUB,
-            f"{settings.PAYMENT_MIN_RUB}..{settings.PAYMENT_MAX_RUB}",
-        )
+        try:
+            minimum = Decimal(str(settings.PAYMENT_MIN_RUB))
+            maximum = Decimal(str(settings.PAYMENT_MAX_RUB))
+            limits_valid = minimum > 0 and maximum >= minimum
+        except (InvalidOperation, TypeError, ValueError):
+            minimum = settings.PAYMENT_MIN_RUB
+            maximum = settings.PAYMENT_MAX_RUB
+            limits_valid = False
+        add("payment_limits", limits_valid, f"{minimum}..{maximum}")
+
         fee = (
             PaymentFeeVersion.objects.filter(
                 provider="yookassa", active=True, effective_from__lte=timezone.now()
@@ -64,9 +70,12 @@ class Command(BaseCommand):
         payload = {"checks": checks, "passed": not failed}
         if options["as_json"]:
             self.stdout.write(json.dumps(payload, ensure_ascii=False, default=str))
-        else:
-            for item in checks:
-                self.stdout.write(f"[{'PASS' if item['passed'] else 'BLOCK'}] {item['name']}: {item['detail']}")
+            if failed:
+                raise CommandError(f"Live payments blocked by {len(failed)} check(s)")
+            return
+
+        for item in checks:
+            self.stdout.write(f"[{'PASS' if item['passed'] else 'BLOCK'}] {item['name']}: {item['detail']}")
         if failed:
             raise CommandError(f"Live payments blocked by {len(failed)} check(s)")
         self.stdout.write(self.style.SUCCESS("Live payment checks passed"))
