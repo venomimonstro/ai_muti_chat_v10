@@ -17,6 +17,8 @@ MONEY_ZERO = Value(Decimal("0.0000"), output_field=MONEY_FIELD)
 class UsageSummaryView(APIView):
     def get(self, request):
         now = timezone.now()
+        local_now = timezone.localtime(now)
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         since_30 = now - timedelta(days=30)
         qs = Generation.objects.filter(
             owner=request.user,
@@ -24,8 +26,7 @@ class UsageSummaryView(APIView):
             completed_at__gte=since_30,
         )
 
-        def period(days):
-            cutoff = now - timedelta(days=days)
+        def period_from(cutoff):
             row = qs.filter(completed_at__gte=cutoff).aggregate(
                 requests=Count("id"),
                 cost=Coalesce(Sum("actual_cost_rub"), MONEY_ZERO, output_field=MONEY_FIELD),
@@ -67,9 +68,9 @@ class UsageSummaryView(APIView):
             row["cost_rub"] = str(row["cost_rub"])
         return Response(
             {
-                "today": period(1),
-                "seven_days": period(7),
-                "thirty_days": period(30),
+                "today": period_from(today_start),
+                "seven_days": period_from(now - timedelta(days=7)),
+                "thirty_days": period_from(since_30),
                 "by_model": by_model,
                 "daily": daily,
             }
