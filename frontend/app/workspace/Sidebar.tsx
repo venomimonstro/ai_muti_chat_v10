@@ -7,14 +7,14 @@ import {Icon} from "./Icons";
 import type {ConversationFolder,ConversationSummary} from "./types";
 
 type Props={
- items:ConversationSummary[];folders:ConversationFolder[];activeId:string|null;wallet:Wallet|null;collapsed:boolean;runningIds:Set<string>;
+ items:ConversationSummary[];folders:ConversationFolder[];activeId:string|null;wallet:Wallet|null;collapsed:boolean;runningIds?:Set<string>;
  onToggle:()=>void;onCreate:()=>void;onSelect:(id:string)=>void;onSearch:()=>void;
  onCreateFolder:(name:string)=>Promise<void>;onRenameFolder:(id:string,name:string)=>Promise<void>;onPinFolder:(id:string,pinned:boolean)=>Promise<void>;onDeleteFolder:(id:string)=>Promise<void>;
  onRenameChat:(id:string,title:string)=>Promise<void>;onPinChat:(id:string,pinned:boolean)=>Promise<void>;onMoveChat:(id:string,folder:string|null)=>Promise<void>;onDeleteChat:(id:string)=>Promise<void>;
 };
 
 export function Sidebar(props:Props){
- const {items,folders,activeId,wallet,collapsed,runningIds}=props;
+ const {items,folders,activeId,wallet,collapsed}=props;const runningIds=props.runningIds??new Set<string>();
  const [openMenu,setOpenMenu]=useState<string|null>(null);const [folderInput,setFolderInput]=useState(false);const [folderName,setFolderName]=useState("");
  const pinned=useMemo(()=>items.filter(x=>x.is_pinned),[items]);
  const unfiled=useMemo(()=>items.filter(x=>!x.folder&&!x.is_pinned),[items]);
