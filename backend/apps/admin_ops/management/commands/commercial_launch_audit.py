@@ -19,6 +19,7 @@ class Command(BaseCommand):
             ("payment_commercial", "payment_commercial_check", {"require_reconciliation": True}),
             ("financial_invariants", "verify_financial_invariants", {}),
             ("operational_drills", "operational_drills_check", {}),
+            ("public_legal", "public_legal_check", {}),
             ("prelaunch_strict", "prelaunch_check", {"strict": True}),
         ]
         results = []
