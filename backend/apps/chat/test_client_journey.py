@@ -105,7 +105,6 @@ def test_client_can_write_receive_organize_and_review_usage(client_journey):
     assert "event: delta" in body
     assert "event: completed" in body
     assert "Тестовый ответ:" in body
-    assert draft_text in body
 
     generation = Generation.objects.get(owner=user)
     generation.refresh_from_db()
@@ -113,6 +112,7 @@ def test_client_can_write_receive_organize_and_review_usage(client_journey):
     assert generation.state == Generation.State.COMPLETED
     assert generation.assistant_message.status == Message.Status.COMPLETED
     assert generation.assistant_message.content.startswith("Тестовый ответ:")
+    assert generation.user_message.content == draft_text
     assert generation.actual_cost_rub is not None
     assert generation.actual_cost_rub > 0
     assert user.wallet.available_rub < before_balance
