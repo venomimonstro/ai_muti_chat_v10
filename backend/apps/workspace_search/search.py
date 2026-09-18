@@ -17,6 +17,10 @@ from .embeddings import cosine_similarity, embed_history
 WORD_RE = re.compile(r"[a-zа-яё0-9]{2,}", re.IGNORECASE)
 VALID_TYPES = {"conversation", "message", "project", "file"}
 VALID_ROLES = {choice for choice, _label in Message.Role.choices}
+VISIBLE_CONVERSATION = Q(conversation__ui_state__isnull=True) | Q(
+    conversation__ui_state__deleted_at__isnull=True
+)
+VISIBLE_CONVERSATION_DIRECT = Q(ui_state__isnull=True) | Q(ui_state__deleted_at__isnull=True)
 
 
 def terms(value: str) -> set[str]:
@@ -66,7 +70,11 @@ class SearchFilters:
 
 
 def message_queryset(user, filters: SearchFilters):
-    queryset = Message.objects.filter(conversation__owner=user).select_related("conversation")
+    queryset = (
+        Message.objects.filter(conversation__owner=user)
+        .filter(VISIBLE_CONVERSATION)
+        .select_related("conversation")
+    )
     if filters.project_id:
         queryset = queryset.filter(conversation__project_id=filters.project_id)
     if filters.conversation_id:
@@ -157,7 +165,7 @@ def search_workspace(*, user, query: str, filters: SearchFilters, limit: int):
     if "message" in filters.types:
         results.extend(_message_results(user, query, filters, limit))
     if "conversation" in filters.types and not filters.role:
-        conversations = Conversation.objects.filter(owner=user)
+        conversations = Conversation.objects.filter(owner=user).filter(VISIBLE_CONVERSATION_DIRECT)
         if filters.project_id:
             conversations = conversations.filter(project_id=filters.project_id)
         if filters.conversation_id:
