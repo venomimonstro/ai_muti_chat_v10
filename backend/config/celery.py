@@ -17,6 +17,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.recover_stale_operations_task",
         "schedule": 300.0,
     },
+    "economic-safety-watch": {
+        "task": "apps.admin_ops.tasks.economic_safety_watch_task",
+        "schedule": 300.0,
+    },
     "detect-abuse-hourly": {
         "task": "apps.admin_ops.tasks.detect_abuse_task",
         "schedule": 3600.0,
