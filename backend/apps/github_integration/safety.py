@@ -55,16 +55,48 @@ def is_sensitive_path(value):
     return False
 
 
-def _request_path(request):
-    if request.method in {"GET", "HEAD"}:
-        return request.GET.get("path", "")
+def _request_json(request):
     if not request.body:
-        return ""
+        return {}
     try:
         payload = json.loads(request.body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, TypeError):
-        return ""
-    return payload.get("path", "") if isinstance(payload, dict) else ""
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _request_path(request):
+    if request.method in {"GET", "HEAD"}:
+        return request.GET.get("path", "")
+    return _request_json(request).get("path", "")
+
+
+def _organization_scope_blocked(request, kwargs):
+    from .models import GitHubInstallation, GitHubRepositoryBinding
+
+    installation_pk = kwargs.get("installation_id")
+    if installation_pk:
+        installation = GitHubInstallation.objects.filter(pk=installation_pk).only("account_type").first()
+        if installation and (installation.account_type or "").casefold() == "organization":
+            return True
+
+    project_id = kwargs.get("project_id")
+    if project_id:
+        binding = (
+            GitHubRepositoryBinding.objects.filter(project_id=project_id)
+            .select_related("installation")
+            .only("installation__account_type")
+            .first()
+        )
+        if binding and (binding.installation.account_type or "").casefold() == "organization":
+            return True
+        if request.method == "POST" and binding is None:
+            installation_pk = _request_json(request).get("installation")
+            if installation_pk:
+                installation = GitHubInstallation.objects.filter(pk=installation_pk).only("account_type").first()
+                if installation and (installation.account_type or "").casefold() == "organization":
+                    return True
+    return False
 
 
 def github_guard(view, *, protect_path=False):
@@ -74,6 +106,16 @@ def github_guard(view, *, protect_path=False):
             return JsonResponse(
                 {"detail": "GitHub интеграция отключена администратором"},
                 status=503,
+            )
+        if _organization_scope_blocked(request, kwargs):
+            return JsonResponse(
+                {
+                    "detail": (
+                        "GitHub-репозитории организаций временно недоступны: "
+                        "требуется user-scoped повторная проверка прав"
+                    )
+                },
+                status=403,
             )
         if protect_path and not sensitive_path_allowed():
             path = _request_path(request)
