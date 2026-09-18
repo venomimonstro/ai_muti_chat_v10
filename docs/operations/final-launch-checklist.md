@@ -20,10 +20,13 @@ are necessary but do not replace the manual evidence below.
 - [x] Public status page and audited incident publication.
 - [x] Backup/restore scripts with isolated target guard and evidence lifecycle.
 - [x] Bounded load smoke runner with error-rate and p95 gates.
+- [x] Commercial gate requires one real paid AI request through public HTTPS and verifies provider output plus wallet settlement.
 
 ## Required deployment evidence
 
 - [ ] Staging deployment uses production topology and isolated credentials.
+- [ ] Dedicated non-admin E2E account has verified email, a small positive balance and credentials stored only in `.env.production`/secret storage.
+- [ ] Real AI request succeeds through public HTTPS and records changed wallet balance in immutable launch evidence.
 - [ ] `scripts/load_smoke.py` report meets agreed traffic/p95 thresholds.
 - [ ] Canary journey and rollback drill recorded in Admin Ops.
 - [ ] Real backup restored within 30 days; RPO/RTO and checksum recorded.
