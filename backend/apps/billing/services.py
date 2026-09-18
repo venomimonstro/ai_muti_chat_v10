@@ -1,3 +1,5 @@
+import os
+from datetime import timedelta
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -37,6 +39,26 @@ def _entry(
         source_id=str(source_id),
         idempotency_key=key,
     )
+
+
+def _enforce_consumer_operation_velocity(wallet, key):
+    if str(key).startswith("public-api:"):
+        return
+    limit = max(1, int(os.getenv("CONSUMER_MAX_OPERATIONS_PER_MINUTE", "20")))
+    since = timezone.now() - timedelta(minutes=1)
+    recent = (
+        wallet.entries.filter(
+            kind=LedgerEntry.Kind.RESERVE,
+            created_at__gte=since,
+            idempotency_key__startswith="reserve:",
+        )
+        .exclude(idempotency_key__startswith="reserve:public-api:")
+        .count()
+    )
+    if recent >= limit:
+        raise ValidationError(
+            "Слишком много AI-операций за короткое время. Подождите минуту и повторите запрос."
+        )
 
 
 @transaction.atomic
@@ -80,6 +102,7 @@ def reserve(user, amount: Decimal, key: str):
     if existing:
         return existing
     wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
+    _enforce_consumer_operation_velocity(wallet, key)
     enforce_spend_limits(wallet, amount)
     if wallet.available_rub < amount:
         raise ValidationError("Недостаточно средств")
