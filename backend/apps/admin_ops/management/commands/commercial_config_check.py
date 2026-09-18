@@ -11,6 +11,7 @@ from apps.admin_ops.commercial_bootstrap import commercial_setup_status
 from apps.ai_registry.models import AIModel, Provider
 from apps.billing.models import PriceVersion
 from apps.image_studio.models import ImageModel
+from apps.image_studio.services import image_price_matrix_complete
 
 
 class Command(BaseCommand):
@@ -39,6 +40,8 @@ class Command(BaseCommand):
         now = timezone.now()
         health_max_age = max(int(os.getenv("AI_PROVIDER_HEALTH_MAX_AGE_SECONDS", "900")), 60)
         health_cutoff = now - timedelta(seconds=health_max_age)
+        price_review_days = max(1, int(os.getenv("AI_PRICE_REVIEW_MAX_AGE_DAYS", "30")))
+        price_cutoff = now - timedelta(days=price_review_days)
         provider_objects = {
             item.slug: item
             for item in Provider.objects.only(
@@ -114,7 +117,18 @@ class Command(BaseCommand):
                     positive_price,
                     "positive price effective now is required",
                 )
-                if provider_live and model["has_active_version"] and positive_price:
+                fresh_price = bool(price and price.effective_from >= price_cutoff)
+                add(
+                    f"model:{model['slug']}:price_review",
+                    fresh_price,
+                    (
+                        f"reviewed/effective {price.effective_from.isoformat()}"
+                        if price
+                        else "missing price"
+                    )
+                    + f"; max_age={price_review_days}d",
+                )
+                if provider_live and model["has_active_version"] and positive_price and fresh_price:
                     registry_model = AIModel.objects.filter(slug=model["slug"]).only("capabilities").first()
                     if registry_model and "text" in set(registry_model.capabilities or []):
                         eligible_text_models += 1
@@ -136,7 +150,11 @@ class Command(BaseCommand):
                     provider_price_per_image__gt=0,
                 )
             )
-            valid_images = [item for item in image_models if item.upstream_model.strip()]
+            valid_images = [
+                item
+                for item in image_models
+                if item.upstream_model.strip() and image_price_matrix_complete(item)
+            ]
             add(
                 "image_catalog",
                 bool(valid_images),
