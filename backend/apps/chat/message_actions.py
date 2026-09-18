@@ -7,15 +7,49 @@ from rest_framework.views import APIView
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
 from .models import Conversation, ConversationBranch, Message
-from .serializers import ConversationSerializer
+from .serializers import MessageSerializer
 from .services import generate_reply
+
+
+def serialize_recent_conversation(conversation, limit=60):
+    messages = list(
+        visible_messages(conversation)
+        .select_related("generation_response")
+        .order_by("-created_at")[:limit]
+    )
+    messages.reverse()
+    return {
+        "id": str(conversation.id),
+        "title": conversation.title,
+        "selected_model": conversation.selected_model,
+        "routing_mode": conversation.routing_mode,
+        "project": str(conversation.project_id) if conversation.project_id else None,
+        "memory_enabled": conversation.memory_enabled,
+        "active_branch": str(conversation.active_branch_id) if conversation.active_branch_id else None,
+        "branches": [
+            {
+                "id": str(branch.id),
+                "parent": str(branch.parent_id) if branch.parent_id else None,
+                "forked_from": str(branch.forked_from_id) if branch.forked_from_id else None,
+                "title": branch.title,
+                "created_at": branch.created_at,
+            }
+            for branch in conversation.branches.all()
+        ],
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+        "messages": MessageSerializer(messages, many=True).data,
+    }
 
 
 class OwnedConversationAction(APIView):
     def conversation(self, request, conversation_id):
-        return Conversation.objects.select_related("active_branch").filter(
-            pk=conversation_id, owner=request.user
-        ).first()
+        return (
+            Conversation.objects.select_related("active_branch")
+            .prefetch_related("branches")
+            .filter(pk=conversation_id, owner=request.user)
+            .first()
+        )
 
     def idempotency_key(self, request):
         key = request.headers.get("Idempotency-Key", "")
@@ -58,10 +92,16 @@ class EditMessageView(OwnedConversationAction):
             return Response({"detail": "Чат не найден"}, status=404)
         message = visible_messages(conversation).filter(pk=message_id, role=Message.Role.USER).first()
         if message is None:
-            return Response({"detail": "Редактировать можно только своё пользовательское сообщение"}, status=404)
+            return Response(
+                {"detail": "Редактировать можно только своё пользовательское сообщение"},
+                status=404,
+            )
         content = str(request.data.get("content", "")).strip()
         if not content or len(content) > 100_000:
-            return Response({"detail": "Сообщение должно содержать от 1 до 100000 символов"}, status=400)
+            return Response(
+                {"detail": "Сообщение должно содержать от 1 до 100000 символов"},
+                status=400,
+            )
         try:
             key = self.idempotency_key(request)
             self._fork_before(
@@ -80,7 +120,7 @@ class EditMessageView(OwnedConversationAction):
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=400)
         conversation.refresh_from_db()
-        return Response(ConversationSerializer(conversation, context={"request": request}).data)
+        return Response(serialize_recent_conversation(conversation))
 
 
 class RegenerateMessageView(OwnedConversationAction):
@@ -95,7 +135,9 @@ class RegenerateMessageView(OwnedConversationAction):
         if assistant is None:
             return Response({"detail": "Ответ не найден"}, status=404)
         ordered = list(visible_messages(conversation).order_by("created_at"))
-        assistant_index = next((i for i, item in enumerate(ordered) if item.id == assistant.id), -1)
+        assistant_index = next(
+            (i for i, item in enumerate(ordered) if item.id == assistant.id), -1
+        )
         source = next(
             (item for item in reversed(ordered[:assistant_index]) if item.role == Message.Role.USER),
             None,
@@ -120,4 +162,4 @@ class RegenerateMessageView(OwnedConversationAction):
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=400)
         conversation.refresh_from_db()
-        return Response(ConversationSerializer(conversation, context={"request": request}).data)
+        return Response(serialize_recent_conversation(conversation))
