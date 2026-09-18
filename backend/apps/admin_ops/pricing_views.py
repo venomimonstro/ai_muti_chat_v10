@@ -58,7 +58,7 @@ def _validate_markup_scope(scope_type, scope_key):
         "compare",
         "compare_synthesis",
         "image",
-        "b2b_api",
+        "public_api",
     }:
         raise ValueError("Неизвестный тип операции")
     return scope_key
@@ -98,8 +98,6 @@ class PricingManagementView(PricingControlView):
                 "Себестоимость выходных токенов",
                 minimum=Decimal("0.0001"),
             )
-            # Kept only as a safe fallback for legacy/no-rule environments. In a normal commercial
-            # install the effective markup is selected from immutable MarkupRuleVersion records.
             base_markup = _decimal(
                 request.data.get("markup_percent", "100"),
                 "Базовая наценка",
