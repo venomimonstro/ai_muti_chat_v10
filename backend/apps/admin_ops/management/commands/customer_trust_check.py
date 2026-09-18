@@ -9,7 +9,7 @@ from django.utils import timezone
 from apps.accounts.models import SupportRequest
 from apps.b2b_api.models import APIUsage
 from apps.billing.models import BalanceReservation, RequestCost
-from apps.chat.models import CompareRun, Generation
+from apps.chat.models import CompareRun, Generation, Message
 from apps.image_studio.models import ImageGeneration
 from apps.payments.models import Payment
 
@@ -30,20 +30,61 @@ class Command(BaseCommand):
         warnings = []
 
         failed_generation_ids = Generation.objects.filter(
-            state__in=[Generation.State.FAILED, Generation.State.CANCELLED]
+            state=Generation.State.FAILED
         ).values("id")
         failed_chat_charges = RequestCost.objects.filter(
             generation_id__in=failed_generation_ids,
             charged_rub__gt=ZERO,
         ).count()
         failed_chat_actual = Generation.objects.filter(
-            state__in=[Generation.State.FAILED, Generation.State.CANCELLED],
+            state=Generation.State.FAILED,
             actual_cost_rub__gt=ZERO,
         ).count()
         if failed_chat_charges or failed_chat_actual:
             blockers.append(
-                f"failed_or_cancelled_chat_was_charged={max(failed_chat_charges, failed_chat_actual)}"
+                f"failed_chat_was_charged={max(failed_chat_charges, failed_chat_actual)}"
             )
+
+        invalid_cancelled_charges = 0
+        for generation in (
+            Generation.objects.filter(
+                state=Generation.State.CANCELLED,
+                actual_cost_rub__gt=ZERO,
+            )
+            .select_related("assistant_message")
+            .iterator()
+        ):
+            request_cost = RequestCost.objects.filter(generation_id=generation.id).first()
+            reservation = (
+                BalanceReservation.objects.filter(pk=generation.reservation_id).first()
+                if generation.reservation_id
+                else None
+            )
+            charged = request_cost.charged_rub if request_cost else None
+            valid_partial = all(
+                [
+                    generation.assistant_message.status == Message.Status.PARTIAL,
+                    bool((generation.assistant_message.content or "").strip()),
+                    charged is not None,
+                    charged == generation.actual_cost_rub,
+                    reservation is not None,
+                    reservation.state == BalanceReservation.State.SETTLED,
+                    reservation.actual_rub == generation.actual_cost_rub,
+                    generation.actual_cost_rub <= reservation.amount_rub,
+                ]
+            )
+            if not valid_partial:
+                invalid_cancelled_charges += 1
+        cancelled_without_output_charged = RequestCost.objects.filter(
+            generation_id__in=Generation.objects.filter(
+                state=Generation.State.CANCELLED,
+                assistant_message__content="",
+            ).values("id"),
+            charged_rub__gt=ZERO,
+        ).count()
+        invalid_cancelled_charges += cancelled_without_output_charged
+        if invalid_cancelled_charges:
+            blockers.append(f"invalid_cancelled_chat_charge={invalid_cancelled_charges}")
 
         failed_images_charged = ImageGeneration.objects.filter(
             state=ImageGeneration.State.FAILED,
