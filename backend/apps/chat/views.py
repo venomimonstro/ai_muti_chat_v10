@@ -1,6 +1,5 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Prefetch
 from django.http import StreamingHttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -17,10 +16,11 @@ from .compare import (
     serialize_compare,
     synthesize_compare,
 )
-from .models import CompareVariant, Conversation, ConversationDraft, Message
+from .models import CompareVariant, Conversation, ConversationDraft
 from .serializers import (
     ConversationDraftSerializer,
     ConversationSerializer,
+    MessageSerializer,
     SendMessageSerializer,
 )
 from .services import generate_reply
@@ -31,16 +31,10 @@ class ConversationViewSet(viewsets.ModelViewSet):
     serializer_class = ConversationSerializer
 
     def get_queryset(self):
-        return (
-            Conversation.objects.filter(owner=self.request.user)
-            .select_related("active_branch")
-            .prefetch_related(
-                "branches",
-                Prefetch(
-                    "messages", queryset=Message.objects.select_related("generation_response")
-                ),
-            )
-        )
+        queryset = Conversation.objects.filter(owner=self.request.user).select_related("active_branch")
+        if self.action in {"list", "retrieve", "branches", "activate_branch", "compare_branch"}:
+            queryset = queryset.prefetch_related("branches")
+        return queryset
 
     def perform_create(self, serializer):
         conversation = serializer.save(owner=self.request.user)
@@ -253,7 +247,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
             {
                 "generation_id": generation.id,
                 "state": generation.state,
-                "message": ConversationSerializer(self.get_object()).data["messages"][-1],
+                "message": MessageSerializer(generation.assistant_message).data,
             },
             status=status.HTTP_200_OK,
         )
