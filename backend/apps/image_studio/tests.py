@@ -6,9 +6,16 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.ai_registry.models import Provider
+from apps.billing.models import CostAnomaly
 from apps.billing.services import credit
 
-from .adapters import EchoImageAdapter, ImageProviderError, OpenAIImageAdapter
+from .adapters import (
+    EchoImageAdapter,
+    ImageProviderError,
+    ImageProviderResult,
+    ImageResult,
+    OpenAIImageAdapter,
+)
 from .models import ImageGeneration, ImageModel
 
 
@@ -97,6 +104,12 @@ class FailingImageAdapter:
         raise ImageProviderError("down", code="upstream_down")
 
 
+class OverDeliveringImageAdapter:
+    def generate(self, **_kwargs):
+        image = ImageResult(EchoImageAdapter._PNG, "image/png", "unexpected")
+        return ImageProviderResult(images=[image, image], provider_request_id="over-delivery")
+
+
 @pytest.mark.django_db(transaction=True)
 def test_provider_failure_releases_full_image_reservation(image_context):
     user, model, _client = image_context
@@ -117,6 +130,38 @@ def test_provider_failure_releases_full_image_reservation(image_context):
     user.wallet.refresh_from_db()
     assert user.wallet.available_rub == Decimal("10.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_image_provider_over_delivery_is_fail_closed_and_disables_provider(image_context):
+    user, model, _client = image_context
+    from .services import generate
+
+    generation = generate(
+        user=user,
+        model_slug=model.slug,
+        prompt="One image only",
+        size="1024x1024",
+        quality="standard",
+        count=1,
+        idempotency_key="image:over-delivery",
+        adapter=OverDeliveringImageAdapter(),
+    )
+
+    generation.refresh_from_db()
+    model.provider.refresh_from_db()
+    user.wallet.refresh_from_db()
+    assert generation.state == ImageGeneration.State.FAILED
+    assert generation.error_code == "invalid_response"
+    assert generation.images.count() == 0
+    assert model.provider.emergency_disabled is True
+    assert user.wallet.available_rub == Decimal("10.0000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert CostAnomaly.objects.filter(
+        severity="critical",
+        provider_slug=model.provider.slug,
+        details__reason="provider_returned_more_images_than_requested",
+    ).exists()
 
 
 def test_openai_adapter_uses_current_response_format_contract(monkeypatch):
