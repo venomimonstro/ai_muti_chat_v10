@@ -19,6 +19,8 @@ class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True)
     email_verified_at = models.DateTimeField(null=True, blank=True)
+    legal_accepted_at = models.DateTimeField(null=True, blank=True)
+    legal_version = models.CharField(max_length=40, blank=True)
     role = models.CharField(max_length=32, choices=Role.choices, default=Role.USER)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
 
