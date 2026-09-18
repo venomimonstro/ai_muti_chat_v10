@@ -51,7 +51,7 @@ class Command(BaseCommand):
         if invalid_settlements:
             blockers.append(f"settlement_over_reservation={invalid_settlements}")
         if stale_reservations:
-            warnings.append(f"stale_active_reservations={stale_reservations}")
+            blockers.append(f"stale_active_reservations={stale_reservations}")
 
         reserved_by_wallet = {
             row["wallet_id"]: row["total"] or ZERO
@@ -145,7 +145,7 @@ class Command(BaseCommand):
             organization__monthly_limit_rub__isnull=True,
         ).count()
         if running_b2b:
-            warnings.append(f"stale_running_b2b_requests={running_b2b}")
+            blockers.append(f"stale_running_b2b_requests={running_b2b}")
         if active_org_without_limit:
             warnings.append(f"b2b_orgs_without_monthly_limit={active_org_without_limit}")
         if active_keys_without_limit:
@@ -160,7 +160,7 @@ class Command(BaseCommand):
             reservation__state=BalanceReservation.State.ACTIVE,
         ).count()
         if zombie_images:
-            warnings.append(f"stale_queued_or_running_image_generations={zombie_images}")
+            blockers.append(f"stale_queued_or_running_image_generations={zombie_images}")
         if failed_with_active_reservation:
             blockers.append(f"failed_images_with_active_reservation={failed_with_active_reservation}")
 
