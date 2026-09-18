@@ -80,7 +80,10 @@ def _recover_compare_synthesis(pk):
 @transaction.atomic
 def _recover_image(pk):
     generation = ImageGeneration.objects.select_for_update().get(pk=pk)
-    if generation.state != ImageGeneration.State.RUNNING or generation.created_at >= _cutoff():
+    if generation.state not in {
+        ImageGeneration.State.QUEUED,
+        ImageGeneration.State.RUNNING,
+    } or generation.created_at >= _cutoff():
         return False
     if generation.reservation_id:
         release(generation.reservation_id)
@@ -126,13 +129,19 @@ def recover_stale_api_usages(*, api_key=None):
 @transaction.atomic
 def _recover_file(pk):
     asset = FileAsset.objects.select_for_update().get(pk=pk)
-    if asset.status != FileAsset.Status.PARSING or asset.updated_at >= _cutoff():
+    if asset.status not in {
+        FileAsset.Status.UPLOADED,
+        FileAsset.Status.QUARANTINE,
+        FileAsset.Status.PARSING,
+    } or asset.updated_at >= _cutoff():
         return False
     now = timezone.now()
     asset.status = FileAsset.Status.FAILED
     asset.error_code = "stale_operation_recovered"
     asset.save(update_fields=["status", "error_code", "updated_at"])
-    asset.jobs.filter(state=FileProcessingJob.State.RUNNING).update(
+    asset.jobs.filter(
+        state__in=[FileProcessingJob.State.QUEUED, FileProcessingJob.State.RUNNING]
+    ).update(
         state=FileProcessingJob.State.FAILED,
         error_code="stale_operation_recovered",
         finished_at=now,
@@ -171,13 +180,21 @@ def recover_stale_operations():
         (
             "image_generations",
             ImageGeneration.objects.filter(
-                state=ImageGeneration.State.RUNNING, created_at__lt=cutoff
+                state__in=[ImageGeneration.State.QUEUED, ImageGeneration.State.RUNNING],
+                created_at__lt=cutoff,
             ),
             _recover_image,
         ),
         (
             "files",
-            FileAsset.objects.filter(status=FileAsset.Status.PARSING, updated_at__lt=cutoff),
+            FileAsset.objects.filter(
+                status__in=[
+                    FileAsset.Status.UPLOADED,
+                    FileAsset.Status.QUARANTINE,
+                    FileAsset.Status.PARSING,
+                ],
+                updated_at__lt=cutoff,
+            ),
             _recover_file,
         ),
     )
