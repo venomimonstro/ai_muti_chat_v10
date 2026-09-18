@@ -11,6 +11,9 @@ from apps.billing.models import MarkupRuleVersion, PriceVersion
 from .services import audit
 from .views import PricingControlView
 
+OPERATION_ALIASES = {"b2b_api": "public_api", "image": "images"}
+OPERATION_KEYS = {"chat", "compare", "compare_synthesis", "images", "public_api"}
+
 
 def _decimal(value, label, *, minimum=None, allow_blank=False):
     if allow_blank and (value is None or str(value).strip() == ""):
@@ -54,9 +57,8 @@ def _validate_markup_scope(scope_type, scope_key):
     if scope_type == MarkupRuleVersion.Scope.MODEL and not AIModel.objects.filter(slug=scope_key).exists():
         raise ValueError("Модель не найдена")
     if scope_type == MarkupRuleVersion.Scope.OPERATION:
-        if scope_key == "b2b_api":
-            scope_key = "public_api"
-        if scope_key not in {"chat", "compare", "compare_synthesis", "image", "public_api"}:
+        scope_key = OPERATION_ALIASES.get(scope_key, scope_key)
+        if scope_key not in OPERATION_KEYS:
             raise ValueError("Неизвестный тип операции")
     return scope_key
 
@@ -67,10 +69,9 @@ class PricingManagementView(PricingControlView):
         by_id = {str(item.id): item for item in PriceVersion.objects.filter(active=True)}
         for row in response.data.get("active_prices", []):
             price = by_id.get(str(row["id"]))
-            if price is None:
-                continue
-            row["input_rub_per_million"] = str(price.input_rub_per_million)
-            row["output_rub_per_million"] = str(price.output_rub_per_million)
+            if price is not None:
+                row["input_rub_per_million"] = str(price.input_rub_per_million)
+                row["output_rub_per_million"] = str(price.output_rub_per_million)
         return response
 
     @transaction.atomic
