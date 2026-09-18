@@ -55,3 +55,23 @@ def test_public_api_uses_its_own_rpm_and_is_not_limited_by_consumer_velocity(mon
     second = reserve(user, Decimal("1"), "public-api:second")
 
     assert first.id != second.id
+
+
+@pytest.mark.django_db(transaction=True)
+def test_public_api_is_not_capped_by_consumer_daily_limit_but_still_requires_prefunded_wallet(
+    monkeypatch,
+):
+    monkeypatch.setenv("CONSUMER_MAX_DAILY_SPEND_RUB", "1")
+    monkeypatch.setenv("CONSUMER_MAX_MONTHLY_SPEND_RUB", "1")
+    user = User.objects.create_user(
+        username="b2b-budget-separation",
+        email="b2b-budget-separation@example.test",
+        password="password123",
+    )
+    credit(user, Decimal("10"), "test", "b2b-budget-separation")
+
+    reservation = reserve(user, Decimal("2"), "public-api:budgeted")
+    assert reservation.amount_rub == Decimal("2.0000")
+
+    with pytest.raises(ValidationError, match="Недостаточно средств"):
+        reserve(user, Decimal("20"), "public-api:too-expensive")
