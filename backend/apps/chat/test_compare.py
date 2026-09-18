@@ -1,4 +1,5 @@
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -7,7 +8,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.ai_registry.models import AIModel, Provider
-from apps.billing.models import BalanceReservation, PriceVersion
+from apps.billing.models import BalanceReservation, CostAnomaly, PriceVersion
 from apps.billing.services import credit
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
@@ -79,6 +80,53 @@ def test_compare_runs_models_and_settles_one_hard_reservation(settings):
     )
     assert replay.id == run.id
     assert CompareRun.objects.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_compare_disables_provider_when_reported_usage_exceeds_reserved_maximum(settings, monkeypatch):
+    settings.COMPARE_CONFIRM_THRESHOLD_RUB = "999"
+    settings.COMPARE_MAX_OUTPUT_TOKENS = 128
+    user = User.objects.create_user(
+        username="compare-overuse", email="compare-overuse@example.com", password="password123"
+    )
+    credit(user, Decimal("100"), "test", "compare-overuse")
+    conversation = Conversation.objects.create(owner=user)
+    models = compare_registry()
+
+    def abusive_provider_call(_model, _messages):
+        return (
+            "unexpected huge result",
+            SimpleNamespace(
+                input_tokens=100,
+                output_tokens=1_000_000,
+                provider_request_id="provider-overuse",
+            ),
+            10,
+        )
+
+    monkeypatch.setattr("apps.chat.compare._provider_call", abusive_provider_call)
+    run = run_compare(
+        user=user,
+        conversation=conversation,
+        prompt="Короткий запрос",
+        model_slugs=[item.slug for item in models],
+        idempotency_key="compare:test:provider-overuse",
+    )
+
+    run.refresh_from_db()
+    models[0].provider.refresh_from_db()
+    user.wallet.refresh_from_db()
+    reservation = BalanceReservation.objects.get(pk=run.reservation_id)
+    assert run.state == CompareRun.State.FAILED
+    assert models[0].provider.emergency_disabled is True
+    assert reservation.state == BalanceReservation.State.SETTLED
+    assert reservation.actual_rub == Decimal("0.0000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert CostAnomaly.objects.filter(
+        severity="critical",
+        provider_slug=models[0].provider.slug,
+        details__reason="provider_usage_exceeded_reserved_maximum",
+    ).exists()
 
 
 @pytest.mark.django_db
