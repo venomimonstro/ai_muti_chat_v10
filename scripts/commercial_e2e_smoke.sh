@@ -15,60 +15,46 @@ fail(){ printf 'E2E FAIL: %s\n' "$1" >&2; exit 1; }
 json(){ python3 - "$@" <<'PY'
 import json,sys
 obj=json.load(sys.stdin)
-path=sys.argv[1].split('.')
-for key in path:
+for key in sys.argv[1].split('.'):
     obj=obj[int(key)] if isinstance(obj,list) else obj[key]
 print(obj)
 PY
 }
 
-printf '[1/8] Public pages\n'
-for path in / /pricing /faq /login /register /forgot-password /api /use-cases/marketing /use-cases/coding /use-cases/documents; do
-  curl -fsS --max-time 15 "${BASE_URL%/}${path}" >/dev/null || fail "public route ${path}"
-done
+printf '[1/9] Public pages\n'
+for path in / /pricing /faq /login /register /forgot-password /api /use-cases/marketing /use-cases/coding /use-cases/documents; do curl -fsS --max-time 15 "${BASE_URL%/}${path}" >/dev/null || fail "public route ${path}"; done
 
-printf '[2/8] CSRF\n'
-csrf_payload="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" "${API_URL%/}/auth/csrf/")"
-csrf="$(printf '%s' "$csrf_payload" | json csrf_token)"
-[[ -n "$csrf" ]] || fail 'csrf token missing'
+printf '[2/9] CSRF\n'
+csrf_payload="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" "${API_URL%/}/auth/csrf/")"; csrf="$(printf '%s' "$csrf_payload" | json csrf_token)"; [[ -n "$csrf" ]] || fail 'csrf token missing'
 
-printf '[3/8] Registration\n'
+printf '[3/9] Registration\n'
 register_payload="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H 'Content-Type: application/json' -d "{\"username\":\"$username\",\"email\":\"$email\",\"password\":\"$password\",\"accepted_terms\":true}" "${API_URL%/}/auth/register/")"
 [[ "$(printf '%s' "$register_payload" | json email)" == "$email" ]] || fail 'registration payload mismatch'
 
-printf '[4/8] Authenticated workspace APIs\n'
-csrf_payload="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" "${API_URL%/}/auth/csrf/")"
-csrf="$(printf '%s' "$csrf_payload" | json csrf_token)"
+printf '[4/9] Authenticated workspace APIs\n'
+csrf_payload="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" "${API_URL%/}/auth/csrf/")"; csrf="$(printf '%s' "$csrf_payload" | json csrf_token)"
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/auth/me/" >/dev/null || fail 'auth/me'
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/models/" >/dev/null || fail 'models'
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/wallet/" >/dev/null || fail 'wallet'
 
-printf '[5/8] Create conversation\n'
-models="$(curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/models/")"
-model="$(printf '%s' "$models" | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(next((x["slug"] for x in rows if x.get("available")), ""))')"
-[[ -n "$model" ]] || fail 'no available AI model configured'
-conversation="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H 'Content-Type: application/json' -d "{\"title\":\"Commercial E2E\",\"routing_mode\":\"balanced\",\"selected_model\":\"$model\"}" "${API_URL%/}/conversations/")"
-conversation_id="$(printf '%s' "$conversation" | json id)"
-[[ -n "$conversation_id" ]] || fail 'conversation id missing'
+printf '[5/9] Create conversation\n'
+models="$(curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/models/")"; model="$(printf '%s' "$models" | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(next((x["slug"] for x in rows if x.get("available")), ""))')"; [[ -n "$model" ]] || fail 'no available AI model configured'
+conversation="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H 'Content-Type: application/json' -d "{\"title\":\"Commercial E2E\",\"routing_mode\":\"balanced\",\"selected_model\":\"$model\"}" "${API_URL%/}/conversations/")"; conversation_id="$(printf '%s' "$conversation" | json id)"; [[ -n "$conversation_id" ]] || fail 'conversation id missing'
 
-printf '[6/8] Optional billable AI request\n'
+printf '[6/9] Optional billable AI request\n'
 if [[ "${E2E_BILLABLE:-0}" == "1" ]]; then
-  request_key="e2e:$rand"
-  response="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H "Idempotency-Key: $request_key" -H 'Content-Type: application/json' -d "{\"content\":\"Ответь одним словом: тест\",\"client_message_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\"}" "${API_URL%/}/conversations/${conversation_id}/messages/")"
-  state="$(printf '%s' "$response" | json state)"
-  [[ "$state" == "completed" || "$state" == "running" ]] || fail "unexpected generation state: $state"
-else
-  printf 'Billable generation skipped; set E2E_BILLABLE=1 for funded staging account flow.\n'
-fi
+  response="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H "Idempotency-Key: e2e:$rand" -H 'Content-Type: application/json' -d "{\"content\":\"Ответь одним словом: тест\",\"client_message_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\"}" "${API_URL%/}/conversations/${conversation_id}/messages/")"; state="$(printf '%s' "$response" | json state)"; [[ "$state" == "completed" || "$state" == "running" ]] || fail "unexpected generation state: $state"
+else printf 'Billable generation skipped.\n'; fi
 
-printf '[7/8] Account surfaces\n'
+printf '[7/9] Account surfaces\n'
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/auth/sessions/" >/dev/null || fail 'sessions'
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/auth/export/" >/dev/null || fail 'account export'
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/payments/" >/dev/null || fail 'payments list'
 
-printf '[8/8] Frontend authenticated routes\n'
-for path in /app /app/account /app/wallet; do
-  curl -fsS --max-time 15 "${BASE_URL%/}${path}" >/dev/null || fail "frontend route ${path}"
-done
+printf '[8/9] Frontend authenticated routes\n'
+for path in /app /app/account /app/wallet; do curl -fsS --max-time 15 "${BASE_URL%/}${path}" >/dev/null || fail "frontend route ${path}"; done
+
+printf '[9/9] Cleanup test account\n'
+curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H 'Content-Type: application/json' -d "{\"password\":\"$password\",\"confirmation\":\"DELETE\"}" "${API_URL%/}/auth/delete-account/" >/dev/null || fail 'account cleanup'
 
 printf 'COMMERCIAL E2E: PASS\n'
