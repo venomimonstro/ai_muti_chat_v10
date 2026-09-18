@@ -17,12 +17,12 @@ trap cleanup EXIT
 printf '[1/10] Secret scan\n'
 bash ./scripts/security_scan.sh
 
-printf '[2/10] Shell syntax\n'
+printf '[2/10] Shell and smoke-script syntax\n'
 bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
 done
-python -m py_compile scripts/commercial_http_smoke.py
+python -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
 
 printf '[3/10] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
