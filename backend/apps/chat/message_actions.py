@@ -16,7 +16,7 @@ def serialize_recent_conversation(conversation, limit=60):
     messages = list(
         visible_messages(conversation)
         .select_related("generation_response")
-        .order_by("-created_at")[:limit]
+        .order_by("-created_at", "-id")[:limit]
     )
     messages.reverse()
     return {
@@ -60,7 +60,7 @@ class OwnedConversationAction(APIView):
         return key
 
     def _fork_before(self, *, conversation, user, target, title):
-        ordered = list(visible_messages(conversation).order_by("created_at"))
+        ordered = list(visible_messages(conversation).order_by("created_at", "id"))
         try:
             index = next(i for i, item in enumerate(ordered) if item.id == target.id)
         except StopIteration as exc:
@@ -136,7 +136,7 @@ class RegenerateMessageView(OwnedConversationAction):
         ).first()
         if assistant is None:
             return Response({"detail": "Ответ не найден"}, status=404)
-        ordered = list(visible_messages(conversation).order_by("created_at"))
+        ordered = list(visible_messages(conversation).order_by("created_at", "id"))
         assistant_index = next(
             (i for i, item in enumerate(ordered) if item.id == assistant.id), -1
         )
