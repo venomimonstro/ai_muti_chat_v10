@@ -9,8 +9,9 @@ from apps.ai_registry.models import AIModel, Provider
 from apps.billing.models import BalanceReservation, PriceVersion, RequestCost
 from apps.billing.services import credit
 
+from .managed_stream import managed_run
 from .models import Conversation, Generation, Message
-from .streaming import prepare, run
+from .streaming import prepare
 
 
 class PartialStreamAdapter:
@@ -76,7 +77,7 @@ def test_cancel_after_delivered_delta_charges_only_partial_and_releases_reserve(
     reservation = BalanceReservation.objects.get(pk=generation.reservation_id)
     reserved_max = reservation.amount_rub
 
-    stream = run(generation, adapter=PartialStreamAdapter())
+    stream = managed_run(generation, adapter=PartialStreamAdapter())
     assert "event: generation" in next(stream)
     delta = next(stream)
     assert "event: delta" in delta
@@ -112,7 +113,7 @@ def test_cancel_before_first_provider_delta_costs_zero(cancellation_context):
         idempotency_key="cancel:before-delta",
     )
 
-    stream = run(generation, adapter=PartialStreamAdapter())
+    stream = managed_run(generation, adapter=PartialStreamAdapter())
     assert "event: generation" in next(stream)
     stream.close()
 
