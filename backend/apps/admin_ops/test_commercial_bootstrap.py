@@ -1,8 +1,10 @@
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.utils import timezone
 
 from apps.admin_ops.commercial_bootstrap import bootstrap_commercial_catalog, commercial_setup_status
 from apps.ai_registry.models import AIModel, Provider, RoutingPolicyVersion
@@ -64,6 +66,48 @@ def test_bootstrap_creates_version_and_price_only_when_explicitly_configured(mon
 @pytest.mark.django_db
 def test_commercial_gate_blocks_empty_catalog():
     bootstrap_commercial_catalog()
+    with pytest.raises(CommandError):
+        call_command("commercial_config_check")
+
+
+@pytest.mark.django_db
+def test_commercial_gate_rejects_price_that_is_only_effective_in_future(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "configured")
+    monkeypatch.setenv("OPENAI_DEFAULT_MODEL", "provider-model-id")
+    bootstrap_commercial_catalog()
+    provider = Provider.objects.get(slug="openai")
+    model = AIModel.objects.get(slug="openai-default")
+    provider.enabled = True
+    provider.save(update_fields=["enabled"])
+    model.enabled = True
+    model.save(update_fields=["enabled"])
+    PriceVersion.objects.create(
+        model_slug=model.slug,
+        input_rub_per_million=Decimal("100"),
+        output_rub_per_million=Decimal("200"),
+        effective_from=timezone.now() + timedelta(hours=1),
+        active=True,
+    )
+
+    with pytest.raises(CommandError):
+        call_command("commercial_config_check")
+
+
+@pytest.mark.django_db
+def test_commercial_gate_rejects_emergency_disabled_provider(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "configured")
+    monkeypatch.setenv("OPENAI_DEFAULT_MODEL", "provider-model-id")
+    monkeypatch.setenv("AI_PRICE_OPENAI_DEFAULT_INPUT_RUB_PER_MILLION", "100")
+    monkeypatch.setenv("AI_PRICE_OPENAI_DEFAULT_OUTPUT_RUB_PER_MILLION", "200")
+    bootstrap_commercial_catalog()
+    provider = Provider.objects.get(slug="openai")
+    model = AIModel.objects.get(slug="openai-default")
+    provider.enabled = True
+    provider.emergency_disabled = True
+    provider.save(update_fields=["enabled", "emergency_disabled"])
+    model.enabled = True
+    model.save(update_fields=["enabled"])
+
     with pytest.raises(CommandError):
         call_command("commercial_config_check")
 
