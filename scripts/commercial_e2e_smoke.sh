@@ -51,15 +51,19 @@ conversation="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $cs
 conversation_id="$(printf '%s' "$conversation" | json id)"
 [[ -n "$conversation_id" ]] || fail 'conversation id missing'
 
-printf '[6/8] AI request\n'
-request_key="e2e:$rand"
-response="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H "Idempotency-Key: $request_key" -H 'Content-Type: application/json' -d "{\"content\":\"Ответь одним словом: тест\",\"client_message_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\"}" "${API_URL%/}/conversations/${conversation_id}/messages/")"
-state="$(printf '%s' "$response" | json state)"
-[[ "$state" == "completed" || "$state" == "running" ]] || fail "unexpected generation state: $state"
+printf '[6/8] Optional billable AI request\n'
+if [[ "${E2E_BILLABLE:-0}" == "1" ]]; then
+  request_key="e2e:$rand"
+  response="$(curl -fsS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -H "X-CSRFToken: $csrf" -H "Idempotency-Key: $request_key" -H 'Content-Type: application/json' -d "{\"content\":\"Ответь одним словом: тест\",\"client_message_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\"}" "${API_URL%/}/conversations/${conversation_id}/messages/")"
+  state="$(printf '%s' "$response" | json state)"
+  [[ "$state" == "completed" || "$state" == "running" ]] || fail "unexpected generation state: $state"
+else
+  printf 'Billable generation skipped; set E2E_BILLABLE=1 for funded staging account flow.\n'
+fi
 
 printf '[7/8] Account surfaces\n'
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/auth/sessions/" >/dev/null || fail 'sessions'
-curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/auth/account-export/" >/dev/null || fail 'account export'
+curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/auth/export/" >/dev/null || fail 'account export'
 curl -fsS -b "$COOKIE_JAR" "${API_URL%/}/payments/" >/dev/null || fail 'payments list'
 
 printf '[8/8] Frontend authenticated routes\n'
