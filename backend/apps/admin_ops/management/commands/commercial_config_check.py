@@ -3,12 +3,14 @@ import os
 from datetime import timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.admin_ops.commercial_bootstrap import commercial_setup_status
-from apps.ai_registry.models import Provider
+from apps.ai_registry.models import AIModel, Provider
 from apps.billing.models import PriceVersion
+from apps.image_studio.models import ImageModel
 
 
 class Command(BaseCommand):
@@ -30,9 +32,9 @@ class Command(BaseCommand):
             checks.append({"name": name, "passed": bool(passed), "detail": detail})
 
         add("routing_policy", status["routing_policy"], "Active routing policy")
-        add("markup_policy", status["markup_policy"], "Active global markup policy")
-        add("margin_policy", status["margin_policy"], "Active margin guard policy")
-        add("rub_fx_identity", status["rub_fx_identity"], "RUB/RUB identity FX snapshot")
+        add("markup_policy", status["markup_policy"], "Effective global markup policy")
+        add("margin_policy", status["margin_policy"], "Effective margin guard policy")
+        add("rub_fx_identity", status["rub_fx_identity"], "Effective RUB/RUB identity FX snapshot")
 
         now = timezone.now()
         health_max_age = max(int(os.getenv("AI_PROVIDER_HEALTH_MAX_AGE_SECONDS", "900")), 60)
@@ -45,9 +47,11 @@ class Command(BaseCommand):
         }
 
         enabled_models = 0
+        eligible_text_models = 0
         for provider in status["providers"]:
             provider_enabled = provider["enabled"]
             record = provider_objects.get(provider["slug"])
+            provider_live = bool(provider_enabled and record and not record.emergency_disabled)
             if provider_enabled:
                 add(
                     f"provider:{provider['slug']}:credential",
@@ -78,7 +82,7 @@ class Command(BaseCommand):
                 enabled_models += 1
                 add(
                     f"model:{model['slug']}:provider_enabled",
-                    provider_enabled and bool(record and not record.emergency_disabled),
+                    provider_live,
                     provider["slug"],
                 )
                 add(
@@ -110,16 +114,41 @@ class Command(BaseCommand):
                     positive_price,
                     "positive price effective now is required",
                 )
+                if provider_live and model["has_active_version"] and positive_price:
+                    registry_model = AIModel.objects.filter(slug=model["slug"]).only("capabilities").first()
+                    if registry_model and "text" in set(registry_model.capabilities or []):
+                        eligible_text_models += 1
 
         add("enabled_model", enabled_models > 0, f"enabled models: {enabled_models}")
-        failed = [item for item in checks if not item["passed"]]
+        add("b2b_api_enabled", settings.B2B_API_ENABLED, "B2B_API_ENABLED=true")
+        if settings.COMPARE_ENABLED:
+            add(
+                "compare_catalog",
+                eligible_text_models >= 2,
+                f"Compare enabled; commercially eligible text models: {eligible_text_models}/2 minimum",
+            )
+        if settings.IMAGES_ENABLED:
+            image_models = list(
+                ImageModel.objects.select_related("provider").filter(
+                    enabled=True,
+                    provider__enabled=True,
+                    provider__emergency_disabled=False,
+                    provider_price_per_image__gt=0,
+                )
+            )
+            valid_images = [item for item in image_models if item.upstream_model.strip()]
+            add(
+                "image_catalog",
+                bool(valid_images),
+                f"Images enabled; commercially eligible image models: {len(valid_images)}",
+            )
 
+        failed = [item for item in checks if not item["passed"]]
         if options["as_json"]:
             self.stdout.write(json.dumps({"checks": checks, "passed": not failed}, ensure_ascii=False))
             if failed:
                 raise CommandError(f"Commercial configuration blocked by {len(failed)} check(s)")
             return
-
         for item in checks:
             marker = "PASS" if item["passed"] else "BLOCK"
             self.stdout.write(f"[{marker}] {item['name']}: {item['detail']}")
