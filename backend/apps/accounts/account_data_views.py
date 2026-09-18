@@ -4,7 +4,7 @@ from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.b2b_api.models import APIKey, OrganizationMembership
+from apps.b2b_api.models import APIKey, Organization, OrganizationMembership
 from apps.billing.models import LedgerEntry, Wallet
 from apps.chat.models import Conversation, Message
 from apps.files.models import FileAsset
@@ -267,6 +267,24 @@ class AccountDeleteView(APIView):
         user = User.objects.select_for_update().get(pk=request.user.pk)
         if not user.check_password(password):
             return Response({"detail": "Неверный пароль"}, status=400)
+
+        now = timezone.now()
+        funded_organization_ids = list(
+            Organization.objects.select_for_update()
+            .filter(billing_user=user, active=True)
+            .values_list("id", flat=True)
+        )
+        if funded_organization_ids:
+            Organization.objects.filter(id__in=funded_organization_ids).update(active=False)
+            APIKey.objects.filter(
+                organization_id__in=funded_organization_ids,
+                revoked_at__isnull=True,
+            ).update(revoked_at=now)
+        OrganizationMembership.objects.filter(
+            user=user,
+            status=OrganizationMembership.Status.ACTIVE,
+        ).update(status=OrganizationMembership.Status.REMOVED)
+
         suffix = str(user.id).replace("-", "")
         user.username = f"deleted-{suffix}"[:150]
         user.email = f"deleted+{suffix}@example.invalid"
