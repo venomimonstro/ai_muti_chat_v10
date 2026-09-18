@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.b2b_api.models import APIUsage
+from apps.billing.models import BalanceReservation
 from apps.billing.services import release
 from apps.chat.models import CompareRun, CompareVariant, Generation, Message
 from apps.files.models import FileAsset, FileProcessingJob
@@ -56,6 +57,23 @@ def _recover_compare(pk):
     run.state = CompareRun.State.PARTIAL if completed else CompareRun.State.FAILED
     run.completed_at = now
     run.save(update_fields=["state", "completed_at"])
+    return True
+
+
+@transaction.atomic
+def _recover_compare_synthesis(pk):
+    run = CompareRun.objects.select_for_update().get(pk=pk)
+    if not run.synthesis_reservation_id or run.synthesis_output:
+        return False
+    reservation = BalanceReservation.objects.select_for_update().filter(
+        pk=run.synthesis_reservation_id,
+        state=BalanceReservation.State.ACTIVE,
+    ).first()
+    if reservation is None or reservation.created_at >= _cutoff():
+        return False
+    release(reservation.id)
+    run.synthesis_reservation_id = None
+    run.save(update_fields=["synthesis_reservation_id"])
     return True
 
 
@@ -137,6 +155,18 @@ def recover_stale_operations():
             "compare_runs",
             CompareRun.objects.filter(state=CompareRun.State.RUNNING, created_at__lt=cutoff),
             _recover_compare,
+        ),
+        (
+            "compare_synthesis",
+            CompareRun.objects.filter(
+                synthesis_reservation_id__isnull=False,
+                synthesis_output="",
+                synthesis_reservation_id__in=BalanceReservation.objects.filter(
+                    state=BalanceReservation.State.ACTIVE,
+                    created_at__lt=cutoff,
+                ).values("id"),
+            ),
+            _recover_compare_synthesis,
         ),
         (
             "image_generations",
