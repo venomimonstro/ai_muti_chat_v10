@@ -1,12 +1,17 @@
 from datetime import timedelta
+from decimal import Decimal
 
-from django.db.models import Count, Sum
+from django.db.models import Count, DecimalField, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.chat.models import Generation
+
+
+MONEY_FIELD = DecimalField(max_digits=14, decimal_places=4)
+MONEY_ZERO = Value(Decimal("0.0000"), output_field=MONEY_FIELD)
 
 
 class UsageSummaryView(APIView):
@@ -23,7 +28,7 @@ class UsageSummaryView(APIView):
             cutoff = now - timedelta(days=days)
             row = qs.filter(completed_at__gte=cutoff).aggregate(
                 requests=Count("id"),
-                cost=Coalesce(Sum("actual_cost_rub"), 0),
+                cost=Coalesce(Sum("actual_cost_rub"), MONEY_ZERO, output_field=MONEY_FIELD),
                 input_tokens=Coalesce(Sum("input_tokens"), 0),
                 output_tokens=Coalesce(Sum("output_tokens"), 0),
             )
@@ -38,7 +43,7 @@ class UsageSummaryView(APIView):
             qs.values("routed_model")
             .annotate(
                 requests=Count("id"),
-                cost_rub=Coalesce(Sum("actual_cost_rub"), 0),
+                cost_rub=Coalesce(Sum("actual_cost_rub"), MONEY_ZERO, output_field=MONEY_FIELD),
                 input_tokens=Coalesce(Sum("input_tokens"), 0),
                 output_tokens=Coalesce(Sum("output_tokens"), 0),
             )
@@ -49,7 +54,7 @@ class UsageSummaryView(APIView):
             .values("day")
             .annotate(
                 requests=Count("id"),
-                cost_rub=Coalesce(Sum("actual_cost_rub"), 0),
+                cost_rub=Coalesce(Sum("actual_cost_rub"), MONEY_ZERO, output_field=MONEY_FIELD),
                 input_tokens=Coalesce(Sum("input_tokens"), 0),
                 output_tokens=Coalesce(Sum("output_tokens"), 0),
             )
