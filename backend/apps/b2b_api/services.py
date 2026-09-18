@@ -27,6 +27,7 @@ from .keys import key_is_active
 from .models import APIKey, APIUsage
 
 ZERO = Decimal("0")
+CONTEXT_OVERHEAD_TOKENS = 32
 
 
 class PublicAPIError(Exception):
@@ -248,6 +249,13 @@ def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key=
     model = _model_for(key, model_slug)
     max_tokens = min(max_tokens, model.max_output_tokens, settings.B2B_API_MAX_OUTPUT_TOKENS)
     input_budget, output_budget = conservative_token_budget(normalized, max_tokens)
+    if input_budget + output_budget + CONTEXT_OVERHEAD_TOKENS > model.context_window:
+        raise PublicAPIError(
+            "This model's maximum context length is exceeded",
+            code="context_length_exceeded",
+            status_code=400,
+            param="messages",
+        )
     price = active_price(model.slug)
     value = require_margin(
         quote(
