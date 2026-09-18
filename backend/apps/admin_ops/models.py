@@ -41,16 +41,8 @@ class SecurityEvent(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     category = models.CharField(max_length=80)
-    severity = models.CharField(
-        max_length=16,
-        choices=Severity.choices,
-        default=Severity.WARNING,
-    )
-    status = models.CharField(
-        max_length=16,
-        choices=Status.choices,
-        default=Status.OPEN,
-    )
+    severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.WARNING)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -129,11 +121,7 @@ class BackupRecord(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     kind = models.CharField(max_length=16, choices=Kind.choices)
-    status = models.CharField(
-        max_length=16,
-        choices=Status.choices,
-        default=Status.REQUESTED,
-    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.REQUESTED)
     storage_reference = models.CharField(max_length=300, blank=True)
     size_bytes = models.PositiveBigIntegerField(null=True, blank=True)
     checksum_sha256 = models.CharField(max_length=64, blank=True)
@@ -187,11 +175,7 @@ class ComplianceSignoff(models.Model):
 
     key = models.SlugField(max_length=100, primary_key=True)
     title = models.CharField(max_length=200)
-    status = models.CharField(
-        max_length=16,
-        choices=Status.choices,
-        default=Status.PENDING,
-    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     evidence_reference = models.CharField(max_length=400, blank=True)
     notes = models.TextField(blank=True)
     reviewed_by = models.ForeignKey(
@@ -224,11 +208,7 @@ class StatusIncident(models.Model):
     title = models.CharField(max_length=200)
     message = models.TextField()
     impact = models.CharField(max_length=16, choices=Impact.choices)
-    state = models.CharField(
-        max_length=20,
-        choices=State.choices,
-        default=State.INVESTIGATING,
-    )
+    state = models.CharField(max_length=20, choices=State.choices, default=State.INVESTIGATING)
     affected_components = models.JSONField(default=list)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -261,7 +241,12 @@ class ProductEvent(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["event_name", "created_at"])]
+        indexes = [
+            models.Index(
+                fields=["event_name", "created_at"],
+                name="admin_ops_p_event_n_7bf562_idx",
+            )
+        ]
 
 
 class OperationalDrillEvidence(models.Model):
@@ -290,7 +275,12 @@ class OperationalDrillEvidence(models.Model):
 
     class Meta:
         ordering = ["-passed_at"]
-        indexes = [models.Index(fields=["kind", "passed_at"])]
+        indexes = [
+            models.Index(
+                fields=["kind", "passed_at"],
+                name="admin_ops_o_kind_874f96_idx",
+            )
+        ]
 
     def save(self, *args, **kwargs):
         if self.pk and type(self).objects.filter(pk=self.pk).exists():
