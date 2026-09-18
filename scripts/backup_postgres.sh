@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-: "${DATABASE_URL:?DATABASE_URL is required}"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${PROJECT_DIR}/.env.production"
+COMPOSE_FILE="${PROJECT_DIR}/docker-compose.prod.yml"
 destination="${1:?Usage: backup_postgres.sh /absolute/private/path/backup.dump}"
 
+[[ -f "$ENV_FILE" ]] || { echo ".env.production not found" >&2; exit 2; }
 if [[ "$destination" != /* || "$destination" == "/" ]]; then
   echo "Backup destination must be an explicit absolute file path." >&2
   exit 2
@@ -13,11 +16,15 @@ if [[ -e "$destination" || -e "${destination}.sha256" ]]; then
   exit 3
 fi
 
+mkdir -p "$(dirname "$destination")"
 umask 077
-temporary="$(mktemp "${destination}.tmp.XXXXXX")"
+temporary="${destination}.tmp.$$"
 trap 'rm -f -- "$temporary"' EXIT
-pg_dump --format=custom --no-owner --no-acl "$DATABASE_URL" > "$temporary"
-pg_restore --list "$temporary" >/dev/null
+compose(){ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+
+compose exec -T postgres sh -ceu 'exec pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' >"$temporary"
+test -s "$temporary" || { echo "Database backup is empty" >&2; exit 4; }
+compose exec -T postgres pg_restore --list <"$temporary" >/dev/null
 mv -- "$temporary" "$destination"
 trap - EXIT
 sha256sum "$destination" | tee "${destination}.sha256"
