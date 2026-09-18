@@ -3,6 +3,7 @@ from django.urls import path
 from .growth_views import GrowthFunnelView
 from .metrics_views import OperationalMetricsView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
+from .user_views import AdminUserActionView, AdminUserDetailView
 from .views import (
     AuditView,
     BackupActionView,
@@ -51,6 +52,8 @@ urlpatterns = [
     path("providers/bulk-action/", ProviderBulkActionView.as_view(), name="admin-provider-bulk-action"),
     path("requests/", RequestInspectorView.as_view(), name="admin-requests"),
     path("users-organizations/", UserOrganizationView.as_view(), name="admin-users-orgs"),
+    path("users/<uuid:user_id>/", AdminUserDetailView.as_view(), name="admin-user-detail"),
+    path("users/<uuid:user_id>/action/", AdminUserActionView.as_view(), name="admin-user-action"),
     path("security/", SecurityEventView.as_view(), name="admin-security"),
     path("security/<uuid:event_id>/action/", SecurityEventActionView.as_view(), name="admin-security-action"),
     path("releases/", ReleaseView.as_view(), name="admin-releases"),
