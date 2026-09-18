@@ -14,6 +14,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         gates = [
             ("django_deploy_check", "check", {"deploy": True}),
+            ("semantic_model", "semantic_model_check", {}),
             ("commercial_config", "commercial_config_check", {"require_healthy": True}),
             ("payment_commercial", "payment_commercial_check", {"require_reconciliation": True}),
             ("financial_invariants", "verify_financial_invariants", {}),
