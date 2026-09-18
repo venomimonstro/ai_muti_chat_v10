@@ -1,9 +1,12 @@
 from django.db import transaction
+from django.utils.dateparse import parse_datetime
 from rest_framework import serializers, status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .branches import visible_messages
 from .models import Conversation
+from .serializers import MessageSerializer
 from .ux_models import ConversationFolder, ConversationUIState
 
 
@@ -59,6 +62,59 @@ class ConversationSummaryListView(APIView):
                 "updated_at": item.updated_at,
             })
         return Response(result)
+
+
+class ConversationWorkspaceView(APIView):
+    def get(self, request, conversation_id):
+        conversation = (
+            Conversation.objects.filter(pk=conversation_id, owner=request.user)
+            .select_related("active_branch")
+            .prefetch_related("branches")
+            .first()
+        )
+        if conversation is None:
+            return Response({"detail": "Чат не найден"}, status=404)
+        try:
+            limit = min(max(int(request.query_params.get("limit", 60)), 20), 120)
+        except (TypeError, ValueError):
+            limit = 60
+        queryset = visible_messages(conversation).select_related("generation_response")
+        before_raw = request.query_params.get("before")
+        if before_raw:
+            before = parse_datetime(before_raw)
+            if before is not None:
+                queryset = queryset.filter(created_at__lt=before)
+        page = list(queryset.order_by("-created_at")[:limit])
+        page.reverse()
+        has_more = False
+        if page:
+            has_more = visible_messages(conversation).filter(created_at__lt=page[0].created_at).exists()
+        return Response({
+            "conversation": {
+                "id": str(conversation.id),
+                "title": conversation.title,
+                "selected_model": conversation.selected_model,
+                "routing_mode": conversation.routing_mode,
+                "project": str(conversation.project_id) if conversation.project_id else None,
+                "memory_enabled": conversation.memory_enabled,
+                "active_branch": str(conversation.active_branch_id) if conversation.active_branch_id else None,
+                "branches": [
+                    {
+                        "id": str(branch.id),
+                        "parent": str(branch.parent_id) if branch.parent_id else None,
+                        "forked_from": str(branch.forked_from_id) if branch.forked_from_id else None,
+                        "title": branch.title,
+                        "created_at": branch.created_at,
+                    }
+                    for branch in conversation.branches.all()
+                ],
+                "created_at": conversation.created_at,
+                "updated_at": conversation.updated_at,
+                "messages": MessageSerializer(page, many=True).data,
+            },
+            "has_more": has_more,
+            "next_before": page[0].created_at.isoformat() if page and has_more else None,
+        })
 
 
 class ConversationUIStateViewSet(viewsets.ViewSet):
