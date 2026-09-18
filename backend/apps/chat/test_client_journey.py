@@ -153,3 +153,40 @@ def test_client_can_write_receive_organize_and_review_usage(client_journey):
         item.get("conversation_id") != conversation_id
         for item in search_after_delete.data["results"]
     )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_non_stream_send_response_stays_bounded_for_long_chat(client_journey):
+    client, user = client_journey
+    conversation = Conversation.objects.create(
+        owner=user,
+        title="Длинная история",
+        selected_model="journey-echo-v1",
+        routing_mode=Conversation.RoutingMode.MANUAL,
+    )
+    Message.objects.bulk_create(
+        [
+            Message(
+                conversation=conversation,
+                role=Message.Role.USER if index % 2 == 0 else Message.Role.ASSISTANT,
+                content=f"old-history-{index}",
+            )
+            for index in range(120)
+        ]
+    )
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/",
+        {
+            "content": "Новый ограниченный ответ",
+            "client_message_id": "7280cf72-7855-4337-975b-264490c3af61",
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="journey:bounded-response",
+    )
+
+    assert response.status_code == 200
+    assert set(response.data) == {"generation_id", "state", "message"}
+    assert response.data["message"]["role"] == Message.Role.ASSISTANT
+    assert "messages" not in response.data
+    assert "old-history-0" not in str(response.data)
