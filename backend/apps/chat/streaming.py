@@ -25,6 +25,8 @@ from apps.billing.services import release, reserve, settle
 from apps.memory_store.services import extract_memory_candidates, process_explicit_command, record_memory_usage
 from apps.workspace_search.embeddings import index_message
 
+from .attachment_context import enrich_snapshot_with_attachments
+from .attachments import attachment_metadata, resolve_chat_attachments
 from .branches import ensure_active_branch
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
@@ -49,7 +51,18 @@ def _index_history(message):
 
 
 def _snapshot_file_ids(generation):
-    return [item.get("file_id") for item in generation.context_snapshot.get("vision_assets", []) if item.get("file_id")]
+    items = generation.context_snapshot.get("attached_files")
+    if items is None:
+        items = generation.context_snapshot.get("vision_assets", [])
+    return [item.get("file_id") for item in items if item.get("file_id")]
+
+
+def _snapshot_vision_ids(generation):
+    return [
+        item.get("file_id")
+        for item in generation.context_snapshot.get("vision_assets", [])
+        if item.get("file_id")
+    ]
 
 
 def _validate_replayed_generation(generation, conversation, content, client_message_id, file_ids=None):
@@ -72,7 +85,11 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
     if not isinstance(content, str) or not content.strip() or len(content) > 100_000:
         raise ValidationError("Сообщение должно содержать от 1 до 100000 символов")
 
-    vision_assets = resolve_vision_assets(user=user, conversation=conversation, file_ids=file_ids)
+    attachments, vision_assets = resolve_chat_attachments(
+        user=user,
+        conversation=conversation,
+        file_ids=file_ids,
+    )
     existing = (
         Generation.objects.filter(idempotency_key=idempotency_key, owner=user)
         .select_related("assistant_message", "user_message")
@@ -148,6 +165,8 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
         routing_content = content
         if vision_assets:
             routing_content += "\n[vision attachment: изображение фото скриншот]"
+        if attachments and len(attachments) != len(vision_assets):
+            routing_content += "\n[document attachment: файл документ таблица PDF]"
         route = select_route(conversation=locked, content=routing_content)
         if vision_assets and "vision" not in set(route.selected.capabilities or []):
             raise ValidationError("Выбранная модель не поддерживает анализ изображений")
@@ -182,14 +201,22 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
             output_tokens=MAX_OUTPUT_TOKENS,
             include_memory=not suppress_memory,
         )
+        snapshot = enrich_snapshot_with_attachments(
+            snapshot,
+            user=user,
+            conversation=conversation,
+            query=content,
+            assets=attachments,
+        )
         snapshot = enrich_snapshot_with_web(
             snapshot,
             content,
             required=bool(route.classification.signals.get("needs_tools")),
         )
         if snapshot.get("budget", {}).get("remaining", 0) < 0:
-            raise ValidationError("Веб-контекст превышает доступное окно модели")
+            raise ValidationError("Контекст превышает доступное окно модели")
         snapshot.update(memory_metadata)
+        snapshot["attached_files"] = attachment_metadata(attachments)
         snapshot["vision_assets"] = vision_metadata(vision_assets)
         snapshot["routing"] = {
             "decision_id": str(decision.id),
@@ -328,7 +355,7 @@ def run(generation, *, adapter=None):
     history = generation.context_snapshot.get("provider_messages") or [
         {"role": generation.user_message.role, "content": generation.user_message.content}
     ]
-    vision_ids = _snapshot_file_ids(generation)
+    vision_ids = _snapshot_vision_ids(generation)
     if vision_ids:
         assets = resolve_vision_assets(
             user=generation.owner,
