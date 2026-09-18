@@ -2,13 +2,13 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.files.models import FileChunk
+from apps.files.models import FileAsset, FileChunk
 from apps.files.rag import detect_prompt_injection
 from apps.files.semantic_embeddings import MODEL_VERSION, embed_passage
 
 
 class Command(BaseCommand):
-    help = "Rebuild file chunk vectors using the current local multilingual semantic model"
+    help = "Rebuild active file chunk vectors using the current local multilingual semantic model"
 
     def add_arguments(self, parser):
         parser.add_argument("--batch-size", type=int, default=64)
@@ -16,7 +16,14 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         batch_size = max(1, min(options["batch_size"], 256))
-        queryset = FileChunk.objects.select_related("file").order_by("id")
+        queryset = (
+            FileChunk.objects.select_related("file")
+            .filter(
+                file__deleted_at__isnull=True,
+                file__status__in=[FileAsset.Status.READY, FileAsset.Status.PARTIAL],
+            )
+            .order_by("id")
+        )
         if not options["force"]:
             queryset = queryset.exclude(embedding_model=MODEL_VERSION)
         updated = 0
@@ -41,6 +48,12 @@ class Command(BaseCommand):
     def _flush(self, batch):
         FileChunk.objects.bulk_update(
             batch,
-            ["embedding", "embedding_model", "injection_risk", "injection_signals", "indexed_at"],
+            [
+                "embedding",
+                "embedding_model",
+                "injection_risk",
+                "injection_signals",
+                "indexed_at",
+            ],
             batch_size=len(batch),
         )
