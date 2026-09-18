@@ -1,0 +1,20 @@
+"use client";
+
+import Link from "next/link";
+import {useEffect,useState} from "react";
+import {useRouter} from "next/navigation";
+import {ApiError,api} from "../../../lib/api";
+import type {Wallet} from "../../../lib/types";
+import styles from "./wallet.module.css";
+
+type Payment={id:string;amount_rub:string;currency:string;status:"created"|"pending"|"succeeded"|"canceled";confirmation_url:string;receipt_status:string;credited_at:string|null;created_at:string};
+const money=(value:string|number|null|undefined)=>`${Number(value??0).toFixed(2).replace(".",",")} ₽`;
+const statusLabel=(status:Payment["status"])=>status==="succeeded"?"Оплачен":status==="pending"?"Ожидает оплаты":status==="canceled"?"Отменён":"Создан";
+
+export default function WalletPage(){
+ const router=useRouter();const [wallet,setWallet]=useState<Wallet|null>(null);const [payments,setPayments]=useState<Payment[]>([]);const [amount,setAmount]=useState("500");const [busy,setBusy]=useState(false);const [error,setError]=useState("");
+ const load=async()=>{try{const[w,p]=await Promise.all([api<Wallet>("/wallet/"),api<Payment[]>("/payments/")]);setWallet(w);setPayments(p);}catch(reason){if(reason instanceof ApiError&&[401,403].includes(reason.status))router.replace("/login");else setError(reason instanceof Error?reason.message:"Не удалось загрузить кошелёк");}};
+ useEffect(()=>{void load();},[]);
+ const topup=async()=>{setBusy(true);setError("");try{const payment=await api<Payment>("/payments/",{method:"POST",headers:{"Idempotency-Key":`wallet:${crypto.randomUUID()}`},body:JSON.stringify({amount_rub:amount})});if(payment.confirmation_url)window.location.assign(payment.confirmation_url);else{await load();}}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось создать платёж");}finally{setBusy(false);}};
+ return <main className={styles.page}><div className={styles.shell}><header className={styles.top}><div><h1>Баланс и платежи</h1><p>Один рублёвый баланс для AI-запросов и функций сервиса.</p></div><Link href="/app">← Workspace</Link></header>{error&&<div className={`${styles.notice} ${styles.error}`}>{error}</div>}<section className={styles.hero}><div className={styles.balance}><small>Доступно</small><strong>{money(wallet?.available_rub)}</strong><div className={styles.split}><span>Оплачено: {money(wallet?.paid_rub)}</span><span>Промо: {money(wallet?.promo_rub)}</span><span>В резерве: {money(wallet?.reserved_rub)}</span></div></div><div className={styles.card}><h2>Пополнить</h2><div className={styles.amounts}>{[300,500,1000,3000].map(item=><button key={item} className={amount===String(item)?styles.active:""} onClick={()=>setAmount(String(item))}>{item.toLocaleString("ru")} ₽</button>)}</div><input className={styles.input} type="number" min="100" max="100000" step="1" value={amount} onChange={e=>setAmount(e.target.value)}/><button className={`${styles.button} ${styles.primary}`} disabled={busy||Number(amount)<100} onClick={topup}>{busy?"Создаём платёж…":`Пополнить на ${money(amount)}`}</button></div></section><section className={styles.grid}><div className={styles.card}><h2>История платежей</h2><div className={styles.list}>{payments.length===0?<p>Платежей пока нет.</p>:payments.map(item=><div className={styles.row} key={item.id}><div><b>{money(item.amount_rub)}</b><small>{new Date(item.created_at).toLocaleString("ru")} · чек: {item.receipt_status}</small></div><span className={`${styles.status} ${item.status==="succeeded"?styles.ok:item.status==="canceled"?styles.bad:""}`}>{statusLabel(item.status)}</span></div>)}</div></div><div className={styles.card}><h2>Последние списания</h2><div className={styles.list}>{wallet?.entries.length?<>{wallet.entries.slice(0,30).map(entry=><div className={styles.row} key={entry.id}><div><b>{entry.kind}</b><small>{new Date(entry.created_at).toLocaleString("ru")}</small></div><strong>{money(entry.amount_rub)}</strong></div>)}</>:<p>Операций пока нет.</p>}</div></div></section></div></main>;
+}
