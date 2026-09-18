@@ -6,6 +6,5 @@ class ChatConfig(AppConfig):
     name = "apps.chat"
 
     def ready(self):
-        # Register UI-only chat organization models without coupling them to the
-        # inference/billing models module.
-        from . import ux_models  # noqa: F401
+        # UI-only organization models are registered here to keep inference models focused.
+        from . import signals, ux_models  # noqa: F401
