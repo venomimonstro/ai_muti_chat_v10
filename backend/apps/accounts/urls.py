@@ -12,6 +12,7 @@ from .security_views import (
     SessionListView,
     SessionRevokeView,
 )
+from .usage_views import UsageSummaryView
 from .views import (
     ChangePasswordView,
     CsrfView,
@@ -36,6 +37,7 @@ urlpatterns = [
     path("me/", MeView.as_view()),
     path("csrf/", CsrfView.as_view()),
     path("preferences/", PreferenceView.as_view()),
+    path("usage/", UsageSummaryView.as_view()),
     path("onboarding/", OnboardingStatusView.as_view()),
     path("change-password/", ChangePasswordView.as_view()),
     path("logout-all/", LogoutAllView.as_view()),
