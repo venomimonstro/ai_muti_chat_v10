@@ -1,7 +1,9 @@
 import pytest
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.chat.branches import ensure_active_branch, fork_branch
 from apps.chat.models import Conversation, Message
 from apps.chat.ux_models import ConversationFolder, ConversationUIState
 
@@ -88,7 +90,74 @@ def test_workspace_page_is_bounded_and_can_load_older_messages():
     )
     assert second.status_code == 200
     assert len(second.data["conversation"]["messages"]) == 60
-    assert second.data["conversation"]["messages"][-1]["content"] != first.data["conversation"]["messages"][0]["content"]
+    first_ids = {item["id"] for item in first.data["conversation"]["messages"]}
+    second_ids = {item["id"] for item in second.data["conversation"]["messages"]}
+    assert first_ids.isdisjoint(second_ids)
+
+
+@pytest.mark.django_db
+def test_workspace_cursor_does_not_skip_messages_with_same_timestamp():
+    user = User.objects.create_user(
+        username="cursor-tie", email="cursor-tie@example.test", password="test-password-123"
+    )
+    conversation = Conversation.objects.create(owner=user, title="Одинаковое время")
+    messages = [
+        Message.objects.create(
+            conversation=conversation,
+            role=Message.Role.USER if index % 2 == 0 else Message.Role.ASSISTANT,
+            content=f"tie-{index}",
+        )
+        for index in range(75)
+    ]
+    same_time = timezone.now()
+    Message.objects.filter(id__in=[item.id for item in messages]).update(created_at=same_time)
+    client = APIClient()
+    client.force_authenticate(user)
+
+    first = client.get(
+        f"/api/v1/conversation-workspace/{conversation.id}/", {"limit": 40}
+    )
+    second = client.get(
+        f"/api/v1/conversation-workspace/{conversation.id}/",
+        {"limit": 40, "before": first.data["next_before"]},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    combined = first.data["conversation"]["messages"] + second.data["conversation"]["messages"]
+    assert len(combined) == 75
+    assert len({item["id"] for item in combined}) == 75
+    assert second.data["has_more"] is False
+
+
+@pytest.mark.django_db
+def test_workspace_paginates_only_active_branch_visible_messages():
+    user = User.objects.create_user(
+        username="branch-page", email="branch-page@example.test", password="test-password-123"
+    )
+    conversation = Conversation.objects.create(owner=user, title="Ветка")
+    branch = ensure_active_branch(conversation, user)
+    root = Message.objects.create(
+        conversation=conversation, branch=branch, role=Message.Role.USER, content="root"
+    )
+    old_answer = Message.objects.create(
+        conversation=conversation, branch=branch, role=Message.Role.ASSISTANT, content="old-answer"
+    )
+    new_branch = fork_branch(
+        conversation=conversation, user=user, source_message=root, title="Новая ветка"
+    )
+    Message.objects.create(
+        conversation=conversation, branch=new_branch, role=Message.Role.ASSISTANT, content="new-answer"
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.get(f"/api/v1/conversation-workspace/{conversation.id}/")
+    assert response.status_code == 200
+    contents = [item["content"] for item in response.data["conversation"]["messages"]]
+    assert "root" in contents
+    assert "new-answer" in contents
+    assert "old-answer" not in contents
+    assert str(old_answer.id) not in {item["id"] for item in response.data["conversation"]["messages"]}
 
 
 @pytest.mark.django_db
