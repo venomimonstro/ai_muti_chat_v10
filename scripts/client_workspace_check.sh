@@ -19,7 +19,9 @@ docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q \
   apps/chat/test_workspace_ux.py \
   apps/chat/test_client_journey.py \
   apps/chat/test_streaming.py \
-  apps/accounts/test_account_security.py
+  apps/accounts/test_account_data.py \
+  apps/accounts/test_mfa.py \
+  apps/accounts/test_usage.py
 
 printf '[3/5] Django model and migration checks\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
