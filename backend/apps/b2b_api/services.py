@@ -13,7 +13,8 @@ from django.db.models import Avg, Count, Sum
 from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError, adapter_for
-from apps.ai_registry.models import AIModel
+from apps.ai_registry.models import AIModel, Provider
+from apps.billing.models import CostAnomaly
 from apps.billing.pricing import (
     active_price,
     calculate_from_snapshot,
@@ -43,6 +44,46 @@ class PublicAPIError(Exception):
 class CompletionResult:
     usage: APIUsage
     cached: bool
+
+
+def _trip_b2b_cost_guard(*, usage, model, provider_cost, charge, result):
+    CostAnomaly.objects.get_or_create(
+        dedupe_key=f"b2b-over-reserve:{usage.id}",
+        defaults={
+            "kind": CostAnomaly.Kind.COST_DEVIATION,
+            "severity": "critical",
+            "model_slug": model.slug,
+            "provider_slug": model.provider.slug,
+            "expected_rub": usage.estimated_cost_rub,
+            "actual_rub": charge,
+            "details": {
+                "reason": "provider_usage_exceeded_reserved_maximum",
+                "api_usage_id": str(usage.id),
+                "provider_cost_rub": str(provider_cost),
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "provider_request_id": result.provider_request_id,
+            },
+        },
+    )
+    Provider.objects.filter(pk=model.provider_id).update(
+        emergency_disabled=True,
+        health_state=Provider.HealthState.DISABLED,
+    )
+    model.provider.emergency_disabled = True
+    model.provider.health_state = Provider.HealthState.DISABLED
+    usage.provider_cost_rub = provider_cost
+    usage.prompt_tokens = result.input_tokens
+    usage.completion_tokens = result.output_tokens
+    usage.provider_request_id = result.provider_request_id
+    usage.save(
+        update_fields=[
+            "provider_cost_rub",
+            "prompt_tokens",
+            "completion_tokens",
+            "provider_request_id",
+        ]
+    )
 
 
 def require_scope(key, scope):
@@ -295,6 +336,13 @@ def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key=
             price, result.input_tokens, result.output_tokens, usage.pricing_snapshot
         )
         if charge > usage.estimated_cost_rub:
+            _trip_b2b_cost_guard(
+                usage=usage,
+                model=model,
+                provider_cost=provider_cost,
+                charge=charge,
+                result=result,
+            )
             raise PublicAPIError(
                 "Provider usage exceeded the reserved maximum",
                 code="cost_limit_exceeded",
