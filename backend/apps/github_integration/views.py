@@ -117,7 +117,7 @@ class GitHubRepositoryListView(APIView):
             raise NotFound("GitHub installation не найдена")
         try:
             repositories = list_repositories(installation.installation_id)
-        except (DjangoValidationError, ImproperConfigured) as exc:
+        except (DjangoValidationError, ImproperlyConfigured) as exc:
             raise ValidationError(str(exc)) from exc
         return Response([
             {
