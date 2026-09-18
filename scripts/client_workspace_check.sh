@@ -17,6 +17,7 @@ docker compose -f "$TEST_COMPOSE" up -d postgres
 printf '[2/5] Workspace UX and client journey tests\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q \
   apps/chat/test_workspace_ux.py \
+  apps/chat/test_workspace_signals.py \
   apps/chat/test_client_journey.py \
   apps/chat/test_streaming.py \
   apps/accounts/test_account_data.py \
