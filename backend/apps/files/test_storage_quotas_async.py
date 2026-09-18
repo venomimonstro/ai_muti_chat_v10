@@ -52,10 +52,11 @@ def test_user_file_count_quota_blocks_second_upload(monkeypatch, file_client):
 
 
 @pytest.mark.django_db
-def test_deleted_file_releases_quota(monkeypatch, file_client):
+def test_deleted_file_releases_storage_quota_but_not_upload_velocity(monkeypatch, file_client):
     _user, project, client = file_client
     monkeypatch.setenv("FILE_USER_MAX_FILES", "1")
     monkeypatch.setenv("FILE_PROJECT_MAX_FILES", "1")
+    monkeypatch.setenv("FILE_UPLOADS_PER_MINUTE", "2")
     monkeypatch.setenv("FILE_PROCESSING_ASYNC", "false")
     first = client.post(
         "/api/v1/files/",
@@ -72,8 +73,66 @@ def test_deleted_file_releases_quota(monkeypatch, file_client):
         format="multipart",
         HTTP_IDEMPOTENCY_KEY="quota:delete:two",
     )
+    third = client.post(
+        "/api/v1/files/",
+        {"project": str(project.id), "file": _text("three.txt")},
+        format="multipart",
+        HTTP_IDEMPOTENCY_KEY="quota:delete:three",
+    )
 
     assert second.status_code == 201
+    assert third.status_code == 400
+    assert "Слишком много загрузок" in str(third.data)
+
+
+@pytest.mark.django_db
+def test_active_processing_limit_blocks_worker_flood(monkeypatch, file_client):
+    _user, project, client = file_client
+    monkeypatch.setenv("FILE_PROCESSING_ASYNC", "true")
+    monkeypatch.setenv("FILE_USER_MAX_ACTIVE_PROCESSING", "1")
+    monkeypatch.setenv("FILE_UPLOADS_PER_MINUTE", "20")
+
+    with patch("apps.files.views.process_file_task.delay", return_value=None):
+        first = client.post(
+            "/api/v1/files/",
+            {"project": str(project.id), "file": _text("pending-one.txt")},
+            format="multipart",
+            HTTP_IDEMPOTENCY_KEY="active:one",
+        )
+        second = client.post(
+            "/api/v1/files/",
+            {"project": str(project.id), "file": _text("pending-two.txt")},
+            format="multipart",
+            HTTP_IDEMPOTENCY_KEY="active:two",
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 400
+    assert "уже обрабатывается" in str(second.data)
+
+
+@pytest.mark.django_db
+def test_idempotent_file_retry_is_not_blocked_by_velocity_limit(monkeypatch, file_client):
+    _user, project, client = file_client
+    monkeypatch.setenv("FILE_UPLOADS_PER_MINUTE", "1")
+    monkeypatch.setenv("FILE_PROCESSING_ASYNC", "false")
+
+    first = client.post(
+        "/api/v1/files/",
+        {"project": str(project.id), "file": _text("retry.txt")},
+        format="multipart",
+        HTTP_IDEMPOTENCY_KEY="velocity:retry",
+    )
+    repeated = client.post(
+        "/api/v1/files/",
+        {"project": str(project.id), "file": _text("retry.txt")},
+        format="multipart",
+        HTTP_IDEMPOTENCY_KEY="velocity:retry",
+    )
+
+    assert first.status_code == 201
+    assert repeated.status_code == 200
+    assert repeated.data["id"] == first.data["id"]
 
 
 @pytest.mark.django_db
