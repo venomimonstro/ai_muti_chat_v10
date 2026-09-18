@@ -70,7 +70,8 @@ def _xlsx_sections(stream):
                 for item in root
             ]
         sheet_names = sorted(
-            name for name in archive.namelist()
+            name
+            for name in archive.namelist()
             if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
         )
         for sheet_name in sheet_names:
@@ -79,13 +80,17 @@ def _xlsx_sections(stream):
             for cell in (node for node in root.iter() if node.tag.endswith("}c")):
                 value = next((node.text for node in cell if node.tag.endswith("}v")), None)
                 if value is None:
-                    value = "".join((node.text or "") for node in cell.iter() if node.tag.endswith("}t"))
+                    value = "".join(
+                        (node.text or "") for node in cell.iter() if node.tag.endswith("}t")
+                    )
                 elif cell.attrib.get("t") == "s" and value.isdigit():
                     index = int(value)
                     value = shared[index] if index < len(shared) else ""
                 if value:
                     values.append(value)
-            sections.append((sheet_name.rsplit("/", 1)[-1], _normalize("\n".join(values))))
+            sections.append(
+                (sheet_name.rsplit("/", 1)[-1], _normalize("\n".join(values)))
+            )
             if sum(len(content) for _, content in sections) > settings.FILE_MAX_EXTRACTED_CHARS:
                 raise PartialExtraction("extracted_text_limit")
     return sections
@@ -123,11 +128,11 @@ def _pdf_sections(stream):
             raise PartialExtraction("extracted_text_limit")
         sections.append((f"page:{index}", text))
     if not sections:
-        # OCR is intentionally not attempted here. Scanned PDFs are marked partial so a
-        # dedicated OCR worker can handle them later without making normal PDF parsing risky.
         raise PartialExtraction("pdf_text_layer_missing")
     if pages_with_text < page_count:
-        sections.append(("pdf:metadata", f"Text extracted from {pages_with_text} of {page_count} pages."))
+        sections.append(
+            ("pdf:metadata", f"Text extracted from {pages_with_text} of {page_count} pages.")
+        )
     return sections
 
 
@@ -177,13 +182,34 @@ def _chunks(sections):
             start = max(end - settings.FILE_CHUNK_OVERLAP_CHARS, start + 1)
 
 
+def _asset_is_deleted(asset_id):
+    return not FileAsset.objects.filter(pk=asset_id, deleted_at__isnull=True).exclude(
+        status__in=[FileAsset.Status.DELETING, FileAsset.Status.DELETED]
+    ).exists()
+
+
+def _finish_job_deleted(job):
+    job.state = FileProcessingJob.State.FAILED
+    job.error_code = "deleted_during_processing"
+    job.finished_at = timezone.now()
+    job.save(update_fields=["state", "error_code", "finished_at"])
+
+
 def process_file(asset: FileAsset):
-    job = FileProcessingJob.objects.create(file=asset)
-    asset.status = FileAsset.Status.PARSING
-    asset.save(update_fields=["status", "updated_at"])
-    job.state = FileProcessingJob.State.RUNNING
-    job.started_at = timezone.now()
-    job.save(update_fields=["state", "started_at"])
+    claimed = (
+        FileAsset.objects.filter(pk=asset.pk, deleted_at__isnull=True)
+        .exclude(status__in=[FileAsset.Status.DELETING, FileAsset.Status.DELETED])
+        .update(status=FileAsset.Status.PARSING, updated_at=timezone.now())
+    )
+    if not claimed:
+        asset.refresh_from_db()
+        return asset
+    asset.refresh_from_db()
+    job = FileProcessingJob.objects.create(
+        file=asset,
+        state=FileProcessingJob.State.RUNNING,
+        started_at=timezone.now(),
+    )
     try:
         sections = _extract(asset)
         chars = sum(len(content) for _, content in sections)
@@ -191,30 +217,51 @@ def process_file(asset: FileAsset):
             raise PartialExtraction("extracted_text_limit")
         chunks = [prepare_chunk(chunk, asset) for chunk in _chunks(sections)]
         with transaction.atomic():
-            asset.chunks.all().delete()
+            locked = FileAsset.objects.select_for_update().get(pk=asset.pk)
+            if locked.deleted_at is not None or locked.status in {
+                FileAsset.Status.DELETING,
+                FileAsset.Status.DELETED,
+            }:
+                _finish_job_deleted(job)
+                return locked
+            locked.chunks.all().delete()
+            for chunk in chunks:
+                chunk.file = locked
             FileChunk.objects.bulk_create(chunks)
-            asset.status = FileAsset.Status.READY
-            asset.extracted_chars = chars
-            asset.error_code = ""
-            asset.save(update_fields=["status", "extracted_chars", "error_code", "updated_at"])
+            locked.status = FileAsset.Status.READY
+            locked.extracted_chars = chars
+            locked.error_code = ""
+            locked.save(
+                update_fields=["status", "extracted_chars", "error_code", "updated_at"]
+            )
             job.state = FileProcessingJob.State.COMPLETED
             job.finished_at = timezone.now()
             job.save(update_fields=["state", "finished_at"])
     except PartialExtraction as exc:
-        asset.status = FileAsset.Status.PARTIAL
-        asset.error_code = exc.code
-        asset.save(update_fields=["status", "error_code", "updated_at"])
-        job.state = FileProcessingJob.State.PARTIAL
-        job.error_code = exc.code
-        job.finished_at = timezone.now()
-        job.save(update_fields=["state", "error_code", "finished_at"])
+        if _asset_is_deleted(asset.pk):
+            _finish_job_deleted(job)
+        else:
+            FileAsset.objects.filter(pk=asset.pk, deleted_at__isnull=True).exclude(
+                status__in=[FileAsset.Status.DELETING, FileAsset.Status.DELETED]
+            ).update(status=FileAsset.Status.PARTIAL, error_code=exc.code, updated_at=timezone.now())
+            job.state = FileProcessingJob.State.PARTIAL
+            job.error_code = exc.code
+            job.finished_at = timezone.now()
+            job.save(update_fields=["state", "error_code", "finished_at"])
     except Exception:
-        asset.status = FileAsset.Status.FAILED
-        asset.error_code = "extraction_failed"
-        asset.save(update_fields=["status", "error_code", "updated_at"])
-        job.state = FileProcessingJob.State.FAILED
-        job.error_code = "extraction_failed"
-        job.finished_at = timezone.now()
-        job.save(update_fields=["state", "error_code", "finished_at"])
+        if _asset_is_deleted(asset.pk):
+            _finish_job_deleted(job)
+        else:
+            FileAsset.objects.filter(pk=asset.pk, deleted_at__isnull=True).exclude(
+                status__in=[FileAsset.Status.DELETING, FileAsset.Status.DELETED]
+            ).update(
+                status=FileAsset.Status.FAILED,
+                error_code="extraction_failed",
+                updated_at=timezone.now(),
+            )
+            job.state = FileProcessingJob.State.FAILED
+            job.error_code = "extraction_failed"
+            job.finished_at = timezone.now()
+            job.save(update_fields=["state", "error_code", "finished_at"])
     asset.refresh_from_db()
     return asset
