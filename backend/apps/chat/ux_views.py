@@ -1,6 +1,5 @@
 from django.db import transaction
 from rest_framework import serializers, status, viewsets
-from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import Conversation
@@ -30,6 +29,19 @@ class ConversationFolderViewSet(viewsets.ModelViewSet):
 
 
 class ConversationUIStateViewSet(viewsets.ViewSet):
+    def list(self, request):
+        rows = ConversationUIState.objects.filter(owner=request.user).values(
+            "conversation_id", "folder_id", "is_pinned"
+        )
+        return Response([
+            {
+                "conversation_id": str(row["conversation_id"]),
+                "folder": str(row["folder_id"]) if row["folder_id"] else None,
+                "is_pinned": row["is_pinned"],
+            }
+            for row in rows
+        ])
+
     @transaction.atomic
     def partial_update(self, request, pk=None):
         conversation = Conversation.objects.select_for_update().filter(pk=pk, owner=request.user).first()
