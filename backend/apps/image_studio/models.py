@@ -41,6 +41,7 @@ class ImageModel(models.Model):
 
 class ImageGeneration(models.Model):
     class State(models.TextChoices):
+        QUEUED = "queued", "В очереди"
         RUNNING = "running", "Выполняется"
         COMPLETED = "completed", "Готово"
         FAILED = "failed", "Ошибка"
