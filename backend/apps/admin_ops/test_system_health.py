@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 from django.core.cache import cache
 from django.test import RequestFactory
@@ -17,8 +15,7 @@ from .system_health import (
 
 
 @pytest.mark.django_db
-def test_http_exception_is_grouped_and_can_be_resolved(settings, tmp_path):
-    settings.SYSTEM_ISSUE_LOG_FILE = str(tmp_path / "ignored-by-module-import.jsonl")
+def test_http_exception_is_grouped_and_can_be_resolved():
     cache.delete(INDEX_KEY)
     request = RequestFactory().get("/api/v1/example/")
     request.user = User.objects.create_user(
