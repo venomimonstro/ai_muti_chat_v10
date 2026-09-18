@@ -2,10 +2,13 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .message_actions import EditMessageView, RegenerateMessageView
+from .ux_views import ConversationFolderViewSet, ConversationUIStateViewSet
 from .views import ConversationViewSet
 
 router = DefaultRouter()
 router.register("conversations", ConversationViewSet, basename="conversation")
+router.register("conversation-folders", ConversationFolderViewSet, basename="conversation-folder")
+router.register("conversation-ui", ConversationUIStateViewSet, basename="conversation-ui")
 
 urlpatterns = [
     path(
