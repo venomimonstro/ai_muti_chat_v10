@@ -43,6 +43,24 @@ def _trip_image_provider(*, model, generation, reason, expected=None, actual=Non
     model.provider.health_state = Provider.HealthState.DISABLED
 
 
+def _validate_existing(existing, *, model_slug, prompt, size, quality, count, conversation):
+    normalized_prompt = str(prompt).strip()
+    try:
+        normalized_count = int(count)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Количество должно быть целым числом") from exc
+    if (
+        existing.model.slug != model_slug
+        or existing.prompt != normalized_prompt
+        or existing.size != size
+        or existing.quality != quality
+        or existing.requested_count != normalized_count
+        or existing.conversation_id != (conversation.id if conversation else None)
+    ):
+        raise ValidationError("Idempotency-Key уже использован для другого запроса")
+    return existing
+
+
 def _validated(model_slug, prompt, size, quality, count):
     if not settings.IMAGES_ENABLED:
         raise ValidationError("Генерация изображений временно отключена")
@@ -86,23 +104,21 @@ def generate(
         raise ValidationError("Чат не найден или недоступен")
     if not idempotency_key or len(idempotency_key) > 160:
         raise ValidationError("Корректный Idempotency-Key обязателен")
-    existing = ImageGeneration.objects.filter(owner=user, idempotency_key=idempotency_key).first()
+    existing = (
+        ImageGeneration.objects.filter(owner=user, idempotency_key=idempotency_key)
+        .select_related("model")
+        .first()
+    )
     if existing:
-        normalized_prompt = str(prompt).strip()
-        try:
-            normalized_count = int(count)
-        except (TypeError, ValueError) as exc:
-            raise ValidationError("Количество должно быть целым числом") from exc
-        if (
-            existing.model.slug != model_slug
-            or existing.prompt != normalized_prompt
-            or existing.size != size
-            or existing.quality != quality
-            or existing.requested_count != normalized_count
-            or existing.conversation_id != (conversation.id if conversation else None)
-        ):
-            raise ValidationError("Idempotency-Key уже использован для другого запроса")
-        return existing
+        return _validate_existing(
+            existing,
+            model_slug=model_slug,
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            count=count,
+            conversation=conversation,
+        )
     model, value, prompt, count = preview(
         model_slug=model_slug, prompt=prompt, size=size, quality=quality, count=count
     )
@@ -129,7 +145,19 @@ def generate(
             generation.reservation = reservation
             generation.save(update_fields=["reservation"])
     except IntegrityError:
-        return ImageGeneration.objects.get(owner=user, idempotency_key=idempotency_key)
+        raced = ImageGeneration.objects.select_related("model").get(
+            owner=user,
+            idempotency_key=idempotency_key,
+        )
+        return _validate_existing(
+            raced,
+            model_slug=model_slug,
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            count=count,
+            conversation=conversation,
+        )
 
     try:
         result = (adapter or adapter_for(model)).generate(
