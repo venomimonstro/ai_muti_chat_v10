@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .compare_views import CompareDetailView, ComparePreviewView, CompareRunView, CompareSynthesisView
 from .message_actions import EditMessageView, RegenerateMessageView
 from .safe_views import SafeConversationViewSet
 from .ux_views import (
@@ -20,6 +21,10 @@ urlpatterns = [
     path("conversation-summaries/", ConversationSummaryListView.as_view(), name="conversation-summaries"),
     path("conversation-workspace/<uuid:conversation_id>/", ConversationWorkspaceView.as_view(), name="conversation-workspace"),
     path("conversation-settings/<uuid:conversation_id>/", ConversationSettingsView.as_view(), name="conversation-settings"),
+    path("compare/preview/", ComparePreviewView.as_view(), name="compare-preview"),
+    path("compare/", CompareRunView.as_view(), name="compare-run"),
+    path("compare/<uuid:compare_id>/", CompareDetailView.as_view(), name="compare-detail"),
+    path("compare/<uuid:compare_id>/synthesis/", CompareSynthesisView.as_view(), name="compare-synthesis"),
     path(
         "conversations/<uuid:conversation_id>/messages/<uuid:message_id>/edit/",
         EditMessageView.as_view(),
