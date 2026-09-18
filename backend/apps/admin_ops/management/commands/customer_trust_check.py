@@ -4,7 +4,6 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounts.models import SupportRequest
@@ -102,9 +101,7 @@ class Command(BaseCommand):
             created_at__lt=stale_before,
         ).count()
         if unanswered_support:
-            blockers.append(
-                f"support_unanswered_over_{stale_hours}h={unanswered_support}"
-            )
+            blockers.append(f"support_unanswered_over_{stale_hours}h={unanswered_support}")
         near_sla_before = timezone.now() - timedelta(hours=max(1, stale_hours // 2))
         near_sla = SupportRequest.objects.filter(
             status__in=[SupportRequest.Status.OPEN, SupportRequest.Status.IN_PROGRESS],
@@ -115,19 +112,39 @@ class Command(BaseCommand):
         if near_sla:
             warnings.append(f"support_approaching_sla={near_sla}")
 
+        referenced_reservations = set(
+            str(value)
+            for value in Generation.objects.exclude(reservation_id__isnull=True).values_list(
+                "reservation_id", flat=True
+            )
+        )
+        referenced_reservations.update(
+            str(value)
+            for value in ImageGeneration.objects.exclude(reservation_id__isnull=True).values_list(
+                "reservation_id", flat=True
+            )
+        )
+        referenced_reservations.update(
+            str(value)
+            for value in APIUsage.objects.exclude(reservation_id__isnull=True).values_list(
+                "reservation_id", flat=True
+            )
+        )
+        referenced_reservations.update(
+            str(value)
+            for value in CompareRun.objects.exclude(reservation_id__isnull=True).values_list(
+                "reservation_id", flat=True
+            )
+        )
+        referenced_reservations.update(
+            str(value)
+            for value in CompareRun.objects.exclude(
+                synthesis_reservation_id__isnull=True
+            ).values_list("synthesis_reservation_id", flat=True)
+        )
         orphan_active_reservations = BalanceReservation.objects.filter(
             state=BalanceReservation.State.ACTIVE,
-        ).filter(
-            generation__isnull=True,
-            api_usage__isnull=True,
-            imagegeneration__isnull=True,
-        ).exclude(
-            id__in=CompareRun.objects.filter(reservation_id__isnull=False).values("reservation_id")
-        ).exclude(
-            id__in=CompareRun.objects.filter(synthesis_reservation_id__isnull=False).values(
-                "synthesis_reservation_id"
-            )
-        ).count()
+        ).exclude(id__in=referenced_reservations).count()
         if orphan_active_reservations:
             blockers.append(f"orphan_active_reservations={orphan_active_reservations}")
 
