@@ -40,7 +40,7 @@ class ImageGenerationSerializer(serializers.ModelSerializer):
     class Meta:
         model = ImageGeneration
         fields = (
-            "id", "model", "model_name", "provider", "prompt", "size", "quality",
+            "id", "conversation", "model", "model_name", "provider", "prompt", "size", "quality",
             "requested_count", "actual_count", "state", "estimated_cost_rub",
             "actual_cost_rub", "error_code", "images", "created_at", "completed_at",
         )
