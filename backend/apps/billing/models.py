@@ -16,6 +16,18 @@ class Wallet(models.Model):
     promo_rub = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(available_rub__gte=0), name="wallet_available_nonnegative"),
+            models.CheckConstraint(condition=models.Q(reserved_rub__gte=0), name="wallet_reserved_nonnegative"),
+            models.CheckConstraint(condition=models.Q(paid_rub__gte=0), name="wallet_paid_nonnegative"),
+            models.CheckConstraint(condition=models.Q(promo_rub__gte=0), name="wallet_promo_nonnegative"),
+            models.CheckConstraint(
+                condition=models.Q(available_rub=models.F("paid_rub") + models.F("promo_rub")),
+                name="wallet_available_equals_buckets",
+            ),
+        ]
+
 
 class LedgerEntry(models.Model):
     class Kind(models.TextChoices):
@@ -66,6 +78,25 @@ class BalanceReservation(models.Model):
     idempotency_key = models.CharField(max_length=160, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     settled_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount_rub__gt=0), name="reservation_amount_positive"),
+            models.CheckConstraint(condition=models.Q(paid_amount_rub__gte=0), name="reservation_paid_nonnegative"),
+            models.CheckConstraint(condition=models.Q(promo_amount_rub__gte=0), name="reservation_promo_nonnegative"),
+            models.CheckConstraint(
+                condition=models.Q(amount_rub=models.F("paid_amount_rub") + models.F("promo_amount_rub")),
+                name="reservation_amount_equals_buckets",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(actual_rub__isnull=True) | models.Q(actual_rub__gte=0),
+                name="reservation_actual_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(actual_rub__isnull=True) | models.Q(actual_rub__lte=models.F("amount_rub")),
+                name="reservation_actual_not_above_reserved",
+            ),
+        ]
 
 
 class PriceVersion(models.Model):
