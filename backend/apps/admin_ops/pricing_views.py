@@ -23,6 +23,20 @@ def _decimal(value, label, *, minimum=None):
 
 
 class PricingManagementView(PricingControlView):
+    def get(self, request):
+        response = super().get(request)
+        by_id = {
+            str(item.id): item
+            for item in PriceVersion.objects.filter(active=True)
+        }
+        for row in response.data.get("active_prices", []):
+            price = by_id.get(str(row["id"]))
+            if price is None:
+                continue
+            row["input_rub_per_million"] = str(price.input_rub_per_million)
+            row["output_rub_per_million"] = str(price.output_rub_per_million)
+        return response
+
     @transaction.atomic
     def post(self, request):
         model_slug = str(request.data.get("model", "")).strip()
