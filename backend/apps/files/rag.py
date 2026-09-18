@@ -160,12 +160,20 @@ def retrieve_project_chunks(*, user, project_id, query: str, limit: int = 4):
     )
     query_embedding = embed_query(query)
     scan_limit = settings.SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT
+
     if connection.vendor == "postgresql":
-        candidates = list(
-            queryset.exclude(embedding__isnull=True)
+        semantic_candidates = list(
+            queryset.filter(embedding_model=MODEL_VERSION)
+            .exclude(embedding__isnull=True)
             .annotate(vector_distance=CosineDistance("embedding", query_embedding))
             .order_by("vector_distance")[:scan_limit]
         )
+        # Keep a lexical fallback while legacy vectors are being reindexed. A chunk with
+        # an old embedding model is never compared against the current E5 query vector.
+        candidates_by_id = {item.id: item for item in semantic_candidates}
+        for item in queryset.order_by("file_id", "position")[:scan_limit]:
+            candidates_by_id.setdefault(item.id, item)
+        candidates = list(candidates_by_id.values())
     else:
         candidates = list(queryset[:scan_limit])
 
@@ -173,10 +181,16 @@ def retrieve_project_chunks(*, user, project_id, query: str, limit: int = 4):
     hits = []
     for chunk in candidates:
         lexical = lexical_score(chunk.content, query_terms)
-        if connection.vendor == "postgresql" and hasattr(chunk, "vector_distance"):
+        if (
+            chunk.embedding_model == MODEL_VERSION
+            and connection.vendor == "postgresql"
+            and hasattr(chunk, "vector_distance")
+        ):
             vector = max(0.0, 1.0 - float(chunk.vector_distance))
-        else:
+        elif chunk.embedding_model == MODEL_VERSION:
             vector = cosine_similarity(chunk.embedding, query_embedding)
+        else:
+            vector = 0.0
         score = vector * settings.RAG_VECTOR_WEIGHT + lexical * settings.RAG_LEXICAL_WEIGHT
         if score >= settings.SMART_CONTEXT_MIN_RELEVANCE:
             hits.append(RetrievalHit(chunk, lexical, vector, score, citation_for(chunk)))
