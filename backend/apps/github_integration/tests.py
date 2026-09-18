@@ -1,12 +1,15 @@
 import pytest
+from django.core import signing
 from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.projects.models import Project, ProjectMembership
 
+from .flow_views import OAUTH_STATE_SALT
 from .models import GitHubInstallation, GitHubRepositoryBinding
 from .services import _safe_path, write_repository_file
+from .views import STATE_SALT
 
 
 @pytest.mark.parametrize("path", ["../secrets.env", "a/../b.py", "a//b.py", ".", "", "a/./b.py"])
@@ -25,6 +28,7 @@ def test_write_is_disabled_by_default_and_requires_no_remote_call():
         owner=user,
         installation_id=1001,
         account_login="safe-user",
+        permissions={"contents": "write"},
     )
     binding = GitHubRepositoryBinding.objects.create(
         project=project,
@@ -95,7 +99,8 @@ def test_binding_may_enable_write_only_when_github_app_granted_contents_write():
 
 
 @pytest.mark.django_db
-def test_project_editor_cannot_use_owner_private_github_repository():
+def test_project_editor_cannot_use_owner_private_github_repository(monkeypatch):
+    monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "true")
     owner = User.objects.create_user(
         username="github-owner", email="github-owner@example.test", password="password123"
     )
@@ -134,7 +139,29 @@ def test_project_editor_cannot_use_owner_private_github_repository():
 
 
 @pytest.mark.django_db
-def test_callback_cannot_take_over_installation_owned_by_another_service_user(monkeypatch):
+def test_setup_url_requires_signed_service_state_and_redirects_to_github_oauth(monkeypatch):
+    monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("GITHUB_APP_CLIENT_ID", "Iv1.test-client")
+    user = User.objects.create_user(
+        username="github-setup", email="github-setup@example.test", password="password123"
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+    state = signing.dumps({"user_id": str(user.id)}, salt=STATE_SALT, compress=True)
+
+    response = client.get(
+        "/api/v1/github/setup/",
+        {"state": state, "installation_id": "7001", "setup_action": "install"},
+    )
+
+    assert response.status_code == 302
+    assert response["Location"].startswith("https://github.com/login/oauth/authorize?")
+    assert "client_id=Iv1.test-client" in response["Location"]
+
+
+@pytest.mark.django_db
+def test_oauth_callback_cannot_take_over_installation_owned_by_another_service_user(monkeypatch):
+    monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "true")
     owner = User.objects.create_user(
         username="install-owner", email="install-owner@example.test", password="password123"
     )
@@ -144,96 +171,71 @@ def test_callback_cannot_take_over_installation_owned_by_another_service_user(mo
     GitHubInstallation.objects.create(
         owner=owner,
         installation_id=5555,
-        account_login="shared-org",
+        account_login="shared-user",
+        account_type="User",
     )
-    monkeypatch.setattr("apps.github_integration.views.exchange_user_code", lambda _code: "token")
+    monkeypatch.setattr("apps.github_integration.flow_views.exchange_user_code", lambda _code: "token")
     monkeypatch.setattr(
-        "apps.github_integration.views.verified_installation",
+        "apps.github_integration.flow_views.verified_installation",
         lambda _token, _installation_id: {
             "id": 5555,
-            "account": {"login": "shared-org", "type": "Organization"},
+            "account": {"login": "shared-user", "type": "User"},
             "repository_selection": "selected",
             "permissions": {"contents": "read"},
         },
     )
+    state = signing.dumps(
+        {"user_id": str(attacker.id), "installation_id": 5555},
+        salt=OAUTH_STATE_SALT,
+        compress=True,
+    )
     client = APIClient()
     client.force_authenticate(attacker)
 
-    from django.core import signing
-    from .views import STATE_SALT
-
-    state = signing.dumps({"user_id": str(attacker.id)}, salt=STATE_SALT, compress=True)
     response = client.get(
         "/api/v1/github/callback/",
-        {"code": "verified-code", "state": state, "installation_id": "5555"},
+        {"code": "verified-code", "state": state},
     )
+
     assert response.status_code == 400
     assert "другому аккаунту" in str(response.data)
     assert GitHubInstallation.objects.get(installation_id=5555).owner_id == owner.id
 
 
 @pytest.mark.django_db
-def test_callback_can_resolve_single_verified_installation_without_installation_id(monkeypatch):
+def test_oauth_callback_records_only_verified_installation_metadata(monkeypatch):
+    monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "true")
     user = User.objects.create_user(
-        username="install-single", email="install-single@example.test", password="password123"
+        username="install-new", email="install-new@example.test", password="password123"
     )
-    monkeypatch.setattr("apps.github_integration.views.exchange_user_code", lambda _code: "token")
+    monkeypatch.setattr("apps.github_integration.flow_views.exchange_user_code", lambda _code: "ephemeral-token")
     monkeypatch.setattr(
-        "apps.github_integration.views.user_installations",
-        lambda _token: [
-            {
-                "id": 7777,
-                "account": {"login": "single-user", "type": "User"},
-                "repository_selection": "selected",
-                "permissions": {"contents": "read"},
-            }
-        ],
+        "apps.github_integration.flow_views.verified_installation",
+        lambda _token, _installation_id: {
+            "id": 7777,
+            "account": {"login": "new-user", "type": "User"},
+            "repository_selection": "selected",
+            "permissions": {"contents": "read"},
+        },
+    )
+    state = signing.dumps(
+        {"user_id": str(user.id), "installation_id": 7777},
+        salt=OAUTH_STATE_SALT,
+        compress=True,
     )
     client = APIClient()
     client.force_authenticate(user)
 
-    from django.core import signing
-    from .views import STATE_SALT
-
-    state = signing.dumps({"user_id": str(user.id)}, salt=STATE_SALT, compress=True)
     response = client.get(
         "/api/v1/github/callback/",
         {"code": "verified-code", "state": state},
     )
-    assert response.status_code == 200
+
+    assert response.status_code == 302
     record = GitHubInstallation.objects.get(installation_id=7777)
     assert record.owner_id == user.id
-    assert record.account_login == "single-user"
+    assert record.account_login == "new-user"
     assert record.permissions == {"contents": "read"}
-
-
-@pytest.mark.django_db
-def test_callback_without_installation_id_refuses_ambiguous_installations(monkeypatch):
-    user = User.objects.create_user(
-        username="install-ambiguous", email="install-ambiguous@example.test", password="password123"
-    )
-    monkeypatch.setattr("apps.github_integration.views.exchange_user_code", lambda _code: "token")
-    monkeypatch.setattr(
-        "apps.github_integration.views.user_installations",
-        lambda _token: [
-            {"id": 8001, "account": {"login": "one"}},
-            {"id": 8002, "account": {"login": "two"}},
-        ],
-    )
-    client = APIClient()
-    client.force_authenticate(user)
-
-    from django.core import signing
-    from .views import STATE_SALT
-
-    state = signing.dumps({"user_id": str(user.id)}, salt=STATE_SALT, compress=True)
-    response = client.get(
-        "/api/v1/github/callback/",
-        {"code": "verified-code", "state": state},
-    )
-    assert response.status_code == 400
-    assert "однозначно" in str(response.data)
-    assert not GitHubInstallation.objects.filter(owner=user).exists()
 
 
 @pytest.mark.django_db
