@@ -3,6 +3,8 @@
 .installed
 .update.lock
 backups/
+launch-evidence/
+*.restore-drill.*
 .venv/
 __pycache__/
 *.py[cod]
