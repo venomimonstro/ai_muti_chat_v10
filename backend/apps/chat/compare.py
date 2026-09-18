@@ -19,7 +19,13 @@ from .branches import ensure_active_branch, fork_branch, visible_messages
 from .models import CompareRun, CompareVariant, Message
 
 
+def _require_enabled():
+    if not settings.COMPARE_ENABLED:
+        raise ValidationError("Compare временно отключён")
+
+
 def _models(slugs):
+    _require_enabled()
     unique = list(dict.fromkeys(slugs))
     if len(unique) < 2 or len(unique) > settings.COMPARE_MAX_MODELS:
         raise ValidationError(f"Выберите от 2 до {settings.COMPARE_MAX_MODELS} моделей")
@@ -37,6 +43,7 @@ def _models(slugs):
 
 
 def _one_model(slug):
+    _require_enabled()
     model = AIModel.objects.filter(slug=slug, enabled=True).select_related("provider").first()
     if not model or not provider_available(model.provider) or "text" not in model.capabilities:
         raise ValidationError(f"Модель {slug} недоступна")
@@ -76,14 +83,7 @@ def compare_preview(*, prompt, model_slugs):
         )
         minimum += low.user_charge_rub
         maximum += high.user_charge_rub
-        rows.append(
-            {
-                "model": model,
-                "price": price,
-                "minimum": low,
-                "maximum": high,
-            }
-        )
+        rows.append({"model": model, "price": price, "minimum": low, "maximum": high})
     threshold = Decimal(settings.COMPARE_CONFIRM_THRESHOLD_RUB)
     return {
         "models": rows,
@@ -122,26 +122,14 @@ def _validate_replayed_compare(run, conversation, prompt, model_slugs):
     return run
 
 
-def run_compare(
-    *,
-    user,
-    conversation,
-    prompt,
-    model_slugs,
-    idempotency_key,
-    source_message=None,
-    confirmed=False,
-):
-    if not settings.COMPARE_ENABLED:
-        raise ValidationError("Compare временно отключён")
+def run_compare(*, user, conversation, prompt, model_slugs, idempotency_key, source_message=None, confirmed=False):
+    _require_enabled()
     if not idempotency_key or len(idempotency_key) > 160:
         raise ValidationError("Корректный Idempotency-Key обязателен")
     prompt = str(prompt).strip()
     if not prompt or len(prompt) > 100_000:
         raise ValidationError("Compare-запрос должен содержать от 1 до 100000 символов")
-    existing = CompareRun.objects.filter(
-        idempotency_key=idempotency_key, owner=user
-    ).first()
+    existing = CompareRun.objects.filter(idempotency_key=idempotency_key, owner=user).first()
     if existing:
         return _validate_replayed_compare(existing, conversation, prompt, model_slugs)
     preview = compare_preview(prompt=prompt, model_slugs=model_slugs)
@@ -149,9 +137,7 @@ def run_compare(
         raise ValidationError("Подтвердите ожидаемую стоимость Compare")
     with transaction.atomic():
         user.__class__.objects.select_for_update().only("pk").get(pk=user.pk)
-        existing = CompareRun.objects.filter(
-            idempotency_key=idempotency_key, owner=user
-        ).first()
+        existing = CompareRun.objects.filter(idempotency_key=idempotency_key, owner=user).first()
         if existing:
             return _validate_replayed_compare(existing, conversation, prompt, model_slugs)
         branch = ensure_active_branch(conversation, user)
@@ -192,10 +178,7 @@ def run_compare(
             try:
                 output, usage, latency = future.result()
                 provider_cost, charge, _profit, _margin = calculate_from_snapshot(
-                    row["price"],
-                    usage.input_tokens,
-                    usage.output_tokens,
-                    variant.pricing_snapshot,
+                    row["price"], usage.input_tokens, usage.output_tokens, variant.pricing_snapshot
                 )
                 variant.state = CompareVariant.State.COMPLETED
                 variant.output = output
@@ -207,9 +190,7 @@ def run_compare(
                 variant.latency_ms = latency
             except Exception as exc:
                 variant.state = CompareVariant.State.FAILED
-                variant.error_code = (
-                    exc.code if isinstance(exc, ProviderError) else "compare_failed"
-                )
+                variant.error_code = exc.code if isinstance(exc, ProviderError) else "compare_failed"
             variant.completed_at = timezone.now()
             variant.save()
     actual = sum((variant.actual_cost_rub for variant, _row in variants), Decimal("0"))
@@ -237,6 +218,7 @@ def run_compare(
 
 
 def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
+    _require_enabled()
     if compare_run.synthesis_output:
         return compare_run
     if compare_run.synthesis_reservation_id:
@@ -263,22 +245,13 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
             operation_type="compare_synthesis",
         )
     )
-    if (
-        expected.user_charge_rub >= Decimal(settings.COMPARE_CONFIRM_THRESHOLD_RUB)
-        and not confirmed
-    ):
+    if expected.user_charge_rub >= Decimal(settings.COMPARE_CONFIRM_THRESHOLD_RUB) and not confirmed:
         raise ValidationError("Подтвердите ожидаемую стоимость синтеза")
     reservation = reserve(user, expected.user_charge_rub, f"compare-synthesis:{compare_run.id}")
     compare_run.synthesis_reservation_id = reservation.id
     compare_run.synthesis_model_slug = model.slug
     compare_run.synthesis_pricing_snapshot = expected.pricing_snapshot
-    compare_run.save(
-        update_fields=[
-            "synthesis_reservation_id",
-            "synthesis_model_slug",
-            "synthesis_pricing_snapshot",
-        ]
-    )
+    compare_run.save(update_fields=["synthesis_reservation_id", "synthesis_model_slug", "synthesis_pricing_snapshot"])
     try:
         output, usage, _latency = _provider_call(model, [{"role": "user", "content": prompt}])
         _provider_cost, charge, _profit, _margin = calculate_from_snapshot(
@@ -300,9 +273,7 @@ def branch_from_variant(*, user, variant, title="Ветка из Compare"):
     source = run.source_message or visible_messages(run.conversation).order_by("created_at").last()
     if source is None:
         raise ValidationError("Нет исходного сообщения для ветвления")
-    branch = fork_branch(
-        conversation=run.conversation, user=user, source_message=source, title=title
-    )
+    branch = fork_branch(conversation=run.conversation, user=user, source_message=source, title=title)
     message = Message.objects.create(
         conversation=run.conversation,
         branch=branch,
