@@ -1,0 +1,152 @@
+import json
+import os
+from datetime import timedelta
+from decimal import Decimal
+
+from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Q
+from django.utils import timezone
+
+from apps.accounts.models import SupportRequest
+from apps.b2b_api.models import APIUsage
+from apps.billing.models import BalanceReservation, RequestCost
+from apps.chat.models import CompareRun, Generation
+from apps.image_studio.models import ImageGeneration
+from apps.payments.models import Payment
+
+ZERO = Decimal("0")
+
+
+class Command(BaseCommand):
+    help = (
+        "Fail-closed проверка пользовательского доверия: без списаний за ошибки, "
+        "зависших резервов, невыданных платежей и заброшенной поддержки."
+    )
+
+    def add_arguments(self, parser):
+        parser.add_argument("--json", action="store_true", dest="as_json")
+
+    def handle(self, *args, **options):
+        blockers = []
+        warnings = []
+
+        failed_generation_ids = Generation.objects.filter(
+            state__in=[Generation.State.FAILED, Generation.State.CANCELLED]
+        ).values("id")
+        failed_chat_charges = RequestCost.objects.filter(
+            generation_id__in=failed_generation_ids,
+            charged_rub__gt=ZERO,
+        ).count()
+        failed_chat_actual = Generation.objects.filter(
+            state__in=[Generation.State.FAILED, Generation.State.CANCELLED],
+            actual_cost_rub__gt=ZERO,
+        ).count()
+        if failed_chat_charges or failed_chat_actual:
+            blockers.append(
+                f"failed_or_cancelled_chat_was_charged={max(failed_chat_charges, failed_chat_actual)}"
+            )
+
+        failed_images_charged = ImageGeneration.objects.filter(
+            state=ImageGeneration.State.FAILED,
+            actual_cost_rub__gt=ZERO,
+        ).count()
+        failed_images_reserved = ImageGeneration.objects.filter(
+            state=ImageGeneration.State.FAILED,
+            reservation__state=BalanceReservation.State.ACTIVE,
+        ).count()
+        if failed_images_charged:
+            blockers.append(f"failed_images_were_charged={failed_images_charged}")
+        if failed_images_reserved:
+            blockers.append(f"failed_images_have_active_reservation={failed_images_reserved}")
+
+        failed_compare_charged = CompareRun.objects.filter(
+            state=CompareRun.State.FAILED,
+            actual_cost_rub__gt=ZERO,
+        ).count()
+        failed_compare_reserved = CompareRun.objects.filter(
+            state=CompareRun.State.FAILED,
+            reservation_id__in=BalanceReservation.objects.filter(
+                state=BalanceReservation.State.ACTIVE
+            ).values("id"),
+        ).count()
+        if failed_compare_charged:
+            blockers.append(f"failed_compare_was_charged={failed_compare_charged}")
+        if failed_compare_reserved:
+            blockers.append(f"failed_compare_has_active_reservation={failed_compare_reserved}")
+
+        failed_b2b_charged = APIUsage.objects.filter(
+            state=APIUsage.State.FAILED,
+            charged_rub__gt=ZERO,
+        ).count()
+        failed_b2b_reserved = APIUsage.objects.filter(
+            state=APIUsage.State.FAILED,
+            reservation__state=BalanceReservation.State.ACTIVE,
+        ).count()
+        if failed_b2b_charged:
+            blockers.append(f"failed_b2b_was_charged={failed_b2b_charged}")
+        if failed_b2b_reserved:
+            blockers.append(f"failed_b2b_has_active_reservation={failed_b2b_reserved}")
+
+        successful_not_credited = Payment.objects.filter(
+            status=Payment.Status.SUCCEEDED,
+            credited_at__isnull=True,
+        ).count()
+        if successful_not_credited:
+            blockers.append(f"successful_payments_not_credited={successful_not_credited}")
+
+        stale_hours = max(1, int(os.getenv("SUPPORT_MAX_UNANSWERED_HOURS", "48")))
+        stale_before = timezone.now() - timedelta(hours=stale_hours)
+        unanswered_support = SupportRequest.objects.filter(
+            status__in=[SupportRequest.Status.OPEN, SupportRequest.Status.IN_PROGRESS],
+            admin_reply="",
+            created_at__lt=stale_before,
+        ).count()
+        if unanswered_support:
+            blockers.append(
+                f"support_unanswered_over_{stale_hours}h={unanswered_support}"
+            )
+        near_sla_before = timezone.now() - timedelta(hours=max(1, stale_hours // 2))
+        near_sla = SupportRequest.objects.filter(
+            status__in=[SupportRequest.Status.OPEN, SupportRequest.Status.IN_PROGRESS],
+            admin_reply="",
+            created_at__lt=near_sla_before,
+            created_at__gte=stale_before,
+        ).count()
+        if near_sla:
+            warnings.append(f"support_approaching_sla={near_sla}")
+
+        orphan_active_reservations = BalanceReservation.objects.filter(
+            state=BalanceReservation.State.ACTIVE,
+        ).filter(
+            generation__isnull=True,
+            api_usage__isnull=True,
+            imagegeneration__isnull=True,
+        ).exclude(
+            id__in=CompareRun.objects.filter(reservation_id__isnull=False).values("reservation_id")
+        ).exclude(
+            id__in=CompareRun.objects.filter(synthesis_reservation_id__isnull=False).values(
+                "synthesis_reservation_id"
+            )
+        ).count()
+        if orphan_active_reservations:
+            blockers.append(f"orphan_active_reservations={orphan_active_reservations}")
+
+        payload = {
+            "ok": not blockers,
+            "blockers": blockers,
+            "warnings": warnings,
+            "support_sla_hours": stale_hours,
+            "checked_at": timezone.now().isoformat(),
+            "recurring_payments_supported": False,
+        }
+        if options["as_json"]:
+            self.stdout.write(json.dumps(payload, ensure_ascii=False))
+        else:
+            for item in warnings:
+                self.stdout.write(self.style.WARNING(f"WARN: {item}"))
+            for item in blockers:
+                self.stdout.write(self.style.ERROR(f"BLOCK: {item}"))
+        if blockers:
+            raise CommandError("Customer trust check failed: " + "; ".join(blockers))
+        if not options["as_json"]:
+            self.stdout.write(self.style.SUCCESS("CUSTOMER TRUST: PASS"))
