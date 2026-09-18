@@ -21,6 +21,7 @@ class Command(BaseCommand):
                 {"require_healthy": True},
             ),
             ("advertised_features", "optional_features_check", {}),
+            ("customer_trust", "customer_trust_check", {}),
             (
                 "payment_commercial",
                 "payment_commercial_check",
