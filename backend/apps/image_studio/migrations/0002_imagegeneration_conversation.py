@@ -4,7 +4,7 @@ import django.db.models.deletion
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("chat", "0010_conversation_ui_state_and_more"),
+        ("chat", "0012_conversation_ui"),
         ("image_studio", "0001_initial"),
     ]
 
