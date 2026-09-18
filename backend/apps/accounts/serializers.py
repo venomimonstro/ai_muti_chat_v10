@@ -106,7 +106,7 @@ class NotificationSerializer(serializers.ModelSerializer):
 class SupportRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupportRequest
-        fields = ("id", "subject", "message", "status", "created_at", "updated_at")
+        fields = ("id", "subject", "category", "message", "status", "created_at", "updated_at")
         read_only_fields = ("id", "status", "created_at", "updated_at")
 
 
