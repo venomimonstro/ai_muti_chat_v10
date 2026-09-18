@@ -1,6 +1,7 @@
 import os
 
 from celery import Celery
+from celery.signals import task_failure
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.runtime_settings")
 app = Celery("ai_workspace")
@@ -13,3 +14,20 @@ app.conf.beat_schedule = {
         "schedule": 3600.0,
     },
 }
+
+
+@task_failure.connect
+def capture_task_failure(sender=None, task_id=None, exception=None, **_kwargs):
+    if exception is None:
+        return
+    try:
+        from apps.admin_ops.system_health import record_background_exception
+
+        record_background_exception(
+            task_name=getattr(sender, "name", "unknown"),
+            task_id=str(task_id or ""),
+            exc=exception,
+        )
+    except Exception:
+        # Ошибка диагностического контура не должна ломать Celery worker.
+        return
