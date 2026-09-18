@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import os
 import secrets
 import struct
 import time
@@ -16,8 +17,16 @@ SESSION_MFA_KEY = "platform_mfa_verified_at"
 SESSION_MFA_MAX_AGE = 12 * 60 * 60
 
 
+def _secret_material(env_name: str, purpose: str) -> bytes:
+    value = os.getenv(env_name, "")
+    if value:
+        return value.encode()
+    # Development/backward-compatible fallback. Strict commercial launch blocks this fallback.
+    return f"{purpose}:{settings.SECRET_KEY}".encode()
+
+
 def _fernet():
-    digest = hashlib.sha256(("mfa-v1:" + settings.SECRET_KEY).encode()).digest()
+    digest = hashlib.sha256(_secret_material("MFA_ENCRYPTION_KEY", "mfa-encryption-v1")).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
@@ -61,7 +70,8 @@ def verify_totp(secret: str, code: str, at_time: int | None = None) -> bool:
 
 def recovery_hash(code: str) -> str:
     value = code.strip().upper().replace("-", "")
-    return hmac.new(settings.SECRET_KEY.encode(), value.encode(), hashlib.sha256).hexdigest()
+    key = _secret_material("MFA_RECOVERY_PEPPER", "mfa-recovery-v1")
+    return hmac.new(key, value.encode(), hashlib.sha256).hexdigest()
 
 
 def new_recovery_codes(count: int = 8) -> list[str]:
@@ -88,6 +98,11 @@ def otpauth_uri(*, secret: str, email: str) -> str:
 
 def mark_session_verified(request):
     request.session[SESSION_MFA_KEY] = int(time.time())
+    request.session.modified = True
+
+
+def clear_session_verification(request):
+    request.session.pop(SESSION_MFA_KEY, None)
     request.session.modified = True
 
 
