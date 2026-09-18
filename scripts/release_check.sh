@@ -12,7 +12,7 @@ cleanup() {
 trap cleanup EXIT
 
 printf '[1/9] Secret scan\n'
-./scripts/security_scan.sh
+bash ./scripts/security_scan.sh
 
 printf '[2/9] Shell syntax\n'
 bash -n install.sh
