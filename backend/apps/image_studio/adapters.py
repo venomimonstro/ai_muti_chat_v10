@@ -88,6 +88,8 @@ class OpenAIImageAdapter:
                     raise ValueError("Image payload exceeds configured limit")
                 content = base64.b64decode(encoded, validate=True)
                 images.append(ImageResult(content, _detect_mime(content), item.get("revised_prompt", "")))
+        except ImageProviderError:
+            raise
         except (KeyError, ValueError, binascii.Error) as exc:
             raise ImageProviderError("Invalid provider response", code="invalid_response") from exc
         return ImageProviderResult(images, str(payload.get("id", "")))
@@ -100,7 +102,7 @@ def _detect_mime(content):
         return "image/jpeg"
     if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
         return "image/webp"
-    raise ValueError("Unsupported image type")
+    raise ImageProviderError("Unsupported image type", code="invalid_image")
 
 
 def adapter_for(model):
