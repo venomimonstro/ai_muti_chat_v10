@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 
 from apps.admin_ops.permissions import IsPlatformAdmin
 
+from .external_refunds import register_unknown_succeeded_refund
 from .models import Payment
 from .provider import PaymentProviderError, YooKassaClient
 from .serializers import (
@@ -64,8 +65,10 @@ class YooKassaWebhookView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        client = YooKassaClient.from_settings()
         try:
-            process_webhook(request.data, client=YooKassaClient.from_settings())
+            register_unknown_succeeded_refund(request.data, client=client)
+            process_webhook(request.data, client=client)
         except ValidationError:
             return Response(status=status.HTTP_400_BAD_REQUEST)
         except PaymentProviderError:
