@@ -1,6 +1,6 @@
 import type {SVGProps} from "react";
 
-export type IconName="panel"|"plus"|"search"|"folder"|"folderPlus"|"pin"|"more"|"wallet"|"settings"|"user"|"send"|"stop"|"copy"|"pencil"|"retry"|"trash"|"chevron"|"spark"|"zap"|"scale"|"brain"|"check"|"x"|"arrowDown";
+export type IconName="panel"|"plus"|"search"|"folder"|"folderPlus"|"pin"|"more"|"wallet"|"settings"|"user"|"bell"|"send"|"stop"|"copy"|"pencil"|"retry"|"trash"|"chevron"|"spark"|"zap"|"scale"|"brain"|"check"|"x"|"arrowDown";
 
 const paths:Record<IconName,string>={
  panel:"M4 5h16v14H4zM9 5v14",
@@ -13,6 +13,7 @@ const paths:Record<IconName,string>={
  wallet:"M4 7h15v11H4zM4 9V6h12M15 12h4",
  settings:"M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm8 3 2-1-2-3-2 .3-1-1.7.3-2-3-2-1.7-2 1-3-.3-2 3 .3 2-1 1.7-2 3 2 1.7 1 2 3 2 1 1-2 .3-2-3z",
  user:"M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8c.7-4 3-6 7-6s6.3 2 7 6",
+ bell:"M6 9a6 6 0 0 1 12 0c0 7 3 7 3 7H3s3 0 3-7Zm4 10h4",
  send:"M4 12 20 4l-6 16-2-7z",
  stop:"M7 7h10v10H7z",
  copy:"M9 9h10v10H9zM5 5h10v4M5 5v10h4",
