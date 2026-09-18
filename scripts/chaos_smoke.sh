@@ -24,13 +24,34 @@ wait_ready() {
   done
 }
 
+wait_worker() {
+  local attempts=0
+  until compose exec -T worker celery -A config inspect ping --timeout=3 2>/dev/null | grep -q 'pong'; do
+    attempts=$((attempts + 1))
+    [[ $attempts -lt 40 ]] || { echo "Celery worker did not recover" >&2; return 1; }
+    sleep 2
+  done
+}
+
+wait_redis() {
+  local attempts=0
+  until compose exec -T redis sh -c 'redis-cli -a "$REDIS_PASSWORD" ping' 2>/dev/null | grep -q PONG; do
+    attempts=$((attempts + 1))
+    [[ $attempts -lt 40 ]] || { echo "Redis did not recover" >&2; return 1; }
+    sleep 2
+  done
+}
+
 cd "$PROJECT_DIR"
 echo '[chaos] worker restart'
 compose restart worker
+wait_worker
 wait_ready
 
 echo '[chaos] redis restart'
 compose restart redis
+wait_redis
+wait_worker
 wait_ready
 
 echo '[chaos] backend restart'
