@@ -80,23 +80,25 @@ if parsed.scheme.startswith("postgres"):
         }
     }
 else:
-    DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": parsed.path}}
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": parsed.path or BASE_DIR / "db.sqlite3",
+        }
+    }
 
-AUTH_PASSWORD_VALIDATORS = (
-    []
-    if DEBUG
-    else [
-        {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-        {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
-        {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
-    ]
-)
 AUTH_USER_MODEL = "accounts.User"
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
 LANGUAGE_CODE = "ru-ru"
 TIME_ZONE = "Europe/Moscow"
 USE_I18N = True
 USE_TZ = True
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -175,6 +177,7 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 SIGNUP_PROMO_RUB = os.getenv("SIGNUP_PROMO_RUB", "25.00")
+CHAT_CONFIRM_THRESHOLD_RUB = os.getenv("CHAT_CONFIRM_THRESHOLD_RUB", "20.00")
 AI_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "120"))
 AI_PROVIDER_MAX_ATTEMPTS = int(os.getenv("AI_PROVIDER_MAX_ATTEMPTS", "2"))
 AI_CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("AI_CIRCUIT_FAILURE_THRESHOLD", "3"))
