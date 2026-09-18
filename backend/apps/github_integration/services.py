@@ -144,6 +144,55 @@ def _safe_path(path):
     return value
 
 
+def _safe_directory_path(path):
+    value = str(path or "").strip().lstrip("/")
+    if not value:
+        return ""
+    return _safe_path(value)
+
+
+def list_repository_directory(binding, path="", *, ref=None):
+    path = _safe_directory_path(path)
+    token = installation_token(
+        binding.installation.installation_id,
+        repository_ids=[binding.repository_id],
+        permissions={"contents": "read"},
+    )
+    suffix = f"/{quote(path, safe='/')}" if path else ""
+    payload = _json_request(
+        "GET",
+        f"{GITHUB_API}/repos/{binding.full_name}/contents{suffix}",
+        headers=_headers(token),
+        params={"ref": ref or binding.default_branch},
+    )
+    if not isinstance(payload, list):
+        raise ValidationError("Path is not a directory")
+    max_items = max(1, min(int(os.getenv("GITHUB_MAX_DIRECTORY_ITEMS", "1000")), 1000))
+    if len(payload) > max_items:
+        raise ValidationError("GitHub directory exceeds configured item limit")
+    items = []
+    for item in payload:
+        item_type = item.get("type")
+        if item_type not in {"file", "dir"}:
+            continue
+        item_path = str(item.get("path") or "")
+        if not item_path or len(item_path) > 1024:
+            continue
+        items.append({
+            "name": str(item.get("name") or "")[:255],
+            "path": item_path,
+            "type": item_type,
+            "size": int(item.get("size") or 0),
+            "sha": str(item.get("sha") or "")[:64],
+        })
+    items.sort(key=lambda item: (item["type"] != "dir", item["name"].casefold()))
+    return {
+        "path": path,
+        "ref": ref or binding.default_branch,
+        "items": items,
+    }
+
+
 def read_repository_file(binding, path, *, ref=None):
     path = _safe_path(path)
     token = installation_token(
