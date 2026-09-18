@@ -5,6 +5,12 @@
 {$APP_DOMAIN} {
     encode zstd gzip
 
+    # Backend accepts files up to 20 MiB; keep a small multipart envelope but reject
+    # oversized bodies before they consume Django/worker memory.
+    request_body {
+        max_size 25MB
+    }
+
     handle /static/* {
         root * /srv
         file_server
