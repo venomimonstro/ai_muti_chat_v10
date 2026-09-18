@@ -1,4 +1,5 @@
 from decimal import Decimal
+from uuid import UUID
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -29,6 +30,10 @@ def _conversation(request):
     conversation_id = request.data.get("conversation")
     if not conversation_id:
         return None
+    try:
+        UUID(str(conversation_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise APIValidationError({"conversation": ["Некорректный идентификатор чата"]}) from exc
     conversation = Conversation.objects.filter(pk=conversation_id, owner=request.user).first()
     if conversation is None:
         raise APIValidationError({"conversation": ["Чат не найден или недоступен"]})
@@ -77,6 +82,10 @@ class ImageGenerationViewSet(viewsets.ReadOnlyModelViewSet):
         if state_filter:
             queryset = queryset.filter(state=state_filter)
         if conversation_id:
+            try:
+                UUID(str(conversation_id))
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise APIValidationError({"conversation": ["Некорректный идентификатор чата"]}) from exc
             queryset = queryset.filter(conversation_id=conversation_id)
         return queryset
 
