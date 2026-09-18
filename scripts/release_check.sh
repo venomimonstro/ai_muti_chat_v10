@@ -51,11 +51,16 @@ docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemig
 
 printf '[8/10] Frontend production build\n'
 docker build \
+  --target builder \
+  --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
+  -t ai-workspace-frontend-builder frontend
+
+docker build \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
   -t ai-workspace-frontend-test frontend
 
 printf '[9/10] Frontend lint\n'
-docker run --rm ai-workspace-frontend-test sh -c 'npm run lint'
+docker run --rm ai-workspace-frontend-builder sh -c 'npm run lint'
 
 printf '[10/10] Frontend runtime route smoke\n'
 docker run -d --rm --name "$FRONTEND_SMOKE_CONTAINER" \
