@@ -75,7 +75,7 @@ class Command(BaseCommand):
         commit_sha = options["commit_sha"].strip()
         if not commit_sha or len(commit_sha) > 64:
             raise CommandError("Rollback evidence requires --commit-sha")
-        version = f"rollback-drill-{now.strftime('%Y%m%dT%H%M%SZ')}"
+        version = f"rollback-drill-{now.strftime('%Y%m%dT%H%M%S%fZ')}"
         record = ReleaseRecord.objects.create(
             version=version,
             commit_sha=commit_sha,
