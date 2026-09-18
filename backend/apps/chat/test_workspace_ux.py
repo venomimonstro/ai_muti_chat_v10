@@ -2,14 +2,18 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.chat.models import Conversation
+from apps.chat.models import Conversation, Message
 from apps.chat.ux_models import ConversationFolder, ConversationUIState
 
 
 @pytest.mark.django_db
 def test_folders_and_ui_state_are_owner_scoped():
-    alice = User.objects.create_user(username="alice-ux", email="alice@example.test", password="test-password-123")
-    bob = User.objects.create_user(username="bob-ux", email="bob@example.test", password="test-password-123")
+    alice = User.objects.create_user(
+        username="alice-ux", email="alice@example.test", password="test-password-123"
+    )
+    bob = User.objects.create_user(
+        username="bob-ux", email="bob@example.test", password="test-password-123"
+    )
     conversation = Conversation.objects.create(owner=alice, title="Рабочий чат")
     bob_folder = ConversationFolder.objects.create(owner=bob, name="Чужая папка")
     client = APIClient()
@@ -40,7 +44,9 @@ def test_folders_and_ui_state_are_owner_scoped():
 
 @pytest.mark.django_db
 def test_conversation_summaries_do_not_include_message_bodies():
-    user = User.objects.create_user(username="summary-user", email="summary@example.test", password="test-password-123")
+    user = User.objects.create_user(
+        username="summary-user", email="summary@example.test", password="test-password-123"
+    )
     Conversation.objects.create(owner=user, title="Лёгкий список")
     client = APIClient()
     client.force_authenticate(user)
@@ -52,9 +58,102 @@ def test_conversation_summaries_do_not_include_message_bodies():
 
 
 @pytest.mark.django_db
+def test_workspace_page_is_bounded_and_can_load_older_messages():
+    user = User.objects.create_user(
+        username="long-chat", email="long@example.test", password="test-password-123"
+    )
+    conversation = Conversation.objects.create(owner=user, title="Очень длинный чат")
+    Message.objects.bulk_create(
+        [
+            Message(
+                conversation=conversation,
+                role=Message.Role.USER if index % 2 == 0 else Message.Role.ASSISTANT,
+                content=f"message-{index}",
+            )
+            for index in range(150)
+        ]
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    first = client.get(f"/api/v1/conversation-workspace/{conversation.id}/?limit=60")
+    assert first.status_code == 200
+    assert len(first.data["conversation"]["messages"]) == 60
+    assert first.data["has_more"] is True
+    assert first.data["next_before"]
+
+    second = client.get(
+        f"/api/v1/conversation-workspace/{conversation.id}/",
+        {"limit": 60, "before": first.data["next_before"]},
+    )
+    assert second.status_code == 200
+    assert len(second.data["conversation"]["messages"]) == 60
+    assert second.data["conversation"]["messages"][-1]["content"] != first.data["conversation"]["messages"][0]["content"]
+
+
+@pytest.mark.django_db
+def test_lightweight_settings_response_does_not_serialize_history():
+    user = User.objects.create_user(
+        username="settings-user", email="settings@example.test", password="test-password-123"
+    )
+    conversation = Conversation.objects.create(owner=user, title="До")
+    Message.objects.create(conversation=conversation, role=Message.Role.USER, content="private body")
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.patch(
+        f"/api/v1/conversation-settings/{conversation.id}/",
+        {"title": "После", "routing_mode": Conversation.RoutingMode.BALANCED},
+        format="json",
+    )
+    assert response.status_code == 200
+    assert response.data["title"] == "После"
+    assert "messages" not in response.data
+    assert "private body" not in str(response.data)
+
+
+@pytest.mark.django_db
+def test_soft_deleted_chat_disappears_without_destroying_messages():
+    user = User.objects.create_user(
+        username="delete-user", email="delete@example.test", password="test-password-123"
+    )
+    conversation = Conversation.objects.create(owner=user, title="Удалить меня")
+    message = Message.objects.create(
+        conversation=conversation, role=Message.Role.USER, content="Сохранить для аудита"
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    deleted = client.patch(
+        f"/api/v1/conversation-ui/{conversation.id}/",
+        {"deleted": True},
+        format="json",
+    )
+    assert deleted.status_code == 200
+    assert deleted.data["deleted"] is True
+    summaries = client.get("/api/v1/conversation-summaries/")
+    assert all(item["id"] != str(conversation.id) for item in summaries.data)
+    workspace = client.get(f"/api/v1/conversation-workspace/{conversation.id}/")
+    assert workspace.status_code == 404
+    assert Message.objects.filter(pk=message.pk).exists()
+
+    restored = client.patch(
+        f"/api/v1/conversation-ui/{conversation.id}/",
+        {"deleted": False},
+        format="json",
+    )
+    assert restored.status_code == 200
+    assert client.get(f"/api/v1/conversation-workspace/{conversation.id}/").status_code == 200
+
+
+@pytest.mark.django_db
 def test_workspace_page_rejects_foreign_conversation():
-    owner = User.objects.create_user(username="owner-ux", email="owner@example.test", password="test-password-123")
-    stranger = User.objects.create_user(username="stranger-ux", email="stranger@example.test", password="test-password-123")
+    owner = User.objects.create_user(
+        username="owner-ux", email="owner@example.test", password="test-password-123"
+    )
+    stranger = User.objects.create_user(
+        username="stranger-ux", email="stranger@example.test", password="test-password-123"
+    )
     conversation = Conversation.objects.create(owner=owner, title="Приватный")
     client = APIClient()
     client.force_authenticate(stranger)
