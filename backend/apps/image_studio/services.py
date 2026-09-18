@@ -7,11 +7,38 @@ from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from apps.ai_registry.models import Provider
+from apps.billing.models import CostAnomaly
 from apps.billing.pricing import calculate_flat_from_snapshot, quote_flat, require_margin
 from apps.billing.services import release, reserve, settle
 
 from .adapters import ImageProviderError, _detect_mime, adapter_for
 from .models import GeneratedImage, ImageGeneration, ImageModel
+
+
+def _trip_image_provider(*, model, generation, reason, expected=None, actual=None):
+    CostAnomaly.objects.get_or_create(
+        dedupe_key=f"image-provider-contract:{generation.id}:{reason}",
+        defaults={
+            "kind": CostAnomaly.Kind.COST_DEVIATION,
+            "severity": "critical",
+            "model_slug": model.slug,
+            "provider_slug": model.provider.slug,
+            "expected_rub": expected,
+            "actual_rub": actual,
+            "details": {
+                "reason": reason,
+                "generation_id": str(generation.id),
+                "requested_count": generation.requested_count,
+            },
+        },
+    )
+    Provider.objects.filter(pk=model.provider_id).update(
+        emergency_disabled=True,
+        health_state=Provider.HealthState.DISABLED,
+    )
+    model.provider.emergency_disabled = True
+    model.provider.health_state = Provider.HealthState.DISABLED
 
 
 def _validated(model_slug, prompt, size, quality, count):
@@ -106,7 +133,14 @@ def generate(
         result = (adapter or adapter_for(model)).generate(
             model=model.upstream_model, prompt=prompt, size=size, quality=quality, count=count
         )
-        if not result.images or len(result.images) > count:
+        if not result.images:
+            raise ImageProviderError("Invalid number of images", code="invalid_response")
+        if len(result.images) > count:
+            _trip_image_provider(
+                model=model,
+                generation=generation,
+                reason="provider_returned_more_images_than_requested",
+            )
             raise ImageProviderError("Invalid number of images", code="invalid_response")
         validated_images = []
         for item in result.images:
@@ -125,6 +159,15 @@ def generate(
         actual_count = generation.images.count()
         native = Decimal(snapshot["provider_price_per_image"]) * actual_count
         provider_cost, charge, _profit, _margin = calculate_flat_from_snapshot(native, snapshot)
+        if charge > generation.reservation.amount_rub:
+            _trip_image_provider(
+                model=model,
+                generation=generation,
+                reason="image_charge_exceeded_reserved_maximum",
+                expected=generation.reservation.amount_rub,
+                actual=charge,
+            )
+            raise ValidationError("Фактическая стоимость изображения превысила зарезервированный максимум")
         with transaction.atomic():
             settle(generation.reservation_id, charge)
             generation.state = ImageGeneration.State.COMPLETED
