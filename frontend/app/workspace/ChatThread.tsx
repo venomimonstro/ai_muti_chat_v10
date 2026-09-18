@@ -2,6 +2,7 @@
 
 import {useEffect,useRef,useState} from "react";
 import type {Conversation} from "../../lib/types";
+import {ConversationAssetsPanel} from "./ConversationAssetsPanel";
 import {ErrorBoundary} from "./ErrorBoundary";
 import {Icon} from "./Icons";
 import {MessageCard} from "./MessageCard";
@@ -13,5 +14,5 @@ export function ChatThread({conversation,hasMore,loadingOlder,onLoadOlder,onConv
  useEffect(()=>{const el=ref.current;if(el)requestAnimationFrame(()=>{el.scrollTop=el.scrollHeight});previousCount.current=conversation?.messages.length??0;pagingAnchor.current=null;},[conversation?.id]);
  const loadOlder=()=>{const el=ref.current;if(el)pagingAnchor.current={height:el.scrollHeight,top:el.scrollTop};onLoadOlder();};
  if(!conversation||conversation.messages.length===0)return <section className="emptyChat"><div className="emptyMark"><Icon name="spark" size={26}/></div><h1>Чем могу помочь?</h1><div className="starterGrid"><button onClick={()=>onStarter("Разбери документ и выдели главное")}>Разобрать документ</button><button onClick={()=>onStarter("Помоги написать сильный текст")}>Написать текст</button><button onClick={()=>onStarter("Помоги написать и проверить код")}>Помочь с кодом</button><button onClick={()=>onStarter("Найди актуальную информацию и укажи источники")}>Найти информацию</button></div></section>;
- return <section ref={ref} className="threadViewport" onScroll={e=>{const el=e.currentTarget;setAway(el.scrollHeight-el.scrollTop-el.clientHeight>260)}}><div className="threadInner">{hasMore&&<button className="olderButton" disabled={loadingOlder} onClick={loadOlder}>{loadingOlder?"Загружаем…":"Показать более ранние сообщения"}</button>}{conversation.messages.map(message=><ErrorBoundary key={message.id}><MessageCard conversationId={conversation.id} message={message} onConversation={onConversation}/></ErrorBoundary>)}</div>{away&&<button className="jumpBottom" onClick={()=>{const el=ref.current;if(el)el.scrollTo({top:el.scrollHeight,behavior:"smooth"})}}><Icon name="arrowDown" size={16}/>К последнему</button>}</section>;
+ return <section ref={ref} className="threadViewport" onScroll={e=>{const el=e.currentTarget;setAway(el.scrollHeight-el.scrollTop-el.clientHeight>260)}}><div className="threadInner"><ConversationAssetsPanel conversationId={conversation.id}/>{hasMore&&<button className="olderButton" disabled={loadingOlder} onClick={loadOlder}>{loadingOlder?"Загружаем…":"Показать более ранние сообщения"}</button>}{conversation.messages.map(message=><ErrorBoundary key={message.id}><MessageCard conversationId={conversation.id} message={message} onConversation={onConversation}/></ErrorBoundary>)}</div>{away&&<button className="jumpBottom" onClick={()=>{const el=ref.current;if(el)el.scrollTo({top:el.scrollHeight,behavior:"smooth"})}}><Icon name="arrowDown" size={16}/>К последнему</button>}</section>;
 }
