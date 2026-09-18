@@ -7,7 +7,7 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .analytics_models import ProductEvent
+from .models import ProductEvent
 from .permissions import IsPlatformAdmin
 
 ALLOWED_EVENTS = {
@@ -66,42 +66,12 @@ class ProductAnalyticsView(APIView):
             days = 30
         since = timezone.now() - timedelta(days=days)
         queryset = ProductEvent.objects.filter(created_at__gte=since)
-        counts = {
-            item["event_name"]: item["count"]
-            for item in queryset.values("event_name").annotate(count=Count("id"))
-        }
+        counts = {item["event_name"]: item["count"] for item in queryset.values("event_name").annotate(count=Count("id"))}
         landing = counts.get("landing_view", 0)
         registered = counts.get("register_complete", 0)
         verified = counts.get("email_verified", 0)
         first_chat = counts.get("first_chat", 0)
         payment = counts.get("payment_success", 0)
-
-        def rate(value, base):
-            return round(value / base * 100, 2) if base else 0
-
-        daily = list(
-            queryset.annotate(day=TruncDate("created_at"))
-            .values("day", "event_name")
-            .annotate(count=Count("id"))
-            .order_by("day", "event_name")
-        )
-        return Response(
-            {
-                "period_days": days,
-                "events": counts,
-                "funnel": {
-                    "landing": landing,
-                    "registered": registered,
-                    "verified": verified,
-                    "first_chat": first_chat,
-                    "paid": payment,
-                    "rates_percent": {
-                        "landing_to_registration": rate(registered, landing),
-                        "registration_to_verified": rate(verified, registered),
-                        "verified_to_first_chat": rate(first_chat, verified),
-                        "first_chat_to_payment": rate(payment, first_chat),
-                    },
-                },
-                "daily": daily,
-            }
-        )
+        def rate(value, base): return round(value / base * 100, 2) if base else 0
+        daily=list(queryset.annotate(day=TruncDate("created_at")).values("day","event_name").annotate(count=Count("id")).order_by("day","event_name"))
+        return Response({"period_days":days,"events":counts,"funnel":{"landing":landing,"registered":registered,"verified":verified,"first_chat":first_chat,"paid":payment,"rates_percent":{"landing_to_registration":rate(registered,landing),"registration_to_verified":rate(verified,registered),"verified_to_first_chat":rate(first_chat,verified),"first_chat_to_payment":rate(payment,first_chat)}},"daily":daily})
