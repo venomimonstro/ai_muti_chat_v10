@@ -13,6 +13,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT="${EVIDENCE_DIR}/commercial-launch-${STAMP}.json"
 RELEASE_LOG="${EVIDENCE_DIR}/release-check-${STAMP}.log"
 E2E_LOG="${EVIDENCE_DIR}/commercial-e2e-${STAMP}.log"
+SYSTEM_LOG="${EVIDENCE_DIR}/system-health-${STAMP}.json"
 
 set -a
 # shellcheck disable=SC1090
@@ -29,6 +30,19 @@ mv "${RELEASE_LOG}.tmp" "$RELEASE_LOG"
 sha256sum "$RELEASE_LOG" >"${RELEASE_LOG}.sha256"
 if [[ $RELEASE_STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED BY RELEASE CHECK"; echo "Evidence: $RELEASE_LOG"; exit "$RELEASE_STATUS"
+fi
+
+printf 'Running production system health gate...\n'
+set +e
+compose exec -T backend python manage.py system_health_check --strict --json >"${SYSTEM_LOG}.tmp"
+SYSTEM_STATUS=$?
+set -e
+mv "${SYSTEM_LOG}.tmp" "$SYSTEM_LOG"
+sha256sum "$SYSTEM_LOG" >"${SYSTEM_LOG}.sha256"
+if [[ $SYSTEM_STATUS -ne 0 ]]; then
+  echo "COMMERCIAL LAUNCH: BLOCKED BY SYSTEM HEALTH"
+  echo "Evidence: $SYSTEM_LOG"
+  exit "$SYSTEM_STATUS"
 fi
 
 printf 'Running live commercial E2E...\n'
@@ -55,6 +69,7 @@ sha256sum "$REPORT" >"${REPORT}.sha256"
 if [[ $STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED"
   echo "Release evidence: $RELEASE_LOG"
+  echo "System health evidence: $SYSTEM_LOG"
   echo "E2E evidence: $E2E_LOG"
   echo "Audit evidence: $REPORT"
   exit "$STATUS"
@@ -62,5 +77,6 @@ fi
 
 echo "COMMERCIAL LAUNCH: PASS"
 echo "Release evidence: $RELEASE_LOG"
+echo "System health evidence: $SYSTEM_LOG"
 echo "E2E evidence: $E2E_LOG"
 echo "Audit evidence: $REPORT"
