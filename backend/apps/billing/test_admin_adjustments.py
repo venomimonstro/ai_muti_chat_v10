@@ -19,6 +19,7 @@ def test_admin_credit_is_promo_and_auditable():
         direction=AdminBalanceAdjustment.Direction.CREDIT,
         amount=Decimal("50"),
         comment="Компенсация за сбой",
+        idempotency_key="credit-1",
     )
     user.wallet.refresh_from_db()
     assert user.wallet.available_rub == Decimal("50.0000")
@@ -42,6 +43,7 @@ def test_admin_debit_consumes_promo_before_paid():
         direction=AdminBalanceAdjustment.Direction.DEBIT,
         amount=Decimal("30"),
         comment="Корректировка ошибочного начисления",
+        idempotency_key="debit-1",
     )
     user.wallet.refresh_from_db()
     assert user.wallet.available_rub == Decimal("95.0000")
@@ -50,7 +52,7 @@ def test_admin_debit_consumes_promo_before_paid():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_admin_adjustment_requires_comment_and_cannot_overdraw():
+def test_admin_adjustment_requires_comment_key_and_cannot_overdraw():
     admin = User.objects.create_user(username="admin-adjust-guard", is_staff=True)
     user = User.objects.create_user(username="adjust-guard-target")
     with pytest.raises(ValidationError):
@@ -60,6 +62,16 @@ def test_admin_adjustment_requires_comment_and_cannot_overdraw():
             direction=AdminBalanceAdjustment.Direction.CREDIT,
             amount=Decimal("10"),
             comment="",
+            idempotency_key="guard-comment",
+        )
+    with pytest.raises(ValidationError):
+        admin_adjust_balance(
+            target_user=user,
+            admin=admin,
+            direction=AdminBalanceAdjustment.Direction.CREDIT,
+            amount=Decimal("10"),
+            comment="Компенсация",
+            idempotency_key="",
         )
     with pytest.raises(ValidationError):
         admin_adjust_balance(
@@ -68,4 +80,31 @@ def test_admin_adjustment_requires_comment_and_cannot_overdraw():
             direction=AdminBalanceAdjustment.Direction.DEBIT,
             amount=Decimal("10"),
             comment="Ручное списание",
+            idempotency_key="guard-debit",
         )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_admin_adjustment_retry_is_idempotent():
+    admin = User.objects.create_user(username="admin-adjust-idempotent", is_staff=True)
+    user = User.objects.create_user(username="adjust-idempotent-target")
+    first = admin_adjust_balance(
+        target_user=user,
+        admin=admin,
+        direction=AdminBalanceAdjustment.Direction.CREDIT,
+        amount=Decimal("50"),
+        comment="Компенсация за сбой",
+        idempotency_key="same-operation",
+    )
+    second = admin_adjust_balance(
+        target_user=user,
+        admin=admin,
+        direction=AdminBalanceAdjustment.Direction.CREDIT,
+        amount=Decimal("50"),
+        comment="Компенсация за сбой",
+        idempotency_key="same-operation",
+    )
+    user.wallet.refresh_from_db()
+    assert first.id == second.id
+    assert user.wallet.available_rub == Decimal("50.0000")
+    assert AdminBalanceAdjustment.objects.filter(wallet=user.wallet).count() == 1
