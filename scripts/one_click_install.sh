@@ -74,8 +74,6 @@ memory_preflight(){
     free_kb="$(df -Pk / | awk 'NR==2{print $4}')"
   fi
 
-  # Универсальный install.sh исторически требует 10 ГБ. Всё, что ниже 10 ГБ,
-  # заранее отправляем в compact/LOW-DISK path, а не ждём ошибку внутри installer.
   if (( free_kb < 10485760 )); then
     LOW_DISK_MODE=true
     printf 'LOW-DISK режим: свободно %.1f ГБ. Используем компактную сборку и очистку временного cache.\n' "$(awk -v kb="$free_kb" 'BEGIN{printf "%.1f", kb/1024/1024}')"
@@ -87,11 +85,16 @@ memory_preflight
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl git openssl
+apt-get install -y ca-certificates curl git openssl python3 iproute2 procps
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
-git --version >/dev/null 2>&1 || fail "git не установлен"
+command -v git >/dev/null 2>&1 || fail "git не установлен"
+command -v python3 >/dev/null 2>&1 || fail "python3 не установлен"
+command -v ip >/dev/null 2>&1 || fail "iproute2 не установлен"
+command -v sysctl >/dev/null 2>&1 || fail "sysctl не установлен"
+printf 'vm.overcommit_memory = 1\n' >/etc/sysctl.d/99-ai-workspace.conf
+sysctl -w vm.overcommit_memory=1 >/dev/null
 
 if [[ -e "${TARGET_DIR}/.installed" ]]; then
   fail "AI Workspace уже установлен в ${TARGET_DIR}. Для обновления используйте sudo bash ${TARGET_DIR}/scripts/update.sh"
@@ -116,13 +119,14 @@ else
   git clone --depth 1 --single-branch --branch "${BRANCH}" "${REPO_URL}" "${TARGET_DIR}"
 fi
 
-[[ -f "${TARGET_DIR}/install.sh" ]] || fail "install.sh отсутствует после checkout"
+for script in install.sh scripts/one_click_install.sh scripts/install_small_vps.sh scripts/install_ip.sh scripts/verify_installation.sh; do
+  [[ -f "${TARGET_DIR}/${script}" ]] || fail "${script} отсутствует после checkout"
+  bash -n "${TARGET_DIR}/${script}" || fail "${script} содержит синтаксическую ошибку"
+done
 [[ -f "${TARGET_DIR}/docker-compose.prod.yml" ]] || fail "docker-compose.prod.yml отсутствует после checkout"
-bash -n "${TARGET_DIR}/install.sh" || fail "install.sh содержит синтаксическую ошибку"
 
 INSTALL_ENTRY="${TARGET_DIR}/install.sh"
 if [[ "${SMALL_VPS_MODE}" == true ]]; then
-  [[ -f "${TARGET_DIR}/scripts/install_small_vps.sh" ]] || fail "scripts/install_small_vps.sh отсутствует"
   INSTALL_ENTRY="${TARGET_DIR}/scripts/install_small_vps.sh"
 elif [[ "${LOW_DISK_MODE}" == true ]]; then
   INSTALL_ENTRY="${TARGET_DIR}/.install-low-disk-runtime.sh"
