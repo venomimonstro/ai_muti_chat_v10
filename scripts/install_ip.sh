@@ -42,7 +42,7 @@ configure_kernel_memory
 resource_preflight
 
 SERVER_IP="${AIWS_SERVER_IP:-}"
-if [[ -z "${SERVER_IP}" && $(command -v ip >/dev/null 2>&1; echo $?) -eq 0 ]]; then
+if [[ -z "${SERVER_IP}" ]] && command -v ip >/dev/null 2>&1; then
   SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')"
 fi
 if [[ -z "${SERVER_IP}" ]]; then
@@ -138,9 +138,7 @@ fi
 
 bash -n "${RUNTIME_INSTALLER}" || fail "runtime installer содержит синтаксическую ошибку"
 
-if ! bash "${RUNTIME_INSTALLER}"; then
-  exit $?
-fi
+bash "${RUNTIME_INSTALLER}"
 
 printf '\nЗапускаем усиленную итоговую проверку установки...\n'
 if ! bash "${VERIFY_SCRIPT}"; then
