@@ -86,6 +86,52 @@ class Refund(models.Model):
         ]
 
 
+class RefundRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Ожидает рассмотрения"
+        APPROVED = "approved", "Одобрен"
+        PROCESSING = "processing", "Возврат выполняется"
+        SUCCEEDED = "succeeded", "Возврат завершён"
+        REJECTED = "rejected", "Отклонён"
+        FAILED = "failed", "Ошибка возврата"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="refund_requests",
+    )
+    payment = models.ForeignKey(
+        Payment,
+        on_delete=models.PROTECT,
+        related_name="refund_requests",
+    )
+    refund = models.OneToOneField(
+        Refund,
+        on_delete=models.PROTECT,
+        related_name="request",
+        null=True,
+        blank=True,
+    )
+    amount_rub = models.DecimalField(max_digits=14, decimal_places=2)
+    reason = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    admin_comment = models.TextField(blank=True)
+    held_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount_rub__gt=0),
+                name="refund_request_amount_positive",
+            )
+        ]
+
+
 class PaymentFeeVersion(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     provider = models.CharField(max_length=32, default="yookassa")
