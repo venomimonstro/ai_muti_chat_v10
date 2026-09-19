@@ -3,6 +3,7 @@ import os
 from datetime import timedelta
 
 from celery import shared_task
+from django.conf import settings
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -25,6 +26,28 @@ def system_heartbeat_task():
 @shared_task
 def recover_stale_operations_task():
     return recover_stale_operations()
+
+
+@shared_task
+def payment_reconciliation_task():
+    if not settings.PAYMENTS_ENABLED:
+        return {"status": "disabled"}
+    from apps.payments.services import reconcile_open_payments, reconcile_open_refunds
+
+    payments = reconcile_open_payments()
+    refunds = reconcile_open_refunds()
+    result = {
+        "status": "ok" if payments.error_count == 0 and refunds["errors"] == 0 else "errors",
+        "payments_checked": payments.checked_count,
+        "payments_corrected": payments.corrected_count,
+        "payments_errors": payments.error_count,
+        "refunds_checked": refunds["checked"],
+        "refunds_corrected": refunds["corrected"],
+        "refunds_errors": refunds["errors"],
+    }
+    if result["status"] != "ok":
+        raise RuntimeError(f"payment reconciliation has errors: {result}")
+    return result
 
 
 @shared_task
@@ -73,7 +96,6 @@ def economic_safety_watch_task():
             action_url="/admin-console/finance",
             level=Notification.Level.WARNING,
         )
-        # Повторно поднимаем исключение: общий task_failure-контур зарегистрирует SystemIssue.
         raise RuntimeError(f"economic_safety_check failed: {exc}") from exc
     return output.getvalue().strip()
 
