@@ -1,5 +1,5 @@
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_UP
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from apps.ai_registry.models import AIModel, Provider
 from apps.b2b_api.models import APIUsage
 from apps.billing.models import FxRateSnapshot, RequestCost
-from apps.billing.pricing import active_price, quote, require_margin
+from apps.billing.pricing import active_margin_policy, active_price, quote, require_margin
 from apps.chat.models import CompareVariant
 from apps.image_studio.models import ImageGeneration
 from apps.procurement.models import (
@@ -32,6 +32,7 @@ from .views import AdminAPIView
 
 ZERO = Decimal("0")
 MILLION = Decimal("1000000")
+MONEY_STEP = Decimal("0.01")
 
 
 def _decimal(value, label, *, minimum=None):
@@ -86,8 +87,19 @@ def _margin(sale, cost):
     return ((sale - cost) / sale * Decimal("100")).quantize(Decimal("0.001"))
 
 
-def _price_matrix(stress_usd):
+def _sale_for_margin(cost, margin_percent):
+    if cost is None:
+        return None
+    margin = Decimal(margin_percent)
+    if margin < 0 or margin >= 100:
+        raise DjangoValidationError("Целевая маржа должна быть от 0 до 99.9%")
+    denominator = Decimal("1") - margin / Decimal("100")
+    return (cost / denominator).quantize(MONEY_STEP, rounding=ROUND_UP)
+
+
+def _price_matrix(stress_usd, target_margin):
     rows = []
+    floor = active_margin_policy().minimum_gross_margin_percent
     for model in AIModel.objects.select_related("provider").order_by("provider__name", "display_name"):
         try:
             price = active_price(model.slug)
@@ -114,6 +126,12 @@ def _price_matrix(stress_usd):
             stress_output = output_native * stress_usd
             stress_input_margin = _margin(input_sale, stress_input) if input_sale is not None else None
             stress_output_margin = _margin(output_sale, stress_output) if output_sale is not None else None
+        recommended_input = _sale_for_margin(input_cost, target_margin) if input_cost is not None else None
+        recommended_output = _sale_for_margin(output_cost, target_margin) if output_cost is not None else None
+        recommended_stress_input = _sale_for_margin(stress_input, target_margin) if stress_input is not None else None
+        recommended_stress_output = _sale_for_margin(stress_output, target_margin) if stress_output is not None else None
+        input_margin = _margin(input_sale, input_cost) if input_sale is not None and input_cost is not None else None
+        output_margin = _margin(output_sale, output_cost) if output_sale is not None and output_cost is not None else None
         rows.append({
             "model": model.slug,
             "model_name": model.display_name,
@@ -130,8 +148,18 @@ def _price_matrix(stress_usd):
             "retail_mode": "explicit" if retail else "markup",
             "retail_input_per_million_rub": str(input_sale) if input_sale is not None else None,
             "retail_output_per_million_rub": str(output_sale) if output_sale is not None else None,
-            "input_margin_percent": str(_margin(input_sale, input_cost)) if input_sale is not None and input_cost is not None else None,
-            "output_margin_percent": str(_margin(output_sale, output_cost)) if output_sale is not None and output_cost is not None else None,
+            "input_margin_percent": str(input_margin) if input_margin is not None else None,
+            "output_margin_percent": str(output_margin) if output_margin is not None else None,
+            "minimum_margin_percent": str(floor),
+            "target_margin_percent": str(target_margin),
+            "recommended_input_rub": str(recommended_input) if recommended_input is not None else None,
+            "recommended_output_rub": str(recommended_output) if recommended_output is not None else None,
+            "recommended_stress_input_rub": str(recommended_stress_input) if recommended_stress_input is not None else None,
+            "recommended_stress_output_rub": str(recommended_stress_output) if recommended_stress_output is not None else None,
+            "below_margin_floor": bool(
+                (input_margin is not None and input_margin < floor)
+                or (output_margin is not None and output_margin < floor)
+            ),
             "stress_usd_rub": str(stress_usd) if price.provider_currency.upper() == "USD" else None,
             "stress_input_cost_rub": str(stress_input) if stress_input is not None else None,
             "stress_output_cost_rub": str(stress_output) if stress_output is not None else None,
@@ -150,6 +178,9 @@ class ProcurementEconomicsView(AdminAPIView):
         try:
             date_from, date_to, start, end = _range(request)
             stress_usd = _decimal(request.query_params.get("stress_usd_rub", "200"), "Стресс-курс USD/RUB", minimum=Decimal("1"))
+            target_margin = _decimal(request.query_params.get("target_margin_percent", "35"), "Целевая маржа", minimum=Decimal("0"))
+            if target_margin >= Decimal("100"):
+                raise DjangoValidationError("Целевая маржа должна быть меньше 100%")
         except DjangoValidationError as exc:
             return Response({"detail": exc.messages}, status=400)
 
@@ -178,10 +209,16 @@ class ProcurementEconomicsView(AdminAPIView):
         source_count = chat.count() + b2b.count() + images.count() + compare.count()
         spend_count = recognized.count()
         allocation_coverage = Decimal(spend_count) / Decimal(source_count) * Decimal("100") if source_count else Decimal("100")
-        prices = _price_matrix(stress_usd)
+        prices = _price_matrix(stress_usd, target_margin)
+        floor = active_margin_policy().minimum_gross_margin_percent
 
         return Response({
             "period": {"from": date_from, "to": date_to},
+            "pricing_policy": {
+                "minimum_margin_percent": str(floor),
+                "target_margin_percent": str(target_margin),
+                "formula": "sale = cost / (1 - margin/100)",
+            },
             "summary": {
                 "revenue_rub": str(revenue),
                 "nominal_provider_cost_rub": str(nominal_cost),
@@ -203,6 +240,7 @@ class ProcurementEconomicsView(AdminAPIView):
                 "low_balance_accounts": sum(1 for item in account_data if item["low_balance"]),
                 "unallocated_completed_operations": max(0, source_count - spend_count),
                 "stress_unprofitable_models": sum(1 for row in prices if row.get("stress_unprofitable")),
+                "below_margin_floor_models": sum(1 for row in prices if row.get("below_margin_floor")),
             },
             "accounts": account_data,
             "purchases": [
@@ -287,18 +325,19 @@ class ProcurementEconomicsView(AdminAPIView):
                 model = AIModel.objects.select_related("provider").get(slug=str(request.data.get("model") or "").strip())
                 input_sale = _decimal(request.data.get("input_rub_per_million"), "Продажная цена input", minimum=Decimal("0.0001"))
                 output_sale = _decimal(request.data.get("output_rub_per_million"), "Продажная цена output", minimum=Decimal("0.0001"))
-                RetailTokenPriceVersion.objects.filter(model_slug=model.slug, active=True).update(active=False)
-                retail = RetailTokenPriceVersion.objects.create(
-                    model_slug=model.slug,
-                    input_rub_per_million=input_sale,
-                    output_rub_per_million=output_sale,
-                    effective_from=timezone.now(),
-                    reason=str(request.data.get("reason") or "")[:300],
-                    created_by=request.user,
-                )
-                price = active_price(model.slug)
-                require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
-                require_margin(quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug))
+                with transaction.atomic():
+                    RetailTokenPriceVersion.objects.filter(model_slug=model.slug, active=True).update(active=False)
+                    retail = RetailTokenPriceVersion.objects.create(
+                        model_slug=model.slug,
+                        input_rub_per_million=input_sale,
+                        output_rub_per_million=output_sale,
+                        effective_from=timezone.now(),
+                        reason=str(request.data.get("reason") or "")[:300],
+                        created_by=request.user,
+                    )
+                    price = active_price(model.slug)
+                    require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
+                    require_margin(quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug))
                 audit(request, "procurement.retail_price_created", "retail_token_price", retail.id, {"model": model.slug, "input_rub_per_million": str(input_sale), "output_rub_per_million": str(output_sale)})
                 return Response({"id": str(retail.id), "model": model.slug}, status=201)
 
