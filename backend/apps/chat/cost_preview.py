@@ -3,7 +3,9 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
+from apps.accounts.services import spend_guard_snapshot
 from apps.ai_registry.router import select_route
+from apps.billing.models import Wallet
 from apps.billing.pricing import active_price, quote, require_margin
 
 from .attachments import resolve_chat_attachments
@@ -75,6 +77,10 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         )
 
     threshold = Decimal(str(getattr(settings, "CHAT_CONFIRM_THRESHOLD_RUB", "20.00")))
+    wallet, _ = Wallet.objects.get_or_create(user=user)
+    guard = spend_guard_snapshot(wallet)
+    single_limit = guard["single_request_limit_rub"]
+    blocked = single_limit is not None and maximum > single_limit
     return {
         "estimated_min_rub": minimum or Decimal("0"),
         "estimated_max_rub": maximum,
@@ -82,4 +88,18 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         "confirmation_threshold_rub": threshold,
         "selected_model": route.selected.slug,
         "models": rows,
+        "spend_guard": {
+            "single_request_limit_rub": single_limit,
+            "single_request_balance_percent": guard["single_request_balance_percent"],
+            "burst_limit_rub": guard["burst_limit_rub"],
+            "burst_window_minutes": guard["burst_window_minutes"],
+            "daily_limit_rub": guard["daily_system_limit_rub"],
+        },
+        "blocked_by_spend_guard": blocked,
+        "spend_guard_message": (
+            f"Расчётный максимум {maximum:.2f} ₽ выше защитного лимита {single_limit:.2f} ₽. "
+            "Запрос не будет отправлен провайдеру и деньги не будут списаны."
+            if blocked and single_limit is not None
+            else ""
+        ),
     }
