@@ -127,26 +127,27 @@ def reserve_provider_spend(*, provider, amount_native, source_key):
     existing = ProviderSpendReservation.objects.select_related("account").filter(source_key=source_key).first()
     if existing:
         return existing
-    accounts = list(
+    account = (
         ProviderFundingAccount.objects.select_for_update()
-        .filter(provider=provider, active=True)
-        .order_by("-is_default", "priority", "created_at")
+        .filter(provider=provider, active=True, is_default=True)
+        .first()
     )
-    if not accounts:
+    # Dev/tests can run without procurement rows. The production launch gate requires them.
+    if account is None:
         return None
-    for account in accounts:
-        if not credential_is_configured(account):
-            continue
-        if account_available_native(account) < amount:
-            continue
-        account.reserved_native += amount
-        account.save(update_fields=["reserved_native", "updated_at"])
-        return ProviderSpendReservation.objects.create(
-            account=account,
-            amount_native=amount,
-            source_key=source_key,
-        )
-    raise ValidationError("Закупленный баланс AI-провайдера исчерпан или API-ключ не настроен")
+    if account.credential_env != provider.credential_env:
+        raise ValidationError("Основной закупочный аккаунт не совпадает с API-ключом активного провайдера")
+    if not credential_is_configured(account):
+        raise ValidationError("API-ключ закупочного аккаунта не настроен на сервере")
+    if account_available_native(account) < amount:
+        raise ValidationError("Закупленный баланс AI-провайдера исчерпан")
+    account.reserved_native += amount
+    account.save(update_fields=["reserved_native", "updated_at"])
+    return ProviderSpendReservation.objects.create(
+        account=account,
+        amount_native=amount,
+        source_key=source_key,
+    )
 
 
 @transaction.atomic
