@@ -6,18 +6,13 @@ import styles from "./admin.module.css";
 
 const links=[
 ["Обзор","/admin-console"],
-["Состояние системы","/admin-console/system"],
-["Аналитика","/admin-console/analytics"],
+["AI-провайдеры","/admin-console/providers"],
 ["Пользователи","/admin-console/users"],
-["Провайдеры и цены","/admin-console/providers"],
-["Закупки API и экономика","/admin-console/procurement"],
 ["Финансы","/admin-console/finance"],
 ["Платежи","/admin-console/payments"],
+["Состояние системы","/admin-console/system"],
 ["Безопасность","/admin-console/security"],
 ["Поддержка","/admin-console/support"],
-["Операции и релизы","/admin-console/operations"],
-["Проверки перед запуском","/admin-console/drills"],
-["Юридическая готовность","/admin-console/compliance"]
 ] as const;
 
 export default function AdminNav(){
@@ -28,6 +23,6 @@ export default function AdminNav(){
   <nav className={styles.nav} aria-label="Разделы панели администратора">
    {links.map(([label,href])=><Link className={active(href)?styles.active:""} aria-current={active(href)?"page":undefined} key={href} href={href}>{label}</Link>)}
   </nav>
-  <div className={styles.bottom}><Link href="/app">← Рабочее пространство</Link><Link href="/security/mfa">Двухфакторная защита</Link></div>
+  <div className={styles.bottom}><Link href="/app">← Рабочее пространство</Link></div>
  </aside>;
 }
