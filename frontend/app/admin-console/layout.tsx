@@ -15,10 +15,12 @@ async function requirePlatformAdmin(){
 
   const base=process.env.INTERNAL_API_URL||"http://backend:8000/api/v1";
   const appDomain=process.env.APP_DOMAIN||"localhost";
+  const publicSite=process.env.NEXT_PUBLIC_SITE_URL||"http://localhost";
+  const forwardedProto=publicSite.startsWith("https://")?"https":"http";
   let response:Response;
   try{
     response=await fetch(`${base}/auth/me/`,{
-      headers:{Cookie:cookieHeader,Host:appDomain,"X-Forwarded-Proto":"http"},
+      headers:{Cookie:cookieHeader,Host:appDomain,"X-Forwarded-Proto":forwardedProto},
       cache:"no-store",
     });
   }catch{
