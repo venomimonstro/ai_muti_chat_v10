@@ -11,6 +11,7 @@ from .pricing_views import PricingManagementView
 from .procurement_breakdown_views import ProcurementBreakdownView
 from .procurement_views import ProcurementEconomicsView
 from .provider_views import SafeProviderBulkActionView
+from .safety_views import AdminConversationMessagesView, ChatSafetySearchView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView, SupportStatusReplyView
 from .system_views import SystemAnalysisView, SystemIssueActionView
@@ -62,6 +63,8 @@ urlpatterns = [
     path("users-organizations/", UserOrganizationView.as_view(), name="admin-users-orgs"),
     path("users/<uuid:user_id>/", AdminUserDetailView.as_view(), name="admin-user-detail"),
     path("users/<uuid:user_id>/action/", AdminUserActionView.as_view(), name="admin-user-action"),
+    path("safety/chats/search/", ChatSafetySearchView.as_view(), name="admin-chat-safety-search"),
+    path("safety/conversations/<uuid:conversation_id>/", AdminConversationMessagesView.as_view(), name="admin-conversation-messages"),
     path("security/", SecurityEventView.as_view(), name="admin-security"),
     path("security/<uuid:event_id>/action/", SecurityEventActionView.as_view(), name="admin-security-action"),
     path("releases/", ReleaseView.as_view(), name="admin-releases"),
