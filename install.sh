@@ -6,6 +6,9 @@ COMPOSE_FILE="${PROJECT_DIR}/docker-compose.prod.yml"
 ENV_FILE="${PROJECT_DIR}/.env.production"
 INSTALL_MARKER="${PROJECT_DIR}/.installed"
 NONINTERACTIVE="${AIWS_NONINTERACTIVE:-false}"
+LOW_MEMORY_MODE=false
+UVICORN_WORKERS="${UVICORN_WORKERS:-2}"
+CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 
 fail() { printf 'Ошибка установки: %s\n' "$1" >&2; exit 1; }
 on_error() {
@@ -53,18 +56,24 @@ install_docker() {
 }
 
 check_server() {
-  local mem_kb disk_kb arch
+  local mem_kb swap_kb disk_kb arch
   mem_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  swap_kb="$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   disk_kb="$(df -Pk "${PROJECT_DIR}" | awk 'NR==2{print $4}')"
   arch="$(uname -m)"
   case "${arch}" in
     x86_64|amd64|aarch64|arm64) ;;
     *) fail "неподдерживаемая архитектура CPU: ${arch}" ;;
   esac
-  if (( mem_kb > 0 && mem_kb < 2000000 )); then
-    fail "нужно минимум около 2 ГБ RAM; найдено $((mem_kb/1024)) МБ"
-  fi
-  if (( mem_kb > 0 && mem_kb < 4000000 )); then
+  (( mem_kb == 0 || mem_kb >= 850000 )) || fail "слишком мало RAM: найдено $((mem_kb/1024)) МБ; нужен сервер около 1 ГБ RAM или больше"
+  if (( mem_kb > 0 && mem_kb < 1600000 )); then
+    (( swap_kb >= 1800000 )) || fail "при RAM $((mem_kb/1024)) МБ нужен swap минимум около 2 ГБ. Запустите установку через scripts/one_click_install.sh, он создаст swap автоматически"
+    LOW_MEMORY_MODE=true
+    UVICORN_WORKERS=1
+    CELERY_CONCURRENCY=1
+    export COMPOSE_PARALLEL_LIMIT=1
+    printf 'LOW-MEMORY режим: RAM %s МБ, swap %s МБ; Uvicorn=1, Celery=1, последовательная сборка.\n' "$((mem_kb/1024))" "$((swap_kb/1024))"
+  elif (( mem_kb > 0 && mem_kb < 4000000 )); then
     printf 'Предупреждение: RAM меньше рекомендуемых 4 ГБ. Для небольшой beta допустимо, но следите за PostgreSQL/Celery.\n' >&2
   fi
   if (( disk_kb < 10000000 )); then
@@ -89,6 +98,14 @@ required_or_prompt() {
   local env_value="$1" label="$2"
   if [[ -n "${env_value}" ]]; then printf '%s' "${env_value}"; return; fi
   prompt_required "${label}" || fail "${label}: задайте значение через AIWS_* переменную для non-interactive установки"
+}
+upsert_env() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "${ENV_FILE}" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "${ENV_FILE}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >>"${ENV_FILE}"
+  fi
 }
 
 install_packages
@@ -172,10 +189,17 @@ if [[ "${RESUME}" != true ]]; then
     printf 'PAYMENT_RETURN_URL=https://%s/app/wallet/return\n' "${APP_DOMAIN}"
     printf 'YOOKASSA_SHOP_ID=\nYOOKASSA_SECRET_KEY=\nYOOKASSA_API_BASE_URL=https://api.yookassa.ru/v3\n'
     printf 'PAYMENTS_FISCALIZATION_MODE=disabled\nPAYMENTS_VAT_CODE=1\nPAYMENT_MIN_RUB=100.00\nPAYMENT_MAX_RUB=100000.00\n'
+    printf 'UVICORN_WORKERS=%s\nCELERY_CONCURRENCY=%s\n' "${UVICORN_WORKERS}" "${CELERY_CONCURRENCY}"
   } >"${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
+else
+  if [[ "${LOW_MEMORY_MODE}" == true ]]; then
+    upsert_env UVICORN_WORKERS 1
+    upsert_env CELERY_CONCURRENCY 1
+  fi
 fi
 
+export UVICORN_WORKERS CELERY_CONCURRENCY
 compose() { docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"; }
 cd "${PROJECT_DIR}"
 
@@ -183,7 +207,13 @@ printf '\n[1/9] Проверка production-конфигурации Docker Comp
 compose config --quiet
 
 printf '[2/9] Сборка контейнеров...\n'
-compose build --pull
+if [[ "${LOW_MEMORY_MODE}" == true ]]; then
+  export COMPOSE_PARALLEL_LIMIT=1
+  compose build --pull backend
+  compose build --pull frontend
+else
+  compose build --pull
+fi
 
 printf '[3/9] Запуск PostgreSQL и Redis...\n'
 compose up -d postgres redis
@@ -229,7 +259,6 @@ done
 
 compose exec -T backend python manage.py check --fail-level ERROR >/dev/null
 
-# Marker создаётся только после успешной миграции, симуляции, запуска всех сервисов и внешнего readiness.
 touch "${INSTALL_MARKER}"
 chmod 600 "${INSTALL_MARKER}"
 
@@ -238,6 +267,9 @@ printf 'Сайт: https://%s\nЛичный кабинет: https://%s/app\nПа�
 printf 'Логин администратора: %s\n' "${ADMIN_USERNAME}"
 if [[ "${GENERATED_ADMIN_PASSWORD}" == true ]]; then
   printf 'Сгенерированный пароль: %s\nСохраните его сейчас — повторно он не выводится.\n' "${ADMIN_PASSWORD}"
+fi
+if [[ "${LOW_MEMORY_MODE}" == true ]]; then
+  printf 'Режим сервера: LOW-MEMORY (1 Uvicorn worker, 1 Celery worker). Для роста нагрузки рекомендуется увеличить RAM до 4 ГБ+.\n'
 fi
 printf '\nДиагностика: sudo bash scripts/system_diagnostics.sh\n'
 printf 'Проверка коммерческого запуска: sudo bash scripts/commercial_launch_check.sh\n'
