@@ -206,6 +206,12 @@ def settle(reservation_id, actual: Decimal):
 
 
 def _consume_generation_reservation_after_provider_delivery(reservation, wallet):
+    """Recover an interrupted customer settlement from confirmed provider usage.
+
+    This path is deliberately conservative: it never charges the whole reserve.
+    It recomputes the exact retail charge from the immutable pricing snapshot and
+    confirmed token usage, then caps it at the amount authorized before the call.
+    """
     key = str(reservation.idempotency_key or "")
     if not key.startswith("generation:"):
         return False
@@ -214,58 +220,52 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
         return False
 
     from apps.billing.models import RequestCost
+    from apps.billing.pricing import calculate, calculate_from_snapshot
     from apps.procurement.models import ProviderSpend
 
     request_cost = (
         RequestCost.objects.select_for_update()
-        .filter(
-            generation_id=generation_id,
-            provider_cost_rub__isnull=False,
-            charged_rub=0,
-        )
+        .select_related("price_version")
+        .filter(generation_id=generation_id, provider_cost_rub__isnull=False)
         .first()
     )
     if request_cost is None or not (request_cost.input_tokens or request_cost.output_tokens):
         return False
+    if request_cost.charged_rub not in {None, MONEY_ZERO}:
+        return False
 
-    actual = reservation.amount_rub
-    wallet.reserved_rub -= actual
-    if wallet.reserved_rub < MONEY_ZERO:
-        raise ValidationError("Reserved balance invariant violated")
-    wallet.save(update_fields=["reserved_rub", "updated_at"])
-    _entry(
-        wallet,
-        LedgerEntry.Kind.DEBIT,
-        actual,
-        MONEY_ZERO,
-        -actual,
-        MONEY_ZERO,
-        MONEY_ZERO,
-        "generation",
-        reservation.id,
-        f"settle-overrun:{reservation.id}",
-    )
+    if request_cost.pricing_snapshot:
+        _provider_cost, calculated_charge, _profit, _margin = calculate_from_snapshot(
+            request_cost.price_version,
+            request_cost.input_tokens,
+            request_cost.output_tokens,
+            request_cost.pricing_snapshot,
+        )
+    else:
+        _provider_cost, calculated_charge = calculate(
+            request_cost.price_version,
+            request_cost.input_tokens,
+            request_cost.output_tokens,
+        )
+    actual = min(max(calculated_charge, MONEY_ZERO), reservation.amount_rub)
+
+    # settle() releases the unused part of the reserve and consumes only `actual`.
+    settle(reservation.id, actual)
 
     provider_cost = request_cost.provider_cost_rub or MONEY_ZERO
-    request_cost.charged_rub = actual
-    request_cost.gross_profit_rub = actual - provider_cost
-    request_cost.gross_margin_percent = (
-        (request_cost.gross_profit_rub / actual * Decimal("100")) if actual else Decimal("-100")
-    )
-    request_cost.save(
-        update_fields=["charged_rub", "gross_profit_rub", "gross_margin_percent"]
+    gross_profit = actual - provider_cost
+    gross_margin = (gross_profit / actual * Decimal("100")) if actual else MONEY_ZERO
+    # Avoid firing procurement post_save a second time: provider usage was already
+    # recorded when provider_cost_rub became non-null.
+    RequestCost.objects.filter(pk=request_cost.pk).update(
+        charged_rub=actual,
+        gross_profit_rub=gross_profit,
+        gross_margin_percent=gross_margin,
     )
     ProviderSpend.objects.filter(
         source_type="chat",
         source_id=str(request_cost.id),
-        customer_charge_rub=0,
     ).update(customer_charge_rub=actual)
-
-    reservation.actual_rub = actual
-    reservation.state = BalanceReservation.State.SETTLED
-    reservation.settled_at = timezone.now()
-    reservation.save(update_fields=["actual_rub", "state", "settled_at"])
-    notify_low_balance(wallet)
     return True
 
 
@@ -280,6 +280,7 @@ def release(reservation_id):
         return reservation
     wallet = Wallet.objects.select_for_update().get(pk=reservation.wallet_id)
     if _consume_generation_reservation_after_provider_delivery(reservation, wallet):
+        reservation.refresh_from_db(fields=["actual_rub", "state", "settled_at"])
         return reservation
     wallet.reserved_rub -= reservation.amount_rub
     wallet.available_rub += reservation.amount_rub
@@ -349,17 +350,36 @@ def debit_paid(user, amount: Decimal, source_type: str, source_id: str):
 
 
 @transaction.atomic
-def admin_adjust_balance(*, target_user, admin, direction, amount, comment):
+def admin_adjust_balance(
+    *, target_user, admin, direction, amount, comment, idempotency_key=""
+):
     amount = Decimal(str(amount)).quantize(Decimal("0.0001"))
     comment = str(comment or "").strip()
+    idempotency_key = str(idempotency_key or "").strip()
     if amount <= 0:
         raise ValidationError("Сумма корректировки должна быть больше нуля")
     if len(comment) < 3:
         raise ValidationError("Для ручной корректировки обязателен комментарий")
     if direction not in {AdminBalanceAdjustment.Direction.CREDIT, AdminBalanceAdjustment.Direction.DEBIT}:
         raise ValidationError("Неизвестное направление корректировки")
+    if not 1 <= len(idempotency_key) <= 120:
+        raise ValidationError("Для корректировки обязателен Idempotency-Key")
 
     wallet, _ = Wallet.objects.select_for_update().get_or_create(user=target_user)
+    ledger_key = f"admin-adjustment:{admin.id}:{target_user.id}:{idempotency_key}"
+    existing_entry = LedgerEntry.objects.filter(idempotency_key=ledger_key).first()
+    if existing_entry is not None:
+        existing = AdminBalanceAdjustment.objects.filter(ledger_entry=existing_entry).first()
+        if existing is None:
+            raise ValidationError("Нарушена связь корректировки с ledger")
+        if (
+            existing.direction != direction
+            or existing.amount_rub != amount
+            or existing.comment != comment
+        ):
+            raise ValidationError("Idempotency-Key уже использован для другой корректировки")
+        return existing
+
     adjustment_id = uuid.uuid4()
     if direction == AdminBalanceAdjustment.Direction.CREDIT:
         # Administrative goodwill/compensation is promo by default and therefore
@@ -392,7 +412,7 @@ def admin_adjust_balance(*, target_user, admin, direction, amount, comment):
         promo_delta,
         "admin_adjustment",
         adjustment_id,
-        f"admin-adjustment:{adjustment_id}",
+        ledger_key,
     )
     return AdminBalanceAdjustment.objects.create(
         id=adjustment_id,
