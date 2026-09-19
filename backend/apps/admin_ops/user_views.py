@@ -50,6 +50,22 @@ class AdminUserDetailView(APIView):
                     if wallet
                     else None
                 ),
+                "ledger_entries": list(
+                    wallet.entries.order_by("-created_at").values(
+                        "id",
+                        "kind",
+                        "amount_rub",
+                        "available_delta_rub",
+                        "reserved_delta_rub",
+                        "paid_delta_rub",
+                        "promo_delta_rub",
+                        "available_after_rub",
+                        "reserved_after_rub",
+                        "source_type",
+                        "source_id",
+                        "created_at",
+                    )[:100]
+                ) if wallet else [],
                 "balance_adjustments": list(
                     AdminBalanceAdjustment.objects.filter(wallet=wallet)
                     .select_related("admin")
