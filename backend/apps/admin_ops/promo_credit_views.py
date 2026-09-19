@@ -2,7 +2,6 @@ import hashlib
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -17,16 +16,16 @@ from .services import audit
 class AdminPromoCreditView(APIView):
     """Credit non-refundable promo RUB directly into a user's wallet.
 
-    This administrative operation is intentionally independent from YooKassa,
-    PAYMENTS_ENABLED, payment limits and the AdminBalanceAdjustment model. The
-    immutable wallet ledger remains the accounting source of truth.
+    The immutable wallet ledger is the financial source of truth. This operation
+    is independent from YooKassa, PAYMENTS_ENABLED, payment limits and the
+    AdminBalanceAdjustment model. Admin audit is best-effort and must never roll
+    back an already committed wallet credit.
     """
 
     permission_classes = [IsPlatformAdmin]
 
-    @transaction.atomic
     def post(self, request, user_id):
-        user = User.objects.select_for_update().filter(pk=user_id).first()
+        user = User.objects.filter(pk=user_id).first()
         if user is None:
             return Response({"detail": "Пользователь не найден"}, status=404)
 
@@ -55,26 +54,32 @@ class AdminPromoCreditView(APIView):
         except ValidationError as exc:
             return Response({"detail": "; ".join(exc.messages)}, status=400)
 
-        wallet = Wallet.objects.select_for_update().get(user=user)
-        audit(
-            request,
-            "user.promo_credit",
-            "user",
-            user.id,
-            {
-                "ledger_entry_id": str(entry.id),
-                "amount_rub": str(amount),
-                "comment": comment,
-                "bucket": "promo",
-                "idempotency_key_hash": hashlib.sha256(raw_key.encode("utf-8")).hexdigest(),
-            },
-        )
+        wallet = Wallet.objects.get(user=user)
+        audit_logged = True
+        try:
+            audit(
+                request,
+                "user.promo_credit",
+                "user",
+                user.id,
+                {
+                    "ledger_entry_id": str(entry.id),
+                    "amount_rub": str(amount),
+                    "comment": comment,
+                    "bucket": "promo",
+                    "idempotency_key_hash": hashlib.sha256(raw_key.encode("utf-8")).hexdigest(),
+                },
+            )
+        except Exception:
+            audit_logged = False
+
         return Response(
             {
                 "ok": True,
                 "user_id": str(user.id),
                 "amount_rub": str(amount),
                 "ledger_entry_id": str(entry.id),
+                "audit_logged": audit_logged,
                 "wallet": {
                     "available_rub": str(wallet.available_rub),
                     "reserved_rub": str(wallet.reserved_rub),
