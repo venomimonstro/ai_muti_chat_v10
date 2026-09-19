@@ -20,7 +20,7 @@ def expensive_chat(settings):
         email="expensive-chat@example.test",
         password="password123!",
     )
-    credit(user, Decimal("100"), "test", "expensive-chat")
+    credit(user, Decimal("1000"), "test", "expensive-chat")
     provider = Provider.objects.create(
         slug="expensive-echo",
         name="Expensive Echo",
@@ -81,7 +81,7 @@ def test_expensive_stream_is_rejected_before_generation_or_reservation(expensive
     assert Message.objects.filter(conversation=conversation).count() == 0
     assert BalanceReservation.objects.filter(wallet=user.wallet).count() == 0
     user.wallet.refresh_from_db()
-    assert user.wallet.available_rub == Decimal("100.0000")
+    assert user.wallet.available_rub == Decimal("1000.0000")
 
 
 @pytest.mark.django_db(transaction=True)
@@ -146,5 +146,40 @@ def test_confirmed_expensive_stream_runs_and_releases_reservation(expensive_chat
     assert "event: completed" in body
     assert Generation.objects.filter(owner=user).count() == 1
     user.wallet.refresh_from_db()
-    assert user.wallet.available_rub < Decimal("100.0000")
+    assert user.wallet.available_rub < Decimal("1000.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_cost_confirmation_cannot_override_hard_wallet_safety_limit(expensive_chat, monkeypatch):
+    client, user, conversation = expensive_chat
+    monkeypatch.setenv("CONSUMER_MAX_SINGLE_REQUEST_BALANCE_PERCENT", "0.5")
+    payload = {
+        "content": "Сделай подробный анализ проекта",
+        "client_message_id": "aa9df412-231e-4fe6-b52d-3dd79ab17562",
+    }
+    preview = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/preview/",
+        payload,
+        format="json",
+    )
+    assert preview.status_code == 200
+    assert preview.data["blocked_by_spend_guard"] is True
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/stream/",
+        {
+            **payload,
+            "confirm_cost": True,
+            "confirmed_max_rub": "1000.00",
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="expensive:hard-guard",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "spend_safety_limit"
+    assert Generation.objects.filter(owner=user).count() == 0
+    assert BalanceReservation.objects.filter(wallet=user.wallet).count() == 0
+    user.wallet.refresh_from_db()
+    assert user.wallet.available_rub == Decimal("1000.0000")
