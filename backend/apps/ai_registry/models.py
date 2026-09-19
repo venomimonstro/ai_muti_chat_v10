@@ -38,15 +38,11 @@ class Provider(models.Model):
     emergency_disabled = models.BooleanField(default=False)
     priority = models.PositiveIntegerField(default=100)
     region = models.CharField(max_length=64, blank=True)
-    adapter_type = models.CharField(
-        max_length=32, choices=AdapterType.choices, default=AdapterType.ECHO
-    )
+    adapter_type = models.CharField(max_length=32, choices=AdapterType.choices, default=AdapterType.ECHO)
     api_base_url = models.URLField(blank=True)
     credential_env = models.CharField(max_length=100, blank=True)
     credential_secret = models.TextField(blank=True, editable=False)
-    health_state = models.CharField(
-        max_length=16, choices=HealthState.choices, default=HealthState.UNKNOWN
-    )
+    health_state = models.CharField(max_length=16, choices=HealthState.choices, default=HealthState.UNKNOWN)
     consecutive_failures = models.PositiveIntegerField(default=0)
     circuit_opened_until = models.DateTimeField(null=True, blank=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
@@ -80,18 +76,14 @@ class Provider(models.Model):
 
     def get_api_key(self) -> str:
         try:
-            key = self.api_keys.filter(enabled=True, health_state__in=["unknown", "healthy", "degraded"]).order_by(
-                "priority", "last_used_at", "created_at"
-            ).first()
+            key = self.api_keys.filter(enabled=True, health_state__in=["unknown", "healthy", "degraded"]).order_by("?").first()
             if key:
                 value = key.get_secret()
                 if value:
                     return value
         except Exception:
             pass
-        return self._legacy_api_key() or (
-            os.getenv(self.credential_env, "").strip() if self.credential_env else ""
-        )
+        return self._legacy_api_key() or (os.getenv(self.credential_env, "").strip() if self.credential_env else "")
 
     def credential_configured(self) -> bool:
         try:
@@ -151,9 +143,7 @@ class ProviderApiKey(models.Model):
 
     class Meta:
         ordering = ["priority", "created_at"]
-        constraints = [
-            models.UniqueConstraint(fields=["provider", "label"], name="unique_provider_api_key_label")
-        ]
+        constraints = [models.UniqueConstraint(fields=["provider", "label"], name="unique_provider_api_key_label")]
 
     def set_secret(self, value: str):
         value = (value or "").strip()
@@ -186,20 +176,12 @@ class AIModel(models.Model):
     enabled = models.BooleanField(default=True)
     capabilities = models.JSONField(default=list, blank=True)
     routing_tags = models.JSONField(default=list, blank=True)
-    fallback_model = models.ForeignKey(
-        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="fallback_for"
-    )
+    fallback_model = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="fallback_for")
     context_window = models.PositiveIntegerField(default=8192)
     max_output_tokens = models.PositiveIntegerField(default=2048)
     input_price_rub_per_million = models.DecimalField(max_digits=12, decimal_places=4, default=0)
     output_price_rub_per_million = models.DecimalField(max_digits=12, decimal_places=4, default=0)
-    current_version = models.ForeignKey(
-        "ModelVersion",
-        on_delete=models.PROTECT,
-        null=True,
-        blank=True,
-        related_name="active_for_models",
-    )
+    current_version = models.ForeignKey("ModelVersion", on_delete=models.PROTECT, null=True, blank=True, related_name="active_for_models")
 
 
 class ModelVersion(models.Model):
@@ -209,16 +191,7 @@ class ModelVersion(models.Model):
         ACTIVE = "active", "Активна"
         RETIRED = "retired", "Выведена"
 
-    IMMUTABLE_FIELDS = (
-        "model_id",
-        "version",
-        "exact_api_id",
-        "capabilities",
-        "routing_tags",
-        "context_window",
-        "max_output_tokens",
-    )
-
+    IMMUTABLE_FIELDS = ("model_id", "version", "exact_api_id", "capabilities", "routing_tags", "context_window", "max_output_tokens")
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     model = models.ForeignKey(AIModel, on_delete=models.PROTECT, related_name="versions")
     version = models.SlugField(max_length=100)
@@ -237,22 +210,14 @@ class ModelVersion(models.Model):
     class Meta:
         ordering = ["model__slug", "-created_at"]
         constraints = [
-            models.UniqueConstraint(
-                fields=["model", "version"], name="unique_model_registry_version"
-            ),
-            models.UniqueConstraint(
-                fields=["model"],
-                condition=models.Q(stage="active"),
-                name="unique_active_version_per_model",
-            ),
+            models.UniqueConstraint(fields=["model", "version"], name="unique_model_registry_version"),
+            models.UniqueConstraint(fields=["model"], condition=models.Q(stage="active"), name="unique_active_version_per_model"),
         ]
 
     def save(self, *args, **kwargs):
         if self.pk:
             previous = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
-            changed = previous and any(
-                previous[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS
-            )
+            changed = previous and any(previous[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS)
             if changed:
                 raise ValidationError("Конфигурация ModelVersion неизменяема; создайте новую версию")
         super().save(*args, **kwargs)
@@ -265,16 +230,8 @@ class ModelVersionTransition(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     model = models.ForeignKey(AIModel, on_delete=models.PROTECT, related_name="version_transitions")
-    from_version = models.ForeignKey(
-        ModelVersion,
-        on_delete=models.PROTECT,
-        null=True,
-        blank=True,
-        related_name="transitions_from",
-    )
-    to_version = models.ForeignKey(
-        ModelVersion, on_delete=models.PROTECT, related_name="transitions_to"
-    )
+    from_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, null=True, blank=True, related_name="transitions_from")
+    to_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, related_name="transitions_to")
     action = models.CharField(max_length=16, choices=Action.choices)
     eval_run_id = models.UUIDField(null=True, blank=True)
     reason = models.CharField(max_length=500, blank=True)
@@ -325,10 +282,4 @@ class RoutingPolicyVersion(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["active"],
-                condition=models.Q(active=True),
-                name="unique_active_routing_policy",
-            )
-        ]
+        constraints = [models.UniqueConstraint(fields=["active"], condition=models.Q(active=True), name="unique_active_routing_policy")]
