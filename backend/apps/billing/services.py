@@ -107,6 +107,15 @@ def reserve(user, amount: Decimal, key: str):
     if existing:
         return existing
     wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
+    # The first lookup is a fast path only. Two identical HTTP requests can both
+    # miss it before one acquires the wallet lock. Re-check after serialization so
+    # the second request returns the same reservation instead of hitting a unique
+    # constraint after touching the wallet.
+    existing = BalanceReservation.objects.filter(idempotency_key=key).first()
+    if existing:
+        if existing.wallet_id != wallet.id:
+            raise ValidationError("Idempotency-Key уже используется другим кошельком")
+        return existing
     _enforce_consumer_operation_velocity(wallet, key)
     if not _is_public_api(key):
         enforce_spend_limits(wallet, amount)
