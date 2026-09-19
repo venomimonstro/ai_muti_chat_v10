@@ -16,6 +16,7 @@ from .models import (
     PaymentEvent,
     ReconciliationRun,
     Refund,
+    RefundRequest,
 )
 from .provider import YooKassaClient
 
@@ -224,7 +225,7 @@ def process_webhook(payload, *, client=None):
 
 
 @transaction.atomic
-def create_refund(*, payment, amount, idempotency_key, client=None):
+def create_refund(*, payment, amount, idempotency_key, client=None, wallet_already_debited=False):
     _assert_payments_ready()
     amount = _money(amount)
     payment = Payment.objects.select_for_update().select_related("user").get(pk=payment.pk)
@@ -253,7 +254,8 @@ def create_refund(*, payment, amount, idempotency_key, client=None):
     if refund.payment_id != payment.id or refund.amount_rub != amount:
         raise ValidationError("Idempotency-Key уже использован для другой операции")
     if refund.wallet_debited_at is None:
-        debit_paid(payment.user, amount, "refund", refund.id)
+        if not wallet_already_debited:
+            debit_paid(payment.user, amount, "refund", refund.id)
         refund.wallet_debited_at = timezone.now()
         refund.save(update_fields=["wallet_debited_at", "updated_at"])
     client = client or YooKassaClient.from_settings()
@@ -275,6 +277,89 @@ def create_refund(*, payment, amount, idempotency_key, client=None):
 
 
 @transaction.atomic
+def create_refund_request(*, user, payment, amount, reason=""):
+    amount = _money(amount)
+    payment = Payment.objects.select_for_update().select_related("user").get(pk=payment.pk)
+    if payment.user_id != user.id:
+        raise ValidationError("Платёж не принадлежит пользователю")
+    if payment.status != Payment.Status.SUCCEEDED:
+        raise ValidationError("Возврат доступен только для успешного платежа")
+    already_refunded = payment.refunds.filter(
+        status__in=[Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED]
+    ).aggregate(total=Sum("amount_rub"))["total"] or Decimal("0")
+    pending_held = payment.refund_requests.filter(
+        status__in=[RefundRequest.Status.PENDING, RefundRequest.Status.APPROVED, RefundRequest.Status.PROCESSING]
+    ).aggregate(total=Sum("amount_rub"))["total"] or Decimal("0")
+    if amount < Decimal("1.00") or already_refunded + pending_held + amount > payment.amount_rub:
+        raise ValidationError("Недопустимая сумма возврата")
+
+    request = RefundRequest.objects.create(
+        user=user,
+        payment=payment,
+        amount_rub=amount,
+        reason=str(reason or "")[:4000],
+    )
+    # Debit the refundable paid bucket immediately. This is a hold: the same money
+    # cannot be spent while an administrator reviews the request.
+    debit_paid(user, amount, "refund_hold", request.id)
+    request.held_at = timezone.now()
+    request.save(update_fields=["held_at", "updated_at"])
+    return request
+
+
+@transaction.atomic
+def approve_refund_request(*, refund_request, admin_comment="", client=None):
+    request = (
+        RefundRequest.objects.select_for_update()
+        .select_related("payment__user")
+        .get(pk=refund_request.pk)
+    )
+    if request.status not in {RefundRequest.Status.PENDING, RefundRequest.Status.APPROVED}:
+        raise ValidationError("Заявка уже обработана")
+    request.status = RefundRequest.Status.APPROVED
+    request.admin_comment = str(admin_comment or "")[:4000]
+    request.save(update_fields=["status", "admin_comment", "updated_at"])
+    try:
+        refund = create_refund(
+            payment=request.payment,
+            amount=request.amount_rub,
+            idempotency_key=f"request-{request.id}"[:64],
+            client=client,
+            wallet_already_debited=True,
+        )
+    except Exception:
+        request.status = RefundRequest.Status.FAILED
+        request.resolved_at = timezone.now()
+        request.save(update_fields=["status", "resolved_at", "updated_at"])
+        # Provider refund did not start. Return the held paid balance.
+        credit(request.user, request.amount_rub, "refund_request_failed", request.id, bucket="paid")
+        raise
+    request.refund = refund
+    request.status = (
+        RefundRequest.Status.SUCCEEDED
+        if refund.status == Refund.Status.SUCCEEDED
+        else RefundRequest.Status.PROCESSING
+    )
+    if request.status == RefundRequest.Status.SUCCEEDED:
+        request.resolved_at = timezone.now()
+    request.save(update_fields=["refund", "status", "resolved_at", "updated_at"])
+    return request
+
+
+@transaction.atomic
+def reject_refund_request(*, refund_request, admin_comment=""):
+    request = RefundRequest.objects.select_for_update().select_related("user").get(pk=refund_request.pk)
+    if request.status != RefundRequest.Status.PENDING:
+        raise ValidationError("Заявка уже обработана")
+    credit(request.user, request.amount_rub, "refund_request_reject", request.id, bucket="paid")
+    request.status = RefundRequest.Status.REJECTED
+    request.admin_comment = str(admin_comment or "")[:4000]
+    request.resolved_at = timezone.now()
+    request.save(update_fields=["status", "admin_comment", "resolved_at", "updated_at"])
+    return request
+
+
+@transaction.atomic
 def apply_refund_status(refund_id, remote, *, event=None):
     refund = Refund.objects.select_for_update().select_related("payment__user").get(id=refund_id)
     if not isinstance(remote, dict):
@@ -293,10 +378,25 @@ def apply_refund_status(refund_id, remote, *, event=None):
         result = "refund_succeeded"
     elif status == Refund.Status.CANCELED and refund.status != Refund.Status.SUCCEEDED:
         refund.status = Refund.Status.CANCELED
-        credit(refund.payment.user, refund.amount_rub, "refund_cancel", refund.id, bucket="paid")
+        request = RefundRequest.objects.filter(refund=refund).first()
+        if request is None:
+            credit(refund.payment.user, refund.amount_rub, "refund_cancel", refund.id, bucket="paid")
         result = "refund_canceled_released"
     refund.provider_payload = remote
     refund.save(update_fields=["status", "provider_payload", "updated_at"])
+
+    request = RefundRequest.objects.select_for_update().filter(refund=refund).first()
+    if request is not None:
+        if refund.status == Refund.Status.SUCCEEDED:
+            request.status = RefundRequest.Status.SUCCEEDED
+            request.resolved_at = timezone.now()
+            request.save(update_fields=["status", "resolved_at", "updated_at"])
+        elif refund.status == Refund.Status.CANCELED:
+            credit(request.user, request.amount_rub, "refund_request_cancel", request.id, bucket="paid")
+            request.status = RefundRequest.Status.FAILED
+            request.resolved_at = timezone.now()
+            request.save(update_fields=["status", "resolved_at", "updated_at"])
+
     if event:
         event.result = result
         event.processed_at = timezone.now()
