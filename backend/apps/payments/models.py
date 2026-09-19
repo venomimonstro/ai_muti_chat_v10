@@ -113,6 +113,7 @@ class RefundRequest(models.Model):
         null=True,
         blank=True,
     )
+    idempotency_key = models.CharField(max_length=160, blank=True)
     amount_rub = models.DecimalField(max_digits=14, decimal_places=2)
     reason = models.TextField(blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
@@ -128,7 +129,12 @@ class RefundRequest(models.Model):
             models.CheckConstraint(
                 condition=models.Q(amount_rub__gt=0),
                 name="refund_request_amount_positive",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["user", "idempotency_key"],
+                condition=~models.Q(idempotency_key=""),
+                name="unique_user_refund_request_idempotency",
+            ),
         ]
 
 
