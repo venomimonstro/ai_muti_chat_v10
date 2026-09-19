@@ -122,7 +122,7 @@ def reserve_provider_spend(*, provider, amount_native, source_key):
         return existing
     account = ProviderFundingAccount.objects.select_for_update().filter(provider=provider, active=True, is_default=True).first()
     if account is None:
-        return None
+        raise ValidationError("Для коммерческого провайдера не настроен основной закупочный аккаунт")
     if account.credential_env != provider.credential_env:
         raise ValidationError("Основной закупочный аккаунт не совпадает с API-ключом активного провайдера")
     if not credential_is_configured(account):
@@ -168,41 +168,21 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, cu
         raise ValidationError("Фактический расход провайдера не может быть отрицательным")
     if customer_charge < ZERO:
         raise ValidationError("Выручка операции не может быть отрицательной")
+
     account = ProviderFundingAccount.objects.select_for_update().get(pk=reservation.account_id)
-    if actual > reservation.amount_native:
-        provider = reservation.account.provider
-        Provider.objects.filter(pk=provider.pk).update(emergency_disabled=True, health_state=Provider.HealthState.DISABLED)
-        CostAnomaly.objects.get_or_create(
-            dedupe_key=f"provider-procurement-overrun:{source_type}:{source_id}",
-            defaults={
-                "kind": CostAnomaly.Kind.COST_DEVIATION,
-                "severity": "critical",
-                "provider_slug": provider.slug,
-                "model_slug": model_slug,
-                "expected_rub": _d(nominal_cost_rub),
-                "actual_rub": _d(nominal_cost_rub),
-                "details": {
-                    "reason": "provider_native_cost_exceeded_reserved_capacity",
-                    "reserved_native": str(reservation.amount_native),
-                    "actual_native": str(actual),
-                    "unallocated_native": str(actual),
-                    "customer_charge_rub": str(customer_charge),
-                },
-            },
-        )
-        account.reserved_native -= reservation.amount_native
-        account.save(update_fields=["reserved_native", "updated_at"])
-        reservation.state = ProviderSpendReservation.State.RELEASED
-        reservation.settled_at = timezone.now()
-        reservation.save(update_fields=["state", "settled_at"])
-        return None
-    account.reserved_native -= reservation.amount_native
-    account.spent_native += actual
-    if account.spent_native + account.reserved_native > account.funded_native:
-        raise ValidationError("Закупочный баланс провайдера исчерпан")
-    account.save(update_fields=["reserved_native", "spent_native", "updated_at"])
+    overrun = actual > reservation.amount_native
+    provider = reservation.account.provider
     unit = account_weighted_unit_cost_rub(account)
     economic = (actual * unit).quantize(RUB_STEP, rounding=ROUND_UP)
+
+    # Always persist the real provider cost. An overrun is an accounting event,
+    # not a reason to make the cost disappear from P&L.
+    account.reserved_native -= reservation.amount_native
+    available_after_release = max(ZERO, account.funded_native - account.spent_native)
+    ledger_spend = min(actual, available_after_release)
+    account.spent_native += ledger_spend
+    account.save(update_fields=["reserved_native", "spent_native", "updated_at"])
+
     spend = ProviderSpend.objects.create(
         account=account,
         reservation=reservation,
@@ -218,10 +198,38 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, cu
         customer_charge_rub=customer_charge,
         acquisition_unit_cost_rub=unit,
     )
-    reservation.actual_native = actual
+
+    reservation.actual_native = min(actual, reservation.amount_native)
     reservation.state = ProviderSpendReservation.State.SETTLED
     reservation.settled_at = timezone.now()
     reservation.save(update_fields=["actual_native", "state", "settled_at"])
+
+    if overrun:
+        unallocated = (actual - ledger_spend).quantize(NATIVE_STEP)
+        Provider.objects.filter(pk=provider.pk).update(
+            emergency_disabled=True,
+            health_state=Provider.HealthState.DISABLED,
+        )
+        CostAnomaly.objects.get_or_create(
+            dedupe_key=f"provider-procurement-overrun:{source_type}:{source_id}",
+            defaults={
+                "kind": CostAnomaly.Kind.COST_DEVIATION,
+                "severity": "critical",
+                "provider_slug": provider.slug,
+                "model_slug": model_slug,
+                "expected_rub": _d(nominal_cost_rub),
+                "actual_rub": economic,
+                "details": {
+                    "reason": "provider_native_cost_exceeded_reserved_capacity",
+                    "reserved_native": str(reservation.amount_native),
+                    "actual_native": str(actual),
+                    "ledger_spend_native": str(ledger_spend),
+                    "unallocated_native": str(unallocated),
+                    "customer_charge_rub": str(customer_charge),
+                    "provider_disabled": True,
+                },
+            },
+        )
     return spend
 
 
