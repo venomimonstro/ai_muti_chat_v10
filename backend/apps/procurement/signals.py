@@ -1,5 +1,8 @@
+import os
 from decimal import Decimal, ROUND_UP
 
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
@@ -28,8 +31,29 @@ def _fx(snapshot):
     return value if value > ZERO else None
 
 
+def _commercial_fail_closed():
+    explicit = str(os.getenv("PROCUREMENT_RUNTIME_FAIL_CLOSED", "")).strip().lower()
+    if explicit:
+        return explicit not in {"0", "false", "no", "off"}
+    return bool(getattr(settings, "PAYMENTS_LIVE_ENABLED", False))
+
+
 def _provider_has_procurement(provider):
     return ProviderFundingAccount.objects.filter(provider=provider, active=True).exists()
+
+
+def _require_procurement(provider):
+    configured = _provider_has_procurement(provider)
+    if configured:
+        return True
+    adapter_type = str(getattr(provider, "adapter_type", ""))
+    if adapter_type == "echo":
+        return False
+    if _commercial_fail_closed():
+        raise ValidationError(
+            f"Коммерческий запрос заблокирован: для провайдера {provider.slug} не настроен закупочный контур"
+        )
+    return False
 
 
 def _release_other(prefix, keep_key=None):
@@ -44,22 +68,32 @@ def _release_other(prefix, keep_key=None):
 
 
 def _ensure(*, provider, expected_rub, snapshot, source_key):
-    if not _provider_has_procurement(provider):
+    if not _require_procurement(provider):
         return None
     fx = _fx(snapshot)
     if fx is None:
+        if _commercial_fail_closed():
+            raise ValidationError(
+                f"Коммерческий запрос заблокирован: отсутствует FX snapshot для {provider.slug}"
+            )
         return None
     native = (_decimal(expected_rub) / fx).quantize(STEP, rounding=ROUND_UP)
     if native <= ZERO:
+        if _commercial_fail_closed() and _decimal(expected_rub) > ZERO:
+            raise ValidationError("Не удалось рассчитать закупочный резерв провайдера")
         return None
     return reserve_provider_spend(provider=provider, amount_native=native, source_key=source_key)
 
 
 def _settle(*, reservation, provider_cost_rub, customer_charge_rub, snapshot, source_type, source_id, model_slug, provider_request_id="", input_tokens=0, output_tokens=0):
     if reservation is None:
+        if _commercial_fail_closed() and _decimal(provider_cost_rub) > ZERO:
+            raise ValidationError("Фактический расход провайдера не имеет закупочного резерва")
         return None
     fx = _fx(snapshot)
     if fx is None:
+        if _commercial_fail_closed():
+            raise ValidationError("Нельзя закрыть расход провайдера без FX snapshot")
         release_provider_spend(reservation.id)
         return None
     native = (_decimal(provider_cost_rub) / fx).quantize(STEP, rounding=ROUND_UP)
@@ -80,7 +114,11 @@ def _settle(*, reservation, provider_cost_rub, customer_charge_rub, snapshot, so
 @receiver(post_save, sender=RequestCost)
 def request_cost_procurement(sender, instance, **kwargs):
     model = AIModel.objects.select_related("provider").filter(slug=instance.price_version.model_slug).first()
-    if model is None or not _provider_has_procurement(model.provider):
+    if model is None:
+        if _commercial_fail_closed():
+            raise ValidationError("Цена ссылается на неизвестную AI-модель")
+        return
+    if not _require_procurement(model.provider):
         return
     prefix = f"chat:{instance.id}:"
     key = f"{prefix}{instance.price_version_id}"
@@ -114,7 +152,7 @@ def request_cost_procurement(sender, instance, **kwargs):
 def api_usage_procurement(sender, instance, **kwargs):
     model = instance.model
     provider = model.provider
-    if not _provider_has_procurement(provider):
+    if not _require_procurement(provider):
         return
     key = f"b2b:{instance.id}"
     reservation = ProviderSpendReservation.objects.filter(source_key=key).first()
@@ -128,6 +166,8 @@ def api_usage_procurement(sender, instance, **kwargs):
             )
         return
     if reservation is None or reservation.state != ProviderSpendReservation.State.ACTIVE:
+        if _commercial_fail_closed() and instance.state == APIUsage.State.COMPLETED:
+            raise ValidationError("B2B расход завершён без активного закупочного резерва")
         return
     if instance.state == APIUsage.State.COMPLETED:
         _settle(
@@ -149,7 +189,7 @@ def api_usage_procurement(sender, instance, **kwargs):
 @receiver(post_save, sender=ImageGeneration)
 def image_generation_procurement(sender, instance, **kwargs):
     provider = instance.model.provider
-    if not _provider_has_procurement(provider):
+    if not _require_procurement(provider):
         return
     key = f"image:{instance.id}"
     reservation = ProviderSpendReservation.objects.filter(source_key=key).first()
@@ -163,6 +203,8 @@ def image_generation_procurement(sender, instance, **kwargs):
             )
         return
     if reservation is None or reservation.state != ProviderSpendReservation.State.ACTIVE:
+        if _commercial_fail_closed() and instance.state == ImageGeneration.State.COMPLETED:
+            raise ValidationError("Image расход завершён без активного закупочного резерва")
         return
     if instance.state == ImageGeneration.State.COMPLETED:
         _settle(
@@ -182,7 +224,7 @@ def image_generation_procurement(sender, instance, **kwargs):
 @receiver(post_save, sender=CompareVariant)
 def compare_variant_procurement(sender, instance, **kwargs):
     provider = instance.model.provider
-    if not _provider_has_procurement(provider):
+    if not _require_procurement(provider):
         return
     key = f"compare:{instance.id}"
     reservation = ProviderSpendReservation.objects.filter(source_key=key).first()
@@ -196,6 +238,8 @@ def compare_variant_procurement(sender, instance, **kwargs):
             )
         return
     if reservation is None or reservation.state != ProviderSpendReservation.State.ACTIVE:
+        if _commercial_fail_closed() and instance.state == CompareVariant.State.COMPLETED:
+            raise ValidationError("Compare расход завершён без активного закупочного резерва")
         return
     if instance.state == CompareVariant.State.COMPLETED:
         _settle(
