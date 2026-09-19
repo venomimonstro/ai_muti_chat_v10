@@ -10,7 +10,7 @@ from .metrics_views import OperationalMetricsView
 from .pricing_views import PricingManagementView
 from .procurement_breakdown_views import ProcurementBreakdownView
 from .procurement_views import ProcurementEconomicsView
-from .provider_views import SafeProviderBulkActionView
+from .provider_views import ProviderCredentialView, SafeProviderBulkActionView
 from .safety_views import AdminConversationMessagesView, ChatSafetySearchView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView, SupportStatusReplyView
@@ -56,6 +56,7 @@ urlpatterns = [
     path("quality/", QualityControlView.as_view(), name="admin-quality"),
     path("incidents/", IncidentControlView.as_view(), name="admin-incidents"),
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
+    path("providers/<slug:provider_slug>/credentials/", ProviderCredentialView.as_view(), name="admin-provider-credentials"),
     path("commercial-setup/", CommercialSetupView.as_view(), name="admin-commercial-setup"),
     path("commercial-setup/providers/<slug:provider_slug>/health/", CommercialProviderHealthView.as_view(), name="admin-commercial-provider-health"),
     path("providers/bulk-action/", SafeProviderBulkActionView.as_view(), name="admin-provider-bulk-action"),
