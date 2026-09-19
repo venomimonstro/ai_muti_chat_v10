@@ -123,13 +123,11 @@ class ProviderClientActivationView(AdminAPIView):
                 "blocked": blocked,
             },
         )
-        status_code = 200 if activated else 409
         return Response(
             {
                 "provider": provider.slug,
                 "provider_enabled": provider.enabled,
                 "activated": activated,
                 "blocked": blocked,
-            },
-            status=status_code,
+            }
         )
