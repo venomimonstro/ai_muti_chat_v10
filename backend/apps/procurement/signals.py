@@ -12,7 +12,7 @@ from apps.billing.models import RequestCost
 from apps.chat.models import CompareVariant
 from apps.image_studio.models import ImageGeneration
 
-from .models import ProviderFundingAccount, ProviderSpendReservation
+from .models import ProviderFundingAccount, ProviderSpend, ProviderSpendReservation
 from .services import release_provider_spend, reserve_provider_spend, settle_provider_spend
 
 ZERO = Decimal("0")
@@ -85,7 +85,29 @@ def _ensure(*, provider, expected_rub, snapshot, source_key):
     return reserve_provider_spend(provider=provider, amount_native=native, source_key=source_key)
 
 
+def _existing_spend(source_type, source_id, customer_charge=None):
+    """Return an already-settled provider spend and safely refresh revenue only.
+
+    Django post_save signals fire on unrelated later updates too (for example a
+    reconciliation_status update). A completed operation must therefore never be
+    settled twice and must not fail merely because its reservation is already closed.
+    """
+    spend = ProviderSpend.objects.filter(
+        source_type=source_type,
+        source_id=str(source_id),
+    ).first()
+    if spend is not None and customer_charge is not None:
+        charge = _decimal(customer_charge)
+        if charge >= ZERO and spend.customer_charge_rub != charge:
+            ProviderSpend.objects.filter(pk=spend.pk).update(customer_charge_rub=charge)
+            spend.customer_charge_rub = charge
+    return spend
+
+
 def _settle(*, reservation, provider_cost_rub, customer_charge_rub, snapshot, source_type, source_id, model_slug, provider_request_id="", input_tokens=0, output_tokens=0):
+    existing = _existing_spend(source_type, source_id, customer_charge_rub)
+    if existing is not None:
+        return existing
     if reservation is None:
         if _commercial_fail_closed() and _decimal(provider_cost_rub) > ZERO:
             raise ValidationError("Фактический расход провайдера не имеет закупочного резерва")
@@ -131,6 +153,8 @@ def request_cost_procurement(sender, instance, **kwargs):
             source_key=key,
         )
         return
+    if _existing_spend("chat", instance.id, instance.charged_rub or ZERO) is not None:
+        return
     reservation = ProviderSpendReservation.objects.filter(
         source_key=key,
         state=ProviderSpendReservation.State.ACTIVE,
@@ -155,6 +179,10 @@ def api_usage_procurement(sender, instance, **kwargs):
     if not _require_procurement(provider):
         return
     key = f"b2b:{instance.id}"
+    if instance.state == APIUsage.State.COMPLETED and _existing_spend(
+        "b2b", instance.id, instance.charged_rub
+    ) is not None:
+        return
     reservation = ProviderSpendReservation.objects.filter(source_key=key).first()
     if instance.state == APIUsage.State.RUNNING:
         if reservation is None:
@@ -192,6 +220,10 @@ def image_generation_procurement(sender, instance, **kwargs):
     if not _require_procurement(provider):
         return
     key = f"image:{instance.id}"
+    if instance.state == ImageGeneration.State.COMPLETED and _existing_spend(
+        "image", instance.id, instance.actual_cost_rub or ZERO
+    ) is not None:
+        return
     reservation = ProviderSpendReservation.objects.filter(source_key=key).first()
     if instance.state == ImageGeneration.State.RUNNING:
         if reservation is None:
@@ -227,6 +259,10 @@ def compare_variant_procurement(sender, instance, **kwargs):
     if not _require_procurement(provider):
         return
     key = f"compare:{instance.id}"
+    if instance.state == CompareVariant.State.COMPLETED and _existing_spend(
+        "compare", instance.id, instance.actual_cost_rub
+    ) is not None:
+        return
     reservation = ProviderSpendReservation.objects.filter(source_key=key).first()
     if instance.state in {CompareVariant.State.QUEUED, CompareVariant.State.RUNNING}:
         if reservation is None:
