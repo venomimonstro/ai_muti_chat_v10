@@ -178,6 +178,10 @@ export type Wallet = {
     id: string;
     kind: string;
     amount_rub: string;
+    available_delta_rub: string;
+    reserved_delta_rub: string;
+    paid_delta_rub: string;
+    promo_delta_rub: string;
     created_at: string;
   }>;
 };
