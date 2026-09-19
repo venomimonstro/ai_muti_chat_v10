@@ -153,7 +153,7 @@ def release_provider_spend(reservation_id):
 
 
 @transaction.atomic
-def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, source_type, source_id, model_slug="", provider_request_id="", input_tokens=0, output_tokens=0):
+def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, customer_charge_rub=0, source_type, source_id, model_slug="", provider_request_id="", input_tokens=0, output_tokens=0):
     if not reservation_id:
         return None
     reservation = ProviderSpendReservation.objects.select_for_update().select_related("account__provider").get(pk=reservation_id)
@@ -163,8 +163,11 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, so
     if reservation.state != ProviderSpendReservation.State.ACTIVE:
         return None
     actual = _d(actual_native).quantize(NATIVE_STEP, rounding=ROUND_UP)
+    customer_charge = _d(customer_charge_rub).quantize(RUB_STEP)
     if actual < ZERO:
         raise ValidationError("Фактический расход провайдера не может быть отрицательным")
+    if customer_charge < ZERO:
+        raise ValidationError("Выручка операции не может быть отрицательной")
     account = ProviderFundingAccount.objects.select_for_update().get(pk=reservation.account_id)
     if actual > reservation.amount_native:
         provider = reservation.account.provider
@@ -183,12 +186,10 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, so
                     "reserved_native": str(reservation.amount_native),
                     "actual_native": str(actual),
                     "unallocated_native": str(actual),
+                    "customer_charge_rub": str(customer_charge),
                 },
             },
         )
-        # Release the bookkeeping reservation. RequestCost/APIUsage remains the authoritative
-        # evidence of the real provider cost; the critical anomaly makes this visible and the
-        # provider is disabled before another request can be routed to it.
         account.reserved_native -= reservation.amount_native
         account.save(update_fields=["reserved_native", "updated_at"])
         reservation.state = ProviderSpendReservation.State.RELEASED
@@ -214,6 +215,7 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, so
         native_cost=actual,
         nominal_cost_rub=_d(nominal_cost_rub).quantize(RUB_STEP),
         economic_cost_rub=economic,
+        customer_charge_rub=customer_charge,
         acquisition_unit_cost_rub=unit,
     )
     reservation.actual_native = actual
