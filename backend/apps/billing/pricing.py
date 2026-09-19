@@ -44,6 +44,20 @@ def active_price(model_slug: str) -> PriceVersion:
     return price
 
 
+def active_retail_price(model_slug: str):
+    from apps.procurement.models import RetailTokenPriceVersion
+
+    return (
+        RetailTokenPriceVersion.objects.filter(
+            model_slug=model_slug,
+            active=True,
+            effective_from__lte=timezone.now(),
+        )
+        .order_by("-effective_from", "-created_at")
+        .first()
+    )
+
+
 def active_fx_snapshot(currency: str) -> FxRateSnapshot | None:
     currency = currency.upper()
     now = timezone.now()
@@ -153,7 +167,7 @@ def _effective_rules(
     return markup, multiplier, applied
 
 
-def _native_cost(price, input_tokens, output_tokens):
+def native_cost(price, input_tokens, output_tokens):
     input_price = (
         price.input_price_per_million
         if price.input_price_per_million is not None
@@ -167,6 +181,17 @@ def _native_cost(price, input_tokens, output_tokens):
     return (Decimal(input_tokens) * input_price + Decimal(output_tokens) * output_price) / MILLION
 
 
+def _retail_charge(retail, input_tokens, output_tokens, multiplier=Decimal("1")):
+    return (
+        (
+            Decimal(input_tokens) * retail.input_rub_per_million
+            + Decimal(output_tokens) * retail.output_rub_per_million
+        )
+        / MILLION
+        * multiplier
+    ).quantize(MONEY_STEP, rounding=ROUND_UP)
+
+
 def quote(
     price: PriceVersion,
     input_tokens: int,
@@ -178,8 +203,9 @@ def quote(
     organization_id=None,
     contract_id=None,
 ):
+    model_slug = model_slug or price.model_slug
     fx = active_fx_snapshot(price.provider_currency)
-    provider_cost = (_native_cost(price, input_tokens, output_tokens) * fx.rate).quantize(
+    provider_cost = (native_cost(price, input_tokens, output_tokens) * fx.rate).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
     markup, multiplier, rules = _effective_rules(
@@ -190,9 +216,15 @@ def quote(
         organization_id=organization_id,
         contract_id=contract_id,
     )
-    charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
-        MONEY_STEP, rounding=ROUND_UP
-    )
+    retail = active_retail_price(model_slug)
+    if retail is not None:
+        charge = _retail_charge(retail, input_tokens, output_tokens, multiplier)
+        pricing_mode = "retail_token"
+    else:
+        charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+            MONEY_STEP, rounding=ROUND_UP
+        )
+        pricing_mode = "markup"
     profit = (charge - provider_cost).quantize(MONEY_STEP)
     margin = (
         (profit / charge * Decimal("100")).quantize(PERCENT_STEP) if charge else Decimal("100.000")
@@ -201,8 +233,15 @@ def quote(
     snapshot = {
         "price_version_id": str(price.id),
         "provider_currency": price.provider_currency,
+        "provider_input_price_per_million": str(
+            price.input_price_per_million if price.input_price_per_million is not None else price.input_rub_per_million
+        ),
+        "provider_output_price_per_million": str(
+            price.output_price_per_million if price.output_price_per_million is not None else price.output_rub_per_million
+        ),
         "fx_snapshot_id": str(fx.id),
         "fx_rate": str(fx.rate),
+        "pricing_mode": pricing_mode,
         "effective_markup_percent": str(markup),
         "price_multiplier": str(multiplier.quantize(Decimal("0.0001"))),
         "markup_rules": rules,
@@ -210,6 +249,14 @@ def quote(
         "margin_floor_percent": str(policy.minimum_gross_margin_percent),
         "operation_type": operation_type,
     }
+    if retail is not None:
+        snapshot.update(
+            {
+                "retail_token_price_id": str(retail.id),
+                "retail_input_rub_per_million": str(retail.input_rub_per_million),
+                "retail_output_rub_per_million": str(retail.output_rub_per_million),
+            }
+        )
     return PriceQuote(
         provider_cost_rub=provider_cost,
         user_charge_rub=charge,
@@ -264,6 +311,7 @@ def quote_flat(
             "provider_currency": provider_currency,
             "fx_snapshot_id": str(fx.id),
             "fx_rate": str(fx.rate),
+            "pricing_mode": "markup",
             "effective_markup_percent": str(markup),
             "price_multiplier": str(multiplier.quantize(Decimal("0.0001"))),
             "markup_rules": rules,
@@ -299,14 +347,24 @@ def calculate(price: PriceVersion, input_tokens: int, output_tokens: int):
 
 def calculate_from_snapshot(price, input_tokens, output_tokens, snapshot):
     fx_rate = Decimal(snapshot["fx_rate"])
-    markup = Decimal(snapshot["effective_markup_percent"])
     multiplier = Decimal(snapshot["price_multiplier"])
-    provider_cost = (_native_cost(price, input_tokens, output_tokens) * fx_rate).quantize(
+    provider_cost = (native_cost(price, input_tokens, output_tokens) * fx_rate).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
-    charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
-        MONEY_STEP, rounding=ROUND_UP
-    )
+    if snapshot.get("pricing_mode") == "retail_token":
+        charge = (
+            (
+                Decimal(input_tokens) * Decimal(snapshot["retail_input_rub_per_million"])
+                + Decimal(output_tokens) * Decimal(snapshot["retail_output_rub_per_million"])
+            )
+            / MILLION
+            * multiplier
+        ).quantize(MONEY_STEP, rounding=ROUND_UP)
+    else:
+        markup = Decimal(snapshot["effective_markup_percent"])
+        charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+            MONEY_STEP, rounding=ROUND_UP
+        )
     profit = (charge - provider_cost).quantize(MONEY_STEP)
     margin = (
         (profit / charge * Decimal("100")).quantize(PERCENT_STEP) if charge else Decimal("100.000")
