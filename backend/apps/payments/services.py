@@ -18,7 +18,7 @@ from .models import (
     Refund,
     RefundRequest,
 )
-from .provider import YooKassaClient
+from .provider import PaymentProviderError, YooKassaClient
 
 CENT = Decimal("0.01")
 
@@ -57,35 +57,69 @@ def _receipt(user, amount):
     }
 
 
-@transaction.atomic
+def _payment_provider_key(payment):
+    return hashlib.sha256(
+        f"payment:{payment.user_id}:{payment.idempotency_key}".encode()
+    ).hexdigest()
+
+
+def _refund_provider_key(refund):
+    return hashlib.sha256(
+        f"refund:{refund.payment_id}:{refund.idempotency_key}".encode()
+    ).hexdigest()
+
+
+def _validate_new_remote_payment(payment, remote):
+    if not isinstance(remote, dict) or not remote.get("id"):
+        raise ValidationError("Invalid provider payment payload")
+    amount = remote.get("amount") or {}
+    metadata = remote.get("metadata") or {}
+    if _money(amount.get("value")) != payment.amount_rub or amount.get("currency") != "RUB":
+        raise ValidationError("Provider payment amount mismatch")
+    if metadata.get("payment_id") != str(payment.id):
+        raise ValidationError("Provider payment metadata mismatch")
+    if metadata.get("user_id") not in {None, "", str(payment.user_id)}:
+        raise ValidationError("Provider payment user mismatch")
+
+
 def create_topup(*, user, amount, idempotency_key, client=None):
+    """Create/recover a top-up using a durable local row and stable provider key.
+
+    The local Payment is committed before the network call. If YooKassa accepts
+    the payment but our request times out, retrying the same client key reuses
+    both the same local Payment and the same provider idempotency key.
+    """
     _assert_payments_ready()
     amount = _money(amount)
+    idempotency_key = str(idempotency_key or "")
     if not 1 <= len(idempotency_key) <= 64:
         raise ValidationError("Idempotency-Key должен содержать от 1 до 64 символов")
     if amount < Decimal(settings.PAYMENT_MIN_RUB) or amount > Decimal(settings.PAYMENT_MAX_RUB):
         raise ValidationError("Сумма пополнения вне разрешённого диапазона")
 
-    user.__class__.objects.select_for_update().only("pk").get(pk=user.pk)
-    payment, _ = Payment.objects.get_or_create(
-        user=user,
-        idempotency_key=idempotency_key,
-        defaults={
-            "amount_rub": amount,
-            "return_url": settings.PAYMENT_RETURN_URL,
-            "description": f"Пополнение баланса {amount:.2f} ₽",
-            "receipt_status": (
-                Payment.ReceiptStatus.PENDING
-                if settings.PAYMENTS_FISCALIZATION_MODE == "provider_receipt"
-                else Payment.ReceiptStatus.LEGAL_REVIEW
-            ),
-        },
-    )
-    if payment.amount_rub != amount:
-        raise ValidationError("Idempotency-Key уже использован для другой операции")
-    if payment.provider_payment_id:
-        return payment
+    with transaction.atomic():
+        user.__class__.objects.select_for_update().only("pk").get(pk=user.pk)
+        payment, _ = Payment.objects.get_or_create(
+            user=user,
+            idempotency_key=idempotency_key,
+            defaults={
+                "amount_rub": amount,
+                "return_url": settings.PAYMENT_RETURN_URL,
+                "description": f"Пополнение баланса {amount:.2f} ₽",
+                "receipt_status": (
+                    Payment.ReceiptStatus.PENDING
+                    if settings.PAYMENTS_FISCALIZATION_MODE == "provider_receipt"
+                    else Payment.ReceiptStatus.LEGAL_REVIEW
+                ),
+            },
+        )
+        if payment.amount_rub != amount:
+            raise ValidationError("Idempotency-Key уже использован для другой операции")
+        if payment.provider_payment_id:
+            return payment
+        payment_id = payment.id
 
+    payment = Payment.objects.select_related("user").get(pk=payment_id)
     payload = {
         "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
         "capture": True,
@@ -98,30 +132,39 @@ def create_topup(*, user, amount, idempotency_key, client=None):
         payload["receipt"] = receipt
     client = client or YooKassaClient.from_settings()
     try:
-        provider_key = hashlib.sha256(
-            f"payment:{user.id}:{idempotency_key}".encode()
-        ).hexdigest()
-        remote = client.create_payment(payload, provider_key)
+        remote = client.create_payment(payload, _payment_provider_key(payment))
+        _validate_new_remote_payment(payment, remote)
     except Exception as exc:
-        payment.last_error = exc.__class__.__name__
-        payment.save(update_fields=["last_error", "updated_at"])
+        # This row must survive a timeout: "unknown" is not the same as "failed".
+        Payment.objects.filter(pk=payment.id, provider_payment_id__isnull=True).update(
+            last_error=exc.__class__.__name__, updated_at=timezone.now()
+        )
         raise
-    payment.provider_payment_id = remote["id"]
-    payment.status = remote.get("status", Payment.Status.PENDING)
-    payment.confirmation_url = (remote.get("confirmation") or {}).get("confirmation_url", "")
-    payment.provider_payload = remote
-    payment.last_error = ""
-    payment.save(
-        update_fields=[
-            "provider_payment_id",
-            "status",
-            "confirmation_url",
-            "provider_payload",
-            "last_error",
-            "updated_at",
-        ]
-    )
-    return payment
+
+    with transaction.atomic():
+        locked = Payment.objects.select_for_update().get(pk=payment.id)
+        remote_id = remote["id"]
+        if locked.provider_payment_id and locked.provider_payment_id != remote_id:
+            raise ValidationError("Provider returned a different payment for the same idempotency key")
+        locked.provider_payment_id = remote_id
+        locked.status = remote.get("status", Payment.Status.PENDING)
+        locked.confirmation_url = (remote.get("confirmation") or {}).get("confirmation_url", "")
+        locked.provider_payload = remote
+        locked.last_error = ""
+        locked.save(
+            update_fields=[
+                "provider_payment_id",
+                "status",
+                "confirmation_url",
+                "provider_payload",
+                "last_error",
+                "updated_at",
+            ]
+        )
+
+    if remote.get("status") == Payment.Status.SUCCEEDED:
+        apply_payment_status(payment.id, remote)
+    return Payment.objects.get(pk=payment.id)
 
 
 def _validate_remote_payment(payment, remote):
@@ -145,13 +188,7 @@ def apply_payment_status(payment_id, remote, *, event=None):
     result = "ignored"
     if remote_status == Payment.Status.SUCCEEDED:
         if payment.credited_at is None:
-            credit(
-                payment.user,
-                payment.amount_rub,
-                "payment",
-                payment.id,
-                bucket="paid",
-            )
+            credit(payment.user, payment.amount_rub, "payment", payment.id, bucket="paid")
             payment.credited_at = timezone.now()
             result = "credited"
         payment.status = Payment.Status.SUCCEEDED
@@ -173,12 +210,52 @@ def apply_payment_status(payment_id, remote, *, event=None):
         payment.status = Payment.Status.PENDING
         result = "pending"
     payment.provider_payload = remote
-    payment.save(update_fields=["status", "credited_at", "provider_payload", "updated_at"])
+    payment.last_error = ""
+    payment.save(
+        update_fields=["status", "credited_at", "provider_payload", "last_error", "updated_at"]
+    )
     if event:
         event.result = result
         event.processed_at = timezone.now()
         event.save(update_fields=["result", "processed_at"])
     return result
+
+
+def _attach_unknown_payment_from_provider(provider_payment_id, *, client):
+    """Recover a payment accepted remotely during a local timeout."""
+    remote = client.get_payment(provider_payment_id)
+    if not isinstance(remote, dict):
+        return None, remote
+    metadata = remote.get("metadata") or {}
+    local_id = metadata.get("payment_id")
+    if not local_id:
+        return None, remote
+    with transaction.atomic():
+        payment = (
+            Payment.objects.select_for_update()
+            .select_related("user")
+            .filter(pk=local_id)
+            .first()
+        )
+        if payment is None:
+            return None, remote
+        _validate_new_remote_payment(payment, remote)
+        if payment.provider_payment_id not in {None, "", provider_payment_id}:
+            raise ValidationError("Local payment is already linked to another provider payment")
+        payment.provider_payment_id = provider_payment_id
+        payment.confirmation_url = (remote.get("confirmation") or {}).get("confirmation_url", "")
+        payment.provider_payload = remote
+        payment.last_error = ""
+        payment.save(
+            update_fields=[
+                "provider_payment_id",
+                "confirmation_url",
+                "provider_payload",
+                "last_error",
+                "updated_at",
+            ]
+        )
+    return payment, remote
 
 
 def process_webhook(payload, *, client=None):
@@ -201,15 +278,19 @@ def process_webhook(payload, *, client=None):
         raise ValidationError("Invalid notification type")
     client = client or YooKassaClient.from_settings()
     if payload.get("event", "").startswith("payment."):
-        payment = Payment.objects.filter(provider_payment_id=object_data.get("id")).first()
+        provider_id = object_data.get("id")
+        payment = Payment.objects.filter(provider_payment_id=provider_id).first()
+        if payment:
+            remote = client.get_payment(payment.provider_payment_id)
+        else:
+            payment, remote = _attach_unknown_payment_from_provider(provider_id, client=client)
         if not payment:
             event.result = "unknown_payment"
             event.processed_at = timezone.now()
             event.save(update_fields=["result", "processed_at"])
             return event.result
-        remote = client.get_payment(payment.provider_payment_id)
         return apply_payment_status(payment.id, remote, event=event)
-    if payload.get("event") == "refund.succeeded":
+    if payload.get("event", "").startswith("refund."):
         refund = Refund.objects.filter(provider_refund_id=object_data.get("id")).first()
         if not refund:
             event.result = "unknown_refund"
@@ -224,56 +305,110 @@ def process_webhook(payload, *, client=None):
     return event.result
 
 
-@transaction.atomic
-def create_refund(*, payment, amount, idempotency_key, client=None, wallet_already_debited=False):
+def _refund_totals(payment, *, exclude_refund_id=None, exclude_request_id=None):
+    refunds = payment.refunds.filter(
+        status__in=[Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED]
+    )
+    if exclude_refund_id:
+        refunds = refunds.exclude(pk=exclude_refund_id)
+    refunded = refunds.aggregate(total=Sum("amount_rub"))["total"] or Decimal("0")
+
+    requests = payment.refund_requests.filter(
+        status__in=[
+            RefundRequest.Status.PENDING,
+            RefundRequest.Status.APPROVED,
+            RefundRequest.Status.PROCESSING,
+        ]
+    )
+    if exclude_request_id:
+        requests = requests.exclude(pk=exclude_request_id)
+    held = requests.aggregate(total=Sum("amount_rub"))["total"] or Decimal("0")
+    return refunded, held
+
+
+def _validate_new_remote_refund(refund, remote):
+    if not isinstance(remote, dict) or not remote.get("id"):
+        raise ValidationError("Invalid provider refund payload")
+    amount = remote.get("amount") or {}
+    if remote.get("payment_id") != refund.payment.provider_payment_id:
+        raise ValidationError("Provider refund payment mismatch")
+    if _money(amount.get("value")) != refund.amount_rub or amount.get("currency") != "RUB":
+        raise ValidationError("Provider refund amount mismatch")
+
+
+def create_refund(
+    *,
+    payment,
+    amount,
+    idempotency_key,
+    client=None,
+    wallet_already_debited=False,
+    held_request_id=None,
+):
+    """Create/recover a refund without losing state on provider timeout.
+
+    The wallet hold and local Refund are committed before the provider call.
+    An ambiguous timeout keeps money held; a retry with the same key is safe.
+    """
     _assert_payments_ready()
     amount = _money(amount)
-    payment = Payment.objects.select_for_update().select_related("user").get(pk=payment.pk)
+    idempotency_key = str(idempotency_key or "")
     if not 1 <= len(idempotency_key) <= 64:
         raise ValidationError("Idempotency-Key должен содержать от 1 до 64 символов")
-    if payment.status != Payment.Status.SUCCEEDED:
-        raise ValidationError("Возврат доступен только для успешного платежа")
-    existing = Refund.objects.filter(
-        payment=payment, idempotency_key=idempotency_key
-    ).first()
-    if existing:
-        if existing.payment_id != payment.id or existing.amount_rub != amount:
+
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().select_related("user").get(pk=payment.pk)
+        if payment.status != Payment.Status.SUCCEEDED:
+            raise ValidationError("Возврат доступен только для успешного платежа")
+        existing = Refund.objects.filter(payment=payment, idempotency_key=idempotency_key).first()
+        if existing and existing.amount_rub != amount:
             raise ValidationError("Idempotency-Key уже использован для другой операции")
-        if existing.provider_refund_id:
-            return existing
-    already = payment.refunds.filter(
-        status__in=[Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED]
-    ).aggregate(total=Sum("amount_rub"))["total"] or Decimal("0")
-    if amount < Decimal("1.00") or already + amount > payment.amount_rub:
-        raise ValidationError("Недопустимая сумма возврата")
-    refund, _created = Refund.objects.get_or_create(
-        payment=payment,
-        idempotency_key=idempotency_key,
-        defaults={"amount_rub": amount},
-    )
-    if refund.payment_id != payment.id or refund.amount_rub != amount:
-        raise ValidationError("Idempotency-Key уже использован для другой операции")
-    if refund.wallet_debited_at is None:
-        if not wallet_already_debited:
-            debit_paid(payment.user, amount, "refund", refund.id)
-        refund.wallet_debited_at = timezone.now()
-        refund.save(update_fields=["wallet_debited_at", "updated_at"])
+        already, held = _refund_totals(
+            payment,
+            exclude_refund_id=existing.id if existing else None,
+            exclude_request_id=held_request_id,
+        )
+        if amount < Decimal("1.00") or already + held + amount > payment.amount_rub:
+            raise ValidationError("Недопустимая сумма возврата")
+        refund, _created = Refund.objects.get_or_create(
+            payment=payment,
+            idempotency_key=idempotency_key,
+            defaults={"amount_rub": amount},
+        )
+        if refund.amount_rub != amount:
+            raise ValidationError("Idempotency-Key уже использован для другой операции")
+        if refund.provider_refund_id:
+            return refund
+        if refund.wallet_debited_at is None:
+            if not wallet_already_debited:
+                debit_paid(payment.user, amount, "refund", refund.id)
+            refund.wallet_debited_at = timezone.now()
+            refund.save(update_fields=["wallet_debited_at", "updated_at"])
+        refund_id = refund.id
+
+    refund = Refund.objects.select_related("payment__user").get(pk=refund_id)
     client = client or YooKassaClient.from_settings()
-    provider_key = hashlib.sha256(
-        f"refund:{payment.id}:{idempotency_key}".encode()
-    ).hexdigest()
     remote = client.create_refund(
         {
-            "payment_id": payment.provider_payment_id,
+            "payment_id": refund.payment.provider_payment_id,
             "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
         },
-        provider_key,
+        _refund_provider_key(refund),
     )
-    refund.provider_refund_id = remote["id"]
-    refund.status = remote.get("status", Refund.Status.PENDING)
-    refund.provider_payload = remote
-    refund.save(update_fields=["provider_refund_id", "status", "provider_payload", "updated_at"])
-    return refund
+    _validate_new_remote_refund(refund, remote)
+
+    with transaction.atomic():
+        locked = Refund.objects.select_for_update().select_related("payment__user").get(pk=refund.id)
+        remote_id = remote["id"]
+        if locked.provider_refund_id and locked.provider_refund_id != remote_id:
+            raise ValidationError("Provider returned a different refund for the same idempotency key")
+        locked.provider_refund_id = remote_id
+        locked.status = remote.get("status", Refund.Status.PENDING)
+        locked.provider_payload = remote
+        locked.save(update_fields=["provider_refund_id", "status", "provider_payload", "updated_at"])
+        if locked.status == Refund.Status.CANCELED and held_request_id is None:
+            credit(locked.payment.user, locked.amount_rub, "refund_cancel", locked.id, bucket="paid")
+    return Refund.objects.get(pk=refund.id)
 
 
 @transaction.atomic
@@ -284,12 +419,7 @@ def create_refund_request(*, user, payment, amount, reason=""):
         raise ValidationError("Платёж не принадлежит пользователю")
     if payment.status != Payment.Status.SUCCEEDED:
         raise ValidationError("Возврат доступен только для успешного платежа")
-    already_refunded = payment.refunds.filter(
-        status__in=[Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED]
-    ).aggregate(total=Sum("amount_rub"))["total"] or Decimal("0")
-    pending_held = payment.refund_requests.filter(
-        status__in=[RefundRequest.Status.PENDING, RefundRequest.Status.APPROVED, RefundRequest.Status.PROCESSING]
-    ).aggregate(total=Sum("amount_rub"))["total"] or Decimal("0")
+    already_refunded, pending_held = _refund_totals(payment)
     if amount < Decimal("1.00") or already_refunded + pending_held + amount > payment.amount_rub:
         raise ValidationError("Недопустимая сумма возврата")
 
@@ -299,51 +429,78 @@ def create_refund_request(*, user, payment, amount, reason=""):
         amount_rub=amount,
         reason=str(reason or "")[:4000],
     )
-    # Debit the refundable paid bucket immediately. This is a hold: the same money
-    # cannot be spent while an administrator reviews the request.
     debit_paid(user, amount, "refund_hold", request.id)
     request.held_at = timezone.now()
     request.save(update_fields=["held_at", "updated_at"])
     return request
 
 
-@transaction.atomic
 def approve_refund_request(*, refund_request, admin_comment="", client=None):
-    request = (
-        RefundRequest.objects.select_for_update()
-        .select_related("payment__user")
-        .get(pk=refund_request.pk)
-    )
-    if request.status not in {RefundRequest.Status.PENDING, RefundRequest.Status.APPROVED}:
-        raise ValidationError("Заявка уже обработана")
-    request.status = RefundRequest.Status.APPROVED
-    request.admin_comment = str(admin_comment or "")[:4000]
-    request.save(update_fields=["status", "admin_comment", "updated_at"])
+    request_key = f"request-{refund_request.id}"[:64]
+    with transaction.atomic():
+        request = (
+            RefundRequest.objects.select_for_update()
+            .select_related("payment__user")
+            .get(pk=refund_request.pk)
+        )
+        if request.status not in {
+            RefundRequest.Status.PENDING,
+            RefundRequest.Status.APPROVED,
+            RefundRequest.Status.PROCESSING,
+        }:
+            raise ValidationError("Заявка уже обработана")
+        request.status = RefundRequest.Status.APPROVED
+        request.admin_comment = str(admin_comment or request.admin_comment or "")[:4000]
+        request.save(update_fields=["status", "admin_comment", "updated_at"])
+        payment = request.payment
+        request_id = request.id
+        request_amount = request.amount_rub
+        request_user_id = request.user_id
+
     try:
         refund = create_refund(
-            payment=request.payment,
-            amount=request.amount_rub,
-            idempotency_key=f"request-{request.id}"[:64],
+            payment=payment,
+            amount=request_amount,
+            idempotency_key=request_key,
             client=client,
             wallet_already_debited=True,
+            held_request_id=request_id,
         )
-    except Exception:
-        request.status = RefundRequest.Status.FAILED
-        request.resolved_at = timezone.now()
-        request.save(update_fields=["status", "resolved_at", "updated_at"])
-        # Provider refund did not start. Return the held paid balance.
-        credit(request.user, request.amount_rub, "refund_request_failed", request.id, bucket="paid")
+    except PaymentProviderError:
+        # Ambiguous network outcome: never return the held balance here. YooKassa
+        # may already have accepted the refund. Persist the link and reconcile/retry.
+        with transaction.atomic():
+            request = RefundRequest.objects.select_for_update().get(pk=request_id)
+            refund = Refund.objects.filter(payment_id=payment.id, idempotency_key=request_key).first()
+            if refund is not None:
+                request.refund = refund
+            request.status = RefundRequest.Status.PROCESSING
+            request.save(update_fields=["refund", "status", "updated_at"])
         raise
-    request.refund = refund
-    request.status = (
-        RefundRequest.Status.SUCCEEDED
-        if refund.status == Refund.Status.SUCCEEDED
-        else RefundRequest.Status.PROCESSING
-    )
-    if request.status == RefundRequest.Status.SUCCEEDED:
-        request.resolved_at = timezone.now()
-    request.save(update_fields=["refund", "status", "resolved_at", "updated_at"])
-    return request
+    except Exception:
+        # Local/authoritative failure before an ambiguous provider outcome: release hold.
+        with transaction.atomic():
+            request = RefundRequest.objects.select_for_update().select_related("user").get(pk=request_id)
+            credit(request.user, request.amount_rub, "refund_request_failed", request.id, bucket="paid")
+            request.status = RefundRequest.Status.FAILED
+            request.resolved_at = timezone.now()
+            request.save(update_fields=["status", "resolved_at", "updated_at"])
+        raise
+
+    with transaction.atomic():
+        request = RefundRequest.objects.select_for_update().select_related("user").get(pk=request_id)
+        request.refund = refund
+        if refund.status == Refund.Status.SUCCEEDED:
+            request.status = RefundRequest.Status.SUCCEEDED
+            request.resolved_at = timezone.now()
+        elif refund.status == Refund.Status.CANCELED:
+            credit(request.user, request.amount_rub, "refund_request_cancel", request.id, bucket="paid")
+            request.status = RefundRequest.Status.FAILED
+            request.resolved_at = timezone.now()
+        else:
+            request.status = RefundRequest.Status.PROCESSING
+        request.save(update_fields=["refund", "status", "resolved_at", "updated_at"])
+        return request
 
 
 @transaction.atomic
@@ -407,11 +564,22 @@ def apply_refund_status(refund_id, remote, *, event=None):
 def reconcile_open_payments(*, client=None):
     client = client or YooKassaClient.from_settings()
     run = ReconciliationRun.objects.create()
-    for payment in Payment.objects.filter(
+    payments = Payment.objects.select_related("user").filter(
         status__in=[Payment.Status.CREATED, Payment.Status.PENDING]
-    ):
+    )
+    for payment in payments:
         run.checked_count += 1
         try:
+            if not payment.provider_payment_id:
+                create_topup(
+                    user=payment.user,
+                    amount=payment.amount_rub,
+                    idempotency_key=payment.idempotency_key,
+                    client=client,
+                )
+                payment.refresh_from_db()
+            if not payment.provider_payment_id:
+                raise PaymentProviderError("Payment still has no provider id")
             remote = client.get_payment(payment.provider_payment_id)
             result = apply_payment_status(payment.id, remote)
             if result in {"credited", "canceled"}:
@@ -426,3 +594,35 @@ def reconcile_open_payments(*, client=None):
         update_fields=["checked_count", "corrected_count", "error_count", "status", "finished_at"]
     )
     return run
+
+
+def reconcile_open_refunds(*, client=None):
+    """Retry/reconcile local refunds after crashes or ambiguous provider timeouts."""
+    client = client or YooKassaClient.from_settings()
+    checked = corrected = errors = 0
+    refunds = Refund.objects.select_related("payment__user").filter(
+        status__in=[Refund.Status.CREATED, Refund.Status.PENDING]
+    )
+    for refund in refunds:
+        checked += 1
+        try:
+            request = RefundRequest.objects.filter(refund=refund).first()
+            if not refund.provider_refund_id:
+                create_refund(
+                    payment=refund.payment,
+                    amount=refund.amount_rub,
+                    idempotency_key=refund.idempotency_key,
+                    client=client,
+                    wallet_already_debited=True,
+                    held_request_id=request.id if request else None,
+                )
+                refund.refresh_from_db()
+            if not refund.provider_refund_id:
+                raise PaymentProviderError("Refund still has no provider id")
+            remote = client.get_refund(refund.provider_refund_id)
+            result = apply_refund_status(refund.id, remote)
+            if result in {"refund_succeeded", "refund_canceled_released"}:
+                corrected += 1
+        except Exception:
+            errors += 1
+    return {"checked": checked, "corrected": corrected, "errors": errors}
