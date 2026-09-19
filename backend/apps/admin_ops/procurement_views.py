@@ -10,7 +10,7 @@ from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel, Provider
 from apps.b2b_api.models import APIUsage
-from apps.billing.models import FxRateSnapshot, RequestCost
+from apps.billing.models import FxRateSnapshot, MarkupRuleVersion, RequestCost
 from apps.billing.pricing import active_margin_policy, active_price, quote, require_margin
 from apps.chat.models import CompareVariant
 from apps.image_studio.models import ImageGeneration
@@ -20,6 +20,7 @@ from apps.procurement.models import (
     ProviderSpend,
     RetailTokenPriceVersion,
 )
+from apps.procurement.official_pricing import official_status, sync_official_prices
 from apps.procurement.services import (
     create_funding_account,
     funding_summary,
@@ -76,8 +77,16 @@ def _latest_fx(currency):
 
 
 def _provider_native_prices(price):
-    input_native = price.input_price_per_million if price.input_price_per_million is not None else price.input_rub_per_million
-    output_native = price.output_price_per_million if price.output_price_per_million is not None else price.output_rub_per_million
+    input_native = (
+        price.input_price_per_million
+        if price.input_price_per_million is not None
+        else price.input_rub_per_million
+    )
+    output_native = (
+        price.output_price_per_million
+        if price.output_price_per_million is not None
+        else price.output_rub_per_million
+    )
     return input_native, output_native
 
 
@@ -85,6 +94,12 @@ def _margin(sale, cost):
     if sale is None or sale <= 0:
         return None
     return ((sale - cost) / sale * Decimal("100")).quantize(Decimal("0.001"))
+
+
+def _markup(sale, cost):
+    if sale is None or cost is None or cost <= 0:
+        return None
+    return ((sale - cost) / cost * Decimal("100")).quantize(Decimal("0.001"))
 
 
 def _sale_for_margin(cost, margin_percent):
@@ -97,17 +112,56 @@ def _sale_for_margin(cost, margin_percent):
     return (cost / denominator).quantize(MONEY_STEP, rounding=ROUND_UP)
 
 
+def _effective_markup_from_quote(price, model):
+    try:
+        q = quote(
+            price,
+            1_000_000,
+            0,
+            provider_slug=model.provider.slug,
+            model_slug=model.slug,
+        )
+        raw = q.pricing_snapshot.get("effective_markup_percent")
+        return Decimal(str(raw)) if raw not in (None, "") else price.markup_percent
+    except Exception:
+        return price.markup_percent
+
+
 def _price_matrix(stress_usd, target_margin):
     rows = []
     floor = active_margin_policy().minimum_gross_margin_percent
     for model in AIModel.objects.select_related("provider").order_by("provider__name", "display_name"):
+        provider = model.provider
+        official = official_status(model)
         try:
             price = active_price(model.slug)
         except DjangoValidationError:
-            rows.append({"model": model.slug, "model_name": model.display_name, "provider": model.provider.slug, "provider_name": model.provider.name, "configured": False})
+            rows.append(
+                {
+                    "model": model.slug,
+                    "model_name": model.display_name,
+                    "upstream_model": model.upstream_model,
+                    "provider": provider.slug,
+                    "provider_name": provider.name,
+                    "configured": False,
+                    "official": official,
+                    "connection": {
+                        "provider_enabled": provider.enabled,
+                        "provider_health": provider.health_state,
+                        "model_enabled": model.enabled,
+                        "keys_total": provider.api_keys.count(),
+                        "keys_healthy": provider.api_keys.filter(enabled=True, health_state="healthy").count(),
+                    },
+                }
+            )
             continue
+
         retail = (
-            RetailTokenPriceVersion.objects.filter(model_slug=model.slug, active=True, effective_from__lte=timezone.now())
+            RetailTokenPriceVersion.objects.filter(
+                model_slug=model.slug,
+                active=True,
+                effective_from__lte=timezone.now(),
+            )
             .order_by("-effective_from", "-created_at")
             .first()
         )
@@ -115,61 +169,99 @@ def _price_matrix(stress_usd, target_margin):
         input_native, output_native = _provider_native_prices(price)
         input_cost = input_native * fx_rate if fx_rate is not None else None
         output_cost = output_native * fx_rate if fx_rate is not None else None
+        input_sale = output_sale = None
+        input_quote = output_quote = None
         try:
-            input_sale = retail.input_rub_per_million if retail else quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug).user_charge_rub
-            output_sale = retail.output_rub_per_million if retail else quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug).user_charge_rub
+            input_quote = quote(
+                price,
+                1_000_000,
+                0,
+                provider_slug=provider.slug,
+                model_slug=model.slug,
+            )
+            output_quote = quote(
+                price,
+                0,
+                1_000_000,
+                provider_slug=provider.slug,
+                model_slug=model.slug,
+            )
+            input_sale = retail.input_rub_per_million if retail else input_quote.user_charge_rub
+            output_sale = retail.output_rub_per_million if retail else output_quote.user_charge_rub
         except DjangoValidationError:
-            input_sale = output_sale = None
+            pass
+
+        input_margin = _margin(input_sale, input_cost) if input_cost is not None else None
+        output_margin = _margin(output_sale, output_cost) if output_cost is not None else None
+        input_markup = _markup(input_sale, input_cost)
+        output_markup = _markup(output_sale, output_cost)
+        effective_markup = _effective_markup_from_quote(price, model)
+        input_profit = input_sale - input_cost if input_sale is not None and input_cost is not None else None
+        output_profit = output_sale - output_cost if output_sale is not None and output_cost is not None else None
+
         stress_input = stress_output = stress_input_margin = stress_output_margin = None
         if price.provider_currency.upper() == "USD":
             stress_input = input_native * stress_usd
             stress_output = output_native * stress_usd
             stress_input_margin = _margin(input_sale, stress_input) if input_sale is not None else None
             stress_output_margin = _margin(output_sale, stress_output) if output_sale is not None else None
+
         recommended_input = _sale_for_margin(input_cost, target_margin) if input_cost is not None else None
         recommended_output = _sale_for_margin(output_cost, target_margin) if output_cost is not None else None
-        recommended_stress_input = _sale_for_margin(stress_input, target_margin) if stress_input is not None else None
-        recommended_stress_output = _sale_for_margin(stress_output, target_margin) if stress_output is not None else None
-        input_margin = _margin(input_sale, input_cost) if input_sale is not None and input_cost is not None else None
-        output_margin = _margin(output_sale, output_cost) if output_sale is not None and output_cost is not None else None
-        rows.append({
-            "model": model.slug,
-            "model_name": model.display_name,
-            "provider": model.provider.slug,
-            "provider_name": model.provider.name,
-            "configured": True,
-            "currency": price.provider_currency,
-            "provider_input_per_million_native": str(input_native),
-            "provider_output_per_million_native": str(output_native),
-            "fx_rate_rub": str(fx_rate) if fx_rate is not None else None,
-            "fx_effective_at": fx.effective_at if fx else None,
-            "provider_input_per_million_rub": str(input_cost) if input_cost is not None else None,
-            "provider_output_per_million_rub": str(output_cost) if output_cost is not None else None,
-            "retail_mode": "explicit" if retail else "markup",
-            "retail_input_per_million_rub": str(input_sale) if input_sale is not None else None,
-            "retail_output_per_million_rub": str(output_sale) if output_sale is not None else None,
-            "input_margin_percent": str(input_margin) if input_margin is not None else None,
-            "output_margin_percent": str(output_margin) if output_margin is not None else None,
-            "minimum_margin_percent": str(floor),
-            "target_margin_percent": str(target_margin),
-            "recommended_input_rub": str(recommended_input) if recommended_input is not None else None,
-            "recommended_output_rub": str(recommended_output) if recommended_output is not None else None,
-            "recommended_stress_input_rub": str(recommended_stress_input) if recommended_stress_input is not None else None,
-            "recommended_stress_output_rub": str(recommended_stress_output) if recommended_stress_output is not None else None,
-            "below_margin_floor": bool(
-                (input_margin is not None and input_margin < floor)
-                or (output_margin is not None and output_margin < floor)
-            ),
-            "stress_usd_rub": str(stress_usd) if price.provider_currency.upper() == "USD" else None,
-            "stress_input_cost_rub": str(stress_input) if stress_input is not None else None,
-            "stress_output_cost_rub": str(stress_output) if stress_output is not None else None,
-            "stress_input_margin_percent": str(stress_input_margin) if stress_input_margin is not None else None,
-            "stress_output_margin_percent": str(stress_output_margin) if stress_output_margin is not None else None,
-            "stress_unprofitable": bool(
-                (stress_input_margin is not None and stress_input_margin <= 0)
-                or (stress_output_margin is not None and stress_output_margin <= 0)
-            ),
-        })
+
+        rows.append(
+            {
+                "model": model.slug,
+                "model_name": model.display_name,
+                "upstream_model": model.upstream_model,
+                "provider": provider.slug,
+                "provider_name": provider.name,
+                "configured": True,
+                "currency": price.provider_currency,
+                "provider_input_per_million_native": str(input_native),
+                "provider_output_per_million_native": str(output_native),
+                "fx_rate_rub": str(fx_rate) if fx_rate is not None else None,
+                "fx_effective_at": fx.effective_at if fx else None,
+                "provider_input_per_million_rub": str(input_cost) if input_cost is not None else None,
+                "provider_output_per_million_rub": str(output_cost) if output_cost is not None else None,
+                "retail_mode": "explicit" if retail else "markup",
+                "retail_input_per_million_rub": str(input_sale) if input_sale is not None else None,
+                "retail_output_per_million_rub": str(output_sale) if output_sale is not None else None,
+                "input_profit_per_million_rub": str(input_profit) if input_profit is not None else None,
+                "output_profit_per_million_rub": str(output_profit) if output_profit is not None else None,
+                "input_markup_percent": str(input_markup) if input_markup is not None else None,
+                "output_markup_percent": str(output_markup) if output_markup is not None else None,
+                "effective_markup_percent": str(effective_markup),
+                "input_margin_percent": str(input_margin) if input_margin is not None else None,
+                "output_margin_percent": str(output_margin) if output_margin is not None else None,
+                "minimum_margin_percent": str(floor),
+                "target_margin_percent": str(target_margin),
+                "recommended_input_rub": str(recommended_input) if recommended_input is not None else None,
+                "recommended_output_rub": str(recommended_output) if recommended_output is not None else None,
+                "below_margin_floor": bool(
+                    (input_margin is not None and input_margin < floor)
+                    or (output_margin is not None and output_margin < floor)
+                ),
+                "stress_usd_rub": str(stress_usd) if price.provider_currency.upper() == "USD" else None,
+                "stress_input_cost_rub": str(stress_input) if stress_input is not None else None,
+                "stress_output_cost_rub": str(stress_output) if stress_output is not None else None,
+                "stress_input_margin_percent": str(stress_input_margin) if stress_input_margin is not None else None,
+                "stress_output_margin_percent": str(stress_output_margin) if stress_output_margin is not None else None,
+                "stress_unprofitable": bool(
+                    (stress_input_margin is not None and stress_input_margin <= 0)
+                    or (stress_output_margin is not None and stress_output_margin <= 0)
+                ),
+                "price_checked_at": price.created_at,
+                "official": official,
+                "connection": {
+                    "provider_enabled": provider.enabled,
+                    "provider_health": provider.health_state,
+                    "model_enabled": model.enabled,
+                    "keys_total": provider.api_keys.count(),
+                    "keys_healthy": provider.api_keys.filter(enabled=True, health_state="healthy").count(),
+                },
+            }
+        )
     return rows
 
 
@@ -177,8 +269,16 @@ class ProcurementEconomicsView(AdminAPIView):
     def get(self, request):
         try:
             date_from, date_to, start, end = _range(request)
-            stress_usd = _decimal(request.query_params.get("stress_usd_rub", "200"), "Стресс-курс USD/RUB", minimum=Decimal("1"))
-            target_margin = _decimal(request.query_params.get("target_margin_percent", "35"), "Целевая маржа", minimum=Decimal("0"))
+            stress_usd = _decimal(
+                request.query_params.get("stress_usd_rub", "200"),
+                "Стресс-курс USD/RUB",
+                minimum=Decimal("1"),
+            )
+            target_margin = _decimal(
+                request.query_params.get("target_margin_percent", "35"),
+                "Целевая маржа",
+                minimum=Decimal("0"),
+            )
             if target_margin >= Decimal("100"):
                 raise DjangoValidationError("Целевая маржа должна быть меньше 100%")
         except DjangoValidationError as exc:
@@ -204,7 +304,9 @@ class ProcurementEconomicsView(AdminAPIView):
         gross_profit_economic = revenue - economic_cost_for_margin
         gross_margin_economic = gross_profit_economic / revenue * Decimal("100") if revenue else ZERO
 
-        accounts = list(ProviderFundingAccount.objects.select_related("provider").order_by("provider__name", "priority", "label"))
+        accounts = list(
+            ProviderFundingAccount.objects.select_related("provider").order_by("provider__name", "priority", "label")
+        )
         account_data = [funding_summary(item) for item in accounts]
         source_count = chat.count() + b2b.count() + images.count() + compare.count()
         spend_count = recognized.count()
@@ -212,62 +314,124 @@ class ProcurementEconomicsView(AdminAPIView):
         prices = _price_matrix(stress_usd, target_margin)
         floor = active_margin_policy().minimum_gross_margin_percent
 
-        return Response({
-            "period": {"from": date_from, "to": date_to},
-            "pricing_policy": {
-                "minimum_margin_percent": str(floor),
-                "target_margin_percent": str(target_margin),
-                "formula": "sale = cost / (1 - margin/100)",
-            },
-            "summary": {
-                "revenue_rub": str(revenue),
-                "nominal_provider_cost_rub": str(nominal_cost),
-                "recognized_procurement_cost_rub": str(recognized_economic_cost),
-                "procurement_cash_outlay_rub": str(procurement_outlay),
-                "procurement_fees_rub": str(procurement_fees),
-                "gross_profit_nominal_rub": str(gross_profit_nominal),
-                "gross_margin_nominal_percent": str(gross_margin_nominal.quantize(Decimal("0.001"))),
-                "gross_profit_economic_rub": str(gross_profit_economic),
-                "gross_margin_economic_percent": str(gross_margin_economic.quantize(Decimal("0.001"))),
-                "input_tokens": int(input_tokens),
-                "output_tokens": int(output_tokens),
-                "nominal_cost_per_million_total_tokens_rub": str((nominal_cost / Decimal(input_tokens + output_tokens) * MILLION).quantize(Decimal("0.01"))) if input_tokens + output_tokens else None,
-                "allocation_coverage_percent": str(allocation_coverage.quantize(Decimal("0.01"))),
-            },
-            "risk": {
-                "funding_accounts": len(accounts),
-                "credentials_configured": sum(1 for item in account_data if item["credential_configured"]),
-                "low_balance_accounts": sum(1 for item in account_data if item["low_balance"]),
-                "unallocated_completed_operations": max(0, source_count - spend_count),
-                "stress_unprofitable_models": sum(1 for row in prices if row.get("stress_unprofitable")),
-                "below_margin_floor_models": sum(1 for row in prices if row.get("below_margin_floor")),
-            },
-            "accounts": account_data,
-            "purchases": [
-                {
-                    "id": str(item.id),
-                    "account": str(item.account_id),
-                    "account_label": item.account.label,
-                    "provider": item.account.provider.slug,
-                    "currency": item.account.currency,
-                    "credit_native": str(item.credit_native),
-                    "base_cost_rub": str(item.base_cost_rub),
-                    "fees_rub": str(item.fees_rub),
-                    "total_cash_outlay_rub": str(item.total_cash_outlay_rub),
-                    "effective_cost_rub_per_native": str(item.effective_cost_rub_per_native),
-                    "market_fx_rate_rub": str(item.market_fx_rate_rub) if item.market_fx_rate_rub is not None else None,
-                    "reference": item.reference,
-                    "purchased_at": item.purchased_at,
-                }
-                for item in purchases.select_related("account__provider")[:200]
-            ],
-            "prices": prices,
-        })
+        return Response(
+            {
+                "period": {"from": date_from, "to": date_to},
+                "pricing_policy": {
+                    "minimum_margin_percent": str(floor),
+                    "target_margin_percent": str(target_margin),
+                    "formula_markup": "sale = cost * (1 + markup/100)",
+                    "formula_margin": "margin = (sale - cost) / sale * 100",
+                },
+                "summary": {
+                    "revenue_rub": str(revenue),
+                    "nominal_provider_cost_rub": str(nominal_cost),
+                    "recognized_procurement_cost_rub": str(recognized_economic_cost),
+                    "procurement_cash_outlay_rub": str(procurement_outlay),
+                    "procurement_fees_rub": str(procurement_fees),
+                    "gross_profit_nominal_rub": str(gross_profit_nominal),
+                    "gross_margin_nominal_percent": str(gross_margin_nominal.quantize(Decimal("0.001"))),
+                    "gross_profit_economic_rub": str(gross_profit_economic),
+                    "gross_margin_economic_percent": str(gross_margin_economic.quantize(Decimal("0.001"))),
+                    "input_tokens": int(input_tokens),
+                    "output_tokens": int(output_tokens),
+                    "allocation_coverage_percent": str(allocation_coverage.quantize(Decimal("0.01"))),
+                },
+                "risk": {
+                    "funding_accounts": len(accounts),
+                    "credentials_configured": sum(1 for item in account_data if item["credential_configured"]),
+                    "low_balance_accounts": sum(1 for item in account_data if item["low_balance"]),
+                    "unallocated_completed_operations": max(0, source_count - spend_count),
+                    "stress_unprofitable_models": sum(1 for row in prices if row.get("stress_unprofitable")),
+                    "below_margin_floor_models": sum(1 for row in prices if row.get("below_margin_floor")),
+                    "models_without_cost": sum(1 for row in prices if not row.get("configured")),
+                },
+                "accounts": account_data,
+                "purchases": [
+                    {
+                        "id": str(item.id),
+                        "account": str(item.account_id),
+                        "account_label": item.account.label,
+                        "provider": item.account.provider.slug,
+                        "currency": item.account.currency,
+                        "credit_native": str(item.credit_native),
+                        "base_cost_rub": str(item.base_cost_rub),
+                        "fees_rub": str(item.fees_rub),
+                        "total_cash_outlay_rub": str(item.total_cash_outlay_rub),
+                        "effective_cost_rub_per_native": str(item.effective_cost_rub_per_native),
+                        "market_fx_rate_rub": str(item.market_fx_rate_rub) if item.market_fx_rate_rub is not None else None,
+                        "reference": item.reference,
+                        "purchased_at": item.purchased_at,
+                    }
+                    for item in purchases.select_related("account__provider")[:200]
+                ],
+                "prices": prices,
+            }
+        )
 
     @transaction.atomic
     def post(self, request):
         action = str(request.data.get("action") or "").strip()
         try:
+            if action == "sync_official_prices":
+                provider_slug = str(request.data.get("provider") or "").strip()
+                result = sync_official_prices(provider_slug=provider_slug)
+                audit(
+                    request,
+                    "procurement.official_prices_synced",
+                    "provider" if provider_slug else "pricing",
+                    provider_slug,
+                    {
+                        "verified": len(result["verified"]),
+                        "rejected": len(result["rejected"]),
+                        "unsupported": len(result["unsupported"]),
+                        "usd_rub": result["usd_rub"],
+                    },
+                )
+                return Response(result)
+
+            if action in {"set_markup", "set_global_markup"}:
+                markup = _decimal(request.data.get("markup_percent"), "Наценка", minimum=Decimal("0"))
+                floor = active_margin_policy().minimum_gross_margin_percent
+                resulting_margin = (markup / (Decimal("100") + markup) * Decimal("100")) if markup or markup == 0 else ZERO
+                if resulting_margin < floor:
+                    required = (floor / (Decimal("100") - floor) * Decimal("100")).quantize(Decimal("0.001"))
+                    raise DjangoValidationError(
+                        f"Наценка {markup}% даёт маржу {resulting_margin.quantize(Decimal('0.001'))}%, ниже floor {floor}%. Минимальная безопасная наценка: {required}%"
+                    )
+                if action == "set_global_markup":
+                    scope_type = MarkupRuleVersion.Scope.GLOBAL
+                    scope_key = ""
+                else:
+                    model = AIModel.objects.get(slug=str(request.data.get("model") or "").strip())
+                    scope_type = MarkupRuleVersion.Scope.MODEL
+                    scope_key = model.slug
+                    RetailTokenPriceVersion.objects.filter(model_slug=model.slug, active=True).update(active=False)
+                MarkupRuleVersion.objects.filter(scope_type=scope_type, scope_key=scope_key, active=True).update(active=False)
+                rule = MarkupRuleVersion.objects.create(
+                    scope_type=scope_type,
+                    scope_key=scope_key,
+                    markup_percent=markup,
+                    price_multiplier=Decimal("1"),
+                    active=True,
+                    effective_from=timezone.now(),
+                    reason="Изменено владельцем через экран экономики",
+                )
+                audit(
+                    request,
+                    "pricing.markup_changed",
+                    scope_type,
+                    scope_key,
+                    {"markup_percent": str(markup), "resulting_margin_percent": str(resulting_margin)},
+                )
+                return Response(
+                    {
+                        "id": str(rule.id),
+                        "markup_percent": str(markup),
+                        "resulting_margin_percent": str(resulting_margin.quantize(Decimal("0.001"))),
+                    }
+                )
+
             if action == "create_account":
                 provider = Provider.objects.get(slug=str(request.data.get("provider") or "").strip())
                 account = create_funding_account(
@@ -280,7 +444,7 @@ class ProcurementEconomicsView(AdminAPIView):
                     is_default=request.data.get("is_default") is True,
                     notes=request.data.get("notes") or "",
                 )
-                audit(request, "procurement.account_created", "provider_funding_account", account.id, {"provider": provider.slug, "credential_env": account.credential_env})
+                audit(request, "procurement.account_created", "provider_funding_account", account.id, {"provider": provider.slug})
                 return Response(funding_summary(account), status=201)
 
             if action == "set_default":
@@ -296,7 +460,6 @@ class ProcurementEconomicsView(AdminAPIView):
                     raise DjangoValidationError("Сначала назначьте другой основной закупочный аккаунт")
                 account.active = active
                 account.save(update_fields=["active", "updated_at"])
-                audit(request, "procurement.account_active", "provider_funding_account", account.id, {"active": active})
                 return Response(funding_summary(account))
 
             if action == "purchase":
@@ -307,7 +470,10 @@ class ProcurementEconomicsView(AdminAPIView):
                     parsed_date = parse_date(raw_date)
                     if parsed_date is None:
                         raise DjangoValidationError("Дата закупки должна быть YYYY-MM-DD")
-                    purchased_at = timezone.make_aware(timezone.datetime.combine(parsed_date, timezone.datetime.min.time()), timezone.get_current_timezone())
+                    purchased_at = timezone.make_aware(
+                        timezone.datetime.combine(parsed_date, timezone.datetime.min.time()),
+                        timezone.get_current_timezone(),
+                    )
                 purchase = record_purchase(
                     account=account,
                     credit_native=_decimal(request.data.get("credit_native"), "API-баланс", minimum=Decimal("0.000001")),
@@ -318,7 +484,6 @@ class ProcurementEconomicsView(AdminAPIView):
                     created_by=request.user,
                     reference=request.data.get("reference") or "",
                 )
-                audit(request, "procurement.purchase_recorded", "provider_purchase", purchase.id, {"provider": account.provider.slug, "credit_native": str(purchase.credit_native), "total_cash_outlay_rub": str(purchase.total_cash_outlay_rub)})
                 return Response({"id": str(purchase.id)}, status=201)
 
             if action == "retail_price":
@@ -338,11 +503,11 @@ class ProcurementEconomicsView(AdminAPIView):
                     price = active_price(model.slug)
                     require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
                     require_margin(quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug))
-                audit(request, "procurement.retail_price_created", "retail_token_price", retail.id, {"model": model.slug, "input_rub_per_million": str(input_sale), "output_rub_per_million": str(output_sale)})
                 return Response({"id": str(retail.id), "model": model.slug}, status=201)
 
             return Response({"detail": "Неизвестное действие"}, status=400)
         except (Provider.DoesNotExist, AIModel.DoesNotExist, ProviderFundingAccount.DoesNotExist):
             return Response({"detail": "Объект не найден"}, status=404)
-        except DjangoValidationError as exc:
-            return Response({"detail": exc.messages}, status=400)
+        except (DjangoValidationError, httpx.HTTPError) as exc:
+            detail = getattr(exc, "messages", None) or [str(exc)]
+            return Response({"detail": detail}, status=400)
