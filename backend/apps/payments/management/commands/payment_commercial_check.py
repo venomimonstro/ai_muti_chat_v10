@@ -7,12 +7,18 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from apps.payments.models import PaymentFeeVersion, ReconciliationRun
+from apps.payments.models import (
+    Payment,
+    PaymentFeeVersion,
+    ReconciliationRun,
+    Refund,
+    RefundRequest,
+)
 from apps.payments.provider import PaymentProviderError, YooKassaClient
 
 
 class Command(BaseCommand):
-    help = "Validate that live payments are configured for commercial traffic"
+    help = "Validate that live payments are configured and financially safe for commercial traffic"
 
     def add_arguments(self, parser):
         parser.add_argument("--json", action="store_true", dest="as_json")
@@ -72,9 +78,38 @@ class Command(BaseCommand):
             fee is not None,
             "active YooKassa PaymentFeeVersion" if fee else "missing active fee version",
         )
+
+        unknown_max_age = max(
+            int(os.getenv("PAYMENT_UNKNOWN_MAX_AGE_SECONDS", "1800")),
+            300,
+        )
+        unknown_cutoff = timezone.now() - timedelta(seconds=unknown_max_age)
+        stale_local_payments = Payment.objects.filter(
+            status=Payment.Status.CREATED,
+            provider_payment_id__isnull=True,
+            updated_at__lt=unknown_cutoff,
+        ).count()
+        stale_refunds = Refund.objects.filter(
+            status__in=[Refund.Status.CREATED, Refund.Status.PENDING],
+            updated_at__lt=unknown_cutoff,
+        ).count()
+        stale_refund_requests = RefundRequest.objects.filter(
+            status__in=[RefundRequest.Status.APPROVED, RefundRequest.Status.PROCESSING],
+            updated_at__lt=unknown_cutoff,
+        ).count()
+        unresolved_count = stale_local_payments + stale_refunds + stale_refund_requests
+        add(
+            "no_stale_unknown_money_operations",
+            unresolved_count == 0,
+            (
+                f"max_age={unknown_max_age}s payments_without_provider_id={stale_local_payments} "
+                f"refunds={stale_refunds} refund_requests={stale_refund_requests}"
+            ),
+        )
+
         if options["require_reconciliation"]:
             max_age = max(
-                int(os.getenv("PAYMENT_RECONCILIATION_MAX_AGE_SECONDS", "86400")), 300
+                int(os.getenv("PAYMENT_RECONCILIATION_MAX_AGE_SECONDS", "1800")), 300
             )
             cutoff = timezone.now() - timedelta(seconds=max_age)
             reconciliation = ReconciliationRun.objects.order_by("-started_at").first()
