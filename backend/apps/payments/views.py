@@ -49,7 +49,13 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except PaymentProviderError:
             return Response(
-                {"detail": "Статус платежа уточняется. Повторите запрос с тем же ключом."},
+                {
+                    "detail": (
+                        "Платёж сохранён, но ответ платёжного провайдера не подтверждён. "
+                        "Повторите запрос с тем же Idempotency-Key: новый платёж создан не будет."
+                    ),
+                    "code": "payment_status_unknown",
+                },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         return Response(PaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
@@ -59,14 +65,26 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
         payment = get_object_or_404(Payment, pk=pk)
         serializer = CreateRefundSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        key = request.headers.get("Idempotency-Key", "")
         try:
             refund = create_refund(
                 payment=payment,
                 amount=serializer.validated_data["amount_rub"],
-                idempotency_key=request.headers.get("Idempotency-Key", ""),
+                idempotency_key=key,
             )
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PaymentProviderError:
+            return Response(
+                {
+                    "detail": (
+                        "Статус возврата у провайдера пока неизвестен. Сумма остаётся удержанной; "
+                        "повторите операцию с тем же Idempotency-Key или запустите сверку."
+                    ),
+                    "code": "refund_status_unknown",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response(RefundSerializer(refund).data, status=status.HTTP_201_CREATED)
 
 
@@ -84,7 +102,11 @@ class RefundRequestViewSet(viewsets.ModelViewSet):
     def create(self, request):
         serializer = CreateRefundRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        payment = get_object_or_404(Payment, pk=serializer.validated_data["payment_id"], user=request.user)
+        payment = get_object_or_404(
+            Payment,
+            pk=serializer.validated_data["payment_id"],
+            user=request.user,
+        )
         try:
             refund_request = create_refund_request(
                 user=request.user,
@@ -94,7 +116,10 @@ class RefundRequestViewSet(viewsets.ModelViewSet):
             )
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(RefundRequestSerializer(refund_request).data, status=status.HTTP_201_CREATED)
+        return Response(
+            RefundRequestSerializer(refund_request).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=["post"], permission_classes=[IsPlatformAdmin])
     def approve(self, request, pk=None):
@@ -110,7 +135,14 @@ class RefundRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except PaymentProviderError:
             return Response(
-                {"detail": "Провайдер возврата временно недоступен; удержанная сумма восстановлена."},
+                {
+                    "detail": (
+                        "Ответ YooKassa не подтверждён. Удержанная сумма НЕ возвращена на баланс, "
+                        "чтобы исключить двойной возврат. Заявка оставлена в обработке и безопасно "
+                        "повторяется/сверяется по тому же ключу."
+                    ),
+                    "code": "refund_status_unknown",
+                },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         return Response(RefundRequestSerializer(item).data)
@@ -142,5 +174,6 @@ class YooKassaWebhookView(APIView):
         except ValidationError:
             return Response(status=status.HTTP_400_BAD_REQUEST)
         except PaymentProviderError:
+            # Non-2xx intentionally asks YooKassa to retry notification delivery.
             return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(status=status.HTTP_200_OK)
