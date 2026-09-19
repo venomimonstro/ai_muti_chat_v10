@@ -8,11 +8,19 @@ INSTALL_MARKER="${PROJECT_DIR}/.installed"
 NONINTERACTIVE="${AIWS_NONINTERACTIVE:-false}"
 
 fail() { printf 'Ошибка установки: %s\n' "$1" >&2; exit 1; }
-on_error() { printf '\nУстановка остановлена на строке %s. Данные и volumes не удалялись.\n' "$1" >&2; }
+on_error() {
+  printf '\nУстановка остановлена на строке %s. Данные и Docker volumes не удалялись.\n' "$1" >&2
+  if command -v docker >/dev/null 2>&1 && [[ -f "${ENV_FILE}" && -f "${COMPOSE_FILE}" ]]; then
+    printf 'Последние журналы контейнеров:\n' >&2
+    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" logs --tail=80 postgres redis backend worker beat frontend caddy 2>/dev/null || true
+  fi
+}
 trap 'on_error "$LINENO"' ERR
 
 [[ "${EUID}" -eq 0 ]] || fail "запустите через sudo"
 [[ -f "${COMPOSE_FILE}" ]] || fail "docker-compose.prod.yml не найден"
+[[ -f "${PROJECT_DIR}/backend/manage.py" ]] || fail "backend/manage.py не найден"
+[[ -f "${PROJECT_DIR}/frontend/package.json" ]] || fail "frontend/package.json не найден"
 
 RESUME=false
 if [[ -e "${ENV_FILE}" ]]; then
@@ -26,7 +34,7 @@ install_packages() {
   command -v apt-get >/dev/null 2>&1 || fail "автоустановка поддерживает Ubuntu/Debian с apt"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y ca-certificates curl openssl iproute2
+  apt-get install -y ca-certificates curl openssl iproute2 git
 }
 
 install_docker() {
@@ -45,14 +53,19 @@ install_docker() {
 }
 
 check_server() {
-  local mem_kb disk_kb
+  local mem_kb disk_kb arch
   mem_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   disk_kb="$(df -Pk "${PROJECT_DIR}" | awk 'NR==2{print $4}')"
+  arch="$(uname -m)"
+  case "${arch}" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *) fail "неподдерживаемая архитектура CPU: ${arch}" ;;
+  esac
   if (( mem_kb > 0 && mem_kb < 2000000 )); then
     fail "нужно минимум около 2 ГБ RAM; найдено $((mem_kb/1024)) МБ"
   fi
   if (( mem_kb > 0 && mem_kb < 4000000 )); then
-    printf 'Предупреждение: RAM меньше рекомендуемых 4 ГБ. Для небольшой beta это допустимо, но следите за нагрузкой.\n' >&2
+    printf 'Предупреждение: RAM меньше рекомендуемых 4 ГБ. Для небольшой beta допустимо, но следите за PostgreSQL/Celery.\n' >&2
   fi
   if (( disk_kb < 10000000 )); then
     fail "нужно минимум около 10 ГБ свободного диска"
@@ -133,7 +146,10 @@ if [[ "${RESUME}" != true ]]; then
     printf 'CORS_ALLOWED_ORIGINS=https://%s\nPUBLIC_API_URL=https://%s/api/v1\nNEXT_PUBLIC_API_URL=https://%s/api/v1\nNEXT_PUBLIC_SITE_URL=https://%s\nFRONTEND_PUBLIC_URL=https://%s\n' "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}"
     printf 'EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend\nEMAIL_HOST=\nEMAIL_PORT=587\nEMAIL_HOST_USER=\nEMAIL_HOST_PASSWORD=\nEMAIL_USE_TLS=true\nEMAIL_USE_SSL=false\nDEFAULT_FROM_EMAIL=noreply@%s\n' "${APP_DOMAIN}"
     printf 'SIGNUP_PROMO_RUB=25.00\nADMIN_MFA_ENFORCED=false\n'
+    printf 'OPERATION_STALE_TIMEOUT_SECONDS=900\n'
     printf 'AI_PROVIDER_TIMEOUT_SECONDS=120\nAI_PROVIDER_MAX_ATTEMPTS=2\nAI_CIRCUIT_FAILURE_THRESHOLD=3\nAI_CIRCUIT_COOLDOWN_SECONDS=60\nAI_PROVIDER_HEALTH_MAX_AGE_SECONDS=900\n'
+    printf 'CONSUMER_MAX_SINGLE_REQUEST_RUB=250\nCONSUMER_MAX_SINGLE_REQUEST_BALANCE_PERCENT=10\nCONSUMER_BURST_WINDOW_MINUTES=10\nCONSUMER_MAX_BURST_SPEND_RUB=500\nCONSUMER_MAX_BURST_SPEND_PERCENT=20\nCONSUMER_MAX_DAILY_SPEND_RUB=20000\nCONSUMER_MAX_DAILY_BALANCE_PERCENT=50\nCONSUMER_MAX_MONTHLY_SPEND_RUB=100000\nCONSUMER_MAX_OPERATIONS_PER_MINUTE=20\n'
+    printf 'PROCUREMENT_RUNTIME_FAIL_CLOSED=1\n'
     printf 'OPENAI_API_KEY=\nOPENAI_API_BASE_URL=https://api.openai.com/v1\nOPENAI_DEFAULT_MODEL=\n'
     printf 'ANTHROPIC_API_KEY=\nANTHROPIC_API_BASE_URL=https://api.anthropic.com/v1\nANTHROPIC_DEFAULT_MODEL=\n'
     printf 'DEEPSEEK_API_KEY=\nDEEPSEEK_API_BASE_URL=https://api.deepseek.com\nDEEPSEEK_DEFAULT_MODEL=\n'
@@ -152,7 +168,7 @@ if [[ "${RESUME}" != true ]]; then
     printf 'B2B_API_ENABLED=true\nB2B_API_MAX_OUTPUT_TOKENS=4096\nB2B_API_MAX_MESSAGE_CHARS=100000\nB2B_API_RUNNING_TIMEOUT_SECONDS=600\nB2B_TRUST_PROXY_IP_HEADER=true\n'
     printf 'GITHUB_INTEGRATION_ENABLED=false\nGITHUB_APP_ID=\nGITHUB_APP_SLUG=\nGITHUB_APP_CLIENT_ID=\nGITHUB_APP_CLIENT_SECRET=\nGITHUB_APP_PRIVATE_KEY=\nGITHUB_MAX_FILE_BYTES=2097152\nGITHUB_MAX_WRITE_BYTES=1048576\nGITHUB_MAX_DIRECTORY_ITEMS=1000\n'
     printf 'API_ANON_RATE=60/min\nAPI_USER_RATE=300/min\nAPI_LOGIN_RATE=10/min\nAPI_REGISTER_RATE=5/hour\nAPI_CLIENT_ERROR_RATE=10/min\n'
-    printf 'PAYMENTS_ENABLED=false\nPAYMENTS_LIVE_ENABLED=false\nPAYMENT_RECONCILIATION_MAX_AGE_SECONDS=86400\n'
+    printf 'PAYMENTS_ENABLED=false\nPAYMENTS_LIVE_ENABLED=false\nPAYMENT_UNKNOWN_MAX_AGE_SECONDS=1800\nPAYMENT_RECONCILIATION_MAX_AGE_SECONDS=1800\n'
     printf 'PAYMENT_RETURN_URL=https://%s/app/wallet/return\n' "${APP_DOMAIN}"
     printf 'YOOKASSA_SHOP_ID=\nYOOKASSA_SECRET_KEY=\nYOOKASSA_API_BASE_URL=https://api.yookassa.ru/v3\n'
     printf 'PAYMENTS_FISCALIZATION_MODE=disabled\nPAYMENTS_VAT_CODE=1\nPAYMENT_MIN_RUB=100.00\nPAYMENT_MAX_RUB=100000.00\n'
@@ -162,45 +178,73 @@ fi
 
 compose() { docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"; }
 cd "${PROJECT_DIR}"
-printf '\n[1/7] Сборка контейнеров...\n'
+
+printf '\n[1/9] Проверка production-конфигурации Docker Compose...\n'
+compose config --quiet
+
+printf '[2/9] Сборка контейнеров...\n'
 compose build --pull
-printf '[2/7] Запуск PostgreSQL и Redis...\n'
+
+printf '[3/9] Запуск PostgreSQL и Redis...\n'
 compose up -d postgres redis
-printf '[3/7] Миграции базы данных...\n'
+
+printf '[4/9] Миграции базы данных...\n'
 compose run --rm backend python manage.py migrate --noinput
-printf '[4/7] Проверка Django и статических файлов...\n'
+compose run --rm backend python manage.py makemigrations --check --dry-run
+
+printf '[5/9] Проверка Django и статических файлов...\n'
 compose run --rm backend python manage.py check --fail-level ERROR
 compose run --rm backend python manage.py collectstatic --noinput
-printf '[5/7] Начальная конфигурация каталога и администратора...\n'
+
+printf '[6/9] Финансовая симуляция 1000 клиентов...\n'
+compose run --rm backend python manage.py simulate_1000_clients --clients 1000 --operations 30
+
+printf '[7/9] Начальная конфигурация каталога и администратора...\n'
 compose run --rm backend python manage.py bootstrap_catalog
 compose run --rm backend python manage.py bootstrap_optional_features
 compose run --rm -e "AIWORKSPACE_ADMIN_PASSWORD=${ADMIN_PASSWORD}" backend python manage.py bootstrap_admin --username "${ADMIN_USERNAME}" --email "${ADMIN_EMAIL}" --reset-password
-printf '[6/7] Запуск приложения...\n'
+
+printf '[8/9] Запуск приложения...\n'
 compose up -d --remove-orphans
-printf '[7/7] Проверка HTTPS и readiness...\n'
+
+printf '[9/9] Проверка контейнеров, HTTPS и readiness...\n'
 READY=false
 for _attempt in $(seq 1 90); do
   if curl -fsS --max-time 5 "https://${APP_DOMAIN}/api/v1/readiness/" >/dev/null 2>&1; then READY=true; break; fi
   sleep 2
 done
 
-if [[ "${READY}" == true ]]; then
-  touch "${INSTALL_MARKER}"; chmod 600 "${INSTALL_MARKER}"
-  printf '\nУстановка завершена успешно.\n'
-  printf 'Сайт: https://%s\nЛичный кабинет: https://%s/app\nПанель администратора: https://%s/admin-console\nСостояние системы: https://%s/admin-console/system\nДвухфакторная защита: https://%s/security/mfa\n' "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}"
-  printf 'Логин администратора: %s\n' "${ADMIN_USERNAME}"
-  if [[ "${GENERATED_ADMIN_PASSWORD}" == true ]]; then
-    printf 'Сгенерированный пароль: %s\nСохраните его сейчас — повторно он не выводится.\n' "${ADMIN_PASSWORD}"
-  fi
-  printf '\nДиагностика: sudo bash scripts/system_diagnostics.sh\n'
-  printf 'Проверка коммерческого запуска: sudo bash scripts/commercial_launch_check.sh\n'
-else
+if [[ "${READY}" != true ]]; then
   printf '\nКонтейнеры запущены, но HTTPS/readiness не прошли. Установка не помечена завершённой.\n' >&2
   printf 'Проверьте DNS и журнал: sudo docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=200 caddy backend frontend\n' >&2
-  printf 'После исправления повторите: sudo bash install.sh\n' >&2
   exit 1
 fi
 
-printf '\nДо коммерческого запуска заполните SMTP, реквизиты продавца, AI API-ключи, модели и себестоимость, image-модель, YooKassa, WEB_SEARCH_BASE_URL; при использовании GitHub включите GITHUB_INTEGRATION_ENABLED и заполните GitHub App credentials; включите MFA и закройте юридические проверки/drills.\n'
+for service in postgres redis backend worker beat frontend caddy; do
+  container_id="$(compose ps -q "${service}")"
+  [[ -n "${container_id}" ]] || fail "контейнер ${service} не создан"
+  running="$(docker inspect -f '{{.State.Running}}' "${container_id}" 2>/dev/null || echo false)"
+  [[ "${running}" == "true" ]] || fail "контейнер ${service} не работает"
+done
+
+compose exec -T backend python manage.py check --fail-level ERROR >/dev/null
+
+# Marker создаётся только после успешной миграции, симуляции, запуска всех сервисов и внешнего readiness.
+touch "${INSTALL_MARKER}"
+chmod 600 "${INSTALL_MARKER}"
+
+printf '\nУстановка завершена успешно.\n'
+printf 'Сайт: https://%s\nЛичный кабинет: https://%s/app\nПанель администратора: https://%s/admin-console\nСостояние системы: https://%s/admin-console/system\nДвухфакторная защита: https://%s/security/mfa\n' "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}" "${APP_DOMAIN}"
+printf 'Логин администратора: %s\n' "${ADMIN_USERNAME}"
+if [[ "${GENERATED_ADMIN_PASSWORD}" == true ]]; then
+  printf 'Сгенерированный пароль: %s\nСохраните его сейчас — повторно он не выводится.\n' "${ADMIN_PASSWORD}"
+fi
+printf '\nДиагностика: sudo bash scripts/system_diagnostics.sh\n'
+printf 'Проверка коммерческого запуска: sudo bash scripts/commercial_launch_check.sh\n'
+printf 'Повторная финансовая симуляция: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py simulate_1000_clients\n'
+
+printf '\nВАЖНО: базовая установка завершена, но реальные платежи по умолчанию выключены.\n'
+printf 'До коммерческого запуска заполните SMTP, реквизиты продавца, AI API-ключи, модели и себестоимость, закупочные аккаунты/FX, image-модель, YooKassa, WEB_SEARCH_BASE_URL; при использовании GitHub включите GITHUB_INTEGRATION_ENABLED и заполните GitHub App credentials; включите MFA и закройте юридические проверки/drills.\n'
+printf 'PAYMENTS_ENABLED/PAYMENTS_LIVE_ENABLED включайте только после успешного scripts/commercial_launch_check.sh.\n'
 printf 'После изменения AI-моделей/цен повторите: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py bootstrap_catalog\n'
 printf 'После настройки image-модели повторите: sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec backend python manage.py bootstrap_optional_features\n'
