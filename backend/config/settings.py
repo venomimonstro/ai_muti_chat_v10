@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "apps.image_studio",
     "apps.b2b_api",
     "apps.github_integration",
+    "apps.procurement",
     "apps.admin_ops",
 ]
 MIDDLEWARE = [
