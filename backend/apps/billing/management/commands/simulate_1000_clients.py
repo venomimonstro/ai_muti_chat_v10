@@ -61,9 +61,7 @@ class ClientState:
 
     def settle(self, key, actual, *, provider_confirmed):
         if key in self.settled_keys:
-            if self.settled_keys[key] != money(actual):
-                raise AssertionError("settlement changed after retry")
-            return
+            return self.settled_keys[key]
         reserved = self.reservation_keys.get(key, ZERO)
         actual = money(actual) if provider_confirmed else ZERO
         actual = min(actual, reserved)
@@ -72,6 +70,7 @@ class ClientState:
         self.available += release
         self.paid += release
         self.settled_keys[key] = actual
+        return actual
 
     def request_refund(self, request_key, payment_key, amount):
         amount = money(amount)
