@@ -6,7 +6,7 @@ import {useRouter} from "next/navigation";
 import {api,ensureCsrf} from "../../lib/api";
 import styles from "../auth.module.css";
 
-type LoginUser={role?:string;status?:string};
+type LoginUser={role?:string;status?:string;is_staff?:boolean;is_superuser?:boolean};
 
 export default function LoginPage(){
   const router=useRouter();
@@ -25,8 +25,8 @@ export default function LoginPage(){
         method:"POST",
         body:JSON.stringify({username:f.get("username"),password:f.get("password")}),
       });
-      const destination=user.role==="platform_admin"?"/admin-console":"/app";
-      router.replace(destination);
+      const isAdmin=user.role==="platform_admin"||user.is_staff===true||user.is_superuser===true;
+      router.replace(isAdmin?"/admin-console":"/app");
       router.refresh();
     }catch(r){
       setError(r instanceof Error?r.message:"Не удалось войти");
