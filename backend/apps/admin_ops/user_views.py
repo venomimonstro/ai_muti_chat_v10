@@ -1,4 +1,5 @@
 from decimal import Decimal, InvalidOperation
+import uuid
 
 from django.contrib.sessions.models import Session
 from django.core.exceptions import ValidationError
@@ -83,6 +84,66 @@ class AdminUserDetailView(APIView):
         )
 
 
+class AdminPromoCreditView(APIView):
+    permission_classes = [IsPlatformAdmin]
+
+    @transaction.atomic
+    def post(self, request, user_id):
+        user = User.objects.select_for_update().filter(pk=user_id).first()
+        if user is None:
+            return Response({"detail": "Пользователь не найден"}, status=404)
+        try:
+            amount = Decimal(str(request.data.get("amount_rub", "")))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({"detail": "Некорректная сумма"}, status=400)
+        comment = str(request.data.get("comment", "")).strip()
+        if amount <= 0:
+            return Response({"detail": "Сумма должна быть больше 0 ₽"}, status=400)
+        if len(comment) < 3:
+            return Response({"detail": "Укажите комментарий к начислению"}, status=400)
+        idempotency_key = str(request.headers.get("Idempotency-Key", "")).strip() or str(uuid.uuid4())
+        if len(idempotency_key) > 120:
+            return Response({"detail": "Idempotency-Key слишком длинный"}, status=400)
+        try:
+            adjustment = admin_adjust_balance(
+                target_user=user,
+                admin=request.user,
+                direction=AdminBalanceAdjustment.Direction.CREDIT,
+                amount=amount,
+                comment=comment,
+                idempotency_key=idempotency_key,
+            )
+        except ValidationError as exc:
+            return Response({"detail": "; ".join(exc.messages)}, status=400)
+        wallet = Wallet.objects.get(user=user)
+        audit(
+            request,
+            "user.promo_credit",
+            "user",
+            user.id,
+            {
+                "adjustment_id": str(adjustment.id),
+                "amount_rub": str(adjustment.amount_rub),
+                "comment": adjustment.comment,
+                "idempotency_key": idempotency_key,
+                "bucket": "promo",
+            },
+        )
+        return Response(
+            {
+                "ok": True,
+                "user_id": str(user.id),
+                "amount_rub": str(adjustment.amount_rub),
+                "wallet": {
+                    "available_rub": str(wallet.available_rub),
+                    "reserved_rub": str(wallet.reserved_rub),
+                    "paid_rub": str(wallet.paid_rub),
+                    "promo_rub": str(wallet.promo_rub),
+                },
+            }
+        )
+
+
 class AdminUserActionView(APIView):
     permission_classes = [IsPlatformAdmin]
 
@@ -117,9 +178,9 @@ class AdminUserActionView(APIView):
                 if action in {"promo_credit", "balance_credit"}
                 else AdminBalanceAdjustment.Direction.DEBIT
             )
-            idempotency_key = str(request.headers.get("Idempotency-Key", "")).strip()
-            if not idempotency_key or len(idempotency_key) > 120:
-                return Response({"detail": "Корректный Idempotency-Key обязателен"}, status=400)
+            idempotency_key = str(request.headers.get("Idempotency-Key", "")).strip() or str(uuid.uuid4())
+            if len(idempotency_key) > 120:
+                return Response({"detail": "Idempotency-Key слишком длинный"}, status=400)
             try:
                 adjustment = admin_adjust_balance(
                     target_user=user,
@@ -130,11 +191,11 @@ class AdminUserActionView(APIView):
                     idempotency_key=idempotency_key,
                 )
             except ValidationError as exc:
-                return Response({"detail": str(exc)}, status=400)
+                return Response({"detail": "; ".join(exc.messages)}, status=400)
             wallet = Wallet.objects.get(user=user)
             audit(
                 request,
-                "user.promo_credit" if action == "promo_credit" else f"user.{action}",
+                "user.promo_credit" if direction == AdminBalanceAdjustment.Direction.CREDIT else "user.balance_debit",
                 "user",
                 user.id,
                 {
