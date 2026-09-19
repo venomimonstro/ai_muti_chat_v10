@@ -1,7 +1,18 @@
+import base64
+import hashlib
+import os
 import uuid
 
+from cryptography.fernet import Fernet, InvalidToken
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+
+
+def _credential_cipher():
+    material = f"ai-workspace-provider-credential:{settings.SECRET_KEY}".encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(material).digest())
+    return Fernet(key)
 
 
 class Provider(models.Model):
@@ -32,6 +43,7 @@ class Provider(models.Model):
     )
     api_base_url = models.URLField(blank=True)
     credential_env = models.CharField(max_length=100, blank=True)
+    credential_secret = models.TextField(blank=True, editable=False)
     health_state = models.CharField(
         max_length=16, choices=HealthState.choices, default=HealthState.UNKNOWN
     )
@@ -42,6 +54,50 @@ class Provider(models.Model):
 
     class Meta:
         ordering = ["priority", "name"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._hydrate_runtime_credential()
+
+    def set_api_key(self, value: str):
+        value = (value or "").strip()
+        if not value:
+            raise ValidationError("API-ключ не может быть пустым")
+        self.credential_secret = _credential_cipher().encrypt(value.encode("utf-8")).decode("ascii")
+
+    def clear_api_key(self):
+        self.credential_secret = ""
+        if self.credential_env:
+            os.environ.pop(self.credential_env, None)
+
+    def get_api_key(self) -> str:
+        if not self.credential_secret:
+            return ""
+        try:
+            return _credential_cipher().decrypt(self.credential_secret.encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError, UnicodeError):
+            return ""
+
+    def credential_configured(self) -> bool:
+        return bool(self.get_api_key() or (self.credential_env and os.getenv(self.credential_env, "").strip()))
+
+    def credential_source(self) -> str:
+        if self.get_api_key():
+            return "database"
+        if self.credential_env and os.getenv(self.credential_env, "").strip():
+            return "environment"
+        return "none"
+
+    def _hydrate_runtime_credential(self):
+        if not getattr(self, "credential_env", "") or not getattr(self, "credential_secret", ""):
+            return
+        value = self.get_api_key()
+        if value:
+            os.environ[self.credential_env] = value
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self._hydrate_runtime_credential()
 
 
 class AIModel(models.Model):
