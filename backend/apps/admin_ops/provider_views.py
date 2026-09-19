@@ -6,7 +6,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.response import Response
 
-from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.models import AIModel, ModelVersion, Provider
 from apps.billing.models import PriceVersion
 
 from .services import audit
@@ -84,7 +84,7 @@ class ProviderCredentialView(AdminAPIView):
             if api_key:
                 provider.set_api_key(api_key)
             elif not clear_api_key:
-                api_key = None  # Пустое поле означает «оставить текущий ключ».
+                api_key = None
 
         if clear_api_key:
             provider.clear_api_key()
@@ -119,6 +119,58 @@ class ProviderCredentialView(AdminAPIView):
             )
 
         return Response(_credential_payload(provider))
+
+
+class ProviderModelConfigView(AdminAPIView):
+    @transaction.atomic
+    def patch(self, request, provider_slug, model_id):
+        model = get_object_or_404(
+            AIModel.objects.select_for_update().select_related("provider", "current_version"),
+            pk=model_id,
+            provider__slug=provider_slug,
+        )
+        upstream_model = str(request.data.get("upstream_model") or "").strip()
+        if not upstream_model:
+            return Response({"detail": "Укажите ID модели у провайдера"}, status=400)
+        if len(upstream_model) > 160:
+            return Response({"detail": "ID модели слишком длинный"}, status=400)
+
+        now = timezone.now()
+        ModelVersion.objects.filter(model=model, stage=ModelVersion.Stage.ACTIVE).update(
+            stage=ModelVersion.Stage.RETIRED,
+            retired_at=now,
+        )
+        version = ModelVersion.objects.create(
+            model=model,
+            version=f"admin-{now.strftime('%Y%m%d%H%M%S%f')}",
+            exact_api_id=upstream_model,
+            capabilities=model.capabilities,
+            routing_tags=model.routing_tags,
+            context_window=model.context_window,
+            max_output_tokens=model.max_output_tokens,
+            stage=ModelVersion.Stage.ACTIVE,
+            activated_at=now,
+            release_notes="Настроено через панель администратора",
+        )
+        model.upstream_model = upstream_model
+        model.current_version = version
+        model.save(update_fields=["upstream_model", "current_version"])
+        audit(
+            request,
+            "provider.model.configured",
+            "ai_model",
+            model.id,
+            metadata={"provider": provider_slug, "model": model.slug, "upstream_model": upstream_model},
+        )
+        return Response(
+            {
+                "id": str(model.id),
+                "slug": model.slug,
+                "upstream_model": model.upstream_model,
+                "current_version": version.version,
+                "enabled": model.enabled,
+            }
+        )
 
 
 class SafeProviderBulkActionView(AdminAPIView):
