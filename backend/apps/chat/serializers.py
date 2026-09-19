@@ -1,7 +1,9 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
+from apps.billing.pricing import active_price, quote, require_margin
 from apps.projects.access import accessible_projects
 
 from .branches import visible_messages
@@ -82,13 +84,87 @@ class ConversationSerializer(serializers.ModelSerializer):
             for branch in obj.branches.all()
         ]
 
+    @staticmethod
+    def _default_client_model():
+        queryset = AIModel.objects.filter(enabled=True).select_related(
+            "provider", "current_version"
+        ).order_by("provider__priority", "display_name")
+        for model in queryset:
+            if not model.current_version_id or not model.upstream_model.strip():
+                continue
+            if not provider_available(model.provider):
+                continue
+            try:
+                price = active_price(model.slug)
+                require_margin(
+                    quote(
+                        price,
+                        1_000_000,
+                        0,
+                        provider_slug=model.provider.slug,
+                        model_slug=model.slug,
+                    )
+                )
+                require_margin(
+                    quote(
+                        price,
+                        0,
+                        1_000_000,
+                        provider_slug=model.provider.slug,
+                        model_slug=model.slug,
+                    )
+                )
+            except (DjangoValidationError, Exception):
+                continue
+            return model
+        return None
+
+    def create(self, validated_data):
+        selected = validated_data.get("selected_model")
+        if not selected or selected == "echo-v1":
+            model = self._default_client_model()
+            if model is None:
+                raise serializers.ValidationError(
+                    {"selected_model": "Нет подключённой модели, доступной клиентскому чату"}
+                )
+            validated_data["selected_model"] = model.slug
+        return super().create(validated_data)
+
     def validate_selected_model(self, value):
         try:
-            model = AIModel.objects.select_related("provider").get(slug=value, enabled=True)
+            model = AIModel.objects.select_related("provider", "current_version").get(
+                slug=value, enabled=True
+            )
         except AIModel.DoesNotExist as exc:
             raise serializers.ValidationError("Модель не найдена") from exc
+        if not model.current_version_id or not model.upstream_model.strip():
+            raise serializers.ValidationError("Модель ещё не готова к работе")
         if not provider_available(model.provider):
             raise serializers.ValidationError("Модель временно недоступна")
+        try:
+            price = active_price(model.slug)
+            require_margin(
+                quote(
+                    price,
+                    1_000_000,
+                    0,
+                    provider_slug=model.provider.slug,
+                    model_slug=model.slug,
+                )
+            )
+            require_margin(
+                quote(
+                    price,
+                    0,
+                    1_000_000,
+                    provider_slug=model.provider.slug,
+                    model_slug=model.slug,
+                )
+            )
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                "Для модели не настроена безопасная коммерческая цена"
+            ) from exc
         return value
 
     def validate_project(self, value):
