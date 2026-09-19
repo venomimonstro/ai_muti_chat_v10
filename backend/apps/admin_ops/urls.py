@@ -8,6 +8,7 @@ from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
 from .metrics_views import OperationalMetricsView
 from .pricing_views import PricingManagementView
+from .procurement_breakdown_views import ProcurementBreakdownView
 from .procurement_views import ProcurementEconomicsView
 from .provider_views import SafeProviderBulkActionView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
@@ -41,16 +42,13 @@ urlpatterns = [
     path("metrics/", OperationalMetricsView.as_view(), name="admin-metrics"),
     path("infrastructure/", InfrastructureHealthView.as_view(), name="admin-infrastructure"),
     path("system-analysis/", SystemAnalysisView.as_view(), name="admin-system-analysis"),
-    path(
-        "system-issues/<str:fingerprint>/action/",
-        SystemIssueActionView.as_view(),
-        name="admin-system-issue-action",
-    ),
+    path("system-issues/<str:fingerprint>/action/", SystemIssueActionView.as_view(), name="admin-system-issue-action"),
     path("growth/", GrowthFunnelView.as_view(), name="admin-growth"),
     path("analytics/", ProductAnalyticsView.as_view(), name="admin-analytics"),
     path("drills/", OperationalDrillStatusView.as_view(), name="admin-drills"),
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("procurement/", ProcurementEconomicsView.as_view(), name="admin-procurement"),
+    path("procurement/breakdown/", ProcurementBreakdownView.as_view(), name="admin-procurement-breakdown"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
     path("ledger/", LedgerInspectorView.as_view(), name="admin-ledger"),
     path("pricing/", PricingManagementView.as_view(), name="admin-pricing"),
@@ -58,11 +56,7 @@ urlpatterns = [
     path("incidents/", IncidentControlView.as_view(), name="admin-incidents"),
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
     path("commercial-setup/", CommercialSetupView.as_view(), name="admin-commercial-setup"),
-    path(
-        "commercial-setup/providers/<slug:provider_slug>/health/",
-        CommercialProviderHealthView.as_view(),
-        name="admin-commercial-provider-health",
-    ),
+    path("commercial-setup/providers/<slug:provider_slug>/health/", CommercialProviderHealthView.as_view(), name="admin-commercial-provider-health"),
     path("providers/bulk-action/", SafeProviderBulkActionView.as_view(), name="admin-provider-bulk-action"),
     path("requests/", RequestInspectorView.as_view(), name="admin-requests"),
     path("users-organizations/", UserOrganizationView.as_view(), name="admin-users-orgs"),
