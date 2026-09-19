@@ -5,11 +5,18 @@ from urllib.parse import urlparse
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-development-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
-ALLOWED_HOSTS = [
+
+_external_hosts = [
     x.strip()
     for x in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
     if x.strip()
 ]
+_internal_hosts = [
+    x.strip()
+    for x in os.getenv("DJANGO_INTERNAL_HOSTS", "backend,localhost,127.0.0.1").split(",")
+    if x.strip()
+]
+ALLOWED_HOSTS = list(dict.fromkeys([*_external_hosts, *_internal_hosts]))
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -50,7 +57,7 @@ MIDDLEWARE = [
 ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
-        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "BACKEND": "django.db.backends.django.DjangoTemplates",
         "DIRS": [],
         "APP_DIRS": True,
         "OPTIONS": {
