@@ -11,6 +11,16 @@ fail(){ printf 'Ошибка IP-установки: %s\n' "$1" >&2; exit 1; }
 [[ -f "${BASE_INSTALLER}" ]] || fail "install.sh не найден"
 [[ -f "${PROJECT_DIR}/deploy/Caddyfile.ip" ]] || fail "deploy/Caddyfile.ip не найден"
 
+configure_kernel_memory(){
+  if command -v sysctl >/dev/null 2>&1; then
+    printf 'vm.overcommit_memory = 1\n' >/etc/sysctl.d/99-ai-workspace.conf
+    sysctl -w vm.overcommit_memory=1 >/dev/null
+    printf 'Redis memory preflight: vm.overcommit_memory=1.\n'
+  fi
+}
+
+configure_kernel_memory
+
 SERVER_IP="${AIWS_SERVER_IP:-}"
 if [[ -z "${SERVER_IP}" ]]; then
   SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')"
