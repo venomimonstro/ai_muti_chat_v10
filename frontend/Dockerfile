@@ -17,6 +17,9 @@ RUN npm run build
 FROM node:22-alpine AS runner
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+ENV NODE_OPTIONS=--max-old-space-size=384
 WORKDIR /app
 COPY --chown=node:node --from=builder /app/.next/standalone ./
 COPY --chown=node:node --from=builder /app/.next/static ./.next/static
