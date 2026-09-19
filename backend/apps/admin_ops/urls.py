@@ -22,7 +22,7 @@ from .safety_views import AdminConversationMessagesView, ChatSafetySearchView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView, SupportStatusReplyView
 from .system_views import SystemAnalysisView, SystemIssueActionView
-from .user_views import AdminUserActionView, AdminUserDetailView
+from .user_views import AdminPromoCreditView, AdminUserActionView, AdminUserDetailView
 from .views import (
     AuditView,
     BackupView,
@@ -74,6 +74,7 @@ urlpatterns = [
     path("requests/", RequestInspectorView.as_view(), name="admin-requests"),
     path("users-organizations/", UserOrganizationView.as_view(), name="admin-users-orgs"),
     path("users/<uuid:user_id>/", AdminUserDetailView.as_view(), name="admin-user-detail"),
+    path("users/<uuid:user_id>/promo-credit/", AdminPromoCreditView.as_view(), name="admin-user-promo-credit"),
     path("users/<uuid:user_id>/action/", AdminUserActionView.as_view(), name="admin-user-action"),
     path("safety/chats/search/", ChatSafetySearchView.as_view(), name="admin-chat-safety-search"),
     path("safety/conversations/<uuid:conversation_id>/", AdminConversationMessagesView.as_view(), name="admin-conversation-messages"),
