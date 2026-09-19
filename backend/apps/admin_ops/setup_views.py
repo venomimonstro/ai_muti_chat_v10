@@ -31,4 +31,4 @@ class CommercialProviderHealthView(APIView):
     def post(self, request, provider_slug):
         provider = get_object_or_404(Provider, slug=provider_slug)
         result = check_provider_health(provider)
-        return Response(result, status=200 if result["healthy"] else 424)
+        return Response(result)
