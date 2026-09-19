@@ -204,6 +204,83 @@ def settle(reservation_id, actual: Decimal):
     return reservation
 
 
+def _consume_generation_reservation_after_provider_delivery(reservation, wallet):
+    """Fail-safe for a provider response that cost more than our preflight reserve.
+
+    streaming.run records provider usage before its generic exception handler calls
+    release(). If a completed provider response exists with a zero customer charge,
+    returning the reservation would give the response away for free. Consume the
+    complete reserved amount instead; the customer can never be charged above what
+    was reserved.
+    """
+    key = str(reservation.idempotency_key or "")
+    if not key.startswith("generation:"):
+        return False
+    generation_id = key.split(":", 1)[1]
+    if not generation_id:
+        return False
+
+    from apps.billing.models import RequestCost
+    from apps.procurement.models import ProviderSpend
+
+    request_cost = (
+        RequestCost.objects.select_for_update()
+        .filter(
+            generation_id=generation_id,
+            provider_cost_rub__isnull=False,
+            charged_rub=0,
+        )
+        .first()
+    )
+    if request_cost is None:
+        return False
+    if not (request_cost.input_tokens or request_cost.output_tokens):
+        return False
+
+    actual = reservation.amount_rub
+    wallet.reserved_rub -= actual
+    if wallet.reserved_rub < MONEY_ZERO:
+        raise ValidationError("Reserved balance invariant violated")
+    wallet.save(update_fields=["reserved_rub", "updated_at"])
+    _entry(
+        wallet,
+        LedgerEntry.Kind.DEBIT,
+        actual,
+        MONEY_ZERO,
+        -actual,
+        MONEY_ZERO,
+        MONEY_ZERO,
+        "generation",
+        reservation.id,
+        f"settle-overrun:{reservation.id}",
+    )
+
+    provider_cost = request_cost.provider_cost_rub or MONEY_ZERO
+    request_cost.charged_rub = actual
+    request_cost.gross_profit_rub = actual - provider_cost
+    request_cost.gross_margin_percent = (
+        (request_cost.gross_profit_rub / actual * Decimal("100")) if actual else Decimal("-100")
+    )
+    request_cost.save(
+        update_fields=["charged_rub", "gross_profit_rub", "gross_margin_percent"]
+    )
+    # The procurement post_save hook may already have materialized the spend using
+    # the temporary zero charge. Keep the immutable economic row synchronized as
+    # part of this same exceptional settlement path.
+    ProviderSpend.objects.filter(
+        source_type="chat",
+        source_id=str(request_cost.id),
+        customer_charge_rub=0,
+    ).update(customer_charge_rub=actual)
+
+    reservation.actual_rub = actual
+    reservation.state = BalanceReservation.State.SETTLED
+    reservation.settled_at = timezone.now()
+    reservation.save(update_fields=["actual_rub", "state", "settled_at"])
+    notify_low_balance(wallet)
+    return True
+
+
 @transaction.atomic
 def release(reservation_id):
     reservation = (
@@ -214,6 +291,8 @@ def release(reservation_id):
     if reservation.state != BalanceReservation.State.ACTIVE:
         return reservation
     wallet = Wallet.objects.select_for_update().get(pk=reservation.wallet_id)
+    if _consume_generation_reservation_after_provider_delivery(reservation, wallet):
+        return reservation
     wallet.reserved_rub -= reservation.amount_rub
     wallet.available_rub += reservation.amount_rub
     wallet.paid_rub += reservation.paid_amount_rub
