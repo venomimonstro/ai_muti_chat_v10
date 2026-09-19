@@ -8,15 +8,25 @@ from rest_framework.views import APIView
 from apps.admin_ops.permissions import IsPlatformAdmin
 
 from .external_refunds import register_unknown_succeeded_refund
-from .models import Payment
+from .models import Payment, RefundRequest
 from .provider import PaymentProviderError, YooKassaClient
 from .serializers import (
     CreatePaymentSerializer,
+    CreateRefundRequestSerializer,
     CreateRefundSerializer,
     PaymentSerializer,
+    RefundRequestSerializer,
     RefundSerializer,
+    ReviewRefundRequestSerializer,
 )
-from .services import create_refund, create_topup, process_webhook
+from .services import (
+    approve_refund_request,
+    create_refund,
+    create_refund_request,
+    create_topup,
+    process_webhook,
+    reject_refund_request,
+)
 
 
 class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
@@ -58,6 +68,66 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(RefundSerializer(refund).data, status=status.HTTP_201_CREATED)
+
+
+class RefundRequestViewSet(viewsets.ModelViewSet):
+    http_method_names = ["get", "post", "head", "options"]
+
+    def get_serializer_class(self):
+        return CreateRefundRequestSerializer if self.action == "create" else RefundRequestSerializer
+
+    def get_queryset(self):
+        if IsPlatformAdmin().has_permission(self.request, self):
+            return RefundRequest.objects.select_related("payment", "refund", "user").all()
+        return RefundRequest.objects.select_related("payment", "refund").filter(user=self.request.user)
+
+    def create(self, request):
+        serializer = CreateRefundRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payment = get_object_or_404(Payment, pk=serializer.validated_data["payment_id"], user=request.user)
+        try:
+            refund_request = create_refund_request(
+                user=request.user,
+                payment=payment,
+                amount=serializer.validated_data["amount_rub"],
+                reason=serializer.validated_data.get("reason", ""),
+            )
+        except ValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(RefundRequestSerializer(refund_request).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsPlatformAdmin])
+    def approve(self, request, pk=None):
+        item = get_object_or_404(RefundRequest, pk=pk)
+        serializer = ReviewRefundRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            item = approve_refund_request(
+                refund_request=item,
+                admin_comment=serializer.validated_data.get("admin_comment", ""),
+            )
+        except ValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PaymentProviderError:
+            return Response(
+                {"detail": "Провайдер возврата временно недоступен; удержанная сумма восстановлена."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(RefundRequestSerializer(item).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsPlatformAdmin])
+    def reject(self, request, pk=None):
+        item = get_object_or_404(RefundRequest, pk=pk)
+        serializer = ReviewRefundRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            item = reject_refund_request(
+                refund_request=item,
+                admin_comment=serializer.validated_data.get("admin_comment", ""),
+            )
+        except ValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(RefundRequestSerializer(item).data)
 
 
 class YooKassaWebhookView(APIView):
