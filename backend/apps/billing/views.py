@@ -12,7 +12,7 @@ from .models import BillingReconciliationRun, CostAnomaly, RequestCost, Wallet
 class WalletView(APIView):
     def get(self, request):
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
-        entries = wallet.entries.order_by("-created_at")[:50]
+        entries = wallet.entries.order_by("-created_at")[:100]
         return Response(
             {
                 "available_rub": wallet.available_rub,
@@ -28,6 +28,8 @@ class WalletView(APIView):
                         "reserved_delta_rub": e.reserved_delta_rub,
                         "paid_delta_rub": e.paid_delta_rub,
                         "promo_delta_rub": e.promo_delta_rub,
+                        "source_type": e.source_type,
+                        "source_id": e.source_id,
                         "created_at": e.created_at,
                     }
                     for e in entries
