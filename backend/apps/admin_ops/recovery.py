@@ -1,19 +1,33 @@
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
 from apps.b2b_api.models import APIUsage
-from apps.billing.models import BalanceReservation
+from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.services import release
 from apps.chat.models import CompareRun, CompareVariant, Generation, Message
 from apps.files.models import FileAsset, FileProcessingJob
 from apps.image_studio.models import ImageGeneration
+from apps.procurement.models import ProviderSpendReservation
+from apps.procurement.services import release_provider_spend
+
+ZERO = Decimal("0.0000")
 
 
 def _cutoff():
     return timezone.now() - timedelta(seconds=settings.OPERATION_STALE_TIMEOUT_SECONDS)
+
+
+def _release_provider_prefix(prefix):
+    ids = ProviderSpendReservation.objects.filter(
+        source_key__startswith=prefix,
+        state=ProviderSpendReservation.State.ACTIVE,
+    ).values_list("id", flat=True)
+    for reservation_id in list(ids):
+        release_provider_spend(reservation_id)
 
 
 @transaction.atomic
@@ -26,15 +40,40 @@ def _recover_generation(pk):
         Generation.State.RUNNING,
     } or generation.created_at >= _cutoff():
         return False
+
+    request_cost = RequestCost.objects.filter(generation_id=generation.id).first()
+    closed = None
     if generation.reservation_id:
-        release(generation.reservation_id)
+        closed = release(generation.reservation_id)
+
+    # Keep the provider-funding ledger in sync with the customer ledger. If
+    # authoritative provider usage exists, re-fire the idempotent settlement
+    # signal. If it never arrived, release only the internal provider reserve.
+    if request_cost is not None:
+        provider_usage_confirmed = bool(
+            request_cost.provider_cost_rub is not None
+            and (request_cost.input_tokens or request_cost.output_tokens)
+        )
+        if provider_usage_confirmed:
+            request_cost.save(update_fields=["reconciliation_status"])
+        else:
+            _release_provider_prefix(f"chat:{request_cost.id}:")
+
     assistant = generation.assistant_message
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["status"])
     generation.state = Generation.State.FAILED
     generation.error_code = "stale_operation_recovered"
     generation.completed_at = timezone.now()
-    generation.save(update_fields=["state", "error_code", "completed_at"])
+    generation.actual_cost_rub = (closed.actual_rub if closed and closed.actual_rub is not None else ZERO)
+    update_fields = ["state", "error_code", "completed_at", "actual_cost_rub"]
+    if request_cost is not None and (
+        request_cost.input_tokens or request_cost.output_tokens
+    ):
+        generation.input_tokens = request_cost.input_tokens
+        generation.output_tokens = request_cost.output_tokens
+        update_fields.extend(["input_tokens", "output_tokens"])
+    generation.save(update_fields=update_fields)
     return True
 
 
@@ -46,13 +85,20 @@ def _recover_compare(pk):
     if run.reservation_id:
         release(run.reservation_id)
     now = timezone.now()
-    run.variants.filter(
-        state__in=[CompareVariant.State.QUEUED, CompareVariant.State.RUNNING]
-    ).update(
+    stale_variants = list(
+        run.variants.filter(
+            state__in=[CompareVariant.State.QUEUED, CompareVariant.State.RUNNING]
+        ).values_list("id", flat=True)
+    )
+    run.variants.filter(pk__in=stale_variants).update(
         state=CompareVariant.State.FAILED,
         error_code="stale_operation_recovered",
         completed_at=now,
     )
+    # Bulk update does not fire post_save, therefore procurement reservations
+    # must be released explicitly for variants that never reached completion.
+    for variant_id in stale_variants:
+        _release_provider_prefix(f"compare:{variant_id}")
     completed = run.variants.filter(state=CompareVariant.State.COMPLETED).exists()
     run.state = CompareRun.State.PARTIAL if completed else CompareRun.State.FAILED
     run.completed_at = now
