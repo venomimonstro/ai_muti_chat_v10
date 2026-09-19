@@ -107,14 +107,14 @@ class AdminUserActionView(APIView):
             user.save(update_fields=["status"])
         elif action == "logout_all":
             self._revoke_sessions(user)
-        elif action in {"balance_credit", "balance_debit"}:
+        elif action in {"promo_credit", "balance_credit", "balance_debit"}:
             try:
                 amount = Decimal(str(request.data.get("amount_rub", "")))
             except (InvalidOperation, TypeError, ValueError):
                 return Response({"detail": "Некорректная сумма"}, status=400)
             direction = (
                 AdminBalanceAdjustment.Direction.CREDIT
-                if action == "balance_credit"
+                if action in {"promo_credit", "balance_credit"}
                 else AdminBalanceAdjustment.Direction.DEBIT
             )
             idempotency_key = str(request.headers.get("Idempotency-Key", "")).strip()
@@ -131,9 +131,10 @@ class AdminUserActionView(APIView):
                 )
             except ValidationError as exc:
                 return Response({"detail": str(exc)}, status=400)
+            wallet = Wallet.objects.get(user=user)
             audit(
                 request,
-                f"user.{action}",
+                "user.promo_credit" if action == "promo_credit" else f"user.{action}",
                 "user",
                 user.id,
                 {
@@ -141,6 +142,7 @@ class AdminUserActionView(APIView):
                     "amount_rub": str(adjustment.amount_rub),
                     "comment": adjustment.comment,
                     "idempotency_key": idempotency_key,
+                    "bucket": "promo" if direction == AdminBalanceAdjustment.Direction.CREDIT else "mixed",
                 },
             )
             return Response(
@@ -150,6 +152,12 @@ class AdminUserActionView(APIView):
                     "adjustment_id": adjustment.id,
                     "amount_rub": adjustment.amount_rub,
                     "direction": adjustment.direction,
+                    "wallet": {
+                        "available_rub": wallet.available_rub,
+                        "reserved_rub": wallet.reserved_rub,
+                        "paid_rub": wallet.paid_rub,
+                        "promo_rub": wallet.promo_rub,
+                    },
                 }
             )
         else:
