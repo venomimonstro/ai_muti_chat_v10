@@ -10,7 +10,7 @@ from apps.accounts.models import Notification, User
 from apps.b2b_api.models import APIKey, Organization
 from apps.billing.services import debit_paid
 
-from .models import Payment, Refund
+from .models import Payment, Refund, RefundRequest
 
 
 def _money(value):
@@ -20,7 +20,7 @@ def _money(value):
         raise ValidationError("Invalid provider refund amount") from exc
 
 
-def _notify_financial_incident(*, payment, refund_id, amount):
+def _notify_financial_incident(*, payment, refund_id, amount, detail=None):
     admins = User.objects.filter(
         role=User.Role.PLATFORM_ADMIN,
         status=User.Status.ACTIVE,
@@ -31,7 +31,7 @@ def _notify_financial_incident(*, payment, refund_id, amount):
             dedupe_key=f"external-refund-gap:{refund_id}",
             defaults={
                 "title": "Внешний возврат требует финансовой проверки",
-                "body": (
+                "body": detail or (
                     f"ЮKassa вернула {amount:.2f} ₽ по платежу {payment.id}, "
                     "но свободного платного баланса клиента недостаточно. "
                     "Аккаунт и B2B-доступ заблокированы до ручной сверки."
@@ -55,14 +55,54 @@ def _freeze_user_spend(user):
     ).update(revoked_at=timezone.now())
 
 
+def _recover_timed_out_local_refund(*, payment, refund_id, amount, remote):
+    """Attach a provider webhook to the one local refund whose POST timed out.
+
+    create_refund() persists the wallet hold and local row before the network call.
+    Therefore a webhook can arrive while provider_refund_id is still NULL. Matching
+    that row first is mandatory: treating it as external would debit the wallet twice.
+    """
+    candidates = list(
+        Refund.objects.select_for_update()
+        .filter(
+            payment=payment,
+            provider_refund_id__isnull=True,
+            amount_rub=amount,
+            status__in=[Refund.Status.CREATED, Refund.Status.PENDING],
+        )
+        .order_by("created_at")[:2]
+    )
+    if len(candidates) != 1:
+        return False
+
+    refund = candidates[0]
+    if refund.wallet_debited_at is None:
+        # Defensive legacy recovery only. New refund flows hold before provider POST.
+        debit_paid(payment.user, amount, "refund_recover", refund.id)
+        refund.wallet_debited_at = timezone.now()
+    refund.provider_refund_id = refund_id
+    refund.status = Refund.Status.SUCCEEDED
+    refund.provider_payload = remote
+    refund.save(
+        update_fields=[
+            "provider_refund_id",
+            "status",
+            "provider_payload",
+            "wallet_debited_at",
+            "updated_at",
+        ]
+    )
+    request = RefundRequest.objects.select_for_update().filter(refund=refund).first()
+    if request is not None:
+        request.status = RefundRequest.Status.SUCCEEDED
+        request.resolved_at = timezone.now()
+        request.save(update_fields=["status", "resolved_at", "updated_at"])
+    return True
+
+
 @transaction.atomic
 def register_unknown_succeeded_refund(payload, *, client):
-    """Materialize provider-side refunds created outside this application.
-
-    Returns True if an unknown refund for one of our payments was registered.
-    Known refunds and unrelated provider objects return False and continue through
-    the normal webhook path.
-    """
+    """Materialize or recover provider-side refunds unknown by provider id locally."""
     if not isinstance(payload, dict) or payload.get("event") != "refund.succeeded":
         return False
     object_data = payload.get("object") or {}
@@ -88,6 +128,37 @@ def register_unknown_succeeded_refund(payload, *, client):
     amount = _money(amount_data.get("value"))
     if amount <= 0 or amount_data.get("currency") != "RUB":
         raise ValidationError("Provider refund amount mismatch")
+
+    if _recover_timed_out_local_refund(
+        payment=payment,
+        refund_id=refund_id,
+        amount=amount,
+        remote=remote,
+    ):
+        return True
+
+    unresolved_same_amount = Refund.objects.filter(
+        payment=payment,
+        provider_refund_id__isnull=True,
+        amount_rub=amount,
+        status__in=[Refund.Status.CREATED, Refund.Status.PENDING],
+    ).count()
+    if unresolved_same_amount > 1:
+        # Multiple indistinguishable timed-out POSTs: never guess which wallet hold
+        # corresponds to this provider refund. Freeze spend and require manual review.
+        _freeze_user_spend(payment.user)
+        _notify_financial_incident(
+            payment=payment,
+            refund_id=refund_id,
+            amount=amount,
+            detail=(
+                f"ЮKassa подтвердила возврат {amount:.2f} ₽ по платежу {payment.id}, "
+                "но найдено несколько незавершённых локальных возвратов той же суммы. "
+                "Дополнительное списание не выполнено; нужна ручная сверка."
+            ),
+        )
+        return True
+
     successful_total = (
         payment.refunds.filter(status=Refund.Status.SUCCEEDED).aggregate(total=Sum("amount_rub"))[
             "total"
@@ -95,7 +166,17 @@ def register_unknown_succeeded_refund(payload, *, client):
         or Decimal("0")
     )
     if successful_total + amount > payment.amount_rub:
-        raise ValidationError("Provider refunds exceed original payment")
+        _freeze_user_spend(payment.user)
+        _notify_financial_incident(
+            payment=payment,
+            refund_id=refund_id,
+            amount=amount,
+            detail=(
+                f"Сумма подтверждённых возвратов YooKassa превышает исходный платёж {payment.id}. "
+                "Новые расходы пользователя заблокированы до ручной сверки."
+            ),
+        )
+        return True
 
     key = "external:" + hashlib.sha256(refund_id.encode()).hexdigest()[:55]
     refunded_at = timezone.now()
