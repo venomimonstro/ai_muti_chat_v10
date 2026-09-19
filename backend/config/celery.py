@@ -17,6 +17,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.recover_stale_operations_task",
         "schedule": 300.0,
     },
+    "reconcile-payments-refunds": {
+        "task": "apps.admin_ops.tasks.payment_reconciliation_task",
+        "schedule": 300.0,
+    },
     "economic-safety-watch": {
         "task": "apps.admin_ops.tasks.economic_safety_watch_task",
         "schedule": 300.0,
