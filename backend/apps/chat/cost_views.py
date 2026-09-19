@@ -39,6 +39,12 @@ def _serialize_preview(value):
         "confirmation_threshold_rub": str(value["confirmation_threshold_rub"]),
         "selected_model": value["selected_model"],
         "models": value["models"],
+        "spend_guard": {
+            key: (str(item) if isinstance(item, Decimal) else item)
+            for key, item in value.get("spend_guard", {}).items()
+        },
+        "blocked_by_spend_guard": value.get("blocked_by_spend_guard", False),
+        "spend_guard_message": value.get("spend_guard_message", ""),
     }
 
 
@@ -104,6 +110,19 @@ class ConfirmedConversationStreamView(APIView):
             )
         except (ValidationError, AIModel.DoesNotExist) as exc:
             raise APIValidationError({"detail": getattr(exc, "messages", [str(exc)])}) from exc
+
+        if preview.get("blocked_by_spend_guard"):
+            payload = _serialize_preview(preview)
+            payload.update(
+                {
+                    "code": "spend_safety_limit",
+                    "detail": preview.get("spend_guard_message") or (
+                        "Запрос превышает безопасный лимит расходов. Деньги не списаны."
+                    ),
+                }
+            )
+            return Response(payload, status=status.HTTP_409_CONFLICT)
+
         confirmed = request.data.get("confirm_cost") is True
         ceiling = _confirmed_ceiling(request) if confirmed else None
         if preview["confirmation_required"] and not confirmed:
