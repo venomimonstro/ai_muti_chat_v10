@@ -6,7 +6,7 @@ import styles from "./admin.module.css";
 
 export const metadata:Metadata={title:"AI Workspace — Панель администратора",robots:{index:false,follow:false}};
 
-type CurrentUser={role?:string;status?:string};
+type CurrentUser={role?:string;status?:string;is_staff?:boolean;is_superuser?:boolean};
 
 async function requirePlatformAdmin(){
   const cookieStore=await cookies();
@@ -17,6 +17,7 @@ async function requirePlatformAdmin(){
   const appDomain=process.env.APP_DOMAIN||"localhost";
   const publicSite=process.env.NEXT_PUBLIC_SITE_URL||"http://localhost";
   const forwardedProto=publicSite.startsWith("https://")?"https":"http";
+
   let response:Response;
   try{
     response=await fetch(`${base}/auth/me/`,{
@@ -32,7 +33,9 @@ async function requirePlatformAdmin(){
 
   const user=await response.json() as CurrentUser;
   if(user.status!=="active") redirect("/login?next=%2Fadmin-console");
-  if(user.role!=="platform_admin") redirect("/app");
+
+  const isAdmin=user.role==="platform_admin"||user.is_staff===true||user.is_superuser===true;
+  if(!isAdmin) redirect("/app");
 }
 
 export default async function AdminLayout({children}:{children:React.ReactNode}){
