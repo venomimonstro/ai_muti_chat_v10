@@ -333,3 +333,40 @@ class BillingReconciliationItem(models.Model):
 
     class Meta:
         ordering = ["entity_type", "entity_id"]
+
+
+class AdminBalanceAdjustment(models.Model):
+    class Direction(models.TextChoices):
+        CREDIT = "credit", "Начисление"
+        DEBIT = "debit", "Списание"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    wallet = models.ForeignKey(Wallet, on_delete=models.PROTECT, related_name="admin_adjustments")
+    admin = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="balance_adjustments_made",
+    )
+    direction = models.CharField(max_length=8, choices=Direction.choices)
+    amount_rub = models.DecimalField(max_digits=14, decimal_places=4)
+    comment = models.TextField()
+    ledger_entry = models.OneToOneField(
+        LedgerEntry,
+        on_delete=models.PROTECT,
+        related_name="admin_adjustment",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount_rub__gt=0), name="admin_adjustment_amount_positive"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError("Admin balance adjustments are immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Admin balance adjustments cannot be deleted")
