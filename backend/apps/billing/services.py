@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 
@@ -8,7 +9,7 @@ from django.utils import timezone
 
 from apps.accounts.services import enforce_spend_limits, notify_low_balance
 
-from .models import BalanceReservation, LedgerEntry, Wallet
+from .models import AdminBalanceAdjustment, BalanceReservation, LedgerEntry, Wallet
 
 MONEY_ZERO = Decimal("0.0000")
 
@@ -205,14 +206,6 @@ def settle(reservation_id, actual: Decimal):
 
 
 def _consume_generation_reservation_after_provider_delivery(reservation, wallet):
-    """Fail-safe for a provider response that cost more than our preflight reserve.
-
-    streaming.run records provider usage before its generic exception handler calls
-    release(). If a completed provider response exists with a zero customer charge,
-    returning the reservation would give the response away for free. Consume the
-    complete reserved amount instead; the customer can never be charged above what
-    was reserved.
-    """
     key = str(reservation.idempotency_key or "")
     if not key.startswith("generation:"):
         return False
@@ -232,9 +225,7 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
         )
         .first()
     )
-    if request_cost is None:
-        return False
-    if not (request_cost.input_tokens or request_cost.output_tokens):
+    if request_cost is None or not (request_cost.input_tokens or request_cost.output_tokens):
         return False
 
     actual = reservation.amount_rub
@@ -264,9 +255,6 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
     request_cost.save(
         update_fields=["charged_rub", "gross_profit_rub", "gross_margin_percent"]
     )
-    # The procurement post_save hook may already have materialized the spend using
-    # the temporary zero charge. Keep the immutable economic row synchronized as
-    # part of this same exceptional settlement path.
     ProviderSpend.objects.filter(
         source_type="chat",
         source_id=str(request_cost.id),
@@ -319,7 +307,6 @@ def release(reservation_id):
 
 
 def reconstruct(wallet):
-    """Rebuild cached wallet buckets only from immutable ledger deltas."""
     entries = wallet.entries.order_by("created_at", "id")
     available = sum((entry.available_delta_rub for entry in entries), MONEY_ZERO)
     reserved = sum((entry.reserved_delta_rub for entry in entries), MONEY_ZERO)
@@ -358,4 +345,61 @@ def debit_paid(user, amount: Decimal, source_type: str, source_id: str):
         source_type,
         source_id,
         key,
+    )
+
+
+@transaction.atomic
+def admin_adjust_balance(*, target_user, admin, direction, amount, comment):
+    amount = Decimal(str(amount)).quantize(Decimal("0.0001"))
+    comment = str(comment or "").strip()
+    if amount <= 0:
+        raise ValidationError("Сумма корректировки должна быть больше нуля")
+    if len(comment) < 3:
+        raise ValidationError("Для ручной корректировки обязателен комментарий")
+    if direction not in {AdminBalanceAdjustment.Direction.CREDIT, AdminBalanceAdjustment.Direction.DEBIT}:
+        raise ValidationError("Неизвестное направление корректировки")
+
+    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=target_user)
+    adjustment_id = uuid.uuid4()
+    if direction == AdminBalanceAdjustment.Direction.CREDIT:
+        # Administrative goodwill/compensation is promo by default and therefore
+        # cannot be cashed out through the paid-balance refund flow.
+        wallet.available_rub += amount
+        wallet.promo_rub += amount
+        available_delta = amount
+        paid_delta = MONEY_ZERO
+        promo_delta = amount
+    else:
+        if wallet.available_rub < amount:
+            raise ValidationError("Недостаточно доступного баланса для ручного списания")
+        promo_delta_abs = min(wallet.promo_rub, amount)
+        paid_delta_abs = amount - promo_delta_abs
+        wallet.available_rub -= amount
+        wallet.promo_rub -= promo_delta_abs
+        wallet.paid_rub -= paid_delta_abs
+        available_delta = -amount
+        paid_delta = -paid_delta_abs
+        promo_delta = -promo_delta_abs
+
+    wallet.save(update_fields=["available_rub", "paid_rub", "promo_rub", "updated_at"])
+    entry = _entry(
+        wallet,
+        LedgerEntry.Kind.ADJUSTMENT,
+        amount,
+        available_delta,
+        MONEY_ZERO,
+        paid_delta,
+        promo_delta,
+        "admin_adjustment",
+        adjustment_id,
+        f"admin-adjustment:{adjustment_id}",
+    )
+    return AdminBalanceAdjustment.objects.create(
+        id=adjustment_id,
+        wallet=wallet,
+        admin=admin,
+        direction=direction,
+        amount_rub=amount,
+        comment=comment,
+        ledger_entry=entry,
     )
