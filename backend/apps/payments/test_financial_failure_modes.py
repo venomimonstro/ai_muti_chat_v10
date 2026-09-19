@@ -6,6 +6,7 @@ from django.test import override_settings
 
 from apps.accounts.models import User
 
+from .external_refunds import register_unknown_succeeded_refund
 from .models import Payment, Refund, RefundRequest
 from .provider import PaymentProviderError
 from .services import (
@@ -63,6 +64,22 @@ class GoodRefundClient:
             "payment_id": payload["payment_id"],
             "status": self.status,
             "amount": payload["amount"],
+        }
+
+
+class RefundWebhookClient:
+    def __init__(self, *, payment_id, amount="40.00", refund_id="refund-webhook-after-timeout"):
+        self.payment_id = payment_id
+        self.amount = amount
+        self.refund_id = refund_id
+
+    def get_refund(self, refund_id):
+        assert refund_id == self.refund_id
+        return {
+            "id": refund_id,
+            "payment_id": self.payment_id,
+            "status": "succeeded",
+            "amount": {"value": self.amount, "currency": "RUB"},
         }
 
 
@@ -149,6 +166,43 @@ def test_direct_refund_timeout_keeps_wallet_hold_and_retry_does_not_debit_twice(
     user.wallet.refresh_from_db()
     assert user.wallet.paid_rub == Decimal("60.0000")
     assert Refund.objects.filter(payment=payment).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(PAYMENTS_ENABLED=True, PAYMENTS_LIVE_ENABLED=False)
+def test_refund_webhook_after_timeout_attaches_local_refund_without_second_wallet_debit():
+    user = User.objects.create_user(username="refund-webhook-timeout", email="refund-webhook-timeout@example.test")
+    payment = _paid_payment(user, suffix="refund-webhook-timeout")
+    with pytest.raises(PaymentProviderError):
+        create_refund(
+            payment=payment,
+            amount="40.00",
+            idempotency_key="webhook-timeout-key",
+            client=TimeoutRefundClient(),
+        )
+    user.wallet.refresh_from_db()
+    assert user.wallet.paid_rub == Decimal("60.0000")
+
+    provider_refund_id = "refund-webhook-after-timeout"
+    recovered = register_unknown_succeeded_refund(
+        {
+            "type": "notification",
+            "event": "refund.succeeded",
+            "object": {"id": provider_refund_id},
+        },
+        client=RefundWebhookClient(
+            payment_id=payment.provider_payment_id,
+            refund_id=provider_refund_id,
+        ),
+    )
+    assert recovered is True
+    refund = Refund.objects.get(payment=payment, idempotency_key="webhook-timeout-key")
+    assert refund.provider_refund_id == provider_refund_id
+    assert refund.status == Refund.Status.SUCCEEDED
+    assert Refund.objects.filter(payment=payment).count() == 1
+    user.wallet.refresh_from_db()
+    assert user.wallet.paid_rub == Decimal("60.0000")
+    assert user.wallet.available_rub == Decimal("60.0000")
 
 
 @pytest.mark.django_db(transaction=True)
