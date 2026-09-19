@@ -70,11 +70,11 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
-        NEXT_PUBLIC_SITE_URL: https://${APP_DOMAIN:?required}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?required}
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?required}
-      NEXT_PUBLIC_SITE_URL: https://${APP_DOMAIN:?required}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?required}
       LEGAL_NAME: ${LEGAL_NAME:-}
       LEGAL_TAX_ID: ${LEGAL_TAX_ID:-}
       LEGAL_ADDRESS: ${LEGAL_ADDRESS:-}
@@ -88,9 +88,11 @@ services:
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped
-    environment: {APP_DOMAIN: "${APP_DOMAIN:?required}", ACME_EMAIL: "${ACME_EMAIL:?required}"}
+    environment:
+      APP_DOMAIN: "${APP_DOMAIN:?required}"
+      ACME_EMAIL: "${ACME_EMAIL:-}"
     ports: ["80:80", "443:443", "443:443/udp"]
-    volumes: ["./deploy/Caddyfile:/etc/caddy/Caddyfile:ro", "static_data:/srv/static:ro", "caddy_data:/data", "caddy_config:/config"]
+    volumes: ["./deploy/${CADDY_CONFIG_FILE:-Caddyfile}:/etc/caddy/Caddyfile:ro", "static_data:/srv/static:ro", "caddy_data:/data", "caddy_config:/config"]
     depends_on: {backend: {condition: service_healthy}, frontend: {condition: service_healthy}}
     networks: [edge]
     logging: *default-logging
