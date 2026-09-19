@@ -51,6 +51,33 @@ def payment_reconciliation_task():
 
 
 @shared_task
+def official_pricing_sync_task():
+    """Refresh provider list prices and USD/RUB from official sources.
+
+    The sync fails closed: if an official page no longer confirms a configured
+    baseline price, no replacement PriceVersion is activated for that model.
+    """
+    from apps.procurement.official_pricing import sync_official_prices
+
+    result = sync_official_prices()
+    if result["rejected"] or result["expired"]:
+        bucket = timezone.now().strftime("%Y-%m-%d")
+        _notify_platform_admins(
+            dedupe_key=f"official-pricing-sync:{bucket}",
+            title="Проверьте официальные цены AI",
+            body=(
+                f"Подтверждено моделей: {len(result['verified'])}; "
+                f"не подтверждено: {len(result['rejected'])}; "
+                f"истёкших временных тарифов: {len(result['expired'])}. "
+                "Коммерческие цены требуют проверки."
+            ),
+            action_url="/admin-console/procurement",
+            level=Notification.Level.WARNING,
+        )
+    return result
+
+
+@shared_task
 def detect_abuse_task():
     output = io.StringIO()
     call_command("detect_abuse", stdout=output)
