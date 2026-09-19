@@ -30,10 +30,7 @@ def account_available_native(account):
 
 
 def account_weighted_unit_cost_rub(account):
-    aggregate = account.purchases.aggregate(
-        credit=Sum("credit_native"),
-        cash=Sum("total_cash_outlay_rub"),
-    )
+    aggregate = account.purchases.aggregate(credit=Sum("credit_native"), cash=Sum("total_cash_outlay_rub"))
     credit = aggregate["credit"] or ZERO
     cash = aggregate["cash"] or ZERO
     if credit <= ZERO:
@@ -108,11 +105,7 @@ def record_purchase(*, account, credit_native, base_cost_rub, fees_rub, purchase
 
 
 def default_account(provider):
-    return ProviderFundingAccount.objects.filter(
-        provider=provider,
-        active=True,
-        is_default=True,
-    ).first()
+    return ProviderFundingAccount.objects.filter(provider=provider, active=True, is_default=True).first()
 
 
 def credential_is_configured(account):
@@ -127,12 +120,7 @@ def reserve_provider_spend(*, provider, amount_native, source_key):
     existing = ProviderSpendReservation.objects.select_related("account").filter(source_key=source_key).first()
     if existing:
         return existing
-    account = (
-        ProviderFundingAccount.objects.select_for_update()
-        .filter(provider=provider, active=True, is_default=True)
-        .first()
-    )
-    # Dev/tests can run without procurement rows. The production launch gate requires them.
+    account = ProviderFundingAccount.objects.select_for_update().filter(provider=provider, active=True, is_default=True).first()
     if account is None:
         return None
     if account.credential_env != provider.credential_env:
@@ -143,11 +131,7 @@ def reserve_provider_spend(*, provider, amount_native, source_key):
         raise ValidationError("Закупленный баланс AI-провайдера исчерпан")
     account.reserved_native += amount
     account.save(update_fields=["reserved_native", "updated_at"])
-    return ProviderSpendReservation.objects.create(
-        account=account,
-        amount_native=amount,
-        source_key=source_key,
-    )
+    return ProviderSpendReservation.objects.create(account=account, amount_native=amount, source_key=source_key)
 
 
 @transaction.atomic
@@ -177,16 +161,14 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, so
     if existing:
         return existing
     if reservation.state != ProviderSpendReservation.State.ACTIVE:
-        raise ValidationError("Закупочный резерв уже закрыт")
+        return None
     actual = _d(actual_native).quantize(NATIVE_STEP, rounding=ROUND_UP)
     if actual < ZERO:
         raise ValidationError("Фактический расход провайдера не может быть отрицательным")
+    account = ProviderFundingAccount.objects.select_for_update().get(pk=reservation.account_id)
     if actual > reservation.amount_native:
         provider = reservation.account.provider
-        Provider.objects.filter(pk=provider.pk).update(
-            emergency_disabled=True,
-            health_state=Provider.HealthState.DISABLED,
-        )
+        Provider.objects.filter(pk=provider.pk).update(emergency_disabled=True, health_state=Provider.HealthState.DISABLED)
         CostAnomaly.objects.get_or_create(
             dedupe_key=f"provider-procurement-overrun:{source_type}:{source_id}",
             defaults={
@@ -200,11 +182,19 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, so
                     "reason": "provider_native_cost_exceeded_reserved_capacity",
                     "reserved_native": str(reservation.amount_native),
                     "actual_native": str(actual),
+                    "unallocated_native": str(actual),
                 },
             },
         )
-        raise ValidationError("Фактический расход провайдера превысил закупочный резерв; провайдер аварийно отключён")
-    account = ProviderFundingAccount.objects.select_for_update().get(pk=reservation.account_id)
+        # Release the bookkeeping reservation. RequestCost/APIUsage remains the authoritative
+        # evidence of the real provider cost; the critical anomaly makes this visible and the
+        # provider is disabled before another request can be routed to it.
+        account.reserved_native -= reservation.amount_native
+        account.save(update_fields=["reserved_native", "updated_at"])
+        reservation.state = ProviderSpendReservation.State.RELEASED
+        reservation.settled_at = timezone.now()
+        reservation.save(update_fields=["state", "settled_at"])
+        return None
     account.reserved_native -= reservation.amount_native
     account.spent_native += actual
     if account.spent_native + account.reserved_native > account.funded_native:
