@@ -10,6 +10,7 @@ const links=[
 ["Аналитика","/admin-console/analytics"],
 ["Пользователи","/admin-console/users"],
 ["Провайдеры и цены","/admin-console/providers"],
+["Закупки API и экономика","/admin-console/procurement"],
 ["Финансы","/admin-console/finance"],
 ["Платежи","/admin-console/payments"],
 ["Безопасность","/admin-console/security"],
