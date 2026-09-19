@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
@@ -21,6 +22,7 @@ from .serializers import (
     ReviewRefundRequestSerializer,
 )
 from .services import (
+    apply_payment_status,
     approve_refund_request,
     create_refund,
     create_topup,
@@ -29,11 +31,38 @@ from .services import (
 )
 
 
+def payment_readiness_payload():
+    blockers = []
+    if not settings.PAYMENTS_ENABLED:
+        blockers.append("Пополнение отключено в настройках сервера")
+    if not settings.YOOKASSA_SHOP_ID:
+        blockers.append("Не указан YOOKASSA_SHOP_ID")
+    if not settings.YOOKASSA_SECRET_KEY:
+        blockers.append("Не указан YOOKASSA_SECRET_KEY")
+    if settings.PAYMENTS_LIVE_ENABLED and settings.PAYMENTS_FISCALIZATION_MODE == "disabled":
+        blockers.append("Для боевых платежей не настроена фискализация")
+    return {
+        "ready": not blockers,
+        "enabled": settings.PAYMENTS_ENABLED,
+        "live_enabled": settings.PAYMENTS_LIVE_ENABLED,
+        "provider": "yookassa",
+        "credentials_configured": bool(settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY),
+        "fiscalization_mode": settings.PAYMENTS_FISCALIZATION_MODE,
+        "min_rub": str(settings.PAYMENT_MIN_RUB),
+        "max_rub": str(settings.PAYMENT_MAX_RUB),
+        "blockers": blockers,
+    }
+
+
 class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PaymentSerializer
 
     def get_queryset(self):
         return Payment.objects.filter(user=self.request.user).order_by("-created_at")
+
+    @action(detail=False, methods=["get"], url_path="readiness")
+    def readiness(self, request):
+        return Response(payment_readiness_payload())
 
     def create(self, request):
         serializer = CreatePaymentSerializer(data=request.data)
@@ -47,18 +76,41 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
             )
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        except PaymentProviderError:
+        except PaymentProviderError as exc:
             return Response(
                 {
                     "detail": (
-                        "Платёж сохранён, но ответ платёжного провайдера не подтверждён. "
+                        "Не удалось подтвердить создание платежа в YooKassa. "
                         "Повторите запрос с тем же Idempotency-Key: новый платёж создан не будет."
                     ),
                     "code": "payment_status_unknown",
+                    "provider_error": str(exc),
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         return Response(PaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="sync")
+    def sync(self, request, pk=None):
+        payment = get_object_or_404(Payment, pk=pk, user=request.user)
+        if not payment.provider_payment_id:
+            return Response(
+                {"detail": "Платёж ещё не связан с YooKassa", "code": "provider_payment_missing"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            client = YooKassaClient.from_settings()
+            remote = client.get_payment(payment.provider_payment_id)
+            apply_payment_status(payment.id, remote)
+        except ValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PaymentProviderError as exc:
+            return Response(
+                {"detail": "Не удалось получить актуальный статус YooKassa", "code": "provider_sync_failed", "provider_error": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        payment.refresh_from_db()
+        return Response(PaymentSerializer(payment).data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsPlatformAdmin])
     def refunds(self, request, pk=None):
@@ -176,6 +228,5 @@ class YooKassaWebhookView(APIView):
         except ValidationError:
             return Response(status=status.HTTP_400_BAD_REQUEST)
         except PaymentProviderError:
-            # Non-2xx intentionally asks YooKassa to retry notification delivery.
             return Response(status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(status=status.HTTP_200_OK)
