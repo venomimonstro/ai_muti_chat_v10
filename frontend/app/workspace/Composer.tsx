@@ -3,15 +3,18 @@
 import {KeyboardEvent,useEffect,useRef,useState} from "react";
 import {Icon} from "./Icons";
 
+const MAX_MESSAGE_CHARS=100000;
+
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools}:{value:string;setValue:(value:string)=>void;sending:boolean;offline:boolean;onSend:()=>void;onStop:()=>void;onOpenTools:()=>void}){
  const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);
+ const trimmed=value.trim();const tooLong=value.length>MAX_MESSAGE_CHARS;const nearLimit=value.length>90000;
  useEffect(()=>{const el=ref.current;if(!el)return;el.style.height="0px";el.style.height=`${Math.min(Math.max(el.scrollHeight,48),220)}px`;},[value]);
- useEffect(()=>{if(!sending)return;const timer=window.setTimeout(()=>setSlow(true),30000);return()=>window.clearTimeout(timer)},[sending]);
- const submit=()=>{setSlow(false);onSend()};
+ useEffect(()=>{if(!sending){setSlow(false);return;}const timer=window.setTimeout(()=>setSlow(true),30000);return()=>window.clearTimeout(timer)},[sending]);
+ const submit=()=>{if(!trimmed||tooLong||offline||sending)return;setSlow(false);onSend()};
  const stop=()=>{setSlow(false);onStop()};
- const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();if(!sending&&value.trim())submit();}};
- return <div className="composerZone"><div className={`composerShell ${focused?"focused":""}`}>
-   <textarea ref={ref} value={value} onChange={e=>setValue(e.target.value)} onFocus={()=>setFocused(true)} onBlur={()=>setFocused(false)} onKeyDown={key} placeholder="Спросите что-нибудь…" rows={1} aria-label="Сообщение"/>
-   <div className="composerBar"><div className="composerLeft"><button className="composerIcon" type="button" onClick={onOpenTools} aria-label="Добавить файл или инструмент" title="Добавить файл или инструмент"><Icon name="plus"/></button>{offline&&<span className="offlineChip">Нет сети · черновик сохранён</span>}{sending&&slow&&<span className="offlineChip">Ответ занимает больше времени, чем обычно</span>}</div>{sending?<button className="sendButton stop" type="button" onClick={stop} aria-label="Остановить ответ" title="Остановить ответ"><Icon name="stop"/></button>:<button className="sendButton" type="button" disabled={!value.trim()||offline} onClick={submit} aria-label="Отправить" title={offline?"Отправка станет доступна после восстановления сети":"Отправить"}><Icon name="send"/></button>}</div>
-  </div><div className="composerHint">AI может ошибаться. Важную информацию проверяйте.</div></div>;
+ const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();submit();}};
+ return <div className="composerZone"><div className={`composerShell ${focused?"focused":""} ${tooLong?"invalid":""}`}>
+   <textarea ref={ref} value={value} maxLength={MAX_MESSAGE_CHARS+5000} onChange={e=>setValue(e.target.value)} onFocus={()=>setFocused(true)} onBlur={()=>setFocused(false)} onKeyDown={key} placeholder="Спросите что-нибудь…" rows={1} aria-label="Сообщение" aria-invalid={tooLong}/>
+   <div className="composerBar"><div className="composerLeft"><button className="composerIcon" type="button" onClick={onOpenTools} aria-label="Добавить файл или инструмент" title="Добавить файл или инструмент"><Icon name="plus"/></button>{offline&&<span className="offlineChip">Нет сети · черновик сохранён</span>}{sending&&slow&&<span className="offlineChip">Ответ занимает больше времени, чем обычно</span>}{nearLimit&&<span className={`charCounter ${tooLong?"error":""}`}>{value.length.toLocaleString("ru-RU")} / {MAX_MESSAGE_CHARS.toLocaleString("ru-RU")}</span>}</div>{sending?<button className="sendButton stop" type="button" onClick={stop} aria-label="Остановить ответ" title="Остановить ответ"><Icon name="stop"/></button>:<button className="sendButton" type="button" disabled={!trimmed||offline||tooLong} onClick={submit} aria-label="Отправить" title={offline?"Отправка станет доступна после восстановления сети":tooLong?"Сообщение превышает лимит 100 000 символов":"Отправить"}><Icon name="send"/></button>}</div>
+  </div>{tooLong&&<div className="composerValidation" role="alert">Сократите сообщение до 100 000 символов. Текст сохранён как черновик.</div>}<div className="composerHint">AI может ошибаться. Важную информацию проверяйте.</div></div>;
 }
