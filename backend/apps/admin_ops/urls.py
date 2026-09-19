@@ -10,6 +10,7 @@ from .metrics_views import OperationalMetricsView
 from .pricing_views import PricingManagementView
 from .procurement_breakdown_views import ProcurementBreakdownView
 from .procurement_views import ProcurementEconomicsView
+from .promo_credit_views import AdminPromoCreditView
 from .provider_views import (
     ProviderCredentialView,
     ProviderDiscoveredModelsView,
@@ -22,7 +23,7 @@ from .safety_views import AdminConversationMessagesView, ChatSafetySearchView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView, SupportStatusReplyView
 from .system_views import SystemAnalysisView, SystemIssueActionView
-from .user_views import AdminPromoCreditView, AdminUserActionView, AdminUserDetailView
+from .user_views import AdminUserActionView, AdminUserDetailView
 from .views import (
     AuditView,
     BackupView,
