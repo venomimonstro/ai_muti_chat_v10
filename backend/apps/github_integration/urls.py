@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .flow_views import GitHubOAuthCallbackView, GitHubSetupView
+from .mutation_views import GitHubFileCreateView, GitHubFileDeleteView
 from .safety import github_guard
 from .views import (
     GitHubConnectView,
@@ -43,5 +44,15 @@ urlpatterns = [
         "projects/<uuid:project_id>/github/file/",
         github_guard(GitHubFileView.as_view(), protect_path=True),
         name="github-project-file",
+    ),
+    path(
+        "projects/<uuid:project_id>/github/file/create/",
+        github_guard(GitHubFileCreateView.as_view(), protect_path=True),
+        name="github-project-file-create",
+    ),
+    path(
+        "projects/<uuid:project_id>/github/file/delete/",
+        github_guard(GitHubFileDeleteView.as_view(), protect_path=True),
+        name="github-project-file-delete",
     ),
 ]
