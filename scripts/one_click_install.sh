@@ -7,6 +7,7 @@ TARGET_DIR="${AIWS_INSTALL_DIR:-/opt/ai-workspace}"
 SWAP_FILE="${AIWS_SWAP_FILE:-/swapfile-aiws}"
 SWAP_SIZE_GB="${AIWS_SWAP_SIZE_GB:-}"
 LOW_DISK_MODE=false
+SMALL_VPS_MODE=false
 
 fail(){ printf 'Ошибка bootstrap-установки: %s\n' "$1" >&2; exit 1; }
 trap 'printf "Bootstrap остановлен на строке %s. Уже скачанные данные не удалялись.\n" "$LINENO" >&2' ERR
@@ -43,18 +44,20 @@ memory_preflight(){
   printf 'Сервер: RAM %s МБ, swap %s МБ, свободно на диске %.1f ГБ.\n' "$((mem_kb/1024))" "$((swap_kb/1024))" "$(awk -v kb="$free_kb" 'BEGIN{printf "%.1f", kb/1024/1024}')"
   (( mem_kb >= 850000 )) || fail "слишком мало RAM ($((mem_kb/1024)) МБ). Нужен сервер примерно от 1 ГБ RAM"
 
+  if (( mem_kb < 3000000 )); then
+    SMALL_VPS_MODE=true
+    printf 'SMALL-VPS режим: сервер меньше 3 ГБ RAM; используем 1 Uvicorn worker, 1 Celery worker и последовательную сборку.\n'
+  fi
+
   if [[ -z "${SWAP_SIZE_GB}" ]]; then
     if (( total_kb < 16777216 )); then SWAP_SIZE_GB=2; else SWAP_SIZE_GB=4; fi
   fi
   [[ "${SWAP_SIZE_GB}" =~ ^[1-9][0-9]*$ ]] || fail "AIWS_SWAP_SIZE_GB должен быть целым числом"
 
-  # На маленьком VPS 4 ГБ swap может занять половину системного диска. Если этот
-  # bootstrap ранее создал /swapfile-aiws 4 ГБ, а диск тесный, уменьшаем только
-  # наш управляемый swap до 2 ГБ. Чужие swap-файлы не трогаем.
   if [[ -f "${SWAP_FILE}" ]]; then
     current_managed_swap_kb="$(du -k "${SWAP_FILE}" 2>/dev/null | awk '{print $1}' || echo 0)"
   fi
-  if (( mem_kb < 1600000 && free_kb < 6291456 && current_managed_swap_kb > 2621440 )); then
+  if (( mem_kb < 3000000 && free_kb < 10485760 && current_managed_swap_kb > 2621440 )); then
     printf 'LOW-DISK: уменьшаем управляемый swap с %.1f ГБ до 2 ГБ, чтобы освободить место для Docker-образов.\n' "$(awk -v kb="$current_managed_swap_kb" 'BEGIN{printf "%.1f", kb/1024/1024}')"
     swapoff "${SWAP_FILE}" 2>/dev/null || true
     create_swap 2
@@ -71,11 +74,13 @@ memory_preflight(){
     free_kb="$(df -Pk / | awk 'NR==2{print $4}')"
   fi
 
-  if (( free_kb < 6291456 )); then
+  # Универсальный install.sh исторически требует 10 ГБ. Всё, что ниже 10 ГБ,
+  # заранее отправляем в compact/LOW-DISK path, а не ждём ошибку внутри installer.
+  if (( free_kb < 10485760 )); then
     LOW_DISK_MODE=true
     printf 'LOW-DISK режим: свободно %.1f ГБ. Используем компактную сборку и очистку временного cache.\n' "$(awk -v kb="$free_kb" 'BEGIN{printf "%.1f", kb/1024/1024}')"
   fi
-  (( free_kb >= 4194304 )) || fail "после настройки swap осталось меньше 4 ГБ свободного диска. Этого недостаточно даже для компактной production-сборки"
+  (( free_kb >= 3355443 )) || fail "после настройки swap осталось меньше примерно 3.2 ГБ свободного диска. Для production-сборки нужен больший диск"
 }
 
 memory_preflight
@@ -115,20 +120,19 @@ fi
 [[ -f "${TARGET_DIR}/docker-compose.prod.yml" ]] || fail "docker-compose.prod.yml отсутствует после checkout"
 bash -n "${TARGET_DIR}/install.sh" || fail "install.sh содержит синтаксическую ошибку"
 
-# На маленьком диске запускаем временную копию installer с более реалистичным
-# preflight. Сам tracked install.sh не меняется; production-конфигурация остаётся той же.
 INSTALL_ENTRY="${TARGET_DIR}/install.sh"
-if [[ "${LOW_DISK_MODE}" == true ]]; then
+if [[ "${SMALL_VPS_MODE}" == true ]]; then
+  [[ -f "${TARGET_DIR}/scripts/install_small_vps.sh" ]] || fail "scripts/install_small_vps.sh отсутствует"
+  INSTALL_ENTRY="${TARGET_DIR}/scripts/install_small_vps.sh"
+elif [[ "${LOW_DISK_MODE}" == true ]]; then
   INSTALL_ENTRY="${TARGET_DIR}/.install-low-disk-runtime.sh"
   sed \
-    -e 's/if (( disk_kb < 10000000 )); then/if (( disk_kb < 4194304 )); then/' \
-    -e 's/нужно минимум около 10 ГБ свободного диска/нужно минимум около 4 ГБ свободного диска в LOW-DISK режиме/' \
+    -e 's/if (( disk_kb < 10000000 )); then/if (( disk_kb < 3355443 )); then/' \
+    -e 's/нужно минимум около 10 ГБ свободного диска/нужно минимум около 3.2 ГБ свободного диска в LOW-DISK режиме/' \
     "${TARGET_DIR}/install.sh" >"${INSTALL_ENTRY}"
   chmod 700 "${INSTALL_ENTRY}"
 fi
 
-# На незавершённой установке без пользовательских контейнеров безопасно очищаем
-# только build cache/dangling layers. Volumes, базы и именованные images не удаляем.
 if [[ "${LOW_DISK_MODE}" == true ]] && command -v docker >/dev/null 2>&1; then
   if [[ -z "$(docker ps -q 2>/dev/null)" ]]; then
     docker builder prune -af >/dev/null 2>&1 || true
