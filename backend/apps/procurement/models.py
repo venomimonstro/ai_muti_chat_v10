@@ -196,3 +196,34 @@ class ProviderSpend(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Историю расхода провайдера нельзя удалять")
+
+
+class RetailTokenPriceVersion(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    model_slug = models.SlugField(max_length=160, db_index=True)
+    input_rub_per_million = models.DecimalField(max_digits=18, decimal_places=4)
+    output_rub_per_million = models.DecimalField(max_digits=18, decimal_places=4)
+    active = models.BooleanField(default=True)
+    effective_from = models.DateTimeField(db_index=True)
+    reason = models.CharField(max_length=300, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="retail_token_price_versions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["model_slug", "-effective_from", "-created_at"]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(input_rub_per_million__gt=0), name="retail_input_price_positive"),
+            models.CheckConstraint(condition=models.Q(output_rub_per_million__gt=0), name="retail_output_price_positive"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError("Продажная цена неизменяема; создайте новую версию")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Историю продажных цен нельзя удалять")
