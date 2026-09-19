@@ -1,4 +1,7 @@
+from decimal import Decimal, InvalidOperation
+
 from django.contrib.sessions.models import Session
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.response import Response
@@ -7,7 +10,8 @@ from rest_framework.views import APIView
 from apps.accounts.models import SupportRequest, User
 from apps.admin_ops.permissions import IsPlatformAdmin
 from apps.b2b_api.models import APIKey, OrganizationMembership
-from apps.billing.models import Wallet
+from apps.billing.models import AdminBalanceAdjustment, Wallet
+from apps.billing.services import admin_adjust_balance
 from apps.chat.models import Generation
 from apps.payments.models import Payment
 
@@ -45,6 +49,11 @@ class AdminUserDetailView(APIView):
                     if wallet
                     else None
                 ),
+                "balance_adjustments": list(
+                    AdminBalanceAdjustment.objects.filter(wallet=wallet)
+                    .select_related("admin")
+                    .values("id", "direction", "amount_rub", "comment", "admin_id", "created_at")[:50]
+                ) if wallet else [],
                 "payments": list(
                     Payment.objects.filter(user=user)
                     .order_by("-created_at")
@@ -82,9 +91,10 @@ class AdminUserActionView(APIView):
         user = User.objects.select_for_update().filter(pk=user_id).first()
         if user is None:
             return Response({"detail": "User not found"}, status=404)
-        if user.id == request.user.id and request.data.get("action") == "block":
-            return Response({"detail": "Cannot block current administrator"}, status=409)
         action = str(request.data.get("action", ""))
+        if user.id == request.user.id and action == "block":
+            return Response({"detail": "Cannot block current administrator"}, status=409)
+
         if action == "block":
             user.status = User.Status.BLOCKED
             user.save(update_fields=["status"])
@@ -97,6 +107,42 @@ class AdminUserActionView(APIView):
             user.save(update_fields=["status"])
         elif action == "logout_all":
             self._revoke_sessions(user)
+        elif action in {"balance_credit", "balance_debit"}:
+            try:
+                amount = Decimal(str(request.data.get("amount_rub", "")))
+            except (InvalidOperation, TypeError, ValueError):
+                return Response({"detail": "Некорректная сумма"}, status=400)
+            direction = (
+                AdminBalanceAdjustment.Direction.CREDIT
+                if action == "balance_credit"
+                else AdminBalanceAdjustment.Direction.DEBIT
+            )
+            try:
+                adjustment = admin_adjust_balance(
+                    target_user=user,
+                    admin=request.user,
+                    direction=direction,
+                    amount=amount,
+                    comment=request.data.get("comment", ""),
+                )
+            except ValidationError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            audit(
+                request,
+                f"user.{action}",
+                "user",
+                user.id,
+                {"adjustment_id": str(adjustment.id), "amount_rub": str(adjustment.amount_rub), "comment": adjustment.comment},
+            )
+            return Response(
+                {
+                    "id": user.id,
+                    "action": action,
+                    "adjustment_id": adjustment.id,
+                    "amount_rub": adjustment.amount_rub,
+                    "direction": adjustment.direction,
+                }
+            )
         else:
             return Response({"detail": "Unsupported action"}, status=400)
         audit(request, f"user.{action}", "user", user.id, {"reason": request.data.get("reason", "")})
