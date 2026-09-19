@@ -10,6 +10,7 @@ from apps.admin_ops.permissions import IsPlatformAdmin
 from .external_refunds import register_unknown_succeeded_refund
 from .models import Payment, RefundRequest
 from .provider import PaymentProviderError, YooKassaClient
+from .refund_request_idempotency import create_refund_request_idempotent
 from .serializers import (
     CreatePaymentSerializer,
     CreateRefundRequestSerializer,
@@ -22,7 +23,6 @@ from .serializers import (
 from .services import (
     approve_refund_request,
     create_refund,
-    create_refund_request,
     create_topup,
     process_webhook,
     reject_refund_request,
@@ -107,12 +107,14 @@ class RefundRequestViewSet(viewsets.ModelViewSet):
             pk=serializer.validated_data["payment_id"],
             user=request.user,
         )
+        key = request.headers.get("Idempotency-Key", "")
         try:
-            refund_request = create_refund_request(
+            refund_request = create_refund_request_idempotent(
                 user=request.user,
                 payment=payment,
                 amount=serializer.validated_data["amount_rub"],
                 reason=serializer.validated_data.get("reason", ""),
+                idempotency_key=key,
             )
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
