@@ -117,6 +117,9 @@ class AdminUserActionView(APIView):
                 if action == "balance_credit"
                 else AdminBalanceAdjustment.Direction.DEBIT
             )
+            idempotency_key = str(request.headers.get("Idempotency-Key", "")).strip()
+            if not idempotency_key or len(idempotency_key) > 120:
+                return Response({"detail": "Корректный Idempotency-Key обязателен"}, status=400)
             try:
                 adjustment = admin_adjust_balance(
                     target_user=user,
@@ -124,6 +127,7 @@ class AdminUserActionView(APIView):
                     direction=direction,
                     amount=amount,
                     comment=request.data.get("comment", ""),
+                    idempotency_key=idempotency_key,
                 )
             except ValidationError as exc:
                 return Response({"detail": str(exc)}, status=400)
@@ -132,7 +136,12 @@ class AdminUserActionView(APIView):
                 f"user.{action}",
                 "user",
                 user.id,
-                {"adjustment_id": str(adjustment.id), "amount_rub": str(adjustment.amount_rub), "comment": adjustment.comment},
+                {
+                    "adjustment_id": str(adjustment.id),
+                    "amount_rub": str(adjustment.amount_rub),
+                    "comment": adjustment.comment,
+                    "idempotency_key": idempotency_key,
+                },
             )
             return Response(
                 {
