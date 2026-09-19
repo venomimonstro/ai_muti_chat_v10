@@ -55,7 +55,7 @@ def _ensure(*, provider, expected_rub, snapshot, source_key):
     return reserve_provider_spend(provider=provider, amount_native=native, source_key=source_key)
 
 
-def _settle(*, reservation, provider_cost_rub, snapshot, source_type, source_id, model_slug, provider_request_id="", input_tokens=0, output_tokens=0):
+def _settle(*, reservation, provider_cost_rub, customer_charge_rub, snapshot, source_type, source_id, model_slug, provider_request_id="", input_tokens=0, output_tokens=0):
     if reservation is None:
         return None
     fx = _fx(snapshot)
@@ -67,6 +67,7 @@ def _settle(*, reservation, provider_cost_rub, snapshot, source_type, source_id,
         reservation_id=reservation.id,
         actual_native=native,
         nominal_cost_rub=_decimal(provider_cost_rub),
+        customer_charge_rub=_decimal(customer_charge_rub),
         source_type=source_type,
         source_id=source_id,
         model_slug=model_slug,
@@ -99,6 +100,7 @@ def request_cost_procurement(sender, instance, **kwargs):
     _settle(
         reservation=reservation,
         provider_cost_rub=instance.provider_cost_rub,
+        customer_charge_rub=instance.charged_rub or ZERO,
         snapshot=instance.pricing_snapshot,
         source_type="chat",
         source_id=str(instance.id),
@@ -131,6 +133,7 @@ def api_usage_procurement(sender, instance, **kwargs):
         _settle(
             reservation=reservation,
             provider_cost_rub=instance.provider_cost_rub,
+            customer_charge_rub=instance.charged_rub,
             snapshot=instance.pricing_snapshot,
             source_type="b2b",
             source_id=str(instance.id),
@@ -165,6 +168,7 @@ def image_generation_procurement(sender, instance, **kwargs):
         _settle(
             reservation=reservation,
             provider_cost_rub=instance.provider_cost_rub or ZERO,
+            customer_charge_rub=instance.actual_cost_rub or ZERO,
             snapshot=instance.price_snapshot,
             source_type="image",
             source_id=str(instance.id),
@@ -197,6 +201,7 @@ def compare_variant_procurement(sender, instance, **kwargs):
         _settle(
             reservation=reservation,
             provider_cost_rub=instance.provider_cost_rub,
+            customer_charge_rub=instance.actual_cost_rub,
             snapshot=instance.pricing_snapshot,
             source_type="compare",
             source_id=str(instance.id),
