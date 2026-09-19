@@ -14,6 +14,11 @@ from apps.ai_registry.token_estimator import estimate_text_tokens
 from apps.billing.models import CostAnomaly
 from apps.billing.pricing import active_price, calculate_from_snapshot, quote, require_margin
 from apps.billing.services import release, reserve, settle
+from apps.procurement.services import (
+    release_provider_spend,
+    reserve_provider_spend,
+    settle_provider_spend,
+)
 from apps.workspace_search.embeddings import index_message
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
@@ -283,13 +288,20 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
     if expected.user_charge_rub >= Decimal(settings.COMPARE_CONFIRM_THRESHOLD_RUB) and not confirmed:
         raise ValidationError("Подтвердите ожидаемую стоимость синтеза")
     reservation = reserve(user, expected.user_charge_rub, f"compare-synthesis:{compare_run.id}")
+    provider_reservation = None
+    if expected.fx_snapshot and expected.fx_snapshot.rate > 0:
+        provider_reservation = reserve_provider_spend(
+            provider=model.provider,
+            amount_native=expected.provider_cost_rub / expected.fx_snapshot.rate,
+            source_key=f"compare-synthesis:{compare_run.id}",
+        )
     compare_run.synthesis_reservation_id = reservation.id
     compare_run.synthesis_model_slug = model.slug
     compare_run.synthesis_pricing_snapshot = expected.pricing_snapshot
     compare_run.save(update_fields=["synthesis_reservation_id", "synthesis_model_slug", "synthesis_pricing_snapshot"])
     try:
         output, usage, _latency = _provider_call(model, [{"role": "user", "content": prompt}])
-        _provider_cost, charge, _profit, _margin = calculate_from_snapshot(
+        provider_cost, charge, _profit, _margin = calculate_from_snapshot(
             price, usage.input_tokens, usage.output_tokens, expected.pricing_snapshot
         )
         if charge > expected.user_charge_rub:
@@ -301,11 +313,26 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
                 operation="compare_synthesis",
             )
             raise ValidationError("Фактическая стоимость синтеза превысила зарезервированный максимум")
+        if provider_reservation is not None:
+            fx_rate = Decimal(expected.pricing_snapshot["fx_rate"])
+            settle_provider_spend(
+                reservation_id=provider_reservation.id,
+                actual_native=provider_cost / fx_rate,
+                nominal_cost_rub=provider_cost,
+                source_type="compare_synthesis",
+                source_id=str(compare_run.id),
+                model_slug=model.slug,
+                provider_request_id=usage.provider_request_id,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
         settle(reservation.id, charge)
         compare_run.synthesis_output = output
         compare_run.synthesis_cost_rub = charge
         compare_run.save(update_fields=["synthesis_output", "synthesis_cost_rub"])
     except Exception:
+        if provider_reservation is not None:
+            release_provider_spend(provider_reservation.id)
         release(reservation.id)
         raise
     return compare_run
