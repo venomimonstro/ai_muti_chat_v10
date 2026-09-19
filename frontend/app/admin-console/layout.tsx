@@ -8,34 +8,33 @@ export const metadata:Metadata={title:"AI Workspace — Панель админ�
 
 type CurrentUser={role?:string;status?:string;is_staff?:boolean;is_superuser?:boolean};
 
+function isPlatformAdmin(user:CurrentUser){
+  return user.role==="platform_admin"||user.is_staff===true||user.is_superuser===true;
+}
+
 async function requirePlatformAdmin(){
   const cookieStore=await cookies();
   const cookieHeader=cookieStore.toString();
   if(!cookieHeader) redirect("/login?next=%2Fadmin-console");
 
   const base=process.env.INTERNAL_API_URL||"http://backend:8000/api/v1";
-  const appDomain=process.env.APP_DOMAIN||"localhost";
-  const publicSite=process.env.NEXT_PUBLIC_SITE_URL||"http://localhost";
-  const forwardedProto=publicSite.startsWith("https://")?"https":"http";
-
   let response:Response;
   try{
     response=await fetch(`${base}/auth/me/`,{
-      headers:{Cookie:cookieHeader,Host:appDomain,"X-Forwarded-Proto":forwardedProto},
+      headers:{Cookie:cookieHeader},
       cache:"no-store",
+      signal:AbortSignal.timeout(5000),
     });
   }catch{
-    redirect("/login?next=%2Fadmin-console");
+    redirect("/login?next=%2Fadmin-console&error=session_check");
   }
 
   if(response.status===401||response.status===403) redirect("/login?next=%2Fadmin-console");
-  if(!response.ok) redirect("/login?next=%2Fadmin-console");
+  if(!response.ok) redirect(`/login?next=%2Fadmin-console&error=admin_check_${response.status}`);
 
   const user=await response.json() as CurrentUser;
-  if(user.status!=="active") redirect("/login?next=%2Fadmin-console");
-
-  const isAdmin=user.role==="platform_admin"||user.is_staff===true||user.is_superuser===true;
-  if(!isAdmin) redirect("/app");
+  if(user.status!=="active") redirect("/login?next=%2Fadmin-console&error=inactive");
+  if(!isPlatformAdmin(user)) redirect("/app");
 }
 
 export default async function AdminLayout({children}:{children:React.ReactNode}){
