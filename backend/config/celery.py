@@ -25,6 +25,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.economic_safety_watch_task",
         "schedule": 300.0,
     },
+    "official-ai-pricing-daily": {
+        "task": "apps.admin_ops.tasks.official_pricing_sync_task",
+        "schedule": 86400.0,
+    },
     "detect-abuse-hourly": {
         "task": "apps.admin_ops.tasks.detect_abuse_task",
         "schedule": 3600.0,
@@ -49,5 +53,4 @@ def capture_task_failure(sender=None, task_id=None, exception=None, **_kwargs):
             exc=exception,
         )
     except Exception:
-        # Ошибка диагностического контура не должна ломать Celery worker.
         return
