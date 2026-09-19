@@ -92,7 +92,22 @@ services:
       LEGAL_ADDRESS: ${LEGAL_ADDRESS:-}
       LEGAL_CONTACT_EMAIL: ${LEGAL_CONTACT_EMAIL:-}
       LEGAL_EFFECTIVE_DATE: ${LEGAL_EFFECTIVE_DATE:-}
-    healthcheck: {test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/status').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"], interval: 15s, timeout: 5s, retries: 10}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          const net=require('net');
+          const socket=net.createConnection({host:'127.0.0.1',port:3000});
+          const done=(code)=>{try{socket.destroy()}catch{};process.exit(code)};
+          socket.setTimeout(3000,()=>done(1));
+          socket.on('connect',()=>done(0));
+          socket.on('error',()=>done(1));
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     depends_on: {backend: {condition: service_healthy}}
     networks: [edge]
     init: true
