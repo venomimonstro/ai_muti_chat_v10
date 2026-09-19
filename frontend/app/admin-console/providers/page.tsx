@@ -1,52 +1,136 @@
 "use client";
 
-import {FormEvent,useEffect,useMemo,useState} from "react";
+import Link from "next/link";
+import {useEffect,useMemo,useState} from "react";
 import {api} from "../../../lib/api";
 import styles from "../admin.module.css";
 
 type Model={id:string;slug:string;enabled:boolean;current_version:string|null};
 type Provider={id:string;slug:string;name:string;enabled:boolean;emergency_disabled:boolean;health_state:string;last_latency_ms:number|null;models:Model[]};
-type ActivePrice={id:string;model:string;currency:string;input_price_per_million:string|null;output_price_per_million:string|null;input_rub_per_million:string;output_rub_per_million:string;markup_percent:string;effective_from:string};
-type MarkupRule={id:string;scope_type:string;scope_key:string;markup_percent:string|null;price_multiplier:string;effective_from:string};
-type Pricing={margin_policy:{minimum_gross_margin_percent:string;anomaly_cost_deviation_percent:string}|null;active_prices:ActivePrice[];markup_rules:MarkupRule[];open_anomalies:{id:string;kind:string;severity:string;model:string;provider:string;expected_rub:string|null;actual_rub:string|null;created_at:string}[]};
+type Credential={slug:string;name:string;adapter_type:string;api_base_url:string;credential_env:string;credential_configured:boolean;credential_source:"database"|"environment"|"none";health_state:string;last_checked_at:string|null;last_latency_ms:number|null};
+type SetupModel={slug:string;enabled:boolean;upstream_model:string;has_active_version:boolean;has_active_price:boolean};
+type SetupProvider={slug:string;models:SetupModel[]};
+type Setup={providers:SetupProvider[]};
+type HealthResult={healthy:boolean;latency_ms:number|null;error_code:string};
 
-const healthLabel:Record<string,string>={healthy:"Работает",unknown:"Не проверен",degraded:"Нестабилен",open:"Автоматически отключён",disabled:"Отключён"};
-const severityLabel:Record<string,string>={info:"Информация",warning:"Предупреждение",critical:"Критическая"};
-const scopeLabel:Record<string,string>={global:"Все запросы",provider:"Провайдер",model:"Модель",operation:"Тип операции",organization:"Организация",contract:"Договор"};
-const operationOptions=[
- {value:"chat",label:"Обычный чат"},
- {value:"compare",label:"Сравнение моделей"},
- {value:"compare_synthesis",label:"Итог Compare"},
- {value:"image",label:"Изображения"},
- {value:"b2b_api",label:"B2B API"},
-];
+const healthLabel:Record<string,string>={healthy:"Работает",unknown:"Не проверен",degraded:"Ошибка связи",open:"Автоматически отключён",disabled:"Отключён"};
+const sourceLabel:Record<string,string>={database:"сохранён в панели",environment:"из .env сервера",none:"не настроен"};
 
 export default function ProvidersAdmin(){
  const[providers,setProviders]=useState<Provider[]>([]);
- const[pricing,setPricing]=useState<Pricing|null>(null);
+ const[credentials,setCredentials]=useState<Record<string,Credential>>({});
+ const[setup,setSetup]=useState<Record<string,SetupProvider>>({});
+ const[keyDraft,setKeyDraft]=useState<Record<string,string>>({});
+ const[baseDraft,setBaseDraft]=useState<Record<string,string>>({});
+ const[modelDraft,setModelDraft]=useState<Record<string,string>>({});
+ const[busy,setBusy]=useState("");
  const[error,setError]=useState("");
  const[notice,setNotice]=useState("");
- const[busy,setBusy]=useState("");
- const[markupScope,setMarkupScope]=useState("global");
- const modelOptions=useMemo(()=>providers.flatMap(provider=>provider.models.map(model=>({slug:model.slug,label:`${provider.name} · ${model.slug}`}))),[providers]);
- const load=async()=>{try{const[p,r]=await Promise.all([api<Provider[]>("/admin/providers/"),api<Pricing>("/admin/pricing/")]);setProviders(p);setPricing(r);setError("");}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось загрузить конфигурацию");}};
+
+ const load=async()=>{
+  try{
+   const[p,s]=await Promise.all([api<Provider[]>("/admin/providers/"),api<Setup>("/admin/commercial-setup/")]);
+   const configs=await Promise.all(p.map(item=>api<Credential>(`/admin/providers/${item.slug}/credentials/`)));
+   setProviders(p);
+   setCredentials(Object.fromEntries(configs.map(item=>[item.slug,item])));
+   setSetup(Object.fromEntries(s.providers.map(item=>[item.slug,item])));
+   setBaseDraft(current=>{const next={...current};for(const item of configs)if(next[item.slug]===undefined)next[item.slug]=item.api_base_url||"";return next;});
+   setModelDraft(current=>{const next={...current};for(const provider of s.providers)for(const model of provider.models)if(next[model.slug]===undefined)next[model.slug]=model.upstream_model||"";return next;});
+   setError("");
+  }catch(reason){setError(reason instanceof Error?reason.message:"Не удалось загрузить провайдеров");}
+ };
  useEffect(()=>{void load();},[]);
- const bulk=async(target:"providers"|"models",action:string,ids:string[])=>{setBusy(`${target}:${ids.join(",")}`);setError("");setNotice("");try{await api("/admin/providers/bulk-action/",{method:"POST",body:JSON.stringify({target,action,ids})});await load();}catch(reason){setError(reason instanceof Error?reason.message:"Операция не выполнена");}finally{setBusy("");}};
- const health=async(slug:string)=>{setBusy(slug);setError("");try{await api(`/admin/commercial-setup/providers/${slug}/health/`,{method:"POST",body:"{}"});}catch(reason){setError(reason instanceof Error?reason.message:"Проверка провайдера завершилась ошибкой");}finally{await load();setBusy("");}};
- const addPrice=async(e:FormEvent<HTMLFormElement>)=>{e.preventDefault();const form=e.currentTarget;const data=new FormData(form);setBusy("price");setError("");setNotice("");try{await api("/admin/pricing/",{method:"POST",body:JSON.stringify({model:data.get("model"),input_rub_per_million:data.get("input"),output_rub_per_million:data.get("output"),markup_percent:data.get("base_markup"),effective_from:data.get("effective")||""})});form.reset();setNotice("Новая версия себестоимости создана. Старые версии сохранены для воспроизводимости прошлых списаний.");await load();}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось создать версию цены");}finally{setBusy("");}};
- const addMarkup=async(e:FormEvent<HTMLFormElement>)=>{e.preventDefault();const form=e.currentTarget;const data=new FormData(form);setBusy("markup");setError("");setNotice("");try{await api("/admin/pricing/",{method:"POST",body:JSON.stringify({kind:"markup_rule",scope_type:markupScope,scope_key:markupScope==="global"?"":data.get("scope_key"),markup_percent:data.get("markup"),price_multiplier:data.get("multiplier"),effective_from:data.get("effective")||"",reason:data.get("reason")})});form.reset();setNotice("Новое правило наценки создано. Оно будет применяться к новым запросам с указанной даты.");await load();}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось создать правило наценки");}finally{setBusy("");}};
- const ruleKeyInput=markupScope==="provider"?<select name="scope_key" required defaultValue=""><option value="" disabled>Выберите провайдера</option>{providers.map(item=><option key={item.slug} value={item.slug}>{item.name} · {item.slug}</option>)}</select>:markupScope==="model"?<select name="scope_key" required defaultValue=""><option value="" disabled>Выберите модель</option>{modelOptions.map(item=><option key={item.slug} value={item.slug}>{item.label}</option>)}</select>:markupScope==="operation"?<select name="scope_key" required defaultValue=""><option value="" disabled>Выберите операцию</option>{operationOptions.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select>:null;
+
+ const configuredCount=useMemo(()=>Object.values(credentials).filter(item=>item.credential_configured).length,[credentials]);
+ const healthyCount=useMemo(()=>providers.filter(item=>item.health_state==="healthy").length,[providers]);
+
+ const saveCredential=async(slug:string)=>{
+  setBusy(`credential:${slug}`);setError("");setNotice("");
+  try{
+   const result=await api<Credential>(`/admin/providers/${slug}/credentials/`,{method:"PATCH",body:JSON.stringify({api_key:(keyDraft[slug]||"").trim(),api_base_url:(baseDraft[slug]||"").trim()})});
+   setCredentials(current=>({...current,[slug]:result}));
+   setKeyDraft(current=>({...current,[slug]:""}));
+   setNotice(`${result.name}: настройки сохранены. Теперь нажмите «Проверить подключение».`);
+   await load();
+  }catch(reason){setError(reason instanceof Error?reason.message:"Не удалось сохранить API-ключ");}
+  finally{setBusy("");}
+ };
+
+ const clearCredential=async(slug:string)=>{
+  if(!window.confirm("Удалить сохранённый API-ключ этого провайдера?"))return;
+  setBusy(`credential:${slug}`);setError("");setNotice("");
+  try{await api(`/admin/providers/${slug}/credentials/`,{method:"PATCH",body:JSON.stringify({clear_api_key:true})});setKeyDraft(current=>({...current,[slug]:""}));setNotice("API-ключ удалён.");await load();}
+  catch(reason){setError(reason instanceof Error?reason.message:"Не удалось удалить API-ключ");}
+  finally{setBusy("");}
+ };
+
+ const testConnection=async(slug:string)=>{
+  setBusy(`health:${slug}`);setError("");setNotice("");
+  try{
+   const result=await api<HealthResult>(`/admin/commercial-setup/providers/${slug}/health/`,{method:"POST",body:"{}"});
+   if(result.healthy)setNotice(`${credentials[slug]?.name||slug}: подключение работает${result.latency_ms!=null?` · ${result.latency_ms} мс`:""}.`);
+   else setError(`${credentials[slug]?.name||slug}: API недоступен. Код: ${result.error_code||"provider_error"}. Проверьте ключ и API URL.`);
+   await load();
+  }catch(reason){setError(reason instanceof Error?reason.message:"Не удалось выполнить проверку API");}
+  finally{setBusy("");}
+ };
+
+ const saveModel=async(providerSlug:string,model:Model)=>{
+  const upstream=(modelDraft[model.slug]||"").trim();
+  if(!upstream){setError("Укажите точный ID модели у провайдера");return;}
+  setBusy(`model:${model.id}`);setError("");setNotice("");
+  try{await api(`/admin/providers/${providerSlug}/models/${model.id}/`,{method:"PATCH",body:JSON.stringify({upstream_model:upstream})});setNotice(`${model.slug}: ID модели сохранён и создана активная версия.`);await load();}
+  catch(reason){setError(reason instanceof Error?reason.message:"Не удалось сохранить модель");}
+  finally{setBusy("");}
+ };
+
+ const toggle=async(target:"providers"|"models",id:string,enable:boolean)=>{
+  setBusy(`${target}:${id}`);setError("");setNotice("");
+  try{await api("/admin/providers/bulk-action/",{method:"POST",body:JSON.stringify({target,action:enable?"enable":"disable",ids:[id]})});setNotice(enable?"Включено.":"Выключено.");await load();}
+  catch(reason){setError(reason instanceof Error?reason.message:"Не удалось изменить состояние");}
+  finally{setBusy("");}
+ };
+
  return <>
-  <header className={styles.header}><div><h1>Провайдеры и цены</h1><p>Доступность моделей, состояние провайдеров, аварийное отключение и фактическая экономика.</p></div><button className={styles.button} onClick={()=>void load()}>Обновить</button></header>
+  <header className={styles.header}><div><h1>AI-провайдеры</h1><p>Подключение API, проверка ключей и настройка реальных ID моделей. Финансовые настройки вынесены отдельно.</p></div><button className={styles.button} disabled={!!busy} onClick={()=>void load()}>Обновить</button></header>
   {notice&&<div className={styles.notice}>{notice}</div>}{error&&<div className={`${styles.notice} ${styles.error}`}>{error}</div>}
-  <section className={styles.section}><h2>Провайдеры</h2><table className={styles.table}><thead><tr><th>Провайдер</th><th>Состояние</th><th>Задержка</th><th>Модели</th><th>Управление</th></tr></thead><tbody>{providers.map(provider=><tr key={provider.id}><td><b>{provider.name}</b><br/><small>{provider.slug} · {provider.enabled?"включён":"выключен"}{provider.emergency_disabled?" · аварийно отключён":""}</small></td><td className={provider.health_state==="healthy"?styles.good:styles.warn}>{healthLabel[provider.health_state]||provider.health_state}</td><td>{provider.last_latency_ms==null?"—":`${provider.last_latency_ms} мс`}</td><td>{provider.models.map(model=><div key={model.id} style={{marginBottom:6}}><span className={styles.pill}>{model.slug} · {model.current_version??"версия не назначена"}</span> <button className={styles.button} disabled={!!busy} onClick={()=>void bulk("models",model.enabled?"disable":"enable",[model.id])}>{model.enabled?"Выключить":"Включить"}</button></div>)}</td><td><div className={styles.actions}><button className={styles.button} disabled={!!busy} onClick={()=>void health(provider.slug)}>Проверить связь</button><button className={styles.button} disabled={!!busy} onClick={()=>void bulk("providers",provider.enabled?"disable":"enable",[provider.id])}>{provider.enabled?"Выключить":"Включить"}</button><button className={`${styles.button} ${provider.emergency_disabled?styles.primary:styles.danger}`} disabled={!!busy} onClick={()=>void bulk("providers",provider.emergency_disabled?"emergency_enable":"emergency_disable",[provider.id])}>{provider.emergency_disabled?"Снять аварийное отключение":"Аварийно отключить"}</button></div></td></tr>)}</tbody></table></section>
-  {pricing&&<>
-   <section className={styles.grid}><div className={styles.card}><small>Минимальная маржа</small><strong>{pricing.margin_policy?.minimum_gross_margin_percent??"—"}%</strong></div><div className={styles.card}><small>Порог аномалии себестоимости</small><strong>{pricing.margin_policy?.anomaly_cost_deviation_percent??"—"}%</strong></div><div className={styles.card}><small>Версии себестоимости</small><strong>{pricing.active_prices.length}</strong></div><div className={styles.card}><small>Открытые ценовые аномалии</small><strong className={pricing.open_anomalies.length?styles.warn:styles.good}>{pricing.open_anomalies.length}</strong></div></section>
-   <section className={styles.section}><h2>Новая версия себестоимости</h2><p>Здесь фиксируется стоимость провайдера. Пользовательская цена определяется отдельными правилами наценки ниже. Поле базовой наценки используется только как fallback, если ни одного действующего правила нет.</p><form className={styles.filters} onSubmit={addPrice}><select name="model" required defaultValue=""><option value="" disabled>Выберите модель</option>{modelOptions.map(item=><option key={item.slug} value={item.slug}>{item.label}</option>)}</select><input name="input" type="number" min="0.0001" step="0.0001" placeholder="Вход ₽ / 1 млн" required/><input name="output" type="number" min="0.0001" step="0.0001" placeholder="Выход ₽ / 1 млн" required/><input name="base_markup" type="number" min="0" step="0.01" defaultValue="100" title="Fallback-наценка, если нет правил"/><input name="effective" type="datetime-local" title="Пусто = действует сразу"/><button className={`${styles.button} ${styles.primary}`} disabled={!!busy}>Создать версию</button></form></section>
-   <section className={styles.section}><h2>Новое правило наценки</h2><p>Правила версионируются и не меняют историю. Более узкая область переопределяет процент более общей, а множители применяются последовательно.</p><form className={styles.filters} onSubmit={addMarkup}><select value={markupScope} onChange={e=>setMarkupScope(e.target.value)}><option value="global">Все запросы</option><option value="provider">Провайдер</option><option value="model">Модель</option><option value="operation">Тип операции</option></select>{ruleKeyInput}<input name="markup" type="number" min="0" step="0.001" placeholder="Наценка %" required/><input name="multiplier" type="number" min="0.0001" step="0.0001" defaultValue="1" placeholder="Множитель" required/><input name="effective" type="datetime-local" title="Пусто = действует сразу"/><input name="reason" maxLength={300} placeholder="Причина изменения"/><button className={`${styles.button} ${styles.primary}`} disabled={!!busy}>Создать правило</button></form></section>
-   <section className={styles.section}><h2>Действующие правила наценки</h2><table className={styles.table}><thead><tr><th>Область</th><th>Ключ</th><th>Наценка</th><th>Множитель</th><th>Действует с</th></tr></thead><tbody>{pricing.markup_rules.map(item=><tr key={item.id}><td>{scopeLabel[item.scope_type]??item.scope_type}</td><td>{item.scope_key||"Все"}</td><td>{item.markup_percent==null?"Не переопределяет":`${item.markup_percent}%`}</td><td>×{item.price_multiplier}</td><td>{new Date(item.effective_from).toLocaleString("ru-RU")}</td></tr>)}</tbody></table></section>
-   <section className={styles.section}><h2>Версии себестоимости</h2><table className={styles.table}><thead><tr><th>Модель</th><th>Вход</th><th>Выход</th><th>Fallback-наценка</th><th>Действует с</th></tr></thead><tbody>{pricing.active_prices.map(item=><tr key={item.id}><td>{item.model}</td><td>{item.input_rub_per_million} ₽ / 1 млн</td><td>{item.output_rub_per_million} ₽ / 1 млн</td><td>{item.markup_percent}%</td><td>{new Date(item.effective_from).toLocaleString("ru-RU")}</td></tr>)}</tbody></table></section>
-   {pricing.open_anomalies.length>0&&<section className={styles.section}><h2>Аномалии стоимости</h2><table className={styles.table}><thead><tr><th>Важность</th><th>Провайдер / модель</th><th>Тип</th><th>Ожидалось → фактически</th></tr></thead><tbody>{pricing.open_anomalies.map(item=><tr key={item.id}><td>{severityLabel[item.severity]||item.severity}</td><td>{item.provider}/{item.model}</td><td>{item.kind}</td><td>{item.expected_rub??"—"} → {item.actual_rub??"—"}</td></tr>)}</tbody></table></section>}
-  </>}
+  <section className={styles.grid}>
+   <div className={styles.card}><small>API-ключ настроен</small><strong>{configuredCount} / {providers.length}</strong></div>
+   <div className={styles.card}><small>Связь проверена</small><strong className={healthyCount?styles.good:styles.warn}>{healthyCount} / {providers.length}</strong></div>
+  </section>
+  <div className={styles.notice}>Порядок подключения: <b>1.</b> вставьте API-ключ → <b>2.</b> сохраните → <b>3.</b> проверьте подключение → <b>4.</b> укажите точный ID модели → <b>5.</b> настройте себестоимость в <Link href="/admin-console/finance">финансах</Link> → <b>6.</b> включите модель.</div>
+  {providers.map(provider=>{
+   const credential=credentials[provider.slug];
+   const setupProvider=setup[provider.slug];
+   return <section className={styles.section} key={provider.id}>
+    <div className={styles.header}><div><h2>{provider.name}</h2><p>{provider.slug} · {credential?.adapter_type||"—"}</p></div><div><b className={provider.health_state==="healthy"?styles.good:styles.warn}>{healthLabel[provider.health_state]||provider.health_state}</b>{provider.last_latency_ms!=null&&<span> · {provider.last_latency_ms} мс</span>}</div></div>
+    <div className={styles.grid}>
+     <div className={styles.card}><small>API-ключ</small><strong className={credential?.credential_configured?styles.good:styles.warn}>{credential?.credential_configured?"Настроен":"Не настроен"}</strong><p>{credential?sourceLabel[credential.credential_source]:"—"}</p></div>
+     <div className={styles.card}><small>Провайдер</small><strong>{provider.enabled?"Включён":"Выключен"}</strong><p>{provider.emergency_disabled?"Аварийно отключён":"Без аварийной блокировки"}</p></div>
+    </div>
+    <h3>Подключение API</h3>
+    <div className={styles.filters}>
+     <input type="password" autoComplete="off" value={keyDraft[provider.slug]||""} onChange={e=>setKeyDraft(current=>({...current,[provider.slug]:e.target.value}))} placeholder={credential?.credential_configured?"Новый ключ (пусто = оставить текущий)":"Вставьте API-ключ"}/>
+     <input value={baseDraft[provider.slug]??credential?.api_base_url??""} onChange={e=>setBaseDraft(current=>({...current,[provider.slug]:e.target.value}))} placeholder="API base URL"/>
+     <button className={`${styles.button} ${styles.primary}`} disabled={!!busy} onClick={()=>void saveCredential(provider.slug)}>Сохранить</button>
+     <button className={styles.button} disabled={!!busy||!credential?.credential_configured} onClick={()=>void testConnection(provider.slug)}>{busy===`health:${provider.slug}`?"Проверяем…":"Проверить подключение"}</button>
+     {credential?.credential_source==="database"&&<button className={`${styles.button} ${styles.danger}`} disabled={!!busy} onClick={()=>void clearCredential(provider.slug)}>Удалить ключ</button>}
+    </div>
+    <h3>Модели</h3>
+    {(provider.models.length===0)&&<p>Для этого провайдера пока нет модели. Запустите bootstrap каталога или добавьте модель через конфигурацию проекта.</p>}
+    {provider.models.map(model=>{
+      const setupModel=setupProvider?.models.find(item=>item.slug===model.slug);
+      return <div key={model.id} className={styles.card} style={{marginBottom:12}}>
+       <div className={styles.header}><div><b>{model.slug}</b><p>Версия: {model.current_version||"не назначена"} · Цена: {setupModel?.has_active_price?"настроена":"не настроена"}</p></div><strong className={model.enabled?styles.good:styles.warn}>{model.enabled?"Включена":"Выключена"}</strong></div>
+       <div className={styles.filters}>
+        <input value={modelDraft[model.slug]??setupModel?.upstream_model??""} onChange={e=>setModelDraft(current=>({...current,[model.slug]:e.target.value}))} placeholder="Точный model ID, например deepseek-chat"/>
+        <button className={styles.button} disabled={!!busy} onClick={()=>void saveModel(provider.slug,model)}>Сохранить model ID</button>
+        <button className={styles.button} disabled={!!busy} onClick={()=>void toggle("models",model.id,!model.enabled)}>{model.enabled?"Выключить модель":"Включить модель"}</button>
+       </div>
+      </div>;
+    })}
+    <div className={styles.actions}><button className={styles.button} disabled={!!busy} onClick={()=>void toggle("providers",provider.id,!provider.enabled)}>{provider.enabled?"Выключить провайдера":"Включить провайдера"}</button></div>
+   </section>;
+  })}
  </>;
 }
