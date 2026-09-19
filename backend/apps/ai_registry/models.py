@@ -70,7 +70,7 @@ class Provider(models.Model):
         if self.credential_env:
             os.environ.pop(self.credential_env, None)
 
-    def get_api_key(self) -> str:
+    def _legacy_api_key(self) -> str:
         if not self.credential_secret:
             return ""
         try:
@@ -78,11 +78,36 @@ class Provider(models.Model):
         except (InvalidToken, ValueError, UnicodeError):
             return ""
 
+    def get_api_key(self) -> str:
+        try:
+            key = self.api_keys.filter(enabled=True, health_state__in=["unknown", "healthy", "degraded"]).order_by(
+                "priority", "last_used_at", "created_at"
+            ).first()
+            if key:
+                value = key.get_secret()
+                if value:
+                    return value
+        except Exception:
+            pass
+        return self._legacy_api_key() or (
+            os.getenv(self.credential_env, "").strip() if self.credential_env else ""
+        )
+
     def credential_configured(self) -> bool:
-        return bool(self.get_api_key() or (self.credential_env and os.getenv(self.credential_env, "").strip()))
+        try:
+            if self.api_keys.filter(enabled=True).exists():
+                return True
+        except Exception:
+            pass
+        return bool(self._legacy_api_key() or (self.credential_env and os.getenv(self.credential_env, "").strip()))
 
     def credential_source(self) -> str:
-        if self.get_api_key():
+        try:
+            if self.api_keys.filter(enabled=True).exists():
+                return "key_pool"
+        except Exception:
+            pass
+        if self._legacy_api_key():
             return "database"
         if self.credential_env and os.getenv(self.credential_env, "").strip():
             return "environment"
@@ -91,13 +116,65 @@ class Provider(models.Model):
     def _hydrate_runtime_credential(self):
         if not getattr(self, "credential_env", "") or not getattr(self, "credential_secret", ""):
             return
-        value = self.get_api_key()
+        value = self._legacy_api_key()
         if value:
             os.environ[self.credential_env] = value
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         self._hydrate_runtime_credential()
+
+
+class ProviderApiKey(models.Model):
+    class HealthState(models.TextChoices):
+        UNKNOWN = "unknown", "Не проверен"
+        HEALTHY = "healthy", "Работает"
+        DEGRADED = "degraded", "Ошибка"
+        DISABLED = "disabled", "Отключён"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.ForeignKey(Provider, on_delete=models.CASCADE, related_name="api_keys")
+    label = models.CharField(max_length=120, default="Основной ключ")
+    secret_encrypted = models.TextField(editable=False)
+    enabled = models.BooleanField(default=True)
+    priority = models.PositiveIntegerField(default=100)
+    health_state = models.CharField(max_length=16, choices=HealthState.choices, default=HealthState.UNKNOWN)
+    last_error_code = models.CharField(max_length=80, blank=True)
+    last_latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    balance_amount = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    balance_currency = models.CharField(max_length=12, blank=True)
+    balance_supported = models.BooleanField(default=False)
+    balance_checked_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["priority", "created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["provider", "label"], name="unique_provider_api_key_label")
+        ]
+
+    def set_secret(self, value: str):
+        value = (value or "").strip()
+        if not value:
+            raise ValidationError("API-ключ не может быть пустым")
+        self.secret_encrypted = _credential_cipher().encrypt(value.encode("utf-8")).decode("ascii")
+
+    def get_secret(self) -> str:
+        if not self.secret_encrypted:
+            return ""
+        try:
+            return _credential_cipher().decrypt(self.secret_encrypted.encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError, UnicodeError):
+            return ""
+
+    @property
+    def masked(self):
+        value = self.get_secret()
+        if len(value) <= 8:
+            return "••••••••"
+        return f"{value[:4]}••••{value[-4:]}"
 
 
 class AIModel(models.Model):
