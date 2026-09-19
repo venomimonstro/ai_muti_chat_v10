@@ -11,6 +11,7 @@ from .pricing_views import PricingManagementView
 from .procurement_breakdown_views import ProcurementBreakdownView
 from .procurement_views import ProcurementEconomicsView
 from .promo_credit_views import AdminPromoCreditView
+from .provider_activation_views import ProviderClientActivationView
 from .provider_views import (
     ProviderCredentialView,
     ProviderDiscoveredModelsView,
@@ -68,6 +69,7 @@ urlpatterns = [
     path("providers/<slug:provider_slug>/keys/", ProviderKeyCollectionView.as_view(), name="admin-provider-keys"),
     path("providers/<slug:provider_slug>/keys/<uuid:key_id>/", ProviderKeyDetailView.as_view(), name="admin-provider-key-detail"),
     path("providers/<slug:provider_slug>/discover-models/", ProviderDiscoveredModelsView.as_view(), name="admin-provider-discover-models"),
+    path("providers/<slug:provider_slug>/activate-models/", ProviderClientActivationView.as_view(), name="admin-provider-activate-models"),
     path("providers/<slug:provider_slug>/models/<uuid:model_id>/", ProviderModelConfigView.as_view(), name="admin-provider-model-config"),
     path("commercial-setup/", CommercialSetupView.as_view(), name="admin-commercial-setup"),
     path("commercial-setup/providers/<slug:provider_slug>/health/", CommercialProviderHealthView.as_view(), name="admin-commercial-provider-health"),
