@@ -5,11 +5,16 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_INSTALLER="${PROJECT_DIR}/install.sh"
 RUNTIME_INSTALLER="${PROJECT_DIR}/.install-ip-runtime.sh"
 ENV_FILE="${PROJECT_DIR}/.env.production"
+VERIFY_SCRIPT="${PROJECT_DIR}/scripts/verify_installation.sh"
 
 fail(){ printf 'Ошибка IP-установки: %s\n' "$1" >&2; exit 1; }
 [[ "${EUID}" -eq 0 ]] || fail "запустите через sudo"
 [[ -f "${BASE_INSTALLER}" ]] || fail "install.sh не найден"
 [[ -f "${PROJECT_DIR}/deploy/Caddyfile.ip" ]] || fail "deploy/Caddyfile.ip не найден"
+[[ -f "${VERIFY_SCRIPT}" ]] || fail "scripts/verify_installation.sh не найден"
+command -v python3 >/dev/null 2>&1 || fail "python3 не установлен; запустите scripts/one_click_install.sh"
+command -v docker >/dev/null 2>&1 || fail "Docker не установлен; запустите scripts/one_click_install.sh"
+docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 не установлен"
 
 configure_kernel_memory(){
   if command -v sysctl >/dev/null 2>&1; then
@@ -19,10 +24,25 @@ configure_kernel_memory(){
   fi
 }
 
+resource_preflight(){
+  local mem_kb swap_kb disk_kb
+  mem_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  swap_kb="$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  disk_kb="$(df -Pk "${PROJECT_DIR}" | awk 'NR==2{print $4}')"
+  printf 'IP preflight: RAM %s МБ, swap %s МБ, свободный диск %.1f ГБ.\n' \
+    "$((mem_kb/1024))" "$((swap_kb/1024))" "$(awk -v k="$disk_kb" 'BEGIN{printf "%.1f", k/1024/1024}')"
+  (( mem_kb >= 1700000 )) || fail "для IP/SMALL-VPS профиля нужно около 2 ГБ RAM"
+  if (( mem_kb < 3000000 && swap_kb < 1500000 )); then
+    fail "для сервера меньше 3 ГБ RAM нужен swap минимум около 1.5 ГБ. Запустите scripts/one_click_install.sh — он создаст swap автоматически"
+  fi
+  (( disk_kb >= 3200000 )) || fail "нужно минимум около 3.2 ГБ свободного диска для компактной сборки"
+}
+
 configure_kernel_memory
+resource_preflight
 
 SERVER_IP="${AIWS_SERVER_IP:-}"
-if [[ -z "${SERVER_IP}" ]]; then
+if [[ -z "${SERVER_IP}" && $(command -v ip >/dev/null 2>&1; echo $?) -eq 0 ]]; then
   SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')"
 fi
 if [[ -z "${SERVER_IP}" ]]; then
@@ -62,24 +82,19 @@ if old_domain not in s:
     raise SystemExit('Не найден блок настройки домена в install.sh')
 s = s.replace(old_domain, new_domain, 1)
 
-# Small VPS / compact disk profile for temporary IP deployments.
 s = s.replace(
     '''  if (( disk_kb < 10000000 )); then\n    fail "нужно минимум около 10 ГБ свободного диска"\n  fi''',
     '''  if (( disk_kb < 3200000 )); then\n    fail "для IP/SMALL-VPS режима нужно минимум около 3.2 ГБ свободного диска"\n  elif (( disk_kb < 6000000 )); then\n    LOW_MEMORY_MODE=true\n    UVICORN_WORKERS=1\n    CELERY_CONCURRENCY=1\n    export COMPOSE_PARALLEL_LIMIT=1\n    printf 'IP/LOW-DISK режим: последовательная сборка и 1 worker.\\n' >&2\n  fi''',
     1,
 )
 
-# HTTP/IP mode must not force HTTPS cookies or redirects.
 s = s.replace('DJANGO_SECURE_SSL_REDIRECT=true', 'DJANGO_SECURE_SSL_REDIRECT=false')
 s = s.replace('DJANGO_SESSION_COOKIE_SECURE=true', 'DJANGO_SESSION_COOKIE_SECURE=false')
 s = s.replace('DJANGO_CSRF_COOKIE_SECURE=true', 'DJANGO_CSRF_COOKIE_SECURE=false')
 s = s.replace('DJANGO_SECURE_HSTS_SECONDS=31536000', 'DJANGO_SECURE_HSTS_SECONDS=0')
-
-# All generated public URLs are HTTP until a domain is connected.
 s = s.replace('https://%s', 'http://%s')
 s = s.replace('https://${APP_DOMAIN}', 'http://${APP_DOMAIN}')
 
-# Tell compose to mount the HTTP-only Caddy config.
 needle = "printf 'APP_DOMAIN=%s\\nACME_EMAIL=%s\\n' \"${APP_DOMAIN}\" \"${ACME_EMAIL}\""
 replacement = "printf 'APP_DOMAIN=%s\\nACME_EMAIL=%s\\nCADDY_CONFIG_FILE=Caddyfile.ip\\n' \"${APP_DOMAIN}\" \"${ACME_EMAIL}\""
 if needle not in s:
@@ -89,8 +104,6 @@ s = s.replace(needle, replacement, 1)
 path.write_text(s)
 PY
 
-# Если предыдущая попытка уже создала env, переводим незавершённую установку
-# в IP-режим без удаления секретов/БД.
 if [[ -f "${ENV_FILE}" && ! -f "${PROJECT_DIR}/.installed" ]]; then
   upsert(){
     local key="$1" value="$2"
@@ -124,4 +137,15 @@ if (( mem_kb > 0 && mem_kb < 3000000 )); then
 fi
 
 bash -n "${RUNTIME_INSTALLER}" || fail "runtime installer содержит синтаксическую ошибку"
-exec bash "${RUNTIME_INSTALLER}"
+
+if ! bash "${RUNTIME_INSTALLER}"; then
+  exit $?
+fi
+
+printf '\nЗапускаем усиленную итоговую проверку установки...\n'
+if ! bash "${VERIFY_SCRIPT}"; then
+  rm -f "${PROJECT_DIR}/.installed"
+  fail "базовый installer завершился, но усиленная итоговая проверка не прошла; маркер .installed снят"
+fi
+
+printf 'IP-установка полностью проверена. Адрес: http://%s\n' "${SERVER_IP}"
