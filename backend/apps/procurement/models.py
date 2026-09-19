@@ -38,26 +38,12 @@ class ProviderFundingAccount(models.Model):
                 condition=models.Q(is_default=True),
                 name="unique_default_funding_account_per_provider",
             ),
+            models.CheckConstraint(condition=models.Q(funded_native__gte=0), name="funding_account_funded_nonnegative"),
+            models.CheckConstraint(condition=models.Q(reserved_native__gte=0), name="funding_account_reserved_nonnegative"),
+            models.CheckConstraint(condition=models.Q(spent_native__gte=0), name="funding_account_spent_nonnegative"),
+            models.CheckConstraint(condition=models.Q(low_balance_native__gte=0), name="funding_account_low_balance_nonnegative"),
             models.CheckConstraint(
-                condition=models.Q(funded_native__gte=0),
-                name="funding_account_funded_nonnegative",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(reserved_native__gte=0),
-                name="funding_account_reserved_nonnegative",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(spent_native__gte=0),
-                name="funding_account_spent_nonnegative",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(low_balance_native__gte=0),
-                name="funding_account_low_balance_nonnegative",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(
-                    funded_native__gte=models.F("reserved_native") + models.F("spent_native")
-                ),
+                condition=models.Q(funded_native__gte=models.F("reserved_native") + models.F("spent_native")),
                 name="funding_account_not_overdrawn",
             ),
         ]
@@ -81,11 +67,7 @@ class ProviderFundingAccount(models.Model):
 
 class ProviderPurchase(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    account = models.ForeignKey(
-        ProviderFundingAccount,
-        on_delete=models.PROTECT,
-        related_name="purchases",
-    )
+    account = models.ForeignKey(ProviderFundingAccount, on_delete=models.PROTECT, related_name="purchases")
     credit_native = models.DecimalField(max_digits=18, decimal_places=6)
     base_cost_rub = models.DecimalField(max_digits=18, decimal_places=4)
     fees_rub = models.DecimalField(max_digits=18, decimal_places=4, default=0)
@@ -127,11 +109,7 @@ class ProviderSpendReservation(models.Model):
         RELEASED = "released", "Освобождён"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    account = models.ForeignKey(
-        ProviderFundingAccount,
-        on_delete=models.PROTECT,
-        related_name="spend_reservations",
-    )
+    account = models.ForeignKey(ProviderFundingAccount, on_delete=models.PROTECT, related_name="spend_reservations")
     amount_native = models.DecimalField(max_digits=18, decimal_places=6)
     actual_native = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     source_key = models.CharField(max_length=180, unique=True)
@@ -155,16 +133,8 @@ class ProviderSpendReservation(models.Model):
 
 class ProviderSpend(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    account = models.ForeignKey(
-        ProviderFundingAccount,
-        on_delete=models.PROTECT,
-        related_name="spends",
-    )
-    reservation = models.OneToOneField(
-        ProviderSpendReservation,
-        on_delete=models.PROTECT,
-        related_name="spend",
-    )
+    account = models.ForeignKey(ProviderFundingAccount, on_delete=models.PROTECT, related_name="spends")
+    reservation = models.OneToOneField(ProviderSpendReservation, on_delete=models.PROTECT, related_name="spend")
     source_type = models.CharField(max_length=40)
     source_id = models.CharField(max_length=160)
     model_slug = models.CharField(max_length=160, blank=True)
@@ -174,19 +144,18 @@ class ProviderSpend(models.Model):
     native_cost = models.DecimalField(max_digits=18, decimal_places=6)
     nominal_cost_rub = models.DecimalField(max_digits=18, decimal_places=4)
     economic_cost_rub = models.DecimalField(max_digits=18, decimal_places=4)
+    customer_charge_rub = models.DecimalField(max_digits=18, decimal_places=4, default=0)
     acquisition_unit_cost_rub = models.DecimalField(max_digits=18, decimal_places=8)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         ordering = ["-created_at"]
         constraints = [
-            models.UniqueConstraint(
-                fields=["source_type", "source_id"],
-                name="unique_provider_spend_source",
-            ),
+            models.UniqueConstraint(fields=["source_type", "source_id"], name="unique_provider_spend_source"),
             models.CheckConstraint(condition=models.Q(native_cost__gte=0), name="provider_spend_native_nonnegative"),
             models.CheckConstraint(condition=models.Q(nominal_cost_rub__gte=0), name="provider_spend_nominal_nonnegative"),
             models.CheckConstraint(condition=models.Q(economic_cost_rub__gte=0), name="provider_spend_economic_nonnegative"),
+            models.CheckConstraint(condition=models.Q(customer_charge_rub__gte=0), name="provider_spend_customer_charge_nonnegative"),
         ]
 
     def save(self, *args, **kwargs):
