@@ -1,4 +1,5 @@
 import type {Metadata} from "next";
+import CryptoCompat from "../components/CryptoCompat";
 import "./workspace.css";
 import "./workspace-fixes.css";
 import "./workspace-performance.css";
@@ -10,5 +11,5 @@ export const metadata: Metadata = {
 };
 
 export default function AppLayout({children}: Readonly<{children: React.ReactNode}>) {
-  return children;
+  return <><CryptoCompat/>{children}</>;
 }
