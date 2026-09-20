@@ -51,6 +51,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "apps.accounts.test_user_middleware.PlatformAdminTestUserMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -179,81 +180,8 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.daily_financial_reconciliation",
         "schedule": 86400.0,
     },
-    "recover-stale-operations": {
-        "task": "apps.admin_ops.tasks.recover_stale_operations_task",
-        "schedule": 300.0,
+    "daily-official-ai-pricing-sync": {
+        "task": "apps.admin_ops.tasks.sync_official_ai_prices",
+        "schedule": 86400.0,
     },
 }
-SIGNUP_PROMO_RUB = os.getenv("SIGNUP_PROMO_RUB", "25.00")
-CHAT_CONFIRM_THRESHOLD_RUB = os.getenv("CHAT_CONFIRM_THRESHOLD_RUB", "20.00")
-AI_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "120"))
-AI_PROVIDER_MAX_ATTEMPTS = int(os.getenv("AI_PROVIDER_MAX_ATTEMPTS", "2"))
-AI_CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("AI_CIRCUIT_FAILURE_THRESHOLD", "3"))
-AI_CIRCUIT_COOLDOWN_SECONDS = int(os.getenv("AI_CIRCUIT_COOLDOWN_SECONDS", "60"))
-FILE_MAX_UPLOAD_BYTES = int(os.getenv("FILE_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
-FILE_MAX_UNCOMPRESSED_BYTES = int(os.getenv("FILE_MAX_UNCOMPRESSED_BYTES", str(100 * 1024 * 1024)))
-FILE_MAX_ARCHIVE_ENTRIES = int(os.getenv("FILE_MAX_ARCHIVE_ENTRIES", "1000"))
-FILE_MAX_COMPRESSION_RATIO = int(os.getenv("FILE_MAX_COMPRESSION_RATIO", "100"))
-FILE_MAX_EXTRACTED_CHARS = int(os.getenv("FILE_MAX_EXTRACTED_CHARS", "2000000"))
-FILE_CHUNK_CHARS = int(os.getenv("FILE_CHUNK_CHARS", "4000"))
-FILE_CHUNK_OVERLAP_CHARS = int(os.getenv("FILE_CHUNK_OVERLAP_CHARS", "200"))
-RAG_EMBEDDING_DIMENSIONS = 384
-RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "local-hash-v1")
-RAG_VECTOR_WEIGHT = float(os.getenv("RAG_VECTOR_WEIGHT", "0.65"))
-RAG_LEXICAL_WEIGHT = float(os.getenv("RAG_LEXICAL_WEIGHT", "0.35"))
-HISTORY_EMBEDDING_MODEL = os.getenv("HISTORY_EMBEDDING_MODEL", "local-history-hash-v1")
-SEARCH_VECTOR_WEIGHT = float(os.getenv("SEARCH_VECTOR_WEIGHT", "0.50"))
-SEARCH_LEXICAL_WEIGHT = float(os.getenv("SEARCH_LEXICAL_WEIGHT", "0.40"))
-SEARCH_RECENCY_WEIGHT = float(os.getenv("SEARCH_RECENCY_WEIGHT", "0.10"))
-SEARCH_RETRIEVAL_SCAN_LIMIT = int(os.getenv("SEARCH_RETRIEVAL_SCAN_LIMIT", "500"))
-SEARCH_MIN_SEMANTIC_SCORE = float(os.getenv("SEARCH_MIN_SEMANTIC_SCORE", "0.10"))
-COMPARE_ENABLED = os.getenv("COMPARE_ENABLED", "true").lower() == "true"
-COMPARE_MAX_MODELS = int(os.getenv("COMPARE_MAX_MODELS", "4"))
-COMPARE_MAX_OUTPUT_TOKENS = int(os.getenv("COMPARE_MAX_OUTPUT_TOKENS", "1024"))
-COMPARE_CONFIRM_THRESHOLD_RUB = os.getenv("COMPARE_CONFIRM_THRESHOLD_RUB", "20.00")
-IMAGES_ENABLED = os.getenv("IMAGES_ENABLED", "true").lower() == "true"
-IMAGE_MAX_PROMPT_CHARS = int(os.getenv("IMAGE_MAX_PROMPT_CHARS", "4000"))
-IMAGE_MAX_RESULT_BYTES = int(os.getenv("IMAGE_MAX_RESULT_BYTES", str(20 * 1024 * 1024)))
-IMAGE_CONFIRM_THRESHOLD_RUB = os.getenv("IMAGE_CONFIRM_THRESHOLD_RUB", "20.00")
-B2B_API_ENABLED = os.getenv("B2B_API_ENABLED", "true").lower() == "true"
-B2B_API_KEY_PEPPER = os.getenv("B2B_API_KEY_PEPPER", SECRET_KEY)
-B2B_API_MAX_OUTPUT_TOKENS = int(os.getenv("B2B_API_MAX_OUTPUT_TOKENS", "4096"))
-B2B_API_MAX_MESSAGE_CHARS = int(os.getenv("B2B_API_MAX_MESSAGE_CHARS", "100000"))
-B2B_API_RUNNING_TIMEOUT_SECONDS = int(
-    os.getenv("B2B_API_RUNNING_TIMEOUT_SECONDS", "600")
-)
-B2B_TRUST_PROXY_IP_HEADER = os.getenv("B2B_TRUST_PROXY_IP_HEADER", "false").lower() == "true"
-OPERATION_STALE_TIMEOUT_SECONDS = int(os.getenv("OPERATION_STALE_TIMEOUT_SECONDS", "900"))
-AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY_ENABLED", "false").lower() == "true"
-AUTO_MEMORY_MAX_CANDIDATES = int(os.getenv("AUTO_MEMORY_MAX_CANDIDATES", "3"))
-SMART_CONTEXT_RECENT_TURNS = int(os.getenv("SMART_CONTEXT_RECENT_TURNS", "6"))
-SMART_CONTEXT_RECENT_SHARE = float(os.getenv("SMART_CONTEXT_RECENT_SHARE", "0.55"))
-SMART_CONTEXT_PROJECT_TOKENS = int(os.getenv("SMART_CONTEXT_PROJECT_TOKENS", "2000"))
-SMART_CONTEXT_MEMORY_TOKENS = int(os.getenv("SMART_CONTEXT_MEMORY_TOKENS", "1600"))
-SMART_CONTEXT_OLD_MESSAGE_TOKENS = int(os.getenv("SMART_CONTEXT_OLD_MESSAGE_TOKENS", "1200"))
-SMART_CONTEXT_FILE_TOKENS = int(os.getenv("SMART_CONTEXT_FILE_TOKENS", "2400"))
-SMART_CONTEXT_SUMMARY_TOKENS = int(os.getenv("SMART_CONTEXT_SUMMARY_TOKENS", "1200"))
-SMART_CONTEXT_MEMORY_LIMIT = int(os.getenv("SMART_CONTEXT_MEMORY_LIMIT", "8"))
-SMART_CONTEXT_OLD_MESSAGE_LIMIT = int(os.getenv("SMART_CONTEXT_OLD_MESSAGE_LIMIT", "4"))
-SMART_CONTEXT_FILE_CHUNK_LIMIT = int(os.getenv("SMART_CONTEXT_FILE_CHUNK_LIMIT", "4"))
-SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT = int(os.getenv("SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT", "200"))
-SMART_CONTEXT_MIN_RELEVANCE = float(os.getenv("SMART_CONTEXT_MIN_RELEVANCE", "0.08"))
-SMART_CONTEXT_SUMMARY_CHARS = int(os.getenv("SMART_CONTEXT_SUMMARY_CHARS", "6000"))
-EVAL_MIN_AVERAGE_SCORE = float(os.getenv("EVAL_MIN_AVERAGE_SCORE", "0.70"))
-EVAL_MAX_HALLUCINATION_RATE = float(os.getenv("EVAL_MAX_HALLUCINATION_RATE", "0.05"))
-EVAL_MAX_ERROR_RATE = float(os.getenv("EVAL_MAX_ERROR_RATE", "0.02"))
-EVAL_MAX_REGRESSION = float(os.getenv("EVAL_MAX_REGRESSION", "0.05"))
-EVAL_MAX_OUTPUT_TOKENS = int(os.getenv("EVAL_MAX_OUTPUT_TOKENS", "1024"))
-PAYMENTS_ENABLED = os.getenv("PAYMENTS_ENABLED", "false").lower() == "true"
-PAYMENTS_LIVE_ENABLED = os.getenv("PAYMENTS_LIVE_ENABLED", "false").lower() == "true"
-PAYMENT_RETURN_URL = os.getenv(
-    "PAYMENT_RETURN_URL", "http://localhost:3000/settings/billing/return"
-)
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
-YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
-YOOKASSA_API_BASE_URL = os.getenv("YOOKASSA_API_BASE_URL", "https://api.yookassa.ru/v3")
-PAYMENTS_FISCALIZATION_MODE = os.getenv("PAYMENTS_FISCALIZATION_MODE", "disabled")
-PAYMENTS_VAT_CODE = int(os.getenv("PAYMENTS_VAT_CODE", "1"))
-PAYMENT_MIN_RUB = os.getenv("PAYMENT_MIN_RUB", "100.00")
-PAYMENT_MAX_RUB = os.getenv("PAYMENT_MAX_RUB", "100000.00")
-ADMIN_MFA_ENFORCED = os.getenv("ADMIN_MFA_ENFORCED", "false").lower() == "true"
