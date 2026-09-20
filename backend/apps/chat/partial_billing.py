@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 
 from django.db import transaction
 
@@ -12,6 +12,7 @@ from apps.procurement.models import ProviderSpend
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0.0000")
+MONEY_STEP = Decimal("0.0001")
 
 
 @transaction.atomic
@@ -80,7 +81,13 @@ def settle_delivered_partial(generation, text: str):
         release(reservation.id)
 
     provider_cost = request_cost.provider_cost_rub or ZERO
-    gross_profit = charge - provider_cost
+    overhead_percent = Decimal(
+        (request_cost.pricing_snapshot or {}).get("overhead_total_percent", "0")
+    )
+    economic_cost = (
+        provider_cost * (Decimal("1") + overhead_percent / Decimal("100"))
+    ).quantize(MONEY_STEP, rounding=ROUND_UP)
+    gross_profit = charge - economic_cost
     gross_margin = (gross_profit / charge * Decimal("100")) if charge else ZERO
 
     # Bypass RequestCost post_save procurement hooks: provider usage was already
