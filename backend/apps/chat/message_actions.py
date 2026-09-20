@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -6,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
+from .cost_preview import chat_cost_preview
 from .models import Conversation, ConversationBranch, Message
 from .serializers import MessageSerializer
 from .services import generate_reply
@@ -41,6 +43,59 @@ def serialize_recent_conversation(conversation, limit=60):
         "updated_at": conversation.updated_at,
         "messages": MessageSerializer(messages, many=True).data,
     }
+
+
+def _preview_payload(preview):
+    return {
+        "estimated_min_rub": str(preview["estimated_min_rub"]),
+        "estimated_max_rub": str(preview["estimated_max_rub"]),
+        "confirmation_required": preview["confirmation_required"],
+        "confirmation_threshold_rub": str(preview["confirmation_threshold_rub"]),
+        "selected_model": preview["selected_model"],
+        "models": preview.get("models", []),
+    }
+
+
+def _cost_guard(request, *, user, conversation, content):
+    preview = chat_cost_preview(
+        user=user,
+        conversation=conversation,
+        content=content,
+        file_ids=[],
+    )
+    if preview.get("blocked_by_spend_guard"):
+        payload = _preview_payload(preview)
+        payload.update(
+            {
+                "code": "spend_safety_limit",
+                "detail": preview.get("spend_guard_message")
+                or "Повторный запрос превышает безопасный лимит расходов. Деньги не списаны.",
+            }
+        )
+        return Response(payload, status=409)
+    if not preview["confirmation_required"]:
+        return None
+
+    confirmed = request.data.get("confirm_cost") is True
+    raw_ceiling = request.data.get("confirmed_max_rub")
+    try:
+        ceiling = Decimal(str(raw_ceiling)) if raw_ceiling not in {None, ""} else None
+    except (InvalidOperation, TypeError, ValueError):
+        ceiling = None
+    maximum = Decimal(str(preview["estimated_max_rub"]))
+    if not confirmed or ceiling is None or ceiling < maximum:
+        payload = _preview_payload(preview)
+        payload.update(
+            {
+                "code": "cost_confirmation_required",
+                "detail": (
+                    "Повторная генерация создаёт новый расход LLM. "
+                    "Подтвердите максимальную стоимость до запуска модели."
+                ),
+            }
+        )
+        return Response(payload, status=409)
+    return None
 
 
 class OwnedConversationAction(APIView):
@@ -115,6 +170,14 @@ class EditMessageView(OwnedConversationAction):
                         {"detail": "Редактировать можно только своё пользовательское сообщение"},
                         status=404,
                     )
+                blocked = _cost_guard(
+                    request,
+                    user=request.user,
+                    conversation=conversation,
+                    content=content,
+                )
+                if blocked is not None:
+                    return blocked
                 self._fork_before(
                     conversation=conversation,
                     user=request.user,
@@ -158,6 +221,14 @@ class RegenerateMessageView(OwnedConversationAction):
                 if source is None:
                     return Response({"detail": "Исходный запрос не найден"}, status=400)
                 source_content = source.content
+                blocked = _cost_guard(
+                    request,
+                    user=request.user,
+                    conversation=conversation,
+                    content=source_content,
+                )
+                if blocked is not None:
+                    return blocked
                 self._fork_before(
                     conversation=conversation,
                     user=request.user,
