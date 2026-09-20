@@ -50,10 +50,14 @@ class ProviderClientActivationView(AdminAPIView):
                 status=409,
             )
 
+        # Lock only AIModel rows. current_version is nullable, and joining it in
+        # the SELECT ... FOR UPDATE query produces a LEFT OUTER JOIN which
+        # PostgreSQL refuses to lock on the nullable side.
         models = list(
-            AIModel.objects.select_for_update()
-            .select_related("current_version")
-            .filter(provider=provider, upstream_model__in=model_ids)
+            AIModel.objects.select_for_update().filter(
+                provider=provider,
+                upstream_model__in=model_ids,
+            )
         )
         by_upstream = {item.upstream_model: item for item in models}
         activated = []
