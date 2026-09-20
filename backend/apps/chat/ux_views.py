@@ -173,13 +173,20 @@ class ConversationSettingsView(APIView):
 
     @transaction.atomic
     def patch(self, request, conversation_id):
+        # Lock only the Conversation row. active_conversations() adds a nullable
+        # LEFT OUTER JOIN to ui_state, and PostgreSQL rejects SELECT ... FOR UPDATE
+        # when it tries to lock the nullable side of that join.
         conversation = (
-            active_conversations(request.user)
-            .select_for_update()
-            .filter(pk=conversation_id)
+            Conversation.objects.select_for_update()
+            .filter(pk=conversation_id, owner=request.user)
             .first()
         )
         if conversation is None:
+            return Response({"detail": "Чат не найден"}, status=404)
+        if ConversationUIState.objects.filter(
+            conversation=conversation,
+            deleted_at__isnull=False,
+        ).exists():
             return Response({"detail": "Чат не найден"}, status=404)
         payload = {key: value for key, value in request.data.items() if key in self.ALLOWED_FIELDS}
         if not payload:
