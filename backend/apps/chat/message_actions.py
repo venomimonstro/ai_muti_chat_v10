@@ -2,7 +2,6 @@ import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -10,6 +9,7 @@ from .branches import ensure_active_branch, fork_branch, visible_messages
 from .models import Conversation, ConversationBranch, Message
 from .serializers import MessageSerializer
 from .services import generate_reply
+from .ux_models import ConversationUIState
 
 
 def serialize_recent_conversation(conversation, limit=60):
@@ -45,14 +45,20 @@ def serialize_recent_conversation(conversation, limit=60):
 
 class OwnedConversationAction(APIView):
     def conversation(self, request, conversation_id, *, lock=False):
-        queryset = Conversation.objects.select_related("active_branch").prefetch_related("branches")
+        # Do not join nullable ui_state/active_branch while taking a row lock:
+        # PostgreSQL rejects FOR UPDATE on the nullable side of an outer join.
+        queryset = Conversation.objects.filter(pk=conversation_id, owner=request.user)
         if lock:
             queryset = queryset.select_for_update()
-        return (
-            queryset.filter(pk=conversation_id, owner=request.user)
-            .filter(Q(ui_state__isnull=True) | Q(ui_state__deleted_at__isnull=True))
-            .first()
-        )
+        conversation = queryset.first()
+        if conversation is None:
+            return None
+        if ConversationUIState.objects.filter(
+            conversation_id=conversation.id,
+            deleted_at__isnull=False,
+        ).exists():
+            return None
+        return conversation
 
     def idempotency_key(self, request):
         key = request.headers.get("Idempotency-Key", "")
@@ -115,7 +121,7 @@ class EditMessageView(OwnedConversationAction):
                     target=message,
                     title="Редактирование сообщения",
                 )
-            generation = generate_reply(
+            generate_reply(
                 user=request.user,
                 conversation=conversation,
                 content=content,
