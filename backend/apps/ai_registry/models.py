@@ -76,11 +76,17 @@ class Provider(models.Model):
 
     def get_api_key(self) -> str:
         try:
-            key = self.api_keys.filter(enabled=True, health_state__in=["unknown", "healthy", "degraded"]).order_by("?").first()
-            if key:
-                value = key.get_secret()
-                if value:
-                    return value
+            # Never randomly choose a degraded key while a verified healthy key
+            # exists. Within each health tier respect the administrator priority.
+            for health_state in ("healthy", "unknown", "degraded"):
+                keys = self.api_keys.filter(
+                    enabled=True,
+                    health_state=health_state,
+                ).order_by("priority", "created_at")[:5]
+                for key in keys:
+                    value = key.get_secret()
+                    if value:
+                        return value
         except Exception:
             pass
         return self._legacy_api_key() or (os.getenv(self.credential_env, "").strip() if self.credential_env else "")
