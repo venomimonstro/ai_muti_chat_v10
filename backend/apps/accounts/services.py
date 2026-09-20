@@ -65,15 +65,16 @@ def _active_reserved(wallet):
 def spend_guard_snapshot(wallet):
     """Return the current consumer safety envelope without mutating the wallet.
 
-    Limits deliberately use both absolute RUB ceilings and percentages of the
-    customer's own funded balance. This prevents a pricing/routing bug from
-    draining a large share of the wallet in one or two requests.
+    By default percentage guards allow the customer to use up to 100% of funds
+    already available to that wallet. Absolute safety ceilings and any explicit
+    user-configured daily/monthly limits still apply. This avoids a hidden 10%
+    cap making a legitimately funded wallet look unusable.
     """
     active_reserved = _active_reserved(wallet)
     total_funds_now = wallet.available_rub + active_reserved
 
     single_absolute = _positive_env_limit("CONSUMER_MAX_SINGLE_REQUEST_RUB", "250")
-    single_percent = _positive_percent("CONSUMER_MAX_SINGLE_REQUEST_BALANCE_PERCENT", "10")
+    single_percent = _positive_percent("CONSUMER_MAX_SINGLE_REQUEST_BALANCE_PERCENT", "100")
     percent_single = (
         (total_funds_now * single_percent / HUNDRED) if single_percent is not None else None
     )
@@ -87,7 +88,7 @@ def spend_guard_snapshot(wallet):
     # requests instead of shrinking unpredictably after every debit.
     burst_basis = wallet.available_rub + active_reserved + burst_spent
     burst_absolute = _positive_env_limit("CONSUMER_MAX_BURST_SPEND_RUB", "500")
-    burst_percent = _positive_percent("CONSUMER_MAX_BURST_SPEND_PERCENT", "20")
+    burst_percent = _positive_percent("CONSUMER_MAX_BURST_SPEND_PERCENT", "100")
     percent_burst = (
         (burst_basis * burst_percent / HUNDRED) if burst_percent is not None else None
     )
@@ -97,7 +98,7 @@ def spend_guard_snapshot(wallet):
     spent_today = _sum_debits(wallet, today_start)
     daily_basis = wallet.available_rub + active_reserved + spent_today
     daily_absolute = _positive_env_limit("CONSUMER_MAX_DAILY_SPEND_RUB", "20000")
-    daily_percent = _positive_percent("CONSUMER_MAX_DAILY_BALANCE_PERCENT", "50")
+    daily_percent = _positive_percent("CONSUMER_MAX_DAILY_BALANCE_PERCENT", "100")
     percent_daily = (
         (daily_basis * daily_percent / HUNDRED) if daily_percent is not None else None
     )
