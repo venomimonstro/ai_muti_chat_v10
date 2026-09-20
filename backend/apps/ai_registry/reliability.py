@@ -5,11 +5,61 @@ from django.db import transaction
 from django.utils import timezone
 
 from .adapters import ProviderError, adapter_for
-from .models import AIModel, Provider, ProviderHealthSnapshot, ReliabilityIncident
+from .models import (
+    AIModel,
+    Provider,
+    ProviderApiKey,
+    ProviderHealthSnapshot,
+    ReliabilityIncident,
+)
+
+
+def _has_healthy_key(provider: Provider) -> bool:
+    return ProviderApiKey.objects.filter(
+        provider_id=provider.id,
+        enabled=True,
+        health_state=ProviderApiKey.HealthState.HEALTHY,
+    ).exists()
 
 
 def provider_available(provider: Provider) -> bool:
-    if not provider.enabled or provider.emergency_disabled:
+    if provider.emergency_disabled:
+        return False
+
+    # A verified key is the strongest runtime signal we have. If the provider
+    # still carries stale disabled/open/degraded state from an earlier failure,
+    # heal that state automatically. Commercial model activation remains the
+    # gate for exposing a model to clients, and pricing/margin is checked by the
+    # router before any paid request is started.
+    if _has_healthy_key(provider):
+        dirty = False
+        if not provider.enabled:
+            provider.enabled = True
+            dirty = True
+        if provider.health_state in {
+            Provider.HealthState.OPEN,
+            Provider.HealthState.DEGRADED,
+            Provider.HealthState.DISABLED,
+            Provider.HealthState.UNKNOWN,
+        }:
+            provider.health_state = Provider.HealthState.HEALTHY
+            provider.consecutive_failures = 0
+            provider.circuit_opened_until = None
+            provider.last_checked_at = timezone.now()
+            dirty = True
+        if dirty:
+            provider.save(
+                update_fields=[
+                    "enabled",
+                    "health_state",
+                    "consecutive_failures",
+                    "circuit_opened_until",
+                    "last_checked_at",
+                ]
+            )
+        return True
+
+    if not provider.enabled:
         return False
     if provider.health_state != Provider.HealthState.OPEN:
         return True
