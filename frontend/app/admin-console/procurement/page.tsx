@@ -47,6 +47,8 @@ export default function EconomicsPage(){
  const overheadPct=Number(overheads?.policy.total_percent??0);
  const econCost=(v:string|null|undefined)=>Number(v??0)*(1+overheadPct/100);
  const expense=(v:string|null|undefined,pct:string)=>Number(v??0)*Number(pct||0)/100;
+ const econProfit=(sale:string|null|undefined,cost:string|null|undefined)=>Number(sale??0)-econCost(cost);
+ const econMargin=(sale:string|null|undefined,cost:string|null|undefined)=>{const s=Number(sale??0);return s>0?econProfit(sale,cost)/s*100:0};
  return <>
   <header className={styles.header}><div><h1>Экономика AI</h1><p>Закупка у провайдера → курс валюты → расходы → наценка → публичная цена клиенту → прибыль.</p></div><div className={styles.actions}><button className={`${styles.button} ${styles.primary}`} disabled={busy} onClick={()=>void sync()}>{busy?"Проверяем…":"Обновить официальные цены"}</button></div></header>
   {notice&&<div className={styles.notice}>{notice}</div>}{error&&<div className={`${styles.notice} ${styles.error}`}>{error}</div>}
@@ -84,8 +86,8 @@ export default function EconomicsPage(){
      <td><b>IN {money(econCost(p.provider_input_per_million_rub))}</b><br/><b>OUT {money(econCost(p.provider_output_per_million_rub))}</b><br/><small>закупка + {num(overheads.policy.total_percent)}%</small></td>
      <td><input style={{width:80}} inputMode="decimal" value={markup[p.model]??""} onChange={e=>setMarkup(v=>({...v,[p.model]:e.target.value}))}/>%<br/><button className={styles.button} disabled={busy} onClick={()=>void applyMarkup(p)}>Сохранить</button></td>
      <td><b>IN {money(p.retail_input_per_million_rub)}</b><br/><b>OUT {money(p.retail_output_per_million_rub)}</b><br/><small>эту цену можно публично показывать клиенту</small></td>
-     <td><b>IN {money(p.input_profit_per_million_rub)}</b><br/><b>OUT {money(p.output_profit_per_million_rub)}</b><br/><small>после всех указанных расходов</small></td>
-     <td className={p.below_margin_floor?styles.bad:styles.good}><b>IN {num(p.input_margin_percent)}%</b><br/><b>OUT {num(p.output_margin_percent)}%</b><br/><small>floor {p.minimum_margin_percent}%</small></td>
+     <td><b>IN {money(econProfit(p.retail_input_per_million_rub,p.provider_input_per_million_rub))}</b><br/><b>OUT {money(econProfit(p.retail_output_per_million_rub,p.provider_output_per_million_rub))}</b><br/><small>после всех указанных расходов</small></td>
+     <td className={(econMargin(p.retail_input_per_million_rub,p.provider_input_per_million_rub)<Number(p.minimum_margin_percent??0)||econMargin(p.retail_output_per_million_rub,p.provider_output_per_million_rub)<Number(p.minimum_margin_percent??0))?styles.bad:styles.good}><b>IN {num(econMargin(p.retail_input_per_million_rub,p.provider_input_per_million_rub))}%</b><br/><b>OUT {num(econMargin(p.retail_output_per_million_rub,p.provider_output_per_million_rub))}%</b><br/><small>floor {p.minimum_margin_percent}%</small></td>
     </>}
    </tr>)}</tbody></table></section>
    <section className={styles.section}><h2>Остатки API</h2><p>Баланс ключей проверяется на странице «AI-провайдеры». Здесь — закупочные аккаунты и фактический расход.</p>{data.accounts.length===0?<p>Закупочные аккаунты пока не заведены.</p>:<table className={styles.table}><thead><tr><th>Провайдер</th><th>Аккаунт</th><th>Доступно</th><th>Потрачено</th></tr></thead><tbody>{data.accounts.map(a=><tr key={a.id}><td>{a.provider_name}</td><td>{a.label}</td><td>{num(a.available_native,4)} {a.currency}</td><td>{num(a.spent_native,4)} {a.currency}</td></tr>)}</tbody></table>}</section>
