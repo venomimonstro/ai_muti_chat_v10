@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from apps.ai_registry.token_estimator import estimate_message_tokens
 
+from .cost_policy import active_pricing_overhead_policy
 from .models import FxRateSnapshot, MarginPolicyVersion, MarkupRuleVersion, PriceVersion
 
 MILLION = Decimal("1000000")
@@ -22,6 +23,7 @@ class MarginFloorError(ValidationError):
 @dataclass(frozen=True)
 class PriceQuote:
     provider_cost_rub: Decimal
+    economic_cost_rub: Decimal
     user_charge_rub: Decimal
     gross_profit_rub: Decimal
     gross_margin_percent: Decimal
@@ -192,6 +194,24 @@ def _retail_charge(retail, input_tokens, output_tokens, multiplier=Decimal("1"))
     ).quantize(MONEY_STEP, rounding=ROUND_UP)
 
 
+def _overhead_snapshot(provider_cost: Decimal):
+    policy = active_pricing_overhead_policy()
+    parts = {
+        "tax_percent": policy.tax_percent,
+        "topup_fee_percent": policy.topup_fee_percent,
+        "other_expenses_percent": policy.other_expenses_percent,
+        "refund_withdrawal_percent": policy.refund_withdrawal_percent,
+    }
+    amounts = {
+        key.replace("_percent", "_rub"): (provider_cost * value / Decimal("100")).quantize(MONEY_STEP, rounding=ROUND_UP)
+        for key, value in parts.items()
+    }
+    total_percent = sum(parts.values(), Decimal("0"))
+    total_rub = sum(amounts.values(), Decimal("0")).quantize(MONEY_STEP, rounding=ROUND_UP)
+    economic_cost = (provider_cost + total_rub).quantize(MONEY_STEP, rounding=ROUND_UP)
+    return policy, parts, amounts, total_percent, total_rub, economic_cost
+
+
 def quote(
     price: PriceVersion,
     input_tokens: int,
@@ -208,6 +228,7 @@ def quote(
     provider_cost = (native_cost(price, input_tokens, output_tokens) * fx.rate).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
+    overhead_policy, overhead_parts, overhead_amounts, overhead_percent, overhead_rub, economic_cost = _overhead_snapshot(provider_cost)
     markup, multiplier, rules = _effective_rules(
         price=price,
         provider_slug=provider_slug,
@@ -221,11 +242,14 @@ def quote(
         charge = _retail_charge(retail, input_tokens, output_tokens, multiplier)
         pricing_mode = "retail_token"
     else:
-        charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+        # Extra business costs are explicit additions to the customer uplift.
+        # Service markup remains visible as the intended earnings component.
+        total_uplift_percent = markup + overhead_percent
+        charge = (provider_cost * (Decimal("1") + total_uplift_percent / Decimal("100")) * multiplier).quantize(
             MONEY_STEP, rounding=ROUND_UP
         )
-        pricing_mode = "markup"
-    profit = (charge - provider_cost).quantize(MONEY_STEP)
+        pricing_mode = "markup_plus_overheads"
+    profit = (charge - economic_cost).quantize(MONEY_STEP)
     margin = (
         (profit / charge * Decimal("100")).quantize(PERCENT_STEP) if charge else Decimal("100.000")
     )
@@ -243,6 +267,15 @@ def quote(
         "fx_rate": str(fx.rate),
         "pricing_mode": pricing_mode,
         "effective_markup_percent": str(markup),
+        "overhead_policy_id": str(overhead_policy.id),
+        "overhead_total_percent": str(overhead_percent),
+        "overhead_total_rub": str(overhead_rub),
+        "economic_cost_rub": str(economic_cost),
+        "tax_percent": str(overhead_parts["tax_percent"]),
+        "topup_fee_percent": str(overhead_parts["topup_fee_percent"]),
+        "other_expenses_percent": str(overhead_parts["other_expenses_percent"]),
+        "refund_withdrawal_percent": str(overhead_parts["refund_withdrawal_percent"]),
+        **{key: str(value) for key, value in overhead_amounts.items()},
         "price_multiplier": str(multiplier.quantize(Decimal("0.0001"))),
         "markup_rules": rules,
         "margin_policy_id": str(policy.id),
@@ -259,6 +292,7 @@ def quote(
         )
     return PriceQuote(
         provider_cost_rub=provider_cost,
+        economic_cost_rub=economic_cost,
         user_charge_rub=charge,
         gross_profit_rub=profit,
         gross_margin_percent=margin,
@@ -283,16 +317,17 @@ def quote_flat(
     provider_cost = (Decimal(provider_cost_native) * fx.rate).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
+    overhead_policy, overhead_parts, overhead_amounts, overhead_percent, overhead_rub, economic_cost = _overhead_snapshot(provider_cost)
     markup, multiplier, rules = _effective_rules(
         price=price_config,
         provider_slug=provider_slug,
         model_slug=model_slug,
         operation_type=operation_type,
     )
-    charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+    charge = (provider_cost * (Decimal("1") + (markup + overhead_percent) / Decimal("100")) * multiplier).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
-    profit = (charge - provider_cost).quantize(MONEY_STEP)
+    profit = (charge - economic_cost).quantize(MONEY_STEP)
     margin = (
         (profit / charge * Decimal("100")).quantize(PERCENT_STEP)
         if charge
@@ -301,6 +336,7 @@ def quote_flat(
     policy = active_margin_policy()
     return PriceQuote(
         provider_cost_rub=provider_cost,
+        economic_cost_rub=economic_cost,
         user_charge_rub=charge,
         gross_profit_rub=profit,
         gross_margin_percent=margin,
@@ -311,8 +347,17 @@ def quote_flat(
             "provider_currency": provider_currency,
             "fx_snapshot_id": str(fx.id),
             "fx_rate": str(fx.rate),
-            "pricing_mode": "markup",
+            "pricing_mode": "markup_plus_overheads",
             "effective_markup_percent": str(markup),
+            "overhead_policy_id": str(overhead_policy.id),
+            "overhead_total_percent": str(overhead_percent),
+            "overhead_total_rub": str(overhead_rub),
+            "economic_cost_rub": str(economic_cost),
+            "tax_percent": str(overhead_parts["tax_percent"]),
+            "topup_fee_percent": str(overhead_parts["topup_fee_percent"]),
+            "other_expenses_percent": str(overhead_parts["other_expenses_percent"]),
+            "refund_withdrawal_percent": str(overhead_parts["refund_withdrawal_percent"]),
+            **{key: str(value) for key, value in overhead_amounts.items()},
             "price_multiplier": str(multiplier.quantize(Decimal("0.0001"))),
             "markup_rules": rules,
             "margin_policy_id": str(policy.id),
@@ -326,12 +371,14 @@ def calculate_flat_from_snapshot(provider_cost_native, snapshot):
     provider_cost = (Decimal(provider_cost_native) * Decimal(snapshot["fx_rate"])).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
+    overhead_percent = Decimal(snapshot.get("overhead_total_percent", "0"))
+    economic_cost = (provider_cost * (Decimal("1") + overhead_percent / Decimal("100"))).quantize(MONEY_STEP, rounding=ROUND_UP)
     charge = (
         provider_cost
-        * (Decimal("1") + Decimal(snapshot["effective_markup_percent"]) / Decimal("100"))
+        * (Decimal("1") + (Decimal(snapshot["effective_markup_percent"]) + overhead_percent) / Decimal("100"))
         * Decimal(snapshot["price_multiplier"])
     ).quantize(MONEY_STEP, rounding=ROUND_UP)
-    profit = (charge - provider_cost).quantize(MONEY_STEP)
+    profit = (charge - economic_cost).quantize(MONEY_STEP)
     margin = (
         (profit / charge * Decimal("100")).quantize(PERCENT_STEP)
         if charge
@@ -351,6 +398,8 @@ def calculate_from_snapshot(price, input_tokens, output_tokens, snapshot):
     provider_cost = (native_cost(price, input_tokens, output_tokens) * fx_rate).quantize(
         MONEY_STEP, rounding=ROUND_UP
     )
+    overhead_percent = Decimal(snapshot.get("overhead_total_percent", "0"))
+    economic_cost = (provider_cost * (Decimal("1") + overhead_percent / Decimal("100"))).quantize(MONEY_STEP, rounding=ROUND_UP)
     if snapshot.get("pricing_mode") == "retail_token":
         charge = (
             (
@@ -362,10 +411,10 @@ def calculate_from_snapshot(price, input_tokens, output_tokens, snapshot):
         ).quantize(MONEY_STEP, rounding=ROUND_UP)
     else:
         markup = Decimal(snapshot["effective_markup_percent"])
-        charge = (provider_cost * (Decimal("1") + markup / Decimal("100")) * multiplier).quantize(
+        charge = (provider_cost * (Decimal("1") + (markup + overhead_percent) / Decimal("100")) * multiplier).quantize(
             MONEY_STEP, rounding=ROUND_UP
         )
-    profit = (charge - provider_cost).quantize(MONEY_STEP)
+    profit = (charge - economic_cost).quantize(MONEY_STEP)
     margin = (
         (profit / charge * Decimal("100")).quantize(PERCENT_STEP) if charge else Decimal("100.000")
     )
