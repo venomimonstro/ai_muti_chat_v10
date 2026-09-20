@@ -7,7 +7,9 @@ from .reliability import provider_available
 
 
 class AIModelSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
     provider = serializers.CharField(source="provider.slug")
+    provider_name = serializers.CharField(source="provider.name")
     available = serializers.SerializerMethodField()
     health_state = serializers.CharField(source="provider.health_state")
     price = serializers.SerializerMethodField()
@@ -20,6 +22,7 @@ class AIModelSerializer(serializers.ModelSerializer):
             "slug",
             "display_name",
             "provider",
+            "provider_name",
             "model_version",
             "exact_api_id",
             "capabilities",
@@ -29,6 +32,13 @@ class AIModelSerializer(serializers.ModelSerializer):
             "health_state",
             "price",
         )
+
+    def get_display_name(self, obj):
+        name = (obj.display_name or obj.upstream_model or obj.slug).strip()
+        provider = (obj.provider.name or obj.provider.slug).strip()
+        if name.casefold().startswith(provider.casefold()):
+            return name
+        return f"{provider} · {name}"
 
     def get_available(self, obj):
         return obj.enabled and provider_available(obj.provider)
