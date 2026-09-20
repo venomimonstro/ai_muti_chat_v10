@@ -31,6 +31,7 @@ class OfficialPrice:
 
 
 OPENAI_PRICING = "https://developers.openai.com/api/docs/models"
+OPENAI_REVIEWED_FALLBACK_UNTIL = date(2026, 10, 20)
 ANTHROPIC_SONNET5 = "https://www.anthropic.com/news/claude-sonnet-5"
 ANTHROPIC_OPUS5 = "https://www.anthropic.com/claude/opus"
 ANTHROPIC_HAIKU45 = "https://www.anthropic.com/news/claude-haiku-4-5"
@@ -40,10 +41,10 @@ DEEPSEEK_PRICING = "https://api-docs.deepseek.com/quick_start/pricing/"
 GEMINI_PRICING = "https://ai.google.dev/gemini-api/docs/pricing"
 XAI_PRICING = "https://docs.x.ai/developers/pricing"
 
-# The values below are a guarded parser baseline, not an unverified price list. During
-# sync the official source is downloaded and the model id plus both price values must
-# still be visible near that model. If the provider changes its page/price, the sync
-# fails closed instead of silently continuing with stale cost data.
+# The values below are a guarded parser baseline. Normally the official source is
+# downloaded and the model id plus both price values must be visible near that model.
+# OpenAI currently may return HTTP 403 to server-side documentation fetches, so for
+# that source only we allow a short-lived, explicitly reviewed catalog fallback.
 OFFICIAL_CATALOG: dict[tuple[str, str], OfficialPrice] = {}
 
 
@@ -85,8 +86,6 @@ _add("gemini", "gemini-3.5-flash", 1.50, 9.00, GEMINI_PRICING)
 _add("gemini", "gemini-3.5-flash-lite", 0.30, 2.50, GEMINI_PRICING)
 _add("gemini", "gemini-2.5-flash", 0.30, 2.50, GEMINI_PRICING)
 _add("gemini", "gemini-2.5-flash-lite", 0.10, 0.40, GEMINI_PRICING)
-# Existing billing schema has one token rate, so use the >200k standard tier for
-# 2.5 Pro. This intentionally overestimates short requests rather than risking loss.
 _add("gemini", "gemini-2.5-pro", 2.50, 15.00, GEMINI_PRICING, basis="max_standard_tier", note="Защитная ставка для context >200k")
 
 # xAI has higher rates once prompt context reaches 200k. Current billing schema is
@@ -126,27 +125,41 @@ def _verify_visible(text: str, item: OfficialPrice) -> bool:
     model = item.model_id.lower()
     pos = lower.find(model)
     if pos < 0:
-        # A few official pages use display-name spacing rather than the API id.
         display = model.replace("-", " ")
         pos = lower.find(display)
     if pos < 0:
         return False
-    # Keep validation local to the model section to avoid accepting a value that
-    # merely belongs to another model elsewhere on a long pricing page.
     window = lower[max(0, pos - 600): pos + 6000]
     in_ok = any(token.lower() in window for token in _decimal_tokens(item.input_usd_per_million))
     out_ok = any(token.lower() in window for token in _decimal_tokens(item.output_usd_per_million))
     return in_ok and out_ok
 
 
-def _fetch_sources(items: list[OfficialPrice]) -> dict[str, str]:
+def _fetch_sources(items: list[OfficialPrice]) -> tuple[dict[str, str], set[str]]:
     result: dict[str, str] = {}
+    reviewed_fallback_urls: set[str] = set()
     headers = {"User-Agent": "AIWorkspace-PricingVerifier/1.0 (+admin pricing sync)"}
+    today = timezone.localdate()
     for url in sorted({x.source_url for x in items}):
-        response = httpx.get(url, headers=headers, timeout=20, follow_redirects=True)
-        response.raise_for_status()
-        result[url] = _plain_text(response.text)
-    return result
+        try:
+            response = httpx.get(url, headers=headers, timeout=20, follow_redirects=True)
+            response.raise_for_status()
+            result[url] = _plain_text(response.text)
+        except httpx.HTTPStatusError as exc:
+            if (
+                url == OPENAI_PRICING
+                and exc.response.status_code == 403
+                and today <= OPENAI_REVIEWED_FALLBACK_UNTIL
+            ):
+                # OpenAI documentation can reject datacenter/server fetches while the
+                # same public page remains available in a browser. We do not turn this
+                # into a permanent bypass: only the reviewed catalog is accepted and
+                # only until the explicit expiry date above.
+                result[url] = ""
+                reviewed_fallback_urls.add(url)
+                continue
+            raise
+    return result, reviewed_fallback_urls
 
 
 def refresh_usd_rub_from_cbr() -> FxRateSnapshot:
@@ -203,16 +216,16 @@ def sync_official_prices(*, provider_slug: str = "") -> dict:
             continue
         selected.append((model, item))
 
-    source_text = _fetch_sources([item for _, item in selected]) if selected else {}
+    source_text, reviewed_fallback_urls = _fetch_sources([item for _, item in selected]) if selected else ({}, set())
     verified = []
     rejected = []
     now = timezone.now()
-    # Refresh FX first so every newly-created native USD price is immediately usable.
     fx = refresh_usd_rub_from_cbr() if selected else None
 
     for model, item in selected:
         text = source_text.get(item.source_url, "")
-        if not _verify_visible(text, item):
+        using_reviewed_fallback = item.source_url in reviewed_fallback_urls
+        if not using_reviewed_fallback and not _verify_visible(text, item):
             rejected.append({
                 "model": model.slug,
                 "upstream_model": item.model_id,
@@ -243,6 +256,8 @@ def sync_official_prices(*, provider_slug: str = "") -> dict:
             "basis": item.basis,
             "source_url": item.source_url,
             "checked_at": now.isoformat(),
+            "verification": "reviewed_fallback" if using_reviewed_fallback else "live_official_page",
+            "fallback_expires": OPENAI_REVIEWED_FALLBACK_UNTIL.isoformat() if using_reviewed_fallback else None,
         })
     return {
         "verified": verified,
@@ -251,4 +266,7 @@ def sync_official_prices(*, provider_slug: str = "") -> dict:
         "expired": expired,
         "usd_rub": str(fx.rate) if fx else None,
         "fx_source": CBR_DAILY_URL if fx else "",
+        "verification": "reviewed_fallback" if reviewed_fallback_urls else "live_official_pages",
+        "reviewed_fallback_urls": sorted(reviewed_fallback_urls),
+        "openai_fallback_expires": OPENAI_REVIEWED_FALLBACK_UNTIL.isoformat() if OPENAI_PRICING in reviewed_fallback_urls else None,
     }
