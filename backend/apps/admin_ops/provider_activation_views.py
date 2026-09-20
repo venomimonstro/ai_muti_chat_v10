@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
@@ -50,9 +51,6 @@ class ProviderClientActivationView(AdminAPIView):
                 status=409,
             )
 
-        # Lock only AIModel rows. current_version is nullable, and joining it in
-        # the SELECT ... FOR UPDATE query produces a LEFT OUTER JOIN which
-        # PostgreSQL refuses to lock on the nullable side.
         models = list(
             AIModel.objects.select_for_update().filter(
                 provider=provider,
@@ -113,9 +111,28 @@ class ProviderClientActivationView(AdminAPIView):
                 }
             )
 
-        if activated and not provider.enabled:
-            provider.enabled = True
-            provider.save(update_fields=["enabled"])
+        if activated:
+            update_fields = []
+            if not provider.enabled:
+                provider.enabled = True
+                update_fields.append("enabled")
+            # A verified healthy pool key is stronger evidence than a stale
+            # provider-level circuit state left over from an earlier failure.
+            # Reset the circuit when exposing verified models to clients so
+            # AUTO Router does not immediately reject the provider as unavailable.
+            if healthy_pool_key:
+                provider.health_state = Provider.HealthState.HEALTHY
+                provider.consecutive_failures = 0
+                provider.circuit_opened_until = None
+                provider.last_checked_at = timezone.now()
+                update_fields.extend([
+                    "health_state",
+                    "consecutive_failures",
+                    "circuit_opened_until",
+                    "last_checked_at",
+                ])
+            if update_fields:
+                provider.save(update_fields=list(dict.fromkeys(update_fields)))
 
         audit(
             request,
@@ -131,6 +148,7 @@ class ProviderClientActivationView(AdminAPIView):
             {
                 "provider": provider.slug,
                 "provider_enabled": provider.enabled,
+                "provider_health": provider.health_state,
                 "activated": activated,
                 "blocked": blocked,
             }
