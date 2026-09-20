@@ -3,6 +3,7 @@ from django.urls import path
 from .analytics_views import ProductAnalyticsView
 from .backup_views import SafeBackupActionView
 from .compliance_views import ComplianceConsoleView
+from .cost_policy_views import PricingOverheadPolicyView
 from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
@@ -58,6 +59,7 @@ urlpatterns = [
     path("drills/", OperationalDrillStatusView.as_view(), name="admin-drills"),
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("procurement/", ProcurementEconomicsView.as_view(), name="admin-procurement"),
+    path("procurement/overheads/", PricingOverheadPolicyView.as_view(), name="admin-pricing-overheads"),
     path("procurement/breakdown/", ProcurementBreakdownView.as_view(), name="admin-procurement-breakdown"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
     path("ledger/", LedgerInspectorView.as_view(), name="admin-ledger"),
