@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -64,6 +65,55 @@ def provider_available(provider: Provider) -> bool:
     if provider.health_state != Provider.HealthState.OPEN:
         return True
     return bool(provider.circuit_opened_until and provider.circuit_opened_until <= timezone.now())
+
+
+@transaction.atomic
+def ensure_safe_client_models() -> int:
+    """Recover saved models that are commercially safe but still disabled.
+
+    This repairs interrupted admin activation flows. It never enables a model
+    without a healthy provider key, an active model version, an active price,
+    and margin above the configured floor for both input and output.
+    """
+    from apps.billing.pricing import active_price, quote, require_margin
+
+    activated = 0
+    candidates = (
+        AIModel.objects.select_for_update()
+        .select_related("provider")
+        .filter(enabled=False, current_version__isnull=False)
+    )
+    for model in candidates:
+        provider = model.provider
+        if provider.emergency_disabled or not _has_healthy_key(provider):
+            continue
+        try:
+            price = active_price(model.slug)
+            require_margin(
+                quote(
+                    price,
+                    1_000_000,
+                    0,
+                    provider_slug=provider.slug,
+                    model_slug=model.slug,
+                )
+            )
+            require_margin(
+                quote(
+                    price,
+                    0,
+                    1_000_000,
+                    provider_slug=provider.slug,
+                    model_slug=model.slug,
+                )
+            )
+        except (ValidationError, Exception):
+            continue
+        model.enabled = True
+        model.save(update_fields=["enabled"])
+        provider_available(provider)
+        activated += 1
+    return activated
 
 
 def candidate_models(primary: AIModel) -> list[AIModel]:
