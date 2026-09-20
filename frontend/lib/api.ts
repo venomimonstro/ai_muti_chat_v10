@@ -1,4 +1,5 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const TEST_USER_KEY = "aiws:test-user";
 
 export class ApiError extends Error {
   constructor(
@@ -20,6 +21,35 @@ function errorText(value: unknown): string {
   return "Не удалось выполнить запрос";
 }
 
+function testUserId(path: string): string {
+  if (typeof window === "undefined" || path.startsWith("/admin/")) return "";
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("as_user");
+    if (requested === "clear") {
+      sessionStorage.removeItem(TEST_USER_KEY);
+      return "";
+    }
+    if (requested && /^[0-9a-f-]{36}$/i.test(requested)) {
+      sessionStorage.setItem(TEST_USER_KEY, requested);
+      return requested;
+    }
+    return sessionStorage.getItem(TEST_USER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function applyTestUserHeader(headers: Headers, path: string) {
+  const id = testUserId(path);
+  if (id) headers.set("X-Test-User", id);
+}
+
+export function clearTestUserMode() {
+  if (typeof window === "undefined") return;
+  try { sessionStorage.removeItem(TEST_USER_KEY); } catch {}
+}
+
 export async function ensureCsrf() {
   if (csrfToken) return csrfToken;
   const response = await fetch(`${API_BASE}/auth/csrf/`, {credentials: "include"});
@@ -35,6 +65,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!(init.body instanceof FormData) && init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  applyTestUserHeader(headers, path);
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
     headers.set("X-CSRFToken", await ensureCsrf());
   }
@@ -176,16 +207,19 @@ export async function streamMessage(
   writePending(conversationId, pending);
   signal.addEventListener("abort", () => clearPending(conversationId), {once: true});
 
-  const send = (confirmCost: boolean) =>
-    fetch(`${API_BASE}/conversations/${conversationId}/messages/stream/`, {
+  const send = (confirmCost: boolean) => {
+    const path = `/conversations/${conversationId}/messages/stream/`;
+    const headers = new Headers({
+      "Content-Type": "application/json",
+      "Idempotency-Key": pending.idempotencyKey,
+      "X-CSRFToken": csrfToken,
+    });
+    applyTestUserHeader(headers, path);
+    return fetch(`${API_BASE}${path}`, {
       method: "POST",
       credentials: "include",
       signal,
-      headers: {
-        "Content-Type": "application/json",
-        "Idempotency-Key": pending.idempotencyKey,
-        "X-CSRFToken": csrfToken,
-      },
+      headers,
       body: JSON.stringify({
         ...pending.payload,
         confirm_cost: confirmCost,
@@ -194,6 +228,7 @@ export async function streamMessage(
           : {}),
       }),
     });
+  };
 
   await ensureCsrf();
   let response = await send(Boolean(pending.confirmedCost));
