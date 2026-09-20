@@ -4,12 +4,13 @@ from django.core.management.base import BaseCommand
 from django.db.models import Sum
 
 from apps.billing.models import BalanceReservation, RequestCost, Wallet
+from apps.billing.services import reconstruct, reconstruct_buckets
 
 ZERO = Decimal("0.0000")
 
 
 class Command(BaseCommand):
-    help = "Audit wallet, reservation and settled-request invariants without mutating data."
+    help = "Audit wallet, ledger, reservation and settled-request invariants without mutating data."
 
     def handle(self, *args, **options):
         failures = 0
@@ -22,6 +23,18 @@ class Command(BaseCommand):
                 issues.append(
                     f"available_bucket_mismatch:{wallet.available_rub}!={wallet.paid_rub}+{wallet.promo_rub}"
                 )
+
+            ledger_available, ledger_reserved = reconstruct(wallet)
+            ledger_paid, ledger_promo = reconstruct_buckets(wallet)
+            if wallet.available_rub != ledger_available:
+                issues.append(f"ledger_available_mismatch:{wallet.available_rub}!={ledger_available}")
+            if wallet.reserved_rub != ledger_reserved:
+                issues.append(f"ledger_reserved_mismatch:{wallet.reserved_rub}!={ledger_reserved}")
+            if wallet.paid_rub != ledger_paid:
+                issues.append(f"ledger_paid_mismatch:{wallet.paid_rub}!={ledger_paid}")
+            if wallet.promo_rub != ledger_promo:
+                issues.append(f"ledger_promo_mismatch:{wallet.promo_rub}!={ledger_promo}")
+
             active_reserved = (
                 wallet.reservations.filter(state=BalanceReservation.State.ACTIVE).aggregate(
                     total=Sum("amount_rub")
@@ -29,9 +42,7 @@ class Command(BaseCommand):
                 or ZERO
             )
             if wallet.reserved_rub != active_reserved:
-                issues.append(
-                    f"reserved_mismatch:{wallet.reserved_rub}!={active_reserved}"
-                )
+                issues.append(f"active_reserve_mismatch:{wallet.reserved_rub}!={active_reserved}")
             if min(wallet.available_rub, wallet.reserved_rub, wallet.paid_rub, wallet.promo_rub) < ZERO:
                 issues.append("negative_wallet_component")
 
