@@ -2,6 +2,13 @@ import os
 
 from .settings import *  # noqa: F403,F401
 
+# Test-user mode must run after Django AuthenticationMiddleware so it can
+# validate the real platform-admin session before substituting request.user.
+_test_user_middleware = "apps.accounts.test_user_middleware.PlatformAdminTestUserMiddleware"
+if _test_user_middleware not in MIDDLEWARE:  # noqa: F405
+    _auth_index = MIDDLEWARE.index("django.contrib.auth.middleware.AuthenticationMiddleware")  # noqa: F405
+    MIDDLEWARE.insert(_auth_index + 1, _test_user_middleware)  # noqa: F405
+
 FRONTEND_PUBLIC_URL = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:3000").rstrip("/")
 EMAIL_BACKEND = os.getenv(
     "EMAIL_BACKEND",
