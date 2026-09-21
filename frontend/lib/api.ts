@@ -5,6 +5,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    public payload?: unknown,
   ) {
     super(message);
   }
@@ -81,12 +82,14 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     if (response.status === 403) csrfToken = "";
     let message = `Ошибка ${response.status}`;
+    let payload: unknown = null;
     try {
-      message = errorText(await response.json());
+      payload = await response.json();
+      message = errorText(payload);
     } catch {
       // Response without JSON body.
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, payload);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -253,6 +256,7 @@ export async function streamMessage(
       throw new ApiError(
         `Стоимость контекста изменилась до ${formatRub(details.estimated_max_rub)} ₽. Деньги не списаны — отправьте запрос ещё раз для нового подтверждения.`,
         409,
+        details,
       );
     }
   }
@@ -262,12 +266,14 @@ export async function streamMessage(
       clearPending(conversationId);
     }
     let message = `Ошибка ${response.status}`;
+    let payload: unknown = null;
     try {
-      message = errorText(await response.json());
+      payload = await response.json();
+      message = errorText(payload);
     } catch {
       // Response without JSON body.
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, payload);
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
