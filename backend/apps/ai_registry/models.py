@@ -76,6 +76,22 @@ class Provider(models.Model):
 
     def get_api_key(self) -> str:
         try:
+            # If procurement accounting is configured, the physical provider
+            # request must use the same key whose purchased balance is reserved.
+            funding = (
+                self.funding_accounts.filter(active=True, is_default=True, api_key__isnull=False, api_key__enabled=True)
+                .select_related("api_key")
+                .first()
+            )
+            if funding is not None:
+                value = funding.api_key.get_secret()
+                if value:
+                    return value
+        except Exception:
+            # Procurement app may not be migrated yet during bootstrap. Fall back
+            # to the normal key pool without making provider startup dependent on it.
+            pass
+        try:
             # Never randomly choose a degraded key while a verified healthy key
             # exists. Within each health tier respect the administrator priority.
             for health_state in ("healthy", "unknown", "degraded"):
