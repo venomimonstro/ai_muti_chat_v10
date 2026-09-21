@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import migrations, models
 import django.db.models.deletion
 
@@ -80,7 +82,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ProviderSpendAllocation",
             fields=[
-                ("id", models.UUIDField(editable=False, primary_key=True, serialize=False)),
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ("native_amount", models.DecimalField(decimal_places=6, max_digits=18)),
                 ("economic_cost_rub", models.DecimalField(decimal_places=4, max_digits=18)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
