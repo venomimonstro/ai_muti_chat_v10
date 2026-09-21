@@ -6,6 +6,7 @@ import "./workspace.css";
 import "./workspace-fixes.css";
 import "./workspace-performance.css";
 import "./workspace-premium.css";
+import "./workspace-billing-dialog.css";
 import "./client-chrome.css";
 
 export const metadata: Metadata = {
