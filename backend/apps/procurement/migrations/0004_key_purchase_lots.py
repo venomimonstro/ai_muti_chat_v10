@@ -46,10 +46,13 @@ class Migration(migrations.Migration):
                 name="unique_provider_procurement_credential_env",
             ),
         ),
+        # Keep the field plain during the nullable/backfill phase. On PostgreSQL,
+        # db_index=True followed by unique=True in the same migration makes Django
+        # schedule the same varchar_pattern_ops "_like" index twice.
         migrations.AddField(
             model_name="providerpurchase",
             name="document_number",
-            field=models.CharField(db_index=True, max_length=48, null=True),
+            field=models.CharField(max_length=48, null=True),
         ),
         migrations.AddField(
             model_name="providerpurchase",
@@ -70,7 +73,14 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="providerpurchase",
             name="document_number",
-            field=models.CharField(db_index=True, max_length=48, unique=True),
+            field=models.CharField(max_length=48),
+        ),
+        migrations.AddConstraint(
+            model_name="providerpurchase",
+            constraint=models.UniqueConstraint(
+                fields=("document_number",),
+                name="unique_provider_purchase_document_number",
+            ),
         ),
         migrations.AddConstraint(
             model_name="providerpurchase",
