@@ -26,6 +26,13 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@example.test")
 SERVER_EMAIL = os.getenv("SERVER_EMAIL", DEFAULT_FROM_EMAIL)
 EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
 
+# Owner-side procurement ledger enforcement is opt-in. Keep it separate from
+# live customer payments: turning on YooKassa must not implicitly block AI calls.
+PROCUREMENT_RUNTIME_FAIL_CLOSED = os.getenv(
+    "PROCUREMENT_RUNTIME_FAIL_CLOSED",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
+
 REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["client_error"] = os.getenv(  # noqa: F405
     "API_CLIENT_ERROR_RATE",
     "10/min",
