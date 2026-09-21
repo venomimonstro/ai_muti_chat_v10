@@ -1,4 +1,5 @@
 import os
+import uuid
 from decimal import Decimal, ROUND_UP
 
 from django.core.exceptions import ValidationError
@@ -13,6 +14,7 @@ from .models import (
     ProviderFundingAccount,
     ProviderPurchase,
     ProviderSpend,
+    ProviderSpendAllocation,
     ProviderSpendReservation,
 )
 
@@ -29,29 +31,76 @@ def account_available_native(account):
     return (account.funded_native - account.reserved_native - account.spent_native).quantize(NATIVE_STEP)
 
 
+def _purchase_remaining_rows(account):
+    purchases = list(
+        ProviderPurchase.objects.select_for_update()
+        .filter(account=account)
+        .order_by("purchased_at", "created_at", "id")
+    )
+    allocated = {
+        row["purchase_id"]: row["value"] or ZERO
+        for row in ProviderSpendAllocation.objects.filter(purchase__account=account)
+        .values("purchase_id")
+        .annotate(value=Sum("native_amount"))
+    }
+    allocated_total = sum(allocated.values(), ZERO)
+    legacy_unallocated_spend = max(ZERO, account.spent_native - allocated_total)
+    rows = []
+    for purchase in purchases:
+        remaining = max(ZERO, purchase.credit_native - allocated.get(purchase.id, ZERO))
+        if legacy_unallocated_spend > ZERO and remaining > ZERO:
+            legacy_take = min(remaining, legacy_unallocated_spend)
+            remaining -= legacy_take
+            legacy_unallocated_spend -= legacy_take
+        rows.append((purchase, remaining))
+    return rows
+
+
 def account_weighted_unit_cost_rub(account):
-    aggregate = account.purchases.aggregate(credit=Sum("credit_native"), cash=Sum("total_cash_outlay_rub"))
-    credit = aggregate["credit"] or ZERO
-    cash = aggregate["cash"] or ZERO
+    # Value only the still-unconsumed procurement inventory. This keeps the
+    # displayed average meaningful after differently-priced top-ups are spent.
+    try:
+        rows = _purchase_remaining_rows(account)
+    except Exception:
+        aggregate = account.purchases.aggregate(credit=Sum("credit_native"), cash=Sum("total_cash_outlay_rub"))
+        credit = aggregate["credit"] or ZERO
+        cash = aggregate["cash"] or ZERO
+        if credit <= ZERO:
+            return ZERO
+        return (cash / credit).quantize(Decimal("0.00000001"), rounding=ROUND_UP)
+    credit = ZERO
+    value = ZERO
+    for purchase, remaining in rows:
+        if remaining <= ZERO:
+            continue
+        credit += remaining
+        value += remaining * purchase.effective_cost_rub_per_native
     if credit <= ZERO:
         return ZERO
-    return (cash / credit).quantize(Decimal("0.00000001"), rounding=ROUND_UP)
+    return (value / credit).quantize(Decimal("0.00000001"), rounding=ROUND_UP)
 
 
 @transaction.atomic
-def create_funding_account(*, provider, label, credential_env, currency, low_balance_native=0, priority=100, is_default=False, notes=""):
+def create_funding_account(*, provider, label, credential_env="", api_key=None, currency="USD", low_balance_native=0, priority=100, is_default=False, notes=""):
     credential_env = str(credential_env or "").strip()
-    if not credential_env:
-        raise ValidationError("Укажите имя env-переменной, в которой хранится API-ключ")
-    if not credential_env.replace("_", "A").isalnum() or credential_env.upper() != credential_env:
-        raise ValidationError("Имя env-переменной должно быть в формате PROVIDER_API_KEY_1")
-    if ProviderFundingAccount.objects.filter(provider=provider, credential_env=credential_env).exists():
-        raise ValidationError("Такой закупочный аккаунт уже существует")
+    if api_key is None and not credential_env:
+        raise ValidationError("Выберите API-ключ для закупочного аккаунта")
+    if api_key is not None:
+        if api_key.provider_id != provider.id:
+            raise ValidationError("API-ключ принадлежит другому провайдеру")
+        if ProviderFundingAccount.objects.filter(api_key=api_key).exists():
+            raise ValidationError("Для этого API-ключа закупочный аккаунт уже создан")
+    if credential_env:
+        if not credential_env.replace("_", "A").isalnum() or credential_env.upper() != credential_env:
+            raise ValidationError("Имя env-переменной должно быть в формате PROVIDER_API_KEY_1")
+        if ProviderFundingAccount.objects.filter(provider=provider, credential_env=credential_env).exists():
+            raise ValidationError("Такой закупочный аккаунт уже существует")
     if is_default:
         ProviderFundingAccount.objects.filter(provider=provider, is_default=True).update(is_default=False)
     account = ProviderFundingAccount.objects.create(
         provider=provider,
-        label=str(label or credential_env).strip()[:160],
+        api_key=api_key,
+        label=str(label or (api_key.label if api_key is not None else credential_env)).strip()[:160],
         credential_env=credential_env,
         currency=str(currency or "USD").upper()[:3],
         low_balance_native=max(ZERO, _d(low_balance_native or 0)),
@@ -59,44 +108,94 @@ def create_funding_account(*, provider, label, credential_env, currency, low_bal
         is_default=bool(is_default),
         notes=str(notes or ""),
     )
-    if account.is_default:
+    if account.is_default and account.credential_env:
         Provider.objects.filter(pk=provider.pk).update(credential_env=account.credential_env)
     return account
 
 
 @transaction.atomic
 def set_default_account(account):
-    account = ProviderFundingAccount.objects.select_for_update().select_related("provider").get(pk=account.pk)
+    account = ProviderFundingAccount.objects.select_for_update().select_related("provider", "api_key").get(pk=account.pk)
     ProviderFundingAccount.objects.filter(provider=account.provider, is_default=True).exclude(pk=account.pk).update(is_default=False)
     account.is_default = True
     account.active = True
     account.save(update_fields=["is_default", "active", "updated_at"])
-    Provider.objects.filter(pk=account.provider_id).update(credential_env=account.credential_env)
+    if account.api_key_id:
+        # Runtime Provider.get_api_key() explicitly prefers the default funding
+        # account key, so the physical request and procurement ledger stay aligned.
+        account.api_key.enabled = True
+        if account.api_key.health_state == "disabled":
+            account.api_key.health_state = "unknown"
+        account.api_key.save(update_fields=["enabled", "health_state"])
+    elif account.credential_env:
+        Provider.objects.filter(pk=account.provider_id).update(credential_env=account.credential_env)
     return account
 
 
 @transaction.atomic
-def record_purchase(*, account, credit_native, base_cost_rub, fees_rub, purchased_at, created_by, market_fx_rate_rub=None, reference=""):
+def record_purchase(
+    *,
+    account,
+    credit_native,
+    base_cost_rub=None,
+    fees_rub=0,
+    purchased_at=None,
+    created_by,
+    market_fx_rate_rub=None,
+    payment_amount=None,
+    payment_currency="RUB",
+    payment_fx_rate_rub=None,
+    reference="",
+):
     account = ProviderFundingAccount.objects.select_for_update().get(pk=account.pk)
     credit = _d(credit_native)
-    base = _d(base_cost_rub)
     fees = _d(fees_rub or 0)
+    payment_currency = str(payment_currency or "RUB").upper().strip()
+    payment = _d(payment_amount) if payment_amount not in (None, "") else None
+    payment_fx = _d(payment_fx_rate_rub) if payment_fx_rate_rub not in (None, "") else None
     if credit <= 0:
         raise ValidationError("Закупленный API-баланс должен быть больше нуля")
-    if base < 0 or fees < 0 or base + fees <= 0:
+    if len(payment_currency) != 3:
+        raise ValidationError("Валюта оплаты должна быть ISO 4217, например RUB или USD")
+    if payment is not None and payment <= ZERO:
+        raise ValidationError("Сумма фактической оплаты должна быть больше нуля")
+    if payment_fx is not None and payment_fx <= ZERO:
+        raise ValidationError("Курс оплаты должен быть больше нуля")
+
+    if base_cost_rub in (None, ""):
+        if payment is None:
+            raise ValidationError("Укажите стоимость закупки в рублях или фактическую сумму оплаты")
+        if payment_currency == "RUB":
+            base = payment
+        else:
+            if payment_fx is None:
+                raise ValidationError("Для оплаты не в рублях укажите фактический курс конвертации в RUB")
+            base = payment * payment_fx
+    else:
+        base = _d(base_cost_rub)
+
+    if base < ZERO or fees < ZERO or base + fees <= ZERO:
         raise ValidationError("Фактическая стоимость закупки должна быть больше нуля")
+    purchased_at = purchased_at or timezone.now()
     total = (base + fees).quantize(RUB_STEP)
     unit = (total / credit).quantize(Decimal("0.00000001"), rounding=ROUND_UP)
+    purchase_id = uuid.uuid4()
+    document_number = f"API-{purchased_at:%Y%m%d}-{str(purchase_id).replace('-', '')[:8].upper()}"
     purchase = ProviderPurchase.objects.create(
+        id=purchase_id,
+        document_number=document_number,
         account=account,
         credit_native=credit,
+        payment_amount=payment,
+        payment_currency=payment_currency,
+        payment_fx_rate_rub=payment_fx,
         base_cost_rub=base,
         fees_rub=fees,
         total_cash_outlay_rub=total,
         market_fx_rate_rub=_d(market_fx_rate_rub) if market_fx_rate_rub not in (None, "") else None,
         effective_cost_rub_per_native=unit,
         reference=str(reference or "")[:300],
-        purchased_at=purchased_at or timezone.now(),
+        purchased_at=purchased_at,
         created_by=created_by,
     )
     account.funded_native += credit
@@ -109,7 +208,12 @@ def default_account(provider):
 
 
 def credential_is_configured(account):
-    return bool(os.getenv(account.credential_env, "").strip())
+    if account.api_key_id:
+        try:
+            return bool(account.api_key.enabled and account.api_key.get_secret())
+        except Exception:
+            return False
+    return bool(account.credential_env and os.getenv(account.credential_env, "").strip())
 
 
 @transaction.atomic
@@ -120,10 +224,18 @@ def reserve_provider_spend(*, provider, amount_native, source_key):
     existing = ProviderSpendReservation.objects.select_related("account").filter(source_key=source_key).first()
     if existing:
         return existing
-    account = ProviderFundingAccount.objects.select_for_update().filter(provider=provider, active=True, is_default=True).first()
+    account = (
+        ProviderFundingAccount.objects.select_for_update()
+        .select_related("api_key")
+        .filter(provider=provider, active=True, is_default=True)
+        .first()
+    )
     if account is None:
         raise ValidationError("Для коммерческого провайдера не настроен основной закупочный аккаунт")
-    if account.credential_env != provider.credential_env:
+    if account.api_key_id:
+        if not account.api_key.enabled:
+            raise ValidationError("API-ключ закупочного аккаунта отключён")
+    elif account.credential_env != provider.credential_env:
         raise ValidationError("Основной закупочный аккаунт не совпадает с API-ключом активного провайдера")
     if not credential_is_configured(account):
         raise ValidationError("API-ключ закупочного аккаунта не настроен на сервере")
@@ -172,14 +284,28 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, cu
     account = ProviderFundingAccount.objects.select_for_update().get(pk=reservation.account_id)
     overrun = actual > reservation.amount_native
     provider = reservation.account.provider
-    unit = account_weighted_unit_cost_rub(account)
-    economic = (actual * unit).quantize(RUB_STEP, rounding=ROUND_UP)
-
-    # Always persist the real provider cost. An overrun is an accounting event,
-    # not a reason to make the cost disappear from P&L.
     account.reserved_native -= reservation.amount_native
     available_after_release = max(ZERO, account.funded_native - account.spent_native)
     ledger_spend = min(actual, available_after_release)
+
+    allocation_plan = []
+    remaining_to_allocate = ledger_spend
+    economic = ZERO
+    if remaining_to_allocate > ZERO:
+        for purchase, remaining in _purchase_remaining_rows(account):
+            if remaining_to_allocate <= ZERO:
+                break
+            if remaining <= ZERO:
+                continue
+            take = min(remaining, remaining_to_allocate).quantize(NATIVE_STEP)
+            cost = (take * purchase.effective_cost_rub_per_native).quantize(RUB_STEP, rounding=ROUND_UP)
+            allocation_plan.append((purchase, take, cost))
+            economic += cost
+            remaining_to_allocate -= take
+    if remaining_to_allocate > ZERO:
+        raise ValidationError("Не удалось распределить расход по документам закупки API")
+
+    unit = (economic / ledger_spend).quantize(Decimal("0.00000001"), rounding=ROUND_UP) if ledger_spend > ZERO else ZERO
     account.spent_native += ledger_spend
     account.save(update_fields=["reserved_native", "spent_native", "updated_at"])
 
@@ -194,10 +320,17 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, cu
         output_tokens=max(0, int(output_tokens or 0)),
         native_cost=actual,
         nominal_cost_rub=_d(nominal_cost_rub).quantize(RUB_STEP),
-        economic_cost_rub=economic,
+        economic_cost_rub=economic.quantize(RUB_STEP),
         customer_charge_rub=customer_charge,
         acquisition_unit_cost_rub=unit,
     )
+    for purchase, native_amount, cost in allocation_plan:
+        ProviderSpendAllocation.objects.create(
+            spend=spend,
+            purchase=purchase,
+            native_amount=native_amount,
+            economic_cost_rub=cost,
+        )
 
     reservation.actual_native = min(actual, reservation.amount_native)
     reservation.state = ProviderSpendReservation.State.SETTLED
@@ -237,10 +370,14 @@ def funding_summary(account):
     unit = account_weighted_unit_cost_rub(account)
     available = account_available_native(account)
     estimated_available_value_rub = (available * unit).quantize(RUB_STEP)
+    key = account.api_key if account.api_key_id else None
     return {
         "id": str(account.id),
         "provider": account.provider.slug,
         "provider_name": account.provider.name,
+        "api_key_id": str(key.id) if key else None,
+        "api_key_label": key.label if key else "",
+        "api_key_masked": key.masked if key else "",
         "label": account.label,
         "credential_env": account.credential_env,
         "credential_configured": credential_is_configured(account),
