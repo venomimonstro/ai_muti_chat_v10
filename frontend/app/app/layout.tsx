@@ -1,10 +1,12 @@
 import type {Metadata} from "next";
+import ClientAppChrome from "../components/ClientAppChrome";
 import CryptoCompat from "../components/CryptoCompat";
 import WorkspaceUxEnhancer from "../components/WorkspaceUxEnhancer";
 import "./workspace.css";
 import "./workspace-fixes.css";
 import "./workspace-performance.css";
 import "./workspace-premium.css";
+import "./client-chrome.css";
 
 export const metadata: Metadata = {
   title: "AI Workspace — рабочее пространство",
@@ -13,5 +15,5 @@ export const metadata: Metadata = {
 };
 
 export default function AppLayout({children}: Readonly<{children: React.ReactNode}>) {
-  return <><CryptoCompat/><WorkspaceUxEnhancer/>{children}</>;
+  return <><CryptoCompat/><WorkspaceUxEnhancer/><ClientAppChrome>{children}</ClientAppChrome></>;
 }
