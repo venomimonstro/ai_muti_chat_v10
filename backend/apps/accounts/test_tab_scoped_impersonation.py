@@ -9,26 +9,26 @@ from .models import User
 
 
 class TabScopedImpersonationTests(TestCase):
-    def test_platform_admin_test_tab_uses_target_user_wallet_without_changing_admin_session(self):
-        admin = User.objects.create_user(
+    def setUp(self):
+        self.admin = User.objects.create_user(
             username="platform-admin-test-tab",
             email="platform-admin-test-tab@example.test",
             password="password123!",
             role=User.Role.PLATFORM_ADMIN,
         )
-        target = User.objects.create_user(
+        self.target = User.objects.create_user(
             username="client-test-tab",
             email="client-test-tab@example.test",
             password="password123!",
         )
-        credit(target, Decimal("37.50"), "test", "target-wallet")
+        credit(self.target, Decimal("37.50"), "test", "target-wallet")
+        self.client = APIClient()
+        self.client.force_login(self.admin)
 
-        client = APIClient()
-        client.force_login(admin)
-
-        target_wallet = client.get(
+    def test_platform_admin_test_tab_uses_target_user_wallet_without_changing_admin_session(self):
+        target_wallet = self.client.get(
             "/api/v1/wallet/",
-            HTTP_X_TEST_USER=str(target.id),
+            HTTP_X_TEST_USER=str(self.target.id),
         )
         self.assertEqual(target_wallet.status_code, 200)
         self.assertEqual(
@@ -36,8 +36,33 @@ class TabScopedImpersonationTests(TestCase):
             Decimal("37.5000"),
         )
         self.assertEqual(target_wallet.headers.get("X-Test-User-Active"), "1")
-        self.assertEqual(target_wallet.headers.get("X-Test-User-Id"), str(target.id))
+        self.assertEqual(target_wallet.headers.get("X-Test-User-Id"), str(self.target.id))
 
-        me = client.get("/api/v1/auth/me/")
+        me = self.client.get("/api/v1/auth/me/")
         self.assertEqual(me.status_code, 200)
-        self.assertEqual(me.data["id"], str(admin.id))
+        self.assertEqual(me.data["id"], str(self.admin.id))
+
+    def test_logout_in_test_user_tab_never_logs_out_real_admin(self):
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            HTTP_X_TEST_USER=str(self.target.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["test_user_mode_ended"])
+        self.assertEqual(response.headers.get("X-Test-User-Active"), "0")
+
+        me = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.data["id"], str(self.admin.id))
+
+    def test_logout_all_in_test_user_tab_never_logs_out_real_admin(self):
+        response = self.client.post(
+            "/api/v1/auth/logout-all/",
+            HTTP_X_TEST_USER=str(self.target.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["test_user_mode_ended"])
+
+        me = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.data["id"], str(self.admin.id))
