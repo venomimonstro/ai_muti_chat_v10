@@ -4,6 +4,7 @@ import WorkspaceUxEnhancer from "../components/WorkspaceUxEnhancer";
 import "./workspace.css";
 import "./workspace-fixes.css";
 import "./workspace-performance.css";
+import "./workspace-premium.css";
 
 export const metadata: Metadata = {
   title: "AI Workspace — рабочее пространство",
