@@ -12,8 +12,15 @@ class ProviderFundingAccount(models.Model):
         on_delete=models.PROTECT,
         related_name="funding_accounts",
     )
+    api_key = models.OneToOneField(
+        "ai_registry.ProviderApiKey",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="funding_account",
+    )
     label = models.CharField(max_length=160)
-    credential_env = models.CharField(max_length=120)
+    credential_env = models.CharField(max_length=120, blank=True, default="")
     currency = models.CharField(max_length=3, default="USD")
     active = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False)
@@ -31,6 +38,7 @@ class ProviderFundingAccount(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["provider", "credential_env"],
+                condition=~models.Q(credential_env=""),
                 name="unique_provider_procurement_credential_env",
             ),
             models.UniqueConstraint(
@@ -57,8 +65,10 @@ class ProviderFundingAccount(models.Model):
         self.credential_env = self.credential_env.strip()
         if len(self.currency) != 3:
             raise ValidationError("Валюта должна быть в формате ISO 4217, например USD")
-        if not self.credential_env:
-            raise ValidationError("Укажите имя переменной окружения с API-ключом")
+        if not self.api_key_id and not self.credential_env:
+            raise ValidationError("Привяжите закупочный аккаунт к API-ключу или укажите legacy env-переменную")
+        if self.api_key_id and self.api_key.provider_id != self.provider_id:
+            raise ValidationError("API-ключ принадлежит другому провайдеру")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -67,8 +77,12 @@ class ProviderFundingAccount(models.Model):
 
 class ProviderPurchase(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document_number = models.CharField(max_length=48, unique=True, db_index=True)
     account = models.ForeignKey(ProviderFundingAccount, on_delete=models.PROTECT, related_name="purchases")
     credit_native = models.DecimalField(max_digits=18, decimal_places=6)
+    payment_amount = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    payment_currency = models.CharField(max_length=3, default="RUB")
+    payment_fx_rate_rub = models.DecimalField(max_digits=18, decimal_places=8, null=True, blank=True)
     base_cost_rub = models.DecimalField(max_digits=18, decimal_places=4)
     fees_rub = models.DecimalField(max_digits=18, decimal_places=4, default=0)
     total_cash_outlay_rub = models.DecimalField(max_digits=18, decimal_places=4)
@@ -87,6 +101,10 @@ class ProviderPurchase(models.Model):
         ordering = ["-purchased_at", "-created_at"]
         constraints = [
             models.CheckConstraint(condition=models.Q(credit_native__gt=0), name="provider_purchase_credit_positive"),
+            models.CheckConstraint(
+                condition=models.Q(payment_amount__isnull=True) | models.Q(payment_amount__gt=0),
+                name="provider_purchase_payment_positive",
+            ),
             models.CheckConstraint(condition=models.Q(base_cost_rub__gte=0), name="provider_purchase_base_nonnegative"),
             models.CheckConstraint(condition=models.Q(fees_rub__gte=0), name="provider_purchase_fees_nonnegative"),
             models.CheckConstraint(condition=models.Q(total_cash_outlay_rub__gt=0), name="provider_purchase_total_positive"),
@@ -96,6 +114,7 @@ class ProviderPurchase(models.Model):
     def save(self, *args, **kwargs):
         if self.pk and type(self).objects.filter(pk=self.pk).exists():
             raise ValidationError("Закупки неизменяемы; создайте корректирующую запись")
+        self.payment_currency = (self.payment_currency or "RUB").upper().strip()
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -165,6 +184,33 @@ class ProviderSpend(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Историю расхода провайдера нельзя удалять")
+
+
+class ProviderSpendAllocation(models.Model):
+    """Immutable FIFO allocation of one provider spend to one purchase lot."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    spend = models.ForeignKey(ProviderSpend, on_delete=models.PROTECT, related_name="purchase_allocations")
+    purchase = models.ForeignKey(ProviderPurchase, on_delete=models.PROTECT, related_name="spend_allocations")
+    native_amount = models.DecimalField(max_digits=18, decimal_places=6)
+    economic_cost_rub = models.DecimalField(max_digits=18, decimal_places=4)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["purchase__purchased_at", "created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["spend", "purchase"], name="unique_spend_purchase_allocation"),
+            models.CheckConstraint(condition=models.Q(native_amount__gt=0), name="spend_allocation_native_positive"),
+            models.CheckConstraint(condition=models.Q(economic_cost_rub__gte=0), name="spend_allocation_cost_nonnegative"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError("Распределение расхода по закупке неизменяемо")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Распределение расхода по закупке нельзя удалять")
 
 
 class RetailTokenPriceVersion(models.Model):
