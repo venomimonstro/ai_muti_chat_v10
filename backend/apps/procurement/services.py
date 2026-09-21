@@ -34,7 +34,7 @@ def account_available_native(account):
 def _purchase_remaining_rows(account):
     purchases = list(
         ProviderPurchase.objects.select_for_update()
-        .filter(account=account)
+        .filter(account=account, state=ProviderPurchase.State.ACTIVE)
         .order_by("purchased_at", "created_at", "id")
     )
     allocated = {
@@ -57,12 +57,14 @@ def _purchase_remaining_rows(account):
 
 
 def account_weighted_unit_cost_rub(account):
-    # Value only the still-unconsumed procurement inventory. This keeps the
-    # displayed average meaningful after differently-priced top-ups are spent.
+    # Value only the still-unconsumed active procurement inventory. Cancelled
+    # and deleted orders remain in history but never contribute to runtime cost.
     try:
         rows = _purchase_remaining_rows(account)
     except Exception:
-        aggregate = account.purchases.aggregate(credit=Sum("credit_native"), cash=Sum("total_cash_outlay_rub"))
+        aggregate = account.purchases.filter(state=ProviderPurchase.State.ACTIVE).aggregate(
+            credit=Sum("credit_native"), cash=Sum("total_cash_outlay_rub")
+        )
         credit = aggregate["credit"] or ZERO
         cash = aggregate["cash"] or ZERO
         if credit <= ZERO:
