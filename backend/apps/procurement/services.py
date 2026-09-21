@@ -115,18 +115,19 @@ def create_funding_account(*, provider, label, credential_env="", api_key=None, 
 
 @transaction.atomic
 def set_default_account(account):
-    account = ProviderFundingAccount.objects.select_for_update().select_related("provider", "api_key").get(pk=account.pk)
+    # Lock only ProviderFundingAccount. Joining nullable api_key under FOR UPDATE
+    # is rejected by PostgreSQL (nullable side of an outer join).
+    account = ProviderFundingAccount.objects.select_for_update().select_related("provider").get(pk=account.pk)
     ProviderFundingAccount.objects.filter(provider=account.provider, is_default=True).exclude(pk=account.pk).update(is_default=False)
     account.is_default = True
     account.active = True
     account.save(update_fields=["is_default", "active", "updated_at"])
     if account.api_key_id:
-        # Runtime Provider.get_api_key() explicitly prefers the default funding
-        # account key, so the physical request and procurement ledger stay aligned.
-        account.api_key.enabled = True
-        if account.api_key.health_state == "disabled":
-            account.api_key.health_state = "unknown"
-        account.api_key.save(update_fields=["enabled", "health_state"])
+        api_key = account.api_key
+        api_key.enabled = True
+        if api_key.health_state == "disabled":
+            api_key.health_state = "unknown"
+        api_key.save(update_fields=["enabled", "health_state"])
     elif account.credential_env:
         Provider.objects.filter(pk=account.provider_id).update(credential_env=account.credential_env)
     return account
@@ -224,16 +225,18 @@ def reserve_provider_spend(*, provider, amount_native, source_key):
     existing = ProviderSpendReservation.objects.select_related("account").filter(source_key=source_key).first()
     if existing:
         return existing
+    # Lock only the funding-account row. api_key is nullable, so select_related
+    # here would create an OUTER JOIN that PostgreSQL refuses to lock.
     account = (
         ProviderFundingAccount.objects.select_for_update()
-        .select_related("api_key")
         .filter(provider=provider, active=True, is_default=True)
         .first()
     )
     if account is None:
         raise ValidationError("Для коммерческого провайдера не настроен основной закупочный аккаунт")
     if account.api_key_id:
-        if not account.api_key.enabled:
+        api_key = account.api_key
+        if not api_key.enabled:
             raise ValidationError("API-ключ закупочного аккаунта отключён")
     elif account.credential_env != provider.credential_env:
         raise ValidationError("Основной закупочный аккаунт не совпадает с API-ключом активного провайдера")
