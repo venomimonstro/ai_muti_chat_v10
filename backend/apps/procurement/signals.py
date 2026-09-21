@@ -1,5 +1,4 @@
 import logging
-import os
 from decimal import Decimal, ROUND_UP
 
 from django.conf import settings
@@ -43,9 +42,6 @@ def _commercial_fail_closed():
     customer wallet reservation/settlement path. Deployments that actively maintain
     provider funding balances can opt into strict fail-closed behaviour explicitly.
     """
-    explicit = str(os.getenv("PROCUREMENT_RUNTIME_FAIL_CLOSED", "")).strip().lower()
-    if explicit:
-        return explicit not in {"0", "false", "no", "off"}
     return bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
 
 
