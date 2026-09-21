@@ -1,3 +1,4 @@
+import logging
 import os
 from decimal import Decimal, ROUND_UP
 
@@ -14,6 +15,8 @@ from apps.image_studio.models import ImageGeneration
 
 from .models import ProviderFundingAccount, ProviderSpend, ProviderSpendReservation
 from .services import release_provider_spend, reserve_provider_spend, settle_provider_spend
+
+logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 STEP = Decimal("0.000001")
@@ -32,10 +35,18 @@ def _fx(snapshot):
 
 
 def _commercial_fail_closed():
+    """Whether the optional owner-side provider funding ledger is mandatory.
+
+    Client payments and provider procurement are separate concerns. A live YooKassa
+    checkout must not by itself require a manually maintained ProviderFundingAccount:
+    the client chat is already protected by model pricing, margin checks and the
+    customer wallet reservation/settlement path. Deployments that actively maintain
+    provider funding balances can opt into strict fail-closed behaviour explicitly.
+    """
     explicit = str(os.getenv("PROCUREMENT_RUNTIME_FAIL_CLOSED", "")).strip().lower()
     if explicit:
         return explicit not in {"0", "false", "no", "off"}
-    return bool(getattr(settings, "PAYMENTS_LIVE_ENABLED", False))
+    return bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
 
 
 def _provider_has_procurement(provider):
@@ -53,6 +64,10 @@ def _require_procurement(provider):
         raise ValidationError(
             f"Коммерческий запрос заблокирован: для провайдера {provider.slug} не настроен закупочный контур"
         )
+    logger.warning(
+        "Provider funding ledger is not configured; continuing with customer pricing/settlement only provider=%s",
+        provider.slug,
+    )
     return False
 
 
