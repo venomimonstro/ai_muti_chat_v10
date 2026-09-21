@@ -76,9 +76,15 @@ class ProviderFundingAccount(models.Model):
 
 
 class ProviderPurchase(models.Model):
+    class State(models.TextChoices):
+        ACTIVE = "active", "Активен"
+        CANCELLED = "cancelled", "Отменён"
+        DELETED = "deleted", "Удалён"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     document_number = models.CharField(max_length=48)
     account = models.ForeignKey(ProviderFundingAccount, on_delete=models.PROTECT, related_name="purchases")
+    state = models.CharField(max_length=16, choices=State.choices, default=State.ACTIVE, db_index=True)
     credit_native = models.DecimalField(max_digits=18, decimal_places=6)
     payment_amount = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     payment_currency = models.CharField(max_length=3, default="RUB")
@@ -95,6 +101,9 @@ class ProviderPurchase(models.Model):
         on_delete=models.PROTECT,
         related_name="recorded_provider_purchases",
     )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -114,12 +123,12 @@ class ProviderPurchase(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk and type(self).objects.filter(pk=self.pk).exists():
-            raise ValidationError("Закупки неизменяемы; создайте корректирующую запись")
+            raise ValidationError("Закупочный ордер изменяется только через защищённые админские операции")
         self.payment_currency = (self.payment_currency or "RUB").upper().strip()
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        raise ValidationError("Закупки нельзя удалять из финансовой истории")
+        raise ValidationError("Закупочный ордер удаляется только через защищённую админскую операцию")
 
 
 class ProviderSpendReservation(models.Model):
