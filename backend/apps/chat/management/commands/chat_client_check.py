@@ -27,7 +27,7 @@ class Command(BaseCommand):
             choices=["economy", "balanced", "maximum"],
             default="economy",
         )
-        parser.add_argument("--traceback", action="store_true")
+        # BaseCommand already provides the standard --traceback option.
 
     def _users(self, identifier):
         queryset = User.objects.filter(status=User.Status.ACTIVE).exclude(
@@ -100,7 +100,7 @@ class Command(BaseCommand):
                         f"PREVIEW_FAILED type={type(exc).__name__} detail={exc}"
                     )
                 )
-                if options["traceback"]:
+                if options.get("traceback"):
                     self.stderr.write(traceback.format_exc())
 
         self.stdout.write(f"CHECKED={len(users)} FAILURES={failures}")
