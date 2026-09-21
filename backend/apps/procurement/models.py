@@ -77,7 +77,7 @@ class ProviderFundingAccount(models.Model):
 
 class ProviderPurchase(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    document_number = models.CharField(max_length=48, unique=True, db_index=True)
+    document_number = models.CharField(max_length=48)
     account = models.ForeignKey(ProviderFundingAccount, on_delete=models.PROTECT, related_name="purchases")
     credit_native = models.DecimalField(max_digits=18, decimal_places=6)
     payment_amount = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
@@ -100,6 +100,7 @@ class ProviderPurchase(models.Model):
     class Meta:
         ordering = ["-purchased_at", "-created_at"]
         constraints = [
+            models.UniqueConstraint(fields=["document_number"], name="unique_provider_purchase_document_number"),
             models.CheckConstraint(condition=models.Q(credit_native__gt=0), name="provider_purchase_credit_positive"),
             models.CheckConstraint(
                 condition=models.Q(payment_amount__isnull=True) | models.Q(payment_amount__gt=0),
