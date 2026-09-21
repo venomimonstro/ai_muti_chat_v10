@@ -1,5 +1,6 @@
 "use client";
 
+import type {ReactNode} from "react";
 import Link from "next/link";
 import {usePathname} from "next/navigation";
 import styles from "../admin.module.css";
@@ -10,7 +11,7 @@ const tabs = [
   ["Закупочные ордера", "/admin-console/procurement/orders"],
 ] as const;
 
-export default function ProcurementLayout({children}:{children:React.ReactNode}) {
+export default function ProcurementLayout({children}:{children:ReactNode}) {
   const pathname = usePathname();
   return <>
     <div className={styles.section} style={{padding:"10px 14px",marginBottom:16}}>
