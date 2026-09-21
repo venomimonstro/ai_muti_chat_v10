@@ -11,7 +11,7 @@ class ProcurementRuntimeGateTests(TestCase):
         self.provider = Provider.objects.create(
             slug="procurement-openai-test",
             name="Procurement OpenAI Test",
-            adapter_type=Provider.AdapterType.OPENAI,
+            adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
             enabled=True,
             health_state=Provider.HealthState.HEALTHY,
         )
