@@ -106,13 +106,15 @@ class AutoEconomyPaidChatTests(TestCase):
         self.assertIn("event: routing", body)
         self.assertIn("event: delta", body)
         self.assertIn("event: completed", body)
-        self.assertIn("Тестовый ответ:", body)
 
         generation = Generation.objects.get(owner=user)
         generation.refresh_from_db()
         generation.assistant_message.refresh_from_db()
         user.wallet.refresh_from_db()
 
+        # SSE is intentionally chunked, so semantic response text must be asserted
+        # against the durable assistant message rather than across raw event frames.
+        self.assertIn("Тестовый ответ:", generation.assistant_message.content)
         self.assertEqual(generation.state, Generation.State.COMPLETED)
         self.assertEqual(generation.routed_model, model.slug)
         self.assertEqual(generation.assistant_message.status, Message.Status.COMPLETED)
