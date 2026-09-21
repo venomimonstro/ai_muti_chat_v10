@@ -10,6 +10,7 @@ from .infrastructure_views import InfrastructureHealthView
 from .metrics_views import OperationalMetricsView
 from .pricing_views import PricingManagementView
 from .procurement_breakdown_views import ProcurementBreakdownView
+from .procurement_ledger_views import ProcurementLedgerView
 from .procurement_views import ProcurementEconomicsView
 from .promo_credit_views import AdminPromoCreditView
 from .provider_activation_views import ProviderClientActivationView
@@ -59,6 +60,7 @@ urlpatterns = [
     path("drills/", OperationalDrillStatusView.as_view(), name="admin-drills"),
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("procurement/", ProcurementEconomicsView.as_view(), name="admin-procurement"),
+    path("procurement/ledger/", ProcurementLedgerView.as_view(), name="admin-procurement-ledger"),
     path("procurement/overheads/", PricingOverheadPolicyView.as_view(), name="admin-pricing-overheads"),
     path("procurement/breakdown/", ProcurementBreakdownView.as_view(), name="admin-procurement-breakdown"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
