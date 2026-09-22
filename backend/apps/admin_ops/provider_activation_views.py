@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.billing.pricing import active_price, quote, require_margin
 
+from .openrouter_pricing import sync_openrouter_prices
 from .services import audit
 from .views import AdminAPIView
 
@@ -51,6 +52,28 @@ class ProviderClientActivationView(AdminAPIView):
                 status=409,
             )
 
+        pricing_sync = {"verified": [], "rejected": [], "skipped": True}
+        if provider.slug == "openrouter":
+            try:
+                pricing_sync = sync_openrouter_prices(provider, model_ids)
+            except Exception as exc:
+                pricing_sync = {
+                    "verified": [],
+                    "rejected": [
+                        {
+                            "model": "*",
+                            "detail": f"Не удалось синхронизировать цены OpenRouter: {exc}",
+                        }
+                    ],
+                    "skipped": False,
+                }
+
+        pricing_rejections = {
+            str(item.get("model") or ""): str(item.get("detail") or "")
+            for item in pricing_sync.get("rejected", [])
+        }
+        global_pricing_error = pricing_rejections.get("*", "")
+
         models = list(
             AIModel.objects.select_for_update().filter(
                 provider=provider,
@@ -64,6 +87,10 @@ class ProviderClientActivationView(AdminAPIView):
         for upstream in model_ids:
             model = by_upstream.get(upstream)
             reasons = []
+            if global_pricing_error:
+                reasons.append(global_pricing_error)
+            if pricing_rejections.get(upstream):
+                reasons.append(pricing_rejections[upstream])
             if model is None:
                 reasons.append("Модель ещё не сохранена в каталоге")
             else:
@@ -142,6 +169,7 @@ class ProviderClientActivationView(AdminAPIView):
             {
                 "activated": [item["upstream_model"] for item in activated],
                 "blocked": blocked,
+                "pricing_sync": pricing_sync,
             },
         )
         return Response(
@@ -151,5 +179,6 @@ class ProviderClientActivationView(AdminAPIView):
                 "provider_health": provider.health_state,
                 "activated": activated,
                 "blocked": blocked,
+                "pricing_sync": pricing_sync,
             }
         )
