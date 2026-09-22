@@ -5,10 +5,12 @@ from django.core.exceptions import ValidationError
 
 from apps.accounts.services import spend_guard_snapshot
 from apps.ai_registry.router import select_route
+from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.models import Wallet
 from apps.billing.pricing import active_price, quote, require_margin
 
 from .attachments import resolve_chat_attachments
+from .models import Message
 
 VISION_RESERVE_TOKENS_PER_IMAGE = 2048
 
@@ -25,6 +27,23 @@ def _context_overhead_tokens(conversation):
     # A small bounded allowance for system/tool metadata and citations.
     total += 512
     return total
+
+
+def _existing_history_tokens(conversation):
+    """Conservative allowance for messages already present in this conversation.
+
+    The previous preview priced only the new prompt plus generic smart-context
+    allowances. prepare() later assembled the actual conversation history, which
+    could produce a much larger wallet reservation and an unrecoverable 409 loop.
+    Include persisted non-failed history up front so preview and real preflight use
+    the same order of magnitude. The final input is still capped by each model's
+    context window below.
+    """
+    rows = Message.objects.filter(conversation=conversation).exclude(status=Message.Status.FAILED).values(
+        "role", "content"
+    )
+    messages = [{"role": item["role"], "content": item["content"] or ""} for item in rows]
+    return estimate_message_tokens(messages) if messages else 0
 
 
 def chat_cost_preview(*, user, conversation, content, file_ids=None):
@@ -48,6 +67,7 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         raise ValidationError("Нет доступной модели для этого запроса")
 
     extra_input = _context_overhead_tokens(conversation)
+    extra_input += _existing_history_tokens(conversation)
     extra_input += len(vision_assets) * VISION_RESERVE_TOKENS_PER_IMAGE
     rows = []
     maximum = Decimal("0")
