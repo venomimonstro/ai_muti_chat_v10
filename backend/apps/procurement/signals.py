@@ -93,7 +93,18 @@ def _ensure(*, provider, expected_rub, snapshot, source_key):
         if _commercial_fail_closed() and _decimal(expected_rub) > ZERO:
             raise ValidationError("Не удалось рассчитать закупочный резерв провайдера")
         return None
-    return reserve_provider_spend(provider=provider, amount_native=native, source_key=source_key)
+    try:
+        return reserve_provider_spend(provider=provider, amount_native=native, source_key=source_key)
+    except ValidationError as exc:
+        if _commercial_fail_closed():
+            raise
+        logger.warning(
+            "Optional provider procurement reservation unavailable; continuing client request provider=%s source=%s reason=%s",
+            provider.slug,
+            source_key,
+            exc,
+        )
+        return None
 
 
 def _existing_spend(source_type, source_id, customer_charge=None):
