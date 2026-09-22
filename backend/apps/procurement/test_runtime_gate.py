@@ -1,9 +1,11 @@
+from unittest.mock import patch
+
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 
 from apps.ai_registry.models import Provider
 
-from .signals import _commercial_fail_closed, _require_procurement
+from .signals import _commercial_fail_closed, _ensure, _require_procurement
 
 
 class ProcurementRuntimeGateTests(TestCase):
@@ -26,3 +28,29 @@ class ProcurementRuntimeGateTests(TestCase):
         self.assertTrue(_commercial_fail_closed())
         with self.assertRaises(ValidationError):
             _require_procurement(self.provider)
+
+    @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=False)
+    @patch("apps.procurement.signals._require_procurement", return_value=True)
+    @patch("apps.procurement.signals.reserve_provider_spend")
+    def test_optional_procurement_gap_does_not_block_client_request(self, reserve, _required):
+        reserve.side_effect = ValidationError("Закупленный баланс AI-провайдера исчерпан")
+        result = _ensure(
+            provider=self.provider,
+            expected_rub="10.00",
+            snapshot={"fx_rate": "100"},
+            source_key="chat:test:optional-ledger",
+        )
+        self.assertIsNone(result)
+
+    @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+    @patch("apps.procurement.signals._require_procurement", return_value=True)
+    @patch("apps.procurement.signals.reserve_provider_spend")
+    def test_strict_procurement_gap_still_blocks_client_request(self, reserve, _required):
+        reserve.side_effect = ValidationError("Закупленный баланс AI-провайдера исчерпан")
+        with self.assertRaises(ValidationError):
+            _ensure(
+                provider=self.provider,
+                expected_rub="10.00",
+                snapshot={"fx_rate": "100"},
+                source_key="chat:test:strict-ledger",
+            )
