@@ -13,6 +13,35 @@ from .streaming import run
 logger = logging.getLogger(__name__)
 
 
+PROVIDER_ERROR_MESSAGES = {
+    "credit_balance_exhausted": (
+        "У AI-провайдера закончились API-кредиты. Запрос сохранён, деньги не списаны. "
+        "Администратору необходимо пополнить баланс провайдера."
+    ),
+    "organization_usage_limit_exceeded": (
+        "AI-провайдер достиг лимита использования организации. Запрос сохранён, деньги не списаны."
+    ),
+    "organization_spend_limit_exceeded": (
+        "AI-провайдер достиг лимита расходов организации. Запрос сохранён, деньги не списаны."
+    ),
+    "project_spend_limit_exceeded": (
+        "AI-провайдер достиг лимита расходов проекта. Запрос сохранён, деньги не списаны."
+    ),
+    "invalid_api_key": (
+        "Ключ AI-провайдера требует проверки администратором. Запрос сохранён, деньги не списаны."
+    ),
+    "authentication_error": (
+        "AI-провайдер отклонил авторизацию. Запрос сохранён, деньги не списаны."
+    ),
+    "permission_denied": (
+        "У ключа AI-провайдера недостаточно прав. Запрос сохранён, деньги не списаны."
+    ),
+    "model_not_found": (
+        "Выбранная модель недоступна для текущего API-ключа. Запрос сохранён, деньги не списаны."
+    ),
+}
+
+
 def _finalize_unhandled_disconnect(generation):
     generation.refresh_from_db(fields=["state", "reservation_id", "actual_cost_rub"])
     if generation.state not in {Generation.State.QUEUED, Generation.State.RUNNING}:
@@ -55,22 +84,9 @@ def _reservation_actual(generation):
 
 
 def _rewrite_error_chunk_if_needed(generation, chunk):
-    """Keep the SSE billing message consistent with the durable ledger.
-
-    streaming.run() can fail after authoritative provider usage has already been
-    persisted. release() then safely settles the exact snapshotted amount. The
-    legacy SSE text always said "money was not charged", which is incorrect in
-    that recovery case and can create a support/financial dispute.
-    """
+    """Keep the SSE message consistent with billing and expose actionable provider failures."""
     if not isinstance(chunk, str) or not chunk.startswith("event: error\n"):
         return chunk
-    actual = _reservation_actual(generation)
-    if actual is None:
-        return chunk
-    generation.refresh_from_db(fields=["state", "actual_cost_rub"])
-    if generation.actual_cost_rub != actual:
-        Generation.objects.filter(pk=generation.pk).update(actual_cost_rub=actual)
-        generation.actual_cost_rub = actual
     try:
         data_line = next(
             line for line in chunk.splitlines() if line.startswith("data: ")
@@ -78,6 +94,20 @@ def _rewrite_error_chunk_if_needed(generation, chunk):
         payload = json.loads(data_line[6:])
     except Exception:
         return chunk
+
+    code = str(payload.get("code") or "")
+    actual = _reservation_actual(generation)
+    if actual is None:
+        if code in PROVIDER_ERROR_MESSAGES:
+            payload["message"] = PROVIDER_ERROR_MESSAGES[code]
+            return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+        return chunk
+
+    generation.refresh_from_db(fields=["state", "actual_cost_rub"])
+    if generation.actual_cost_rub != actual:
+        Generation.objects.filter(pk=generation.pk).update(actual_cost_rub=actual)
+        generation.actual_cost_rub = actual
+
     if actual > 0:
         payload["cost_rub"] = str(actual)
         payload["message"] = (
@@ -86,7 +116,10 @@ def _rewrite_error_chunk_if_needed(generation, chunk):
         )
     else:
         payload["cost_rub"] = "0"
-        payload["message"] = "Запрос прервался до подтверждения расхода LLM. Деньги не списаны."
+        payload["message"] = PROVIDER_ERROR_MESSAGES.get(
+            code,
+            "Запрос прервался до подтверждения расхода LLM. Деньги не списаны.",
+        )
     return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
