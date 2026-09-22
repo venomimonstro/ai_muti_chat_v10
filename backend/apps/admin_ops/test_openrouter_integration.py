@@ -13,15 +13,35 @@ from .openrouter_pricing import sync_openrouter_prices
 
 class OpenRouterIntegrationTests(TestCase):
     def setUp(self):
-        self.provider = Provider.objects.create(
-            slug="openrouter",
-            name="OpenRouter",
-            enabled=True,
-            adapter_type=Provider.AdapterType.XAI_CHAT,
-            api_base_url="https://openrouter.ai/api/v1",
-            credential_env="OPENROUTER_API_KEY",
-            health_state=Provider.HealthState.HEALTHY,
+        # The OpenRouter provider is created by ai_registry.0009 during test DB
+        # setup. Reuse that canonical row instead of trying to create a second
+        # provider with the same unique slug.
+        self.provider = Provider.objects.get(slug="openrouter")
+        self.provider.name = "OpenRouter"
+        self.provider.enabled = True
+        self.provider.emergency_disabled = False
+        self.provider.adapter_type = Provider.AdapterType.XAI_CHAT
+        self.provider.api_base_url = "https://openrouter.ai/api/v1"
+        self.provider.credential_env = "OPENROUTER_API_KEY"
+        self.provider.health_state = Provider.HealthState.HEALTHY
+        self.provider.consecutive_failures = 0
+        self.provider.circuit_opened_until = None
+        self.provider.save(
+            update_fields=[
+                "name",
+                "enabled",
+                "emergency_disabled",
+                "adapter_type",
+                "api_base_url",
+                "credential_env",
+                "health_state",
+                "consecutive_failures",
+                "circuit_opened_until",
+            ]
         )
+        self.provider.api_keys.all().delete()
+        self.provider.models.all().delete()
+
         self.key = ProviderApiKey(
             provider=self.provider,
             label="Ключ 1",
