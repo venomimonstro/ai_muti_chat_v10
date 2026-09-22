@@ -152,6 +152,34 @@ def _http_error(exc: httpx.HTTPError) -> ProviderError:
     return ProviderError("Provider request failed",code=f"http_{status or 'network'}",retryable=True)
 
 
+def _openai_stream_error(event: dict) -> ProviderError:
+    """Normalize Responses API error and response.failed SSE envelopes.
+
+    OpenAI may send either a top-level `error` event or a `response.failed`
+    envelope whose actual error lives under `response.error`. Preserve the
+    provider code/message so runtime diagnostics and admin logs are actionable.
+    """
+    event_type = str(event.get("type") or "")
+    response = event.get("response") if isinstance(event.get("response"), dict) else {}
+    error = event.get("error") if isinstance(event.get("error"), dict) else {}
+    if not error and isinstance(response.get("error"), dict):
+        error = response.get("error") or {}
+    code = str(error.get("code") or error.get("type") or response.get("status") or event_type or "provider_error")
+    message = str(error.get("message") or event.get("message") or response.get("status_details") or "OpenAI Responses request failed")
+    non_retryable = {
+        "invalid_request_error",
+        "invalid_request",
+        "invalid_api_key",
+        "authentication_error",
+        "permission_denied",
+        "insufficient_quota",
+        "model_not_found",
+        "billing_hard_limit_reached",
+    }
+    retryable = code not in non_retryable and not code.startswith("invalid_")
+    return ProviderError(message, code=code[:120], retryable=retryable)
+
+
 class OpenAIResponsesAdapter(HTTPAdapter):
     def __init__(self,*,api_key:str,base_url:str="https://api.openai.com/v1"):
         if not api_key:raise ProviderError("Provider credential is not configured")
@@ -172,7 +200,7 @@ class OpenAIResponsesAdapter(HTTPAdapter):
                     elif event_type=="response.completed":
                         envelope=event.get("response",{});usage=envelope.get("usage") or {}
                         yield ProviderStreamEvent(kind="completed",provider_request_id=envelope.get("id",""),input_tokens=usage.get("input_tokens",0),output_tokens=usage.get("output_tokens",0))
-                    elif event_type in {"error","response.failed"}:raise ProviderError(event.get("message") or "Provider stream failed")
+                    elif event_type in {"error","response.failed"}:raise _openai_stream_error(event)
         except httpx.HTTPError as exc:raise _http_error(exc) from exc
         except json.JSONDecodeError as exc:raise ProviderError("Invalid provider stream",code="invalid_stream") from exc
     def generate(self,*,model:str,messages:list[dict],max_output_tokens:int):return _collect(self,model=model,messages=messages,max_output_tokens=max_output_tokens)
