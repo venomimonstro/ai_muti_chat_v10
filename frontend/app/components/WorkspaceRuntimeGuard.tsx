@@ -48,6 +48,7 @@ function dispatchRouting(source: HTMLSelectElement, value: string) {
 export default function WorkspaceRuntimeGuard() {
   const [target, setTarget] = useState<HTMLElement | null>(null);
   const [mode, setMode] = useState<PublicMode>("balanced");
+  const [sending, setSending] = useState(false);
   const submitLocked = useRef(false);
   const observedSending = useRef(false);
   const unlockTimer = useRef<number | null>(null);
@@ -59,13 +60,14 @@ export default function WorkspaceRuntimeGuard() {
       if (disposed) return;
       const nextTarget = composerTarget();
       if (nextTarget) setTarget((current) => current === nextTarget ? current : nextTarget);
+      setSending(Boolean(document.querySelector(".sendButton.stop")));
       const source = routingSelect();
       if (!source) return;
       setMode(readPublicMode());
     };
     sync();
     const observer = new MutationObserver(sync);
-    observer.observe(document.body, {subtree:true,childList:true,attributes:true,attributeFilter:["disabled","value"]});
+    observer.observe(document.body, {subtree:true,childList:true,attributes:true,attributeFilter:["disabled","value","class"]});
     const interval = window.setInterval(sync, 400);
     document.addEventListener("change", sync, true);
     return () => {disposed=true;observer.disconnect();window.clearInterval(interval);document.removeEventListener("change",sync,true)};
@@ -82,19 +84,19 @@ export default function WorkspaceRuntimeGuard() {
       return event.type==="click"&&Boolean(node.closest(".sendButton:not(.stop)"));
     };
     const guard=(event:Event)=>{if(!gesture(event))return;if(submitLocked.current){event.preventDefault();event.stopImmediatePropagation();return}submitLocked.current=true;observedSending.current=false;if(unlockTimer.current!==null)window.clearTimeout(unlockTimer.current);unlockTimer.current=window.setTimeout(unlock,10000)};
-    const observer=new MutationObserver(()=>{const sending=Boolean(document.querySelector(".sendButton.stop"));if(sending)observedSending.current=true;else if(observedSending.current)unlock()});
+    const observer=new MutationObserver(()=>{const active=Boolean(document.querySelector(".sendButton.stop"));if(active)observedSending.current=true;else if(observedSending.current)unlock()});
     observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:["class"]});
     document.addEventListener("click",guard,true);document.addEventListener("keydown",guard,true);
     return()=>{document.removeEventListener("click",guard,true);document.removeEventListener("keydown",guard,true);observer.disconnect();if(unlockTimer.current!==null)window.clearTimeout(unlockTimer.current)};
   },[]);
 
-  const choose=(next:PublicMode)=>{const source=routingSelect();if(!source||source.disabled)return;setMode(next);dispatchRouting(source,`auto:${next}`)};
+  const choose=(next:PublicMode)=>{const source=routingSelect();if(!source||source.disabled||sending)return;setMode(next);dispatchRouting(source,`auto:${next}`)};
   if(!target)return null;
   const current=LEVELS.find(item=>item.value===mode)??LEVELS[1];
   return createPortal(
-    <label className="systemTierPicker" title={current.hint}>
+    <label className="systemTierPicker" title={sending?"Дождитесь окончания текущего ответа":current.hint}>
       <span className="srOnly">Уровень модели</span>
-      <select aria-label="Уровень модели" value={mode} disabled={Boolean(routingSelect()?.disabled)} onChange={event=>choose(event.target.value as PublicMode)}>
+      <select aria-label="Уровень модели" value={mode} disabled={sending||Boolean(routingSelect()?.disabled)} onChange={event=>choose(event.target.value as PublicMode)}>
         {LEVELS.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
       </select>
     </label>,
