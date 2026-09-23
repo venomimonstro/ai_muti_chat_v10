@@ -1,9 +1,14 @@
+from decimal import Decimal
+
+from django.db.models import Sum
 from rest_framework import serializers
 
 from .models import Payment, Refund, RefundRequest
 
 
 class PaymentSerializer(serializers.ModelSerializer):
+    refundable_rub = serializers.SerializerMethodField()
+
     class Meta:
         model = Payment
         fields = (
@@ -14,9 +19,32 @@ class PaymentSerializer(serializers.ModelSerializer):
             "confirmation_url",
             "receipt_status",
             "credited_at",
+            "refundable_rub",
             "created_at",
         )
         read_only_fields = fields
+
+    def get_refundable_rub(self, obj):
+        if obj.status != Payment.Status.SUCCEEDED:
+            return "0.00"
+        refunded = (
+            obj.refunds.filter(
+                status__in=[Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED]
+            ).aggregate(total=Sum("amount_rub"))["total"]
+            or Decimal("0.00")
+        )
+        held = (
+            obj.refund_requests.filter(
+                status__in=[
+                    RefundRequest.Status.PENDING,
+                    RefundRequest.Status.APPROVED,
+                    RefundRequest.Status.PROCESSING,
+                ]
+            ).aggregate(total=Sum("amount_rub"))["total"]
+            or Decimal("0.00")
+        )
+        remaining = max(Decimal("0.00"), obj.amount_rub - refunded - held)
+        return f"{remaining:.2f}"
 
 
 class CreatePaymentSerializer(serializers.Serializer):
