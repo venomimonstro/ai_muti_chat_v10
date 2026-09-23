@@ -44,11 +44,25 @@ class Command(BaseCommand):
         for provider in Provider.objects.prefetch_related("api_keys", "models").order_by("priority", "slug"):
             if provider.adapter_type == Provider.AdapterType.ECHO:
                 continue
+
             configured_keys = provider.api_keys.filter(enabled=True).count()
-            configured = provider.enabled or provider.credential_configured() or configured_keys > 0
-            if not configured:
-                self.stdout.write(f"[SKIP] provider={provider.slug}: not configured")
+
+            # A provider explicitly disabled by the owner is outside the runtime
+            # routing surface. Stale credentials, health state or saved models must
+            # not turn an intentionally disabled integration into a critical failure.
+            if not provider.enabled:
+                reason = "disabled by admin"
+                if configured_keys:
+                    reason += f"; stored enabled keys={configured_keys} ignored by routing"
+                self.stdout.write(f"[SKIP] provider={provider.slug}: {reason}")
                 continue
+
+            configured = provider.credential_configured() or configured_keys > 0
+            if not configured:
+                failed += 1
+                self.stdout.write(f"[FAIL] provider={provider.slug}: enabled but no credential configured")
+                continue
+
             healthy_keys = provider.api_keys.filter(enabled=True, health_state="healthy").count()
             models = list(provider.models.all())
             enabled = [m for m in models if m.enabled]
@@ -117,7 +131,11 @@ class Command(BaseCommand):
                     failed += 1
                     self.stdout.write(f"  [FAIL] generation {type(exc).__name__}: {exc}")
 
-        visible_manual = AIModel.objects.filter(enabled=True).exclude(provider__slug="gigachat").count()
+        visible_manual = AIModel.objects.filter(
+            enabled=True,
+            provider__enabled=True,
+            provider__emergency_disabled=False,
+        ).exclude(provider__slug="gigachat").count()
         self.stdout.write(
             f"--- CLIENT ---\nmanual_visible_models={visible_manual} auto_ready_tiers={ready_tiers}/3 "
             f"legacy_gigachat_hidden=yes"
