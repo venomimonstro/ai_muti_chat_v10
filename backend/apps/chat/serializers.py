@@ -15,6 +15,7 @@ PUBLIC_SYSTEM_LEVELS = {
     Conversation.RoutingMode.BALANCED: "System Pro",
     Conversation.RoutingMode.MAXIMUM: "System Max",
 }
+INTERNAL_CONTEXT_KINDS = {"system_policy", "product_identity"}
 
 
 def _public_generation_identity(generation):
@@ -41,7 +42,7 @@ def _public_routing_snapshot(generation, model_name, hide_upstream):
         return routing
     if not hide_upstream:
         return routing
-    public = {
+    return {
         "decision_id": routing.get("decision_id"),
         "mode": routing.get("mode"),
         "task_taxonomy": routing.get("task_taxonomy"),
@@ -57,7 +58,18 @@ def _public_routing_snapshot(generation, model_name, hide_upstream):
         # exposed through the customer API. Full diagnostics remain in admin data.
         "candidates": [],
     }
-    return public
+
+
+def _public_context_components(generation):
+    components = generation.context_snapshot.get("components", [])
+    if not isinstance(components, list):
+        return []
+    # System prompts are implementation/security controls, not customer-visible
+    # context. Memory/file/history entries remain inspectable as before.
+    return [
+        item for item in components
+        if not isinstance(item, dict) or item.get("kind") not in INTERNAL_CONTEXT_KINDS
+    ]
 
 
 class MessageSerializer(serializers.ModelSerializer):
@@ -93,7 +105,7 @@ class MessageSerializer(serializers.ModelSerializer):
                 "version": generation.context_snapshot.get("version"),
                 "sha256": generation.context_snapshot.get("sha256", ""),
                 "budget": generation.context_snapshot.get("budget", {}),
-                "components": generation.context_snapshot.get("components", []),
+                "components": _public_context_components(generation),
                 "citations": generation.context_snapshot.get("citations", []),
                 "vision_assets": generation.context_snapshot.get("vision_assets", []),
                 "web_sources": generation.context_snapshot.get("web_sources", []),
