@@ -1,7 +1,9 @@
 .topbar .selectors > .selectWrap:first-child{display:none}
-.systemTierPicker{display:inline-flex;align-items:center;min-width:0}
+.composerActions>.attach{order:1}
+.composerActions>.costPreview{order:2;margin-left:auto}
+.systemTierPicker{order:3;display:inline-flex;align-items:center;min-width:0}
 .systemTierPicker select{width:auto;max-width:148px;min-height:36px;border:0;border-radius:10px;background:#f1eef6;color:#504765;padding:8px 30px 8px 10px;font-size:12px;font-weight:750;line-height:1;box-shadow:none;cursor:pointer}
 .systemTierPicker select:hover{background:#ebe7f3}
 .systemTierPicker select:focus{border:0;box-shadow:0 0 0 3px #6d51e71a;outline:none}
-.composerActions .systemTierPicker + .costPreview{margin-left:0}
-@media (max-width:700px){.systemTierPicker select{max-width:128px;padding-left:8px;padding-right:24px}.composerActions .costPreview{display:none}}
+.composerActions>.send{order:4;margin-left:0}
+@media (max-width:700px){.composerActions>.costPreview{display:none}.systemTierPicker{margin-left:auto}.systemTierPicker select{max-width:128px;padding-left:8px;padding-right:24px}}
