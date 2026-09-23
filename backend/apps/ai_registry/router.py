@@ -16,9 +16,9 @@ OUTPUT_TOKENS = 1024
 CONTEXT_SAFETY_TOKENS = 64
 MODE_LABELS = {
     "manual": "Вручную",
-    "economy": "Эконом",
-    "balanced": "Баланс",
-    "maximum": "Максимум",
+    "economy": "Слабая",
+    "balanced": "Средняя",
+    "maximum": "Высокая",
 }
 TASK_LABELS = dict(EvalCase.Taxonomy.choices)
 DEFAULT_WEIGHTS = {
@@ -31,6 +31,7 @@ DEFAULT_THRESHOLDS = {
     "economy_min_quality": 0.60,
     "fallback_price_multiplier": 1.50,
     "unknown_latency_ms": 1500,
+    "tier_models": {},
 }
 RULES = [
     (EvalCase.Taxonomy.DEBUGGING, ("ошибк", "баг", "debug", "traceback", "исправь код")),
@@ -81,9 +82,7 @@ def classify_task(content, conversation):
     taxonomy = matches[0][1] if matches else EvalCase.Taxonomy.QA
     confidence = min(0.98, 0.58 + (matches[0][0] * 0.12)) if matches else 0.52
     content_tokens = estimate_text_tokens(content)
-    long_context = content_tokens > 2000 or any(
-        token in normalized for token in ("длинный документ", "весь документ", "большой файл")
-    )
+    long_context = content_tokens > 2000 or any(token in normalized for token in ("длинный документ", "весь документ", "большой файл"))
     if long_context and not matches:
         taxonomy = EvalCase.Taxonomy.LONG_DOCUMENTS
         confidence = 0.82
@@ -106,9 +105,7 @@ def classify_task(content, conversation):
     )
     image_request = any(token in normalized for token in ("изображен", "фото", "картин", "скриншот"))
     needs_vision = image_request and has_visual_files
-    needs_tools = any(
-        token in normalized for token in ("найди акту", "проверь в интернете", "сегодня", "последние новости")
-    )
+    needs_tools = any(token in normalized for token in ("найди акту", "проверь в интернете", "сегодня", "последние новости"))
     capabilities = ["text"]
     if needs_vision:
         capabilities.append("vision")
@@ -185,90 +182,94 @@ def _active_policy():
     return policy
 
 
+def _manual_route(policy, classification, conversation, input_tokens):
+    try:
+        primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(
+            slug=conversation.selected_model, enabled=True
+        )
+    except AIModel.DoesNotExist as exc:
+        raise ValidationError("Выбранная модель недоступна") from exc
+    available = candidate_models(primary)
+    if not available:
+        raise ValidationError("Выбранная модель временно недоступна")
+    priced = []
+    primary_cost = None
+    multiplier = Decimal(str((policy.thresholds or {}).get("fallback_price_multiplier", 1.5)))
+    for model in available:
+        reasons = []
+        if not _fits_context(model, input_tokens):
+            reasons.append("context_window_too_small")
+        price = active_price(model.slug)
+        price_quote = quote(
+            price,
+            input_tokens,
+            min(OUTPUT_TOKENS, model.max_output_tokens),
+            provider_slug=model.provider.slug,
+            model_slug=model.slug,
+        )
+        charge = price_quote.user_charge_rub
+        if primary_cost is None:
+            primary_cost = charge
+        if not price_quote.margin_allowed:
+            reasons.append("margin_below_floor")
+        if charge > primary_cost * multiplier:
+            reasons.append("fallback_price_requires_consent")
+        priced.append({
+            "model": model.slug,
+            "provider": model.provider.slug,
+            "model_version": model.current_version.version if model.current_version else None,
+            "exact_api_id": model.upstream_model,
+            "status": "eligible" if not reasons else "rejected",
+            "reasons": reasons,
+            "estimated_input_tokens": input_tokens,
+            "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
+            "estimated_cost_rub": str(charge),
+            "gross_margin_percent": str(price_quote.gross_margin_percent),
+            "score": None,
+        })
+    allowed_models = [model for model, item in zip(available, priced, strict=True) if item["status"] == "eligible"]
+    for rank, item in enumerate((item for item in priced if item["status"] == "eligible"), 1):
+        item["rank"] = rank
+        item["fallback_allowed"] = True
+    if not allowed_models:
+        raise ValidationError("Выбранная модель не помещает запрос в контекст или нарушает лимит стоимости")
+    selected_item = next(item for item in priced if item["status"] == "eligible")
+    return RouteSelection(
+        policy=policy,
+        classification=classification,
+        selected=allowed_models[0],
+        ordered_models=allowed_models,
+        candidates=priced,
+        explanation=f"Модель {allowed_models[0].display_name} выбрана пользователем вручную.",
+        estimated_input_tokens=input_tokens,
+        estimated_output_tokens=min(OUTPUT_TOKENS, allowed_models[0].max_output_tokens),
+        estimated_cost_rub=Decimal(selected_item["estimated_cost_rub"]),
+    )
+
+
 def select_route(*, conversation, content):
     policy = _active_policy()
     classification = classify_task(content, conversation)
     input_tokens = _estimated_input(conversation, content)
     mode = conversation.routing_mode
     if mode == "manual":
-        try:
-            primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(
-                slug=conversation.selected_model, enabled=True
-            )
-        except AIModel.DoesNotExist as exc:
-            raise ValidationError("Выбранная модель недоступна") from exc
-        available = candidate_models(primary)
-        if not available:
-            raise ValidationError("Выбранная модель временно недоступна")
-        priced = []
-        primary_cost = None
-        multiplier = Decimal(str(policy.thresholds.get("fallback_price_multiplier", 1.5)))
-        for model in available:
-            reasons = []
-            if not _fits_context(model, input_tokens):
-                reasons.append("context_window_too_small")
-            price = active_price(model.slug)
-            price_quote = quote(
-                price,
-                input_tokens,
-                min(OUTPUT_TOKENS, model.max_output_tokens),
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
-            )
-            charge = price_quote.user_charge_rub
-            if primary_cost is None:
-                primary_cost = charge
-            if not price_quote.margin_allowed:
-                reasons.append("margin_below_floor")
-            if charge > primary_cost * multiplier:
-                reasons.append("fallback_price_requires_consent")
-            allowed = not reasons
-            priced.append({
-                "model": model.slug,
-                "provider": model.provider.slug,
-                "model_version": model.current_version.version if model.current_version else None,
-                "exact_api_id": model.upstream_model,
-                "status": "eligible" if allowed else "rejected",
-                "reasons": reasons,
-                "estimated_input_tokens": input_tokens,
-                "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
-                "estimated_cost_rub": str(charge),
-                "gross_margin_percent": str(price_quote.gross_margin_percent),
-                "score": None,
-            })
-        allowed_models = [
-            model for model, item in zip(available, priced, strict=True) if item["status"] == "eligible"
-        ]
-        for rank, item in enumerate((item for item in priced if item["status"] == "eligible"), 1):
-            item["rank"] = rank
-            item["fallback_allowed"] = True
-        if not allowed_models:
-            raise ValidationError("Выбранная модель не помещает запрос в контекст или нарушает лимит стоимости")
-        return RouteSelection(
-            policy=policy,
-            classification=classification,
-            selected=allowed_models[0],
-            ordered_models=allowed_models,
-            candidates=priced,
-            explanation=f"Модель {allowed_models[0].display_name} выбрана пользователем вручную.",
-            estimated_input_tokens=input_tokens,
-            estimated_output_tokens=min(OUTPUT_TOKENS, allowed_models[0].max_output_tokens),
-            estimated_cost_rub=Decimal(next(item["estimated_cost_rub"] for item in priced if item["status"] == "eligible")),
-        )
+        return _manual_route(policy, classification, conversation, input_tokens)
 
-    weights = policy.mode_weights.get(mode)
+    weights = (policy.mode_weights or {}).get(mode) or DEFAULT_WEIGHTS.get(mode)
     if not weights:
         raise ValidationError("Неизвестный режим AUTO Router")
-    default_quality = float(policy.thresholds.get("default_quality", 0.55))
-    economy_min = float(policy.thresholds.get("economy_min_quality", 0.60))
-    unknown_latency = int(policy.thresholds.get("unknown_latency_ms", 1500))
+    thresholds = policy.thresholds or {}
+    default_quality = float(thresholds.get("default_quality", 0.55))
+    economy_min = float(thresholds.get("economy_min_quality", 0.60))
+    unknown_latency = int(thresholds.get("unknown_latency_ms", 1500))
+    pinned_slug = str((thresholds.get("tier_models") or {}).get(mode) or "").strip()
+
     candidates = []
     model_lookup = {}
     for model in AIModel.objects.filter(enabled=True).select_related("provider", "current_version"):
         model_lookup[model.slug] = model
         reasons = []
-        capabilities = _capabilities(model)
-        missing = set(classification.required_capabilities) - capabilities
+        missing = set(classification.required_capabilities) - _capabilities(model)
         if missing:
             reasons.append("missing_capabilities:" + ",".join(sorted(missing)))
         if not provider_available(model.provider):
@@ -313,7 +314,9 @@ def select_route(*, conversation, content):
             "estimated_cost_rub": str(charge) if charge is not None else None,
             "gross_margin_percent": str(price_quote.gross_margin_percent) if price_quote else None,
             "score": None,
+            "admin_tier_model": model.slug == pinned_slug,
         })
+
     eligible = [item for item in candidates if item["status"] == "eligible"]
     if not eligible:
         raise ValidationError("AUTO Router не нашёл подходящую доступную модель")
@@ -323,19 +326,21 @@ def select_route(*, conversation, content):
     for item in eligible:
         cost_score = _normalize_inverse(float(item["estimated_cost_rub"]), min(costs), max(costs))
         latency_score = _normalize_inverse(item["latency_ms"], min(latencies), max(latencies))
-        context_score = (
-            (math.log2(item["context_window"]) - min(contexts)) / (max(contexts) - min(contexts))
-            if max(contexts) > min(contexts) else 1.0
-        )
-        health_score = _health_score(model_lookup[item["model"]].provider)
-        tag_bonus = 0.05 if classification.taxonomy in model_lookup[item["model"]].routing_tags else 0
-        needs_bonus = 0.03 if classification.signals["needs_tools"] and "tools" in _capabilities(model_lookup[item["model"]]) else 0
+        context_score = ((math.log2(item["context_window"]) - min(contexts)) / (max(contexts) - min(contexts))) if max(contexts) > min(contexts) else 1.0
+        model = model_lookup[item["model"]]
+        health_score = _health_score(model.provider)
+        tag_bonus = 0.05 if classification.taxonomy in model.routing_tags else 0
+        needs_bonus = 0.03 if classification.signals["needs_tools"] and "tools" in _capabilities(model) else 0
         long_bonus = 0.05 * context_score if classification.signals["long_context"] else 0
         item["score_components"] = {
-            "quality": round(item["quality"], 4), "cost": round(cost_score, 4),
-            "latency": round(latency_score, 4), "health": round(health_score, 4),
-            "context": round(context_score, 4), "tag_bonus": tag_bonus,
-            "needs_bonus": needs_bonus, "long_context_bonus": round(long_bonus, 4),
+            "quality": round(item["quality"], 4),
+            "cost": round(cost_score, 4),
+            "latency": round(latency_score, 4),
+            "health": round(health_score, 4),
+            "context": round(context_score, 4),
+            "tag_bonus": tag_bonus,
+            "needs_bonus": needs_bonus,
+            "long_context_bonus": round(long_bonus, 4),
         }
         item["score"] = round(
             item["quality"] * float(weights.get("quality", 0))
@@ -345,27 +350,38 @@ def select_route(*, conversation, content):
             + tag_bonus + needs_bonus + long_bonus,
             6,
         )
+
     eligible.sort(key=lambda item: (-item["score"], item["model"]))
-    selected_item = eligible[0]
+    pinned = next((item for item in eligible if item["model"] == pinned_slug), None)
+    selected_item = pinned or eligible[0]
     selected = model_lookup[selected_item["model"]]
     selected_cost = Decimal(selected_item["estimated_cost_rub"])
-    multiplier = Decimal(str(policy.thresholds.get("fallback_price_multiplier", 1.5)))
+    multiplier = Decimal(str(thresholds.get("fallback_price_multiplier", 1.5)))
+
+    # A configured tier model is always attempted first. Remaining eligible
+    # external API models are ordered by score and act only as API fallbacks.
+    fallback_items = [item for item in eligible if item["model"] != selected_item["model"]]
+    ranked = [selected_item, *fallback_items]
     ordered_models = []
-    for rank, item in enumerate(eligible, 1):
+    for rank, item in enumerate(ranked, 1):
         item["rank"] = rank
-        allowed = Decimal(item["estimated_cost_rub"]) <= selected_cost * multiplier
+        allowed = rank == 1 or Decimal(item["estimated_cost_rub"]) <= selected_cost * multiplier
         item["fallback_allowed"] = allowed
         if allowed:
             ordered_models.append(model_lookup[item["model"]])
+
     label = TASK_LABELS.get(classification.taxonomy, classification.taxonomy)
-    quality_note = (
-        f"eval-оценка {selected_item['quality']:.0%}"
-        if selected_item["quality_source"] == "eval" else "базовая оценка до накопления eval"
-    )
-    explanation = (
-        f"AUTO определил задачу «{label}» и выбрал {selected.display_name}: {quality_note}, "
-        f"провайдер {selected.provider.get_health_state_display().lower()}, режим «{MODE_LABELS[mode]}»."
-    )
+    quality_note = f"eval-оценка {selected_item['quality']:.0%}" if selected_item["quality_source"] == "eval" else "базовая оценка до накопления eval"
+    if pinned:
+        explanation = (
+            f"AUTO: уровень «{MODE_LABELS[mode]}» закреплён администратором за {selected.display_name} "
+            f"({selected.provider.name}); задача «{label}», {quality_note}."
+        )
+    else:
+        explanation = (
+            f"AUTO определил задачу «{label}» и выбрал {selected.display_name}: {quality_note}, "
+            f"провайдер {selected.provider.get_health_state_display().lower()}, уровень «{MODE_LABELS[mode]}»."
+        )
     return RouteSelection(
         policy=policy,
         classification=classification,
