@@ -42,3 +42,19 @@ def test_usage_summary_is_user_scoped():
     assert Decimal(response.data["thirty_days"]["cost_rub"]) == Decimal("2.5000")
     assert response.data["thirty_days"]["input_tokens"] == 200
     assert response.data["thirty_days"]["output_tokens"] == 80
+
+
+@pytest.mark.django_db
+def test_usage_hides_gigachat_internal_model_names():
+    user = User.objects.create_user(username="usage-system", email="system@example.test", password="test-password-123")
+    make_generation(user, cost="1.0000", model="gigachat-2-lite")
+    make_generation(user, cost="2.0000", model="gigachat-2-pro")
+    make_generation(user, cost="3.0000", model="gigachat-2-max")
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.get("/api/v1/auth/usage/")
+    assert response.status_code == 200
+    names = {row["routed_model"] for row in response.data["by_model"]}
+    assert {"System Lite", "System Pro", "System Max"}.issubset(names)
+    assert all("gigachat" not in name.casefold() for name in names)
