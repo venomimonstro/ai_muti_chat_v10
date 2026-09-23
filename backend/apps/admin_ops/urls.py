@@ -7,6 +7,7 @@ from .cost_policy_views import PricingOverheadPolicyView
 from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
+from .live_tool_views import LiveToolCheckView, LiveToolSettingsView
 from .metrics_views import OperationalMetricsView
 from .owner_destructive_views import OwnerProcurementLedgerView, OwnerProviderKeyDetailView
 from .pricing_views import PricingManagementView
@@ -69,6 +70,8 @@ urlpatterns = [
     path("quality/", QualityControlView.as_view(), name="admin-quality"),
     path("routing-tiers/", RoutingTierMatrixView.as_view(), name="admin-routing-tiers"),
     path("incidents/", IncidentControlView.as_view(), name="admin-incidents"),
+    path("live-tools/", LiveToolSettingsView.as_view(), name="admin-live-tools"),
+    path("live-tools/check/", LiveToolCheckView.as_view(), name="admin-live-tools-check"),
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
     path("providers/<slug:provider_slug>/credentials/", ProviderCredentialView.as_view(), name="admin-provider-credentials"),
     path("providers/<slug:provider_slug>/keys/", ProviderKeyCollectionView.as_view(), name="admin-provider-keys"),
