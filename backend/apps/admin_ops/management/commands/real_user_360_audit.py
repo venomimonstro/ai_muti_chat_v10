@@ -55,7 +55,7 @@ class Command(BaseCommand):
 
         # Wallet and immutable-ledger reconciliation.
         bad_wallets = []
-        for wallet in Wallet.objects.all().iterator():
+        for wallet in Wallet.objects.all().iterator(chunk_size=200):
             ledger_available, ledger_reserved = reconstruct(wallet)
             ledger_paid, ledger_promo = reconstruct_buckets(wallet)
             problems = []
@@ -76,16 +76,12 @@ class Command(BaseCommand):
 
         # Reservations must never remain active after the operation is stale.
         cutoff = timezone.now() - timedelta(seconds=stale_seconds)
-        stale = list(
-            BalanceReservation.objects.filter(
-                state=BalanceReservation.State.ACTIVE,
-                created_at__lt=cutoff,
-            ).values_list("id", flat=True)[:show]
-        )
-        stale_count = BalanceReservation.objects.filter(
+        stale_qs = BalanceReservation.objects.filter(
             state=BalanceReservation.State.ACTIVE,
             created_at__lt=cutoff,
-        ).count()
+        )
+        stale = list(stale_qs.values_list("id", flat=True)[:show])
+        stale_count = stale_qs.count()
         if stale_count:
             fail("stale_reservations", f"{stale_count} stuck reservation(s), sample={list(map(str, stale))}")
         else:
@@ -94,7 +90,7 @@ class Command(BaseCommand):
         # Completed generations must be settled once and equal their RequestCost.
         bad_completed = []
         completed = Generation.objects.filter(state=Generation.State.COMPLETED).select_related("assistant_message")
-        for generation in completed.iterator():
+        for generation in completed.iterator(chunk_size=200):
             problems = []
             cost = RequestCost.objects.filter(generation_id=generation.id).first()
             reservation = (
@@ -128,7 +124,7 @@ class Command(BaseCommand):
             state__in=[Generation.State.FAILED, Generation.State.CANCELLED],
             reservation_id__isnull=False,
         )
-        for generation in terminal.iterator():
+        for generation in terminal.iterator(chunk_size=200):
             reservation = BalanceReservation.objects.filter(pk=generation.reservation_id).first()
             if reservation and reservation.state == BalanceReservation.State.ACTIVE:
                 terminal_active.append(str(generation.id))
@@ -140,7 +136,7 @@ class Command(BaseCommand):
         # A successful payment must credit the wallet exactly once.
         bad_payments = []
         successful = Payment.objects.filter(status=Payment.Status.SUCCEEDED)
-        for payment in successful.iterator():
+        for payment in successful.iterator(chunk_size=200):
             key = f"credit:payment:{payment.id}"
             credit_count = LedgerEntry.objects.filter(idempotency_key=key).count()
             problems = []
@@ -157,7 +153,7 @@ class Command(BaseCommand):
 
         bad_refunds = []
         succeeded_refunds = Refund.objects.filter(status=Refund.Status.SUCCEEDED)
-        for refund in succeeded_refunds.iterator():
+        for refund in succeeded_refunds.iterator(chunk_size=200):
             problems = []
             if refund.wallet_debited_at is None:
                 problems.append("wallet hold/debit missing")
@@ -171,14 +167,15 @@ class Command(BaseCommand):
             ok("refund_settlement", f"{succeeded_refunds.count()} successful refund(s) have wallet debit")
 
         # Duplicate-looking human sends are warnings, not automatic deletions: users
-        # are allowed to intentionally repeat a prompt. This detects the UI race in
-        # production without corrupting legitimate history.
+        # are allowed to intentionally repeat a prompt. Scan only recent history and
+        # stream rows instead of loading an unbounded production message table.
         suspicious = []
-        recent_messages = list(
-            Message.objects.filter(role=Message.Role.USER)
+        duplicate_since = timezone.now() - timedelta(days=30)
+        recent_messages = (
+            Message.objects.filter(role=Message.Role.USER, created_at__gte=duplicate_since)
             .exclude(content="")
-            .select_related("conversation")
             .order_by("conversation_id", "created_at", "id")
+            .iterator(chunk_size=500)
         )
         previous = None
         for message in recent_messages:
@@ -192,7 +189,7 @@ class Command(BaseCommand):
         if suspicious:
             warn("rapid_duplicate_prompts", f"possible double-submit sample={suspicious}")
         else:
-            ok("rapid_duplicate_prompts", "no same-prompt pairs within 2 seconds in scanned history")
+            ok("rapid_duplicate_prompts", "no same-prompt pairs within 2 seconds in the last 30 days")
 
         self.stdout.write(
             f"--- SUMMARY ---\ncritical={len(failures)} warnings={len(warnings)} "
