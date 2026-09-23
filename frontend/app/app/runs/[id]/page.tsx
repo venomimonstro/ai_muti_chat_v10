@@ -1,0 +1,33 @@
+"use client";
+
+import Link from "next/link";
+import {useParams} from "next/navigation";
+import {useEffect,useState} from "react";
+import {api} from "../../../../lib/api";
+
+type Step={id:string;agent_name:string;sequence:number;title:string;action_type:string;state:string;public_log:string;cost_rub:string;started_at:string|null;finished_at:string|null};
+type Approval={id:string;title:string;description:string;status:string;action_payload:Record<string,unknown>;created_at:string};
+type Run={id:string;agent:string|null;agent_name:string|null;team:string|null;team_name:string|null;project:string|null;state:string;objective:string;output_payload:{text?:string;repository?:string;repository_files?:string[]};plan:Array<Record<string,unknown>>;cost_reserved_rub:string;cost_actual_rub:string;step_count:number;tool_call_count:number;handoff_count:number;error_code:string;error_message:string;started_at:string|null;finished_at:string|null;steps:Step[];approvals:Approval[]};
+
+const stateLabel:Record<string,string>={queued:"В очереди",planning:"Планирование",running:"Выполняется",waiting_tool:"Ожидает инструмент",waiting_approval:"Нужно подтверждение",reviewing:"Проверка",completed:"Готово",failed:"Ошибка",canceled:"Отменён",budget_exceeded:"Лимит бюджета",pending:"Ожидает",approved:"Одобрено",rejected:"Отклонено"};
+const activeStates=new Set(["queued","planning","running","waiting_tool","reviewing"]);
+
+export default function AgentRunPage(){
+ const params=useParams<{id:string}>();const id=String(params.id);const[run,setRun]=useState<Run|null>(null);const[error,setError]=useState("");const[busy,setBusy]=useState("");
+ const load=async()=>{try{setRun(await api<Run>(`/agent-runs/${id}/`));setError("")}catch(e){setError(e instanceof Error?e.message:"Не удалось загрузить запуск")}};
+ useEffect(()=>{void load()},[id]);
+ useEffect(()=>{if(!run||!activeStates.has(run.state))return;const timer=window.setInterval(()=>void load(),2000);return()=>window.clearInterval(timer)},[run?.state,id]);
+ const decide=async(approval:Approval,decision:"approved"|"rejected")=>{setBusy(approval.id);setError("");try{setRun(await api<Run>(`/agent-runs/${id}/approvals/${approval.id}/decision/`,{method:"POST",body:JSON.stringify({decision})}))}catch(e){setError(e instanceof Error?e.message:"Не удалось сохранить решение")}finally{setBusy("")}};
+ const cancel=async()=>{setBusy("cancel");try{setRun(await api<Run>(`/agent-runs/${id}/cancel/`,{method:"POST"}))}catch(e){setError(e instanceof Error?e.message:"Не удалось остановить запуск")}finally{setBusy("")}};
+ if(!run)return <main style={{padding:32}}>{error||"Загрузка…"}</main>;
+ const pending=run.approvals.filter(item=>item.status==="pending");
+ return <main style={{maxWidth:1080,margin:"0 auto",padding:"30px 20px 70px"}}>
+  <header style={{display:"flex",justifyContent:"space-between",gap:18,alignItems:"flex-start",marginBottom:24}}><div><Link href={run.team?"/app/dev":run.agent?`/app/agents/${run.agent}`:"/app/agents"} style={{textDecoration:"none",opacity:.65}}>← Назад</Link><h1 style={{fontSize:34,margin:"10px 0 5px"}}>{run.team_name||run.agent_name||"Agent Run"}</h1><div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}><strong>{stateLabel[run.state]||run.state}</strong><span style={{opacity:.6}}>· {run.step_count} шагов · {run.tool_call_count} tool calls · {Number(run.cost_actual_rub||0).toFixed(2)} ₽</span></div></div>{activeStates.has(run.state)&&<button disabled={!!busy} onClick={()=>void cancel()} style={{padding:"10px 14px",border:"1px solid #d99",borderRadius:10,background:"transparent"}}>Остановить</button>}</header>
+  {error&&<div style={{padding:13,border:"1px solid #cb747a",borderRadius:12,marginBottom:16}}>{error}</div>}
+  <section style={{border:"1px solid #ddd",borderRadius:18,padding:20,marginBottom:18}}><div style={{fontSize:12,opacity:.55,textTransform:"uppercase"}}>Задача</div><p style={{fontSize:18,lineHeight:1.55,whiteSpace:"pre-wrap"}}>{run.objective}</p>{run.output_payload?.repository&&<div style={{fontSize:13,opacity:.62}}>Repository: <strong>{run.output_payload.repository}</strong>{run.output_payload.repository_files?.length?` · прочитано ключевых файлов: ${run.output_payload.repository_files.length}`:""}</div>}</section>
+  {pending.length>0&&<section style={{border:"1px solid #d9b46f",borderRadius:18,padding:20,marginBottom:18}}><h2 style={{marginTop:0}}>Нужно подтверждение</h2>{pending.map(item=><div key={item.id} style={{padding:"13px 0",borderTop:"1px solid #eee"}}><strong>{item.title}</strong>{item.description&&<p style={{opacity:.72}}>{item.description}</p>}<div style={{display:"flex",gap:8}}><button disabled={!!busy} onClick={()=>void decide(item,"approved")} style={{padding:"9px 13px",border:0,borderRadius:9,fontWeight:700}}>Разрешить</button><button disabled={!!busy} onClick={()=>void decide(item,"rejected")} style={{padding:"9px 13px",border:"1px solid #ccc",borderRadius:9,background:"transparent"}}>Отклонить</button></div></div>)}</section>}
+  <section style={{marginBottom:18}}><h2>Журнал работы</h2>{run.steps.length?<div style={{display:"grid",gap:10}}>{run.steps.map(step=><article key={step.id} style={{border:"1px solid #ddd",borderRadius:16,padding:17}}><div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"baseline"}}><div><span style={{fontSize:12,opacity:.5}}>ШАГ {step.sequence} · {step.action_type}</span><h3 style={{margin:"5px 0"}}>{step.title}</h3><div style={{fontSize:13,opacity:.6}}>{step.agent_name} · {stateLabel[step.state]||step.state}</div></div><strong>{Number(step.cost_rub||0).toFixed(2)} ₽</strong></div>{step.public_log&&<div style={{marginTop:13,padding:14,borderRadius:12,background:"rgba(127,127,127,.08)",whiteSpace:"pre-wrap",lineHeight:1.55}}>{step.public_log}</div>}</article>)}</div>:<div style={{border:"1px dashed #bbb",borderRadius:15,padding:24,opacity:.65}}>Шаги появятся после начала выполнения.</div>}</section>
+  {run.output_payload?.text&&<section style={{border:"1px solid #ddd",borderRadius:18,padding:20,marginBottom:18}}><h2 style={{marginTop:0}}>Итог</h2><div style={{whiteSpace:"pre-wrap",lineHeight:1.6}}>{run.output_payload.text}</div></section>}
+  {run.error_message&&<section style={{border:"1px solid #cb747a",borderRadius:18,padding:20}}><h2 style={{marginTop:0}}>Ошибка</h2><div style={{fontFamily:"ui-monospace, monospace",fontSize:13}}>{run.error_code||"agent_error"}</div><p>{run.error_message}</p></section>}
+ </main>
+}
