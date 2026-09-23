@@ -12,6 +12,11 @@ from apps.chat.models import Generation
 
 MONEY_FIELD = DecimalField(max_digits=14, decimal_places=4)
 MONEY_ZERO = Value(Decimal("0.0000"), output_field=MONEY_FIELD)
+TERMINAL_STATES = [
+    Generation.State.COMPLETED,
+    Generation.State.FAILED,
+    Generation.State.CANCELLED,
+]
 
 
 def public_model_name(value):
@@ -32,9 +37,12 @@ class UsageSummaryView(APIView):
         local_now = timezone.localtime(now)
         today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         since_30 = now - timedelta(days=30)
+        # A cancelled/failed generation can still have a confirmed partial charge
+        # after tokens were delivered. Excluding it would make the usage screen
+        # disagree with the wallet ledger, so all terminal generations belong here.
         qs = Generation.objects.filter(
             owner=request.user,
-            state=Generation.State.COMPLETED,
+            state__in=TERMINAL_STATES,
             completed_at__gte=since_30,
         )
 
