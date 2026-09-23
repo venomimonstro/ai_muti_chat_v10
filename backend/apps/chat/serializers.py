@@ -10,6 +10,56 @@ from .branches import visible_messages
 from .models import Conversation, ConversationDraft, Message
 
 
+PUBLIC_SYSTEM_LEVELS = {
+    Conversation.RoutingMode.ECONOMY: "System Lite",
+    Conversation.RoutingMode.BALANCED: "System Pro",
+    Conversation.RoutingMode.MAXIMUM: "System Max",
+}
+
+
+def _public_generation_identity(generation):
+    routing = generation.context_snapshot.get("routing", {}) or {}
+    mode = routing.get("mode")
+    raw_model = generation.routed_model or generation.model or ""
+    is_internal_gigachat = generation.provider_slug == "gigachat" or raw_model.startswith("gigachat")
+    if is_internal_gigachat:
+        fallback = "System Pro"
+        lowered = raw_model.lower()
+        if "lite" in lowered:
+            fallback = "System Lite"
+        elif "max" in lowered:
+            fallback = "System Max"
+        elif "pro" in lowered:
+            fallback = "System Pro"
+        return PUBLIC_SYSTEM_LEVELS.get(mode, fallback), "system", True
+    return raw_model, generation.provider_slug, False
+
+
+def _public_routing_snapshot(generation, model_name, hide_upstream):
+    routing = generation.context_snapshot.get("routing")
+    if not isinstance(routing, dict):
+        return routing
+    if not hide_upstream:
+        return routing
+    public = {
+        "decision_id": routing.get("decision_id"),
+        "mode": routing.get("mode"),
+        "task_taxonomy": routing.get("task_taxonomy"),
+        "selected_model": model_name,
+        "model_version": model_name,
+        "exact_api_id": "",
+        "explanation": f"Использован уровень {model_name}.",
+        "policy_version": routing.get("policy_version"),
+        "classification_confidence": routing.get("classification_confidence"),
+        "required_capabilities": routing.get("required_capabilities", []),
+        "estimated_cost_rub": routing.get("estimated_cost_rub"),
+        # Internal providers/models and fallback candidates are intentionally not
+        # exposed through the customer API. Full diagnostics remain in admin data.
+        "candidates": [],
+    }
+    return public
+
+
 class MessageSerializer(serializers.ModelSerializer):
     generation = serializers.SerializerMethodField()
 
@@ -22,13 +72,15 @@ class MessageSerializer(serializers.ModelSerializer):
             generation = obj.generation_response
         except Message.generation_response.RelatedObjectDoesNotExist:
             return None
+        model_name, provider_name, hide_upstream = _public_generation_identity(generation)
+        routing = _public_routing_snapshot(generation, model_name, hide_upstream)
         return {
             "id": generation.id,
             "state": generation.state,
-            "model": generation.routed_model or generation.model,
-            "provider": generation.provider_slug,
-            "model_version": generation.context_snapshot.get("routing", {}).get("model_version"),
-            "exact_api_id": generation.context_snapshot.get("routing", {}).get("exact_api_id", ""),
+            "model": model_name,
+            "provider": provider_name,
+            "model_version": model_name if hide_upstream else generation.context_snapshot.get("routing", {}).get("model_version"),
+            "exact_api_id": "" if hide_upstream else generation.context_snapshot.get("routing", {}).get("exact_api_id", ""),
             "cost_rub": generation.actual_cost_rub,
             "input_tokens": generation.input_tokens,
             "output_tokens": generation.output_tokens,
@@ -47,7 +99,7 @@ class MessageSerializer(serializers.ModelSerializer):
                 "web_sources": generation.context_snapshot.get("web_sources", []),
                 "web_search": generation.context_snapshot.get("web_search"),
                 "dropped_or_deduplicated": generation.context_snapshot.get("dropped_or_deduplicated", 0),
-                "routing": generation.context_snapshot.get("routing"),
+                "routing": routing,
             },
         }
 
