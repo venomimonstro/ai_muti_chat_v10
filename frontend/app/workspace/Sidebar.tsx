@@ -36,6 +36,8 @@ export function Sidebar(props:Props){
   <button className="sideAction" onClick={()=>{props.onSearch();if(window.innerWidth<=820&&!collapsed)props.onToggle();}}><Icon name="search"/><span>Поиск</span><kbd>⌘K</kbd></button>
   <nav className="sidePrimaryNav" aria-label="Основные разделы">
    <Link href="/app/projects" title="Проекты"><Icon name="folder"/><span>Проекты</span></Link>
+   <Link href="/app/agents" title="AI-сотрудники"><Icon name="brain"/><span>Агенты</span></Link>
+   <Link href="/app/dev" title="AI-команда разработки"><Icon name="zap"/><span>Dev Studio</span></Link>
    <Link href="/app/images" title="Изображения"><Icon name="spark"/><span>Изображения</span></Link>
    <Link href="/app/compare" title="Сравнение моделей"><Icon name="scale"/><span>Сравнить модели</span></Link>
   </nav>
