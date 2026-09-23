@@ -10,7 +10,7 @@ from apps.chat.models import Conversation, Generation, Message
 from .usage_views import public_model_name
 
 
-def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, model="model-a", state=Generation.State.COMPLETED):
+def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, model="model-a", state=Generation.State.COMPLETED, provider_slug=""):
     conversation = Conversation.objects.create(owner=user, title="usage")
     request = Message.objects.create(conversation=conversation, role=Message.Role.USER, content="test")
     response = Message.objects.create(conversation=conversation, role=Message.Role.ASSISTANT, content="ok")
@@ -21,6 +21,7 @@ def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, mod
         state=state,
         model=model,
         routed_model=model,
+        provider_slug=provider_slug,
         idempotency_key=f"usage-{user.id}-{request.id}",
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -33,6 +34,7 @@ def test_public_system_name_uses_customer_routing_level_before_internal_slug():
     assert public_model_name("gigachat-2-max", "economy") == "System Lite"
     assert public_model_name("gigachat-2-lite", "balanced") == "System Pro"
     assert public_model_name("gigachat-2-pro", "maximum") == "System Max"
+    assert public_model_name("renamed-internal-model", "maximum", "gigachat") == "System Max"
 
 
 @pytest.mark.django_db
