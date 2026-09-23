@@ -12,6 +12,7 @@ DEPLOY_STARTED=false
 [[ "${EUID}" -eq 0 ]] || { printf 'Запустите: sudo ./scripts/update.sh\n' >&2; exit 1; }
 [[ -f "${ENV_FILE}" ]] || { printf '.env.production не найден. Сначала запустите install.sh\n' >&2; exit 1; }
 command -v flock >/dev/null 2>&1 || { printf 'Команда flock не найдена\n' >&2; exit 1; }
+command -v openssl >/dev/null 2>&1 || { printf 'openssl не найден\n' >&2; exit 1; }
 
 exec 9>"${PROJECT_DIR}/.update.lock"
 flock -n 9 || { printf 'Другое обновление уже выполняется\n' >&2; exit 1; }
@@ -20,6 +21,32 @@ mkdir -p "${BACKUP_DIR}"
 
 compose() {
   docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
+}
+
+upsert_env_if_missing() {
+  local key="$1" value="$2"
+  if ! grep -q "^${key}=" "${ENV_FILE}"; then
+    printf '%s=%s\n' "${key}" "${value}" >>"${ENV_FILE}"
+  fi
+}
+
+ensure_runtime_env() {
+  local sandbox_secret
+  sandbox_secret="$(sed -n 's/^SANDBOX_SHARED_SECRET=//p' "${ENV_FILE}" | head -n 1)"
+  if [[ -z "${sandbox_secret}" ]]; then
+    sandbox_secret="$(openssl rand -hex 32)"
+    if grep -q '^SANDBOX_SHARED_SECRET=' "${ENV_FILE}"; then
+      sed -i "s|^SANDBOX_SHARED_SECRET=.*|SANDBOX_SHARED_SECRET=${sandbox_secret}|" "${ENV_FILE}"
+    else
+      printf 'SANDBOX_SHARED_SECRET=%s\n' "${sandbox_secret}" >>"${ENV_FILE}"
+    fi
+  fi
+  upsert_env_if_missing SANDBOX_TIMEOUT_SECONDS 90
+  upsert_env_if_missing SANDBOX_MAX_BODY_BYTES 2097152
+  upsert_env_if_missing SANDBOX_MAX_FILES 300
+  upsert_env_if_missing SANDBOX_MAX_FILE_BYTES 524288
+  upsert_env_if_missing SANDBOX_CLIENT_TIMEOUT_SECONDS 100
+  chmod 600 "${ENV_FILE}"
 }
 
 rollback_app() {
@@ -65,6 +92,8 @@ if [[ -d .git ]]; then
   fi
 fi
 
+ensure_runtime_env
+
 printf 'Запускаем обязательный release gate...\n'
 bash "${PROJECT_DIR}/scripts/release_check.sh"
 
@@ -77,6 +106,7 @@ compose run --rm backend python manage.py collectstatic --noinput
 compose up -d --remove-orphans
 compose exec -T backend python manage.py check --deploy
 compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
+compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"
 
 trap - ERR
 printf 'Обновление завершено.\n'
