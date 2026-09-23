@@ -176,3 +176,32 @@ def test_identity_preview_is_zero_cost_even_without_provider_models():
     assert response.data["confirmation_required"] is False
     assert response.data["selected_model"] == "System Max"
     assert Wallet.objects.filter(user=user).count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_rest_identity_message_is_deterministic_and_free_without_provider_model():
+    user = User.objects.create_user(username="identity-rest", email="identity-rest@example.test")
+    conversation = Conversation.objects.create(
+        owner=user,
+        routing_mode=Conversation.RoutingMode.ECONOMY,
+        selected_model="echo-v1",
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+    message_id = uuid.uuid4()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/",
+        {"content": "Кто тебя создал?", "client_message_id": str(message_id), "file_ids": []},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="identity-rest-key",
+    )
+
+    assert response.status_code == 200
+    assert response.data["state"] == Generation.State.COMPLETED
+    assert response.data["message"]["content"] == "Компания BBTEC."
+    assert response.data["message"]["generation"]["model"] == "System Lite"
+    assert response.data["message"]["generation"]["provider"] == "system"
+    assert Decimal(response.data["message"]["generation"]["cost_rub"]) == Decimal("0")
+    assert Wallet.objects.filter(user=user).count() == 0
+    assert BalanceReservation.objects.filter(wallet__user=user).count() == 0
