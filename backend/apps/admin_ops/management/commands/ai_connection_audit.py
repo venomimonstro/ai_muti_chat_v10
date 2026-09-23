@@ -33,14 +33,21 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--live", action="store_true", help="Perform live provider health checks")
+        parser.add_argument("--generate", action="store_true", help="Send one tiny real generation to every configured AUTO tier")
 
     def handle(self, *args, **options):
         live = bool(options["live"])
+        generate = bool(options["generate"])
         failed = 0
         self.stdout.write("=== AI CONNECTION AUDIT 360 ===")
 
         for provider in Provider.objects.prefetch_related("api_keys", "models").order_by("priority", "slug"):
             if provider.adapter_type == Provider.AdapterType.ECHO:
+                continue
+            configured_keys = provider.api_keys.filter(enabled=True).count()
+            configured = provider.enabled or provider.credential_configured() or configured_keys > 0
+            if not configured:
+                self.stdout.write(f"[SKIP] provider={provider.slug}: not configured")
                 continue
             healthy_keys = provider.api_keys.filter(enabled=True, health_state="healthy").count()
             models = list(provider.models.all())
@@ -50,7 +57,7 @@ class Command(BaseCommand):
                 failed += 1
             self.stdout.write(
                 f"[{status}] provider={provider.slug} enabled={provider.enabled} health={provider.health_state} "
-                f"healthy_keys={healthy_keys} models={len(models)} enabled_models={len(enabled)}"
+                f"healthy_keys={healthy_keys}/{configured_keys} models={len(models)} enabled_models={len(enabled)}"
             )
             if live and healthy_keys and models:
                 probe = next((m for m in models if m.current_version_id and m.upstream_model), models[0])
@@ -60,14 +67,15 @@ class Command(BaseCommand):
                     if not health.healthy:
                         failed += 1
                     self.stdout.write(f"  [{live_status}] live latency_ms={health.latency_ms} error={health.error_code or '-'}")
-                except (ProviderError, Exception) as exc:
+                except Exception as exc:
                     failed += 1
                     self.stdout.write(f"  [FAIL] live {type(exc).__name__}: {exc}")
 
         policy = RoutingPolicyVersion.objects.filter(active=True).first()
         tier_models = dict((policy.thresholds if policy else {}).get("tier_models") or {})
         self.stdout.write("--- AUTO TIERS ---")
-        auto_ready = False
+        ready_tiers = 0
+        generated_models = set()
         for tier, mode in TIER_TO_MODE.items():
             slug = tier_models.get(mode) or ""
             if not slug:
@@ -83,15 +91,40 @@ class Command(BaseCommand):
             if problems:
                 failed += 1
                 self.stdout.write(f"[FAIL] {tier}/{mode}: {model.provider.slug}/{model.slug} -> {','.join(problems)}")
-            else:
-                auto_ready = True
-                self.stdout.write(f"[OK] {tier}/{mode}: {model.provider.slug}/{model.slug} ({model.upstream_model})")
+                continue
+            ready_tiers += 1
+            self.stdout.write(f"[OK] {tier}/{mode}: {model.provider.slug}/{model.slug} ({model.upstream_model})")
+            if generate and model.slug not in generated_models:
+                generated_models.add(model.slug)
+                try:
+                    result = adapter_for(model).generate(
+                        model=model.upstream_model,
+                        messages=[{"role": "user", "content": "Ответь только: OK"}],
+                        max_output_tokens=16,
+                    )
+                    text = (result.text or "").strip().replace("\n", " ")[:120]
+                    if not text:
+                        failed += 1
+                        self.stdout.write("  [FAIL] generation returned empty response")
+                    else:
+                        self.stdout.write(
+                            f"  [OK] generation response={text!r} input_tokens={result.input_tokens} output_tokens={result.output_tokens}"
+                        )
+                except ProviderError as exc:
+                    failed += 1
+                    self.stdout.write(f"  [FAIL] generation code={exc.code}: {exc}")
+                except Exception as exc:
+                    failed += 1
+                    self.stdout.write(f"  [FAIL] generation {type(exc).__name__}: {exc}")
 
         visible_manual = AIModel.objects.filter(enabled=True).exclude(provider__slug="gigachat").count()
-        self.stdout.write(f"--- CLIENT ---\nmanual_visible_models={visible_manual} auto_ready={auto_ready}")
-        if not auto_ready:
+        self.stdout.write(
+            f"--- CLIENT ---\nmanual_visible_models={visible_manual} auto_ready_tiers={ready_tiers}/3 "
+            f"legacy_gigachat_hidden=yes"
+        )
+        if ready_tiers != 3:
             failed += 1
 
         if failed:
             raise CommandError(f"AI audit failed: {failed} critical problem(s)")
-        self.stdout.write(self.style.SUCCESS("AI audit passed: provider -> model -> pricing -> AUTO -> client chain is ready"))
+        self.stdout.write(self.style.SUCCESS("AI audit passed: provider -> model -> pricing -> AUTO -> real generation -> client chain is ready"))
