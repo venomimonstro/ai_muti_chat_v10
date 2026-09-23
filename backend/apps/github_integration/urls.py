@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .dev_views import GitHubWorkingBranchView
 from .flow_views import GitHubOAuthCallbackView, GitHubSetupView
 from .mutation_views import GitHubFileCreateView, GitHubFileDeleteView
 from .safety import github_guard
@@ -54,5 +55,10 @@ urlpatterns = [
         "projects/<uuid:project_id>/github/file/delete/",
         github_guard(GitHubFileDeleteView.as_view(), protect_path=True),
         name="github-project-file-delete",
+    ),
+    path(
+        "projects/<uuid:project_id>/github/branches/",
+        github_guard(GitHubWorkingBranchView.as_view()),
+        name="github-project-branch-create",
     ),
 ]
