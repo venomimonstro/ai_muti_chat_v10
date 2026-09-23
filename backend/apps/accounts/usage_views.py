@@ -17,11 +17,20 @@ TERMINAL_STATES = [
     Generation.State.FAILED,
     Generation.State.CANCELLED,
 ]
+PUBLIC_SYSTEM_LEVELS = {
+    "economy": "System Lite",
+    "balanced": "System Pro",
+    "maximum": "System Max",
+}
 
 
-def public_model_name(value):
+def public_model_name(value, routing_mode=None):
     raw = str(value or "")
     lowered = raw.casefold()
+    # Routing mode is the customer contract. The internal model may change or
+    # fallback without changing the System level the user selected.
+    if lowered.startswith("gigachat") and routing_mode in PUBLIC_SYSTEM_LEVELS:
+        return PUBLIC_SYSTEM_LEVELS[routing_mode]
     if lowered.startswith("gigachat"):
         if "lite" in lowered or lowered in {"gigachat-2", "gigachat"}:
             return "System Lite"
@@ -61,20 +70,20 @@ class UsageSummaryView(APIView):
             }
 
         raw_by_model = list(
-            qs.values("routed_model")
+            qs.values("routed_model", "routing_decision__mode")
             .annotate(
                 requests=Count("id"),
                 cost_rub=Coalesce(Sum("actual_cost_rub"), MONEY_ZERO, output_field=MONEY_FIELD),
                 input_tokens=Coalesce(Sum("input_tokens"), 0),
                 output_tokens=Coalesce(Sum("output_tokens"), 0),
             )
-            .order_by("-cost_rub")[:20]
+            .order_by("-cost_rub")[:40]
         )
         # Never leak the internal GigaChat provider/model vocabulary through the
-        # customer usage page. Merge rows if legacy/current slugs map to one tier.
+        # customer usage page. Merge fallbacks/internal variants into their public tier.
         merged = {}
         for row in raw_by_model:
-            name = public_model_name(row.get("routed_model"))
+            name = public_model_name(row.get("routed_model"), row.get("routing_decision__mode"))
             target = merged.setdefault(
                 name,
                 {"routed_model": name, "requests": 0, "cost_rub": Decimal("0"), "input_tokens": 0, "output_tokens": 0},
