@@ -18,6 +18,7 @@ from .compare import (
 )
 from .managed_stream import managed_run
 from .models import CompareVariant, Conversation, ConversationDraft
+from .product_identity import create_identity_generation, direct_identity_answer, identity_sse
 from .serializers import (
     ConversationDraftSerializer,
     ConversationSerializer,
@@ -235,13 +236,27 @@ class ConversationViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": "Idempotency-Key обязателен"}, status=status.HTTP_400_BAD_REQUEST
             )
+        conversation = self.get_object()
+        content = serializer.validated_data["content"]
+        file_ids = serializer.validated_data.get("file_ids") or []
+        identity_answer = direct_identity_answer(content, file_ids)
         try:
-            generation = generate_reply(
-                user=request.user,
-                conversation=self.get_object(),
-                idempotency_key=key,
-                **serializer.validated_data,
-            )
+            if identity_answer is not None:
+                generation, _created = create_identity_generation(
+                    user=request.user,
+                    conversation=conversation,
+                    content=content,
+                    client_message_id=serializer.validated_data["client_message_id"],
+                    idempotency_key=key,
+                    answer=identity_answer,
+                )
+            else:
+                generation = generate_reply(
+                    user=request.user,
+                    conversation=conversation,
+                    idempotency_key=key,
+                    **serializer.validated_data,
+                )
         except (ValidationError, AIModel.DoesNotExist) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
@@ -262,17 +277,33 @@ class ConversationViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": "Idempotency-Key обязателен"}, status=status.HTTP_400_BAD_REQUEST
             )
+        conversation = self.get_object()
+        content = serializer.validated_data["content"]
+        file_ids = serializer.validated_data.get("file_ids") or []
+        identity_answer = direct_identity_answer(content, file_ids)
         try:
-            generation, _created = prepare(
-                user=request.user,
-                conversation=self.get_object(),
-                idempotency_key=key,
-                **serializer.validated_data,
-            )
+            if identity_answer is not None:
+                generation, _created = create_identity_generation(
+                    user=request.user,
+                    conversation=conversation,
+                    content=content,
+                    client_message_id=serializer.validated_data["client_message_id"],
+                    idempotency_key=key,
+                    answer=identity_answer,
+                )
+                stream = identity_sse(generation)
+            else:
+                generation, _created = prepare(
+                    user=request.user,
+                    conversation=conversation,
+                    idempotency_key=key,
+                    **serializer.validated_data,
+                )
+                stream = managed_run(generation)
         except (ValidationError, AIModel.DoesNotExist) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         response = StreamingHttpResponse(
-            managed_run(generation), content_type="text/event-stream; charset=utf-8"
+            stream, content_type="text/event-stream; charset=utf-8"
         )
         response["Cache-Control"] = "no-cache, no-transform"
         response["X-Accel-Buffering"] = "no"
