@@ -11,13 +11,19 @@ const LEVELS: Array<{value: PublicMode; label: string; hint: string}> = [
   {value: "maximum", label: "System Max", hint: "Максимум качества"},
 ];
 
+function isWorkspace() {
+  return typeof window !== "undefined" && window.location.pathname.startsWith("/app");
+}
+
 function routingSelect() {
+  if (typeof document === "undefined") return null;
   return document.querySelector<HTMLSelectElement>(
     ".topbar .selectors > .selectWrap:first-child select",
   );
 }
 
 function composerActions() {
+  if (typeof document === "undefined") return null;
   return document.querySelector<HTMLElement>(".composer .composerActions");
 }
 
@@ -26,6 +32,15 @@ function readPublicMode(): PublicMode {
   if (raw === "auto:economy") return "economy";
   if (raw === "auto:maximum") return "maximum";
   return "balanced";
+}
+
+function dispatchRouting(source: HTMLSelectElement, value: string) {
+  // Use the native setter so React's controlled-select change tracking receives
+  // a real change event instead of a silent property mutation.
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  if (setter) setter.call(source, value);
+  else source.value = value;
+  source.dispatchEvent(new Event("change", {bubbles: true}));
 }
 
 /**
@@ -44,8 +59,10 @@ export default function WorkspaceRuntimeGuard() {
   const submitLocked = useRef(false);
   const observedBusy = useRef(false);
   const unlockTimer = useRef<number | null>(null);
+  const normalizedManualValue = useRef("");
 
   useEffect(() => {
+    if (!isWorkspace()) return;
     let disposed = false;
 
     const sync = () => {
@@ -56,14 +73,18 @@ export default function WorkspaceRuntimeGuard() {
       const source = routingSelect();
       if (!source) return;
 
-      // The customer product has only System tiers. Legacy/manual conversations
-      // are normalized to System Pro instead of exposing an upstream model name.
+      // New/public chats use only System tiers. Old manual chats are normalized
+      // once per observed manual value to System Pro so the visible control never
+      // claims one level while the request is still routed manually.
       if (source.value.startsWith("model:") && !source.disabled) {
-        source.value = "auto:balanced";
-        source.dispatchEvent(new Event("change", {bubbles: true}));
+        if (normalizedManualValue.current !== source.value) {
+          normalizedManualValue.current = source.value;
+          dispatchRouting(source, "auto:balanced");
+        }
         setMode("balanced");
         return;
       }
+      normalizedManualValue.current = "";
       setMode(readPublicMode());
     };
 
@@ -86,6 +107,7 @@ export default function WorkspaceRuntimeGuard() {
   }, []);
 
   useEffect(() => {
+    if (!isWorkspace()) return;
     const unlock = () => {
       submitLocked.current = false;
       observedBusy.current = false;
@@ -146,8 +168,7 @@ export default function WorkspaceRuntimeGuard() {
     const source = routingSelect();
     if (!source || source.disabled) return;
     setMode(next);
-    source.value = `auto:${next}`;
-    source.dispatchEvent(new Event("change", {bubbles: true}));
+    dispatchRouting(source, `auto:${next}`);
   };
 
   if (!target) return null;
