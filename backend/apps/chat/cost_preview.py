@@ -10,9 +10,21 @@ from apps.billing.models import Wallet
 from apps.billing.pricing import active_price, quote, require_margin
 
 from .attachments import resolve_chat_attachments
-from .models import Message
+from .models import Conversation, Message
 
 VISION_RESERVE_TOKENS_PER_IMAGE = 2048
+PUBLIC_SYSTEM_LEVELS = {
+    Conversation.RoutingMode.ECONOMY: "System Lite",
+    Conversation.RoutingMode.BALANCED: "System Pro",
+    Conversation.RoutingMode.MAXIMUM: "System Max",
+}
+
+
+def _public_model(model, conversation):
+    if model.provider.slug == "gigachat":
+        level = PUBLIC_SYSTEM_LEVELS.get(conversation.routing_mode, "System Pro")
+        return level, level
+    return model.slug, model.display_name
 
 
 def _context_overhead_tokens(conversation):
@@ -24,21 +36,12 @@ def _context_overhead_tokens(conversation):
         total += int(getattr(settings, "SMART_CONTEXT_FILE_TOKENS", 2400))
     if conversation.memory_enabled:
         total += int(getattr(settings, "SMART_CONTEXT_MEMORY_TOKENS", 1600))
-    # A small bounded allowance for system/tool metadata and citations.
     total += 512
     return total
 
 
 def _existing_history_tokens(conversation):
-    """Conservative allowance for messages already present in this conversation.
-
-    The previous preview priced only the new prompt plus generic smart-context
-    allowances. prepare() later assembled the actual conversation history, which
-    could produce a much larger wallet reservation and an unrecoverable 409 loop.
-    Include persisted non-failed history up front so preview and real preflight use
-    the same order of magnitude. The final input is still capped by each model's
-    context window below.
-    """
+    """Conservative allowance for messages already present in this conversation."""
     rows = Message.objects.filter(conversation=conversation).exclude(status=Message.Status.FAILED).values(
         "role", "content"
     )
@@ -88,10 +91,11 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         charge = value.user_charge_rub
         maximum = max(maximum, charge)
         minimum = charge if minimum is None else min(minimum, charge)
+        public_slug, public_name = _public_model(model, conversation)
         rows.append(
             {
-                "model": model.slug,
-                "display_name": model.display_name,
+                "model": public_slug,
+                "display_name": public_name,
                 "estimated_max_rub": str(charge),
             }
         )
@@ -101,12 +105,13 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
     guard = spend_guard_snapshot(wallet)
     single_limit = guard["single_request_limit_rub"]
     blocked = single_limit is not None and maximum > single_limit
+    selected_slug, _selected_name = _public_model(route.selected, conversation)
     return {
         "estimated_min_rub": minimum or Decimal("0"),
         "estimated_max_rub": maximum,
         "confirmation_required": maximum >= threshold,
         "confirmation_threshold_rub": threshold,
-        "selected_model": route.selected.slug,
+        "selected_model": selected_slug,
         "models": rows,
         "spend_guard": {
             "single_request_limit_rub": single_limit,
