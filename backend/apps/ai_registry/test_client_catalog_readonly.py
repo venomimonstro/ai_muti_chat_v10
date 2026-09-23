@@ -27,12 +27,11 @@ class ClientModelCatalogReadOnlyTests(TestCase):
         self.assertNotIn(model.id, {item.id for item in rows})
 
     def test_gigachat_is_internal_only_even_when_enabled_for_auto_router(self):
-        provider = Provider.objects.create(
-            slug="gigachat",
-            name="GigaChat API",
-            enabled=True,
-            health_state=Provider.HealthState.HEALTHY,
-        )
+        provider, _ = Provider.objects.get_or_create(slug="gigachat", defaults={"name": "GigaChat API"})
+        provider.enabled = True
+        provider.emergency_disabled = False
+        provider.health_state = Provider.HealthState.HEALTHY
+        provider.save(update_fields=["enabled", "emergency_disabled", "health_state"])
         gigachat = AIModel.objects.create(
             provider=provider,
             slug="gigachat-test-model",
