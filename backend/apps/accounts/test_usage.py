@@ -7,6 +7,8 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.chat.models import Conversation, Generation, Message
 
+from .usage_views import public_model_name
+
 
 def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, model="model-a", state=Generation.State.COMPLETED):
     conversation = Conversation.objects.create(owner=user, title="usage")
@@ -25,6 +27,12 @@ def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, mod
         actual_cost_rub=Decimal(cost),
         completed_at=timezone.now(),
     )
+
+
+def test_public_system_name_uses_customer_routing_level_before_internal_slug():
+    assert public_model_name("gigachat-2-max", "economy") == "System Lite"
+    assert public_model_name("gigachat-2-lite", "balanced") == "System Pro"
+    assert public_model_name("gigachat-2-pro", "maximum") == "System Max"
 
 
 @pytest.mark.django_db
