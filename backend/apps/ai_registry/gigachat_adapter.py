@@ -12,6 +12,20 @@ from .adapters import AdapterHealth, ProviderError, ProviderResult, ProviderStre
 OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 DEFAULT_API_BASE_URL = "https://api.giga.chat/v1"
 DEFAULT_SCOPE = "GIGACHAT_API_PERS"
+VALID_SCOPES = {"GIGACHAT_API_PERS", "GIGACHAT_API_B2B", "GIGACHAT_API_CORP"}
+
+
+def configured_scope(fallback: str = DEFAULT_SCOPE) -> str:
+    try:
+        from .models import Provider
+        config = Provider.objects.filter(slug="gigachat").values_list("auth_config", flat=True).first() or {}
+        value = str(config.get("scope") or "").strip()
+        if value in VALID_SCOPES:
+            return value
+    except Exception:
+        pass
+    value = str(fallback or DEFAULT_SCOPE).strip()
+    return value if value in VALID_SCOPES else DEFAULT_SCOPE
 
 
 class GigaChatAPIAdapter:
@@ -22,7 +36,7 @@ class GigaChatAPIAdapter:
             raise ProviderError("Provider credential is not configured", code="credential_missing", retryable=False)
         self.authorization_key = authorization_key.removeprefix("Basic ").strip()
         self.base_url = (base_url or DEFAULT_API_BASE_URL).rstrip("/")
-        self.scope = scope or DEFAULT_SCOPE
+        self.scope = configured_scope(scope)
         self._token = ""
         self._token_expires_at = 0.0
 
@@ -49,7 +63,7 @@ class GigaChatAPIAdapter:
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             raise ProviderError(
-                "GigaChat OAuth rejected authorization key",
+                "GigaChat OAuth rejected authorization key or scope",
                 code=f"gigachat_oauth_http_{status}",
                 retryable=status >= 500 or status == 429,
             ) from exc
@@ -58,9 +72,13 @@ class GigaChatAPIAdapter:
         token = str(payload.get("access_token") or "").strip()
         if not token:
             raise ProviderError("GigaChat OAuth returned no access token", code="gigachat_oauth_invalid", retryable=True)
-        expires_at_ms = payload.get("expires_at")
+        expires_at_raw = payload.get("expires_at")
+        if expires_at_raw:
+            expires_at = float(expires_at_raw)
+            self._token_expires_at = expires_at / 1000.0 if expires_at > 10_000_000_000 else expires_at
+        else:
+            self._token_expires_at = now + 29 * 60
         self._token = token
-        self._token_expires_at = (float(expires_at_ms) / 1000.0) if expires_at_ms else now + 29 * 60
         return token
 
     def _headers(self, *, force_token: bool = False) -> dict:
