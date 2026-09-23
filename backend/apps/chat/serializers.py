@@ -114,21 +114,21 @@ class ConversationSerializer(serializers.ModelSerializer):
                         {"selected_model": "Нет подключённой модели для ручного режима. Выберите AUTO или подключите клиентскую модель."}
                     )
                 validated_data["selected_model"] = model.slug
-        elif not selected:
-            # AUTO routing chooses the real provider/model only when a generation starts.
-            # Keep the DB-compatible placeholder out of the client-model validation path.
+        else:
+            # AUTO has exactly one source of truth: the admin tier matrix. Never
+            # let a stale browser/manual selection override or block AUTO creation.
             validated_data["selected_model"] = "echo-v1"
         return super().create(validated_data)
 
     def validate_selected_model(self, value):
-        # AUTO conversations may carry the legacy placeholder; it is never sent to a provider.
         routing_mode = self.initial_data.get("routing_mode") if hasattr(self, "initial_data") else None
         if routing_mode in {
             Conversation.RoutingMode.ECONOMY,
             Conversation.RoutingMode.BALANCED,
             Conversation.RoutingMode.MAXIMUM,
-        } and value == "echo-v1":
-            return value
+        }:
+            # Ignore any stale/manual model posted by the client in AUTO mode.
+            return "echo-v1"
         try:
             model = AIModel.objects.select_related("provider", "current_version").get(
                 slug=value, enabled=True
