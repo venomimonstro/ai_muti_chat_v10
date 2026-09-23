@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "apps.github_integration",
     "apps.procurement",
     "apps.admin_ops",
+    "apps.agents",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -176,42 +177,15 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "300"))
 CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "330"))
 CELERY_BEAT_SCHEDULE = {
-    "system-heartbeat": {
-        "task": "apps.admin_ops.tasks.system_heartbeat_task",
-        "schedule": 60.0,
-    },
-    "daily-financial-reconciliation": {
-        "task": "apps.billing.tasks.daily_financial_reconciliation",
-        "schedule": 86400.0,
-    },
-    "payment-reconciliation": {
-        "task": "apps.admin_ops.tasks.payment_reconciliation_task",
-        "schedule": 300.0,
-    },
-    "recover-stale-operations": {
-        "task": "apps.admin_ops.tasks.recover_stale_operations_task",
-        "schedule": 300.0,
-    },
-    "economic-safety-watch": {
-        "task": "apps.admin_ops.tasks.economic_safety_watch_task",
-        "schedule": 300.0,
-    },
-    "billing-integrity-watch": {
-        "task": "apps.admin_ops.tasks.billing_integrity_watch_task",
-        "schedule": 900.0,
-    },
-    "detect-abuse": {
-        "task": "apps.admin_ops.tasks.detect_abuse_task",
-        "schedule": 300.0,
-    },
-    "support-sla-watch": {
-        "task": "apps.admin_ops.tasks.support_sla_watch_task",
-        "schedule": 3600.0,
-    },
-    "official-pricing-sync": {
-        "task": "apps.admin_ops.tasks.official_pricing_sync_task",
-        "schedule": 86400.0,
-    },
+    "system-heartbeat": {"task": "apps.admin_ops.tasks.system_heartbeat_task", "schedule": 60.0},
+    "daily-financial-reconciliation": {"task": "apps.billing.tasks.daily_financial_reconciliation", "schedule": 86400.0},
+    "payment-reconciliation": {"task": "apps.admin_ops.tasks.payment_reconciliation_task", "schedule": 300.0},
+    "recover-stale-operations": {"task": "apps.admin_ops.tasks.recover_stale_operations_task", "schedule": 300.0},
+    "economic-safety-watch": {"task": "apps.admin_ops.tasks.economic_safety_watch_task", "schedule": 300.0},
+    "billing-integrity-watch": {"task": "apps.admin_ops.tasks.billing_integrity_watch_task", "schedule": 900.0},
+    "detect-abuse": {"task": "apps.admin_ops.tasks.detect_abuse_task", "schedule": 300.0},
+    "support-sla-watch": {"task": "apps.admin_ops.tasks.support_sla_watch_task", "schedule": 3600.0},
+    "official-pricing-sync": {"task": "apps.admin_ops.tasks.official_pricing_sync_task", "schedule": 86400.0},
 }
 SIGNUP_PROMO_RUB = os.getenv("SIGNUP_PROMO_RUB", "25.00")
 CHAT_CONFIRM_THRESHOLD_RUB = os.getenv("CHAT_CONFIRM_THRESHOLD_RUB", "20.00")
@@ -248,9 +222,7 @@ B2B_API_ENABLED = os.getenv("B2B_API_ENABLED", "true").lower() == "true"
 B2B_API_KEY_PEPPER = os.getenv("B2B_API_KEY_PEPPER", SECRET_KEY)
 B2B_API_MAX_OUTPUT_TOKENS = int(os.getenv("B2B_API_MAX_OUTPUT_TOKENS", "4096"))
 B2B_API_MAX_MESSAGE_CHARS = int(os.getenv("B2B_API_MAX_MESSAGE_CHARS", "100000"))
-B2B_API_RUNNING_TIMEOUT_SECONDS = int(
-    os.getenv("B2B_API_RUNNING_TIMEOUT_SECONDS", "600")
-)
+B2B_API_RUNNING_TIMEOUT_SECONDS = int(os.getenv("B2B_API_RUNNING_TIMEOUT_SECONDS", "600"))
 B2B_TRUST_PROXY_IP_HEADER = os.getenv("B2B_TRUST_PROXY_IP_HEADER", "false").lower() == "true"
 OPERATION_STALE_TIMEOUT_SECONDS = int(os.getenv("OPERATION_STALE_TIMEOUT_SECONDS", "900"))
 AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY_ENABLED", "false").lower() == "true"
@@ -275,9 +247,7 @@ EVAL_MAX_REGRESSION = float(os.getenv("EVAL_MAX_REGRESSION", "0.05"))
 EVAL_MAX_OUTPUT_TOKENS = int(os.getenv("EVAL_MAX_OUTPUT_TOKENS", "1024"))
 PAYMENTS_ENABLED = os.getenv("PAYMENTS_ENABLED", "false").lower() == "true"
 PAYMENTS_LIVE_ENABLED = os.getenv("PAYMENTS_LIVE_ENABLED", "false").lower() == "true"
-PAYMENT_RETURN_URL = os.getenv(
-    "PAYMENT_RETURN_URL", "http://localhost:3000/settings/billing/return"
-)
+PAYMENT_RETURN_URL = os.getenv("PAYMENT_RETURN_URL", "http://localhost:3000/settings/billing/return")
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
 YOOKASSA_API_BASE_URL = os.getenv("YOOKASSA_API_BASE_URL", "https://api.yookassa.ru/v3")
