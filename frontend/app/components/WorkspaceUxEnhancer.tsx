@@ -7,19 +7,19 @@ export default function WorkspaceUxEnhancer(){
     const enhance=()=>{
       const select=document.querySelector<HTMLSelectElement>(".headerControls .selectControl:first-child select");
       if(!select)return;
-      select.setAttribute("aria-label","Уровень задачи или конкретная LLM");
-      select.title="Выберите уровень задачи или конкретную LLM и модель";
+      select.setAttribute("aria-label","Уровень System");
+      select.title="Уровень качества ответа";
       const labels:Record<string,string>={
-        "auto:economy":"Простая · эконом",
-        "auto:balanced":"Средняя · оптимально",
-        "auto:maximum":"Сложная · максимум качества",
+        "auto:economy":"System Lite",
+        "auto:balanced":"System Pro",
+        "auto:maximum":"System Max",
       };
       for(const option of Array.from(select.options)){
         if(labels[option.value]&&option.textContent!==labels[option.value])option.textContent=labels[option.value];
       }
       const groups=select.querySelectorAll("optgroup");
-      if(groups[0])groups[0].label="Уровень задачи — система выберет LLM";
-      if(groups[1])groups[1].label="Вручную — выбрать LLM и модель";
+      if(groups[0])groups[0].label="Уровень System";
+      if(groups[1])groups[1].label="Дополнительные модели";
     };
     enhance();
     const observer=new MutationObserver(enhance);
