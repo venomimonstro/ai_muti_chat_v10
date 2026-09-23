@@ -92,6 +92,10 @@ def _models_url(provider: Provider):
     return f"{provider.api_base_url.rstrip('/')}/models"
 
 
+def _openrouter_key_url(provider: Provider):
+    return f"{provider.api_base_url.rstrip('/')}/key"
+
+
 def _extract_models(provider: Provider, payload):
     raw = payload.get("models", []) if provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT else payload.get("data", [])
     result = []
@@ -135,12 +139,36 @@ def _price_for(provider: Provider, model_id: str):
     }
 
 
+def _provider_error_code(response: httpx.Response, prefix="http") -> str:
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            raw = error.get("code") or error.get("type")
+            if raw:
+                return str(raw)[:80]
+    except Exception:
+        pass
+    return f"{prefix}_{response.status_code}"[:80]
+
+
 def _check_key(provider: Provider, key: ProviderApiKey):
+    """Validate the actual credential, not merely provider catalog reachability.
+
+    OpenRouter exposes GET /api/v1/key specifically for validating the current
+    bearer key. /models can be reachable independently and therefore must not be
+    treated as proof that an OpenRouter secret is valid.
+    """
     started = time.monotonic()
     now = timezone.now()
+    url = _openrouter_key_url(provider) if provider.slug == "openrouter" else _models_url(provider)
     try:
-        response = httpx.get(_models_url(provider), headers=_headers(provider, key.get_secret()), timeout=10)
+        response = httpx.get(url, headers=_headers(provider, key.get_secret()), timeout=10, follow_redirects=True)
         response.raise_for_status()
+        if provider.slug == "openrouter":
+            payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+                raise ValueError("OpenRouter /key returned invalid payload")
         key.health_state = ProviderApiKey.HealthState.HEALTHY
         key.last_error_code = ""
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
@@ -150,11 +178,11 @@ def _check_key(provider: Provider, key: ProviderApiKey):
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
     except httpx.HTTPStatusError as exc:
         key.health_state = ProviderApiKey.HealthState.DEGRADED
-        key.last_error_code = f"http_{exc.response.status_code}"
+        key.last_error_code = _provider_error_code(exc.response, "http")
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError):
         key.health_state = ProviderApiKey.HealthState.DEGRADED
-        key.last_error_code = "network"
+        key.last_error_code = "invalid_response" if provider.slug == "openrouter" else "network"
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
     key.last_checked_at = now
     key.save(update_fields=["health_state", "last_error_code", "last_latency_ms", "last_checked_at"])
@@ -165,7 +193,7 @@ def _refresh_balance(provider: Provider, key: ProviderApiKey):
     key.balance_supported = False
     key.balance_amount = None
     key.balance_currency = ""
-    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT:
+    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT and provider.slug != "openrouter":
         try:
             response = httpx.get(f"{provider.api_base_url.rstrip('/')}/user/balance", headers=_headers(provider, key.get_secret()), timeout=10)
             response.raise_for_status()
@@ -176,6 +204,26 @@ def _refresh_balance(provider: Provider, key: ProviderApiKey):
                 key.balance_amount = Decimal(str(preferred.get("total_balance") or "0"))
                 key.balance_currency = str(preferred.get("currency") or "")
                 key.balance_supported = True
+        except Exception:
+            pass
+    elif provider.slug == "openrouter":
+        # /credits is the authoritative account credit source, but OpenRouter
+        # requires a Management API key for it. Ordinary inference keys are still
+        # valid via /key; a 403 here means only that total credits are unavailable.
+        try:
+            response = httpx.get(
+                f"{provider.api_base_url.rstrip('/')}/credits",
+                headers=_headers(provider, key.get_secret()),
+                timeout=10,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            data = (response.json() or {}).get("data") or {}
+            total_credits = Decimal(str(data.get("total_credits") or "0"))
+            total_usage = Decimal(str(data.get("total_usage") or "0"))
+            key.balance_amount = total_credits - total_usage
+            key.balance_currency = "USD"
+            key.balance_supported = True
         except Exception:
             pass
     key.balance_checked_at = timezone.now()
@@ -217,6 +265,17 @@ class ProviderKeyCollectionView(AdminAPIView):
         item.set_secret(secret)
         item.save()
         healthy = _check_key(provider, item)
+        if provider.slug == "openrouter" and not healthy:
+            error_code = item.last_error_code or "key_validation_failed"
+            item.delete()
+            provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
+            provider.last_checked_at = timezone.now()
+            provider.save(update_fields=["health_state", "last_checked_at"])
+            if error_code in {"http_401", "invalid_api_key", "unauthorized"}:
+                detail = "OpenRouter отклонил API-ключ. Проверьте, что вставлен полный ключ sk-or-… и он не удалён в OpenRouter."
+            else:
+                detail = f"OpenRouter не подтвердил API-ключ: {error_code}"
+            return Response({"detail": detail, "code": error_code}, status=400)
         _refresh_balance(provider, item)
         provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
         provider.last_checked_at = timezone.now()
@@ -258,7 +317,7 @@ class ProviderDiscoveredModelsView(AdminAPIView):
         if not api_key:
             return Response({"detail": "Сначала добавьте рабочий API-ключ"}, status=409)
         try:
-            response = httpx.get(_models_url(provider), headers=_headers(provider, api_key), timeout=15)
+            response = httpx.get(_models_url(provider), headers=_headers(provider, api_key), timeout=15, follow_redirects=True)
             response.raise_for_status()
             models = _extract_models(provider, response.json())
         except httpx.HTTPStatusError as exc:
