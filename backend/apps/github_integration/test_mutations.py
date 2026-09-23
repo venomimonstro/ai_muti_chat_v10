@@ -5,6 +5,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.projects.models import Project
 
+from .branching import create_repository_branch
 from .models import GitHubInstallation, GitHubOperationLog, GitHubRepositoryBinding
 from .mutations import create_repository_file, delete_repository_file
 
@@ -142,3 +143,65 @@ def test_create_api_requires_confirmation_and_records_audit(monkeypatch):
     log = GitHubOperationLog.objects.filter(binding__project=project, action="create_file").latest("created_at")
     assert log.success is True
     assert log.path == "src/new.py"
+
+
+@pytest.mark.django_db
+def test_working_branch_is_created_from_default_branch_without_touching_default(monkeypatch):
+    _user, _project, binding = _binding()
+    calls = []
+    monkeypatch.setattr("apps.github_integration.branching.installation_token", lambda *args, **kwargs: "token")
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if method == "GET":
+            return {"object": {"sha": "base-sha"}}
+        return {"ref": "refs/heads/ai-workspace/test", "object": {"sha": "base-sha"}}
+
+    monkeypatch.setattr("apps.github_integration.branching._json_request", fake_request)
+    result = create_repository_branch(binding, "ai-workspace/test")
+
+    assert result == {"branch": "ai-workspace/test", "base_branch": "main", "sha": "base-sha"}
+    assert calls[0][0] == "GET"
+    assert calls[1][0] == "POST"
+    assert calls[1][2]["json"] == {"ref": "refs/heads/ai-workspace/test", "sha": "base-sha"}
+
+
+@pytest.mark.django_db
+def test_branch_api_requires_confirmation_and_audits(monkeypatch):
+    user, project, _binding_obj = _binding()
+    client = APIClient()
+    client.force_authenticate(user)
+    monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "true")
+
+    denied = client.post(
+        f"/api/v1/projects/{project.id}/github/branches/",
+        {"branch": "ai-workspace/no-confirm"},
+        format="json",
+    )
+    assert denied.status_code == 400
+
+    monkeypatch.setattr(
+        "apps.github_integration.dev_views.create_repository_branch",
+        lambda *args, **kwargs: {"branch": "ai-workspace/work", "base_branch": "main", "sha": "abc"},
+    )
+    created = client.post(
+        f"/api/v1/projects/{project.id}/github/branches/",
+        {"branch": "ai-workspace/work", "confirm_create": True},
+        format="json",
+    )
+
+    assert created.status_code == 200
+    log = GitHubOperationLog.objects.filter(binding__project=project, action="create_branch").latest("created_at")
+    assert log.success is True
+    assert log.branch == "ai-workspace/work"
+
+
+def test_branch_name_rejects_traversal_and_default_branch():
+    class FakeBinding:
+        write_enabled = True
+        default_branch = "main"
+
+    with pytest.raises(ValidationError):
+        create_repository_branch(FakeBinding(), "../evil")
+    with pytest.raises(ValidationError):
+        create_repository_branch(FakeBinding(), "main")
