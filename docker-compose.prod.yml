@@ -93,7 +93,7 @@ services:
       SANDBOX_SHARED_SECRET: ${SANDBOX_SHARED_SECRET:-}
     volumes: [media_data:/app/media, logs_data:/app/logs]
     depends_on: {backend: {condition: service_healthy}, sandbox: {condition: service_healthy}}
-    networks: [private, sandbox_net]
+    networks: [private, sandbox_net, egress]
     init: true
     stop_grace_period: 45s
     logging: *default-logging
@@ -104,7 +104,7 @@ services:
     command: celery -A config beat -l INFO
     volumes: [logs_data:/app/logs]
     depends_on: {backend: {condition: service_healthy}}
-    networks: [private]
+    networks: [private, egress]
     init: true
     stop_grace_period: 30s
     logging: *default-logging
@@ -165,6 +165,7 @@ services:
 networks:
   private: {internal: true}
   sandbox_net: {internal: true}
+  egress:
   edge:
 volumes:
   postgres_data:
