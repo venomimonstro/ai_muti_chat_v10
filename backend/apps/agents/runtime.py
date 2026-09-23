@@ -12,12 +12,9 @@ from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
 from apps.procurement.models import ProviderFundingAccount
-from apps.procurement.services import (
-    release_provider_spend,
-    reserve_provider_spend,
-    settle_provider_spend,
-)
+from apps.procurement.services import release_provider_spend, reserve_provider_spend, settle_provider_spend
 
+from .dev_context import build_repository_context
 from .models import AgentRun, AgentStepRun
 
 
@@ -49,60 +46,54 @@ def _model_for(agent):
     raise ValidationError("Для уровня агента нет доступной подключённой модели")
 
 
-def _messages(run, agent):
+def _messages(run, agent, repository_context=None):
     team_context = ""
     if run.team_id:
         members = list(run.team.members.filter(enabled=True).select_related("agent").order_by("priority"))
-        team_context = "\nКоманда:\n" + "\n".join(
-            f"- {item.role}: {item.agent.name}" for item in members
+        team_context = "\nКоманда:\n" + "\n".join(f"- {item.role}: {item.agent.name}" for item in members)
+    repo = ""
+    if repository_context:
+        repo = (
+            "\n\nКонтекст GitHub repository уже получен реальным read-only инструментом. "
+            "Опирайся только на фактически переданные файлы и дерево, не выдумывай отсутствующий код.\n"
+            + repository_context["rendered"]
         )
     system = (
-        "Ты автономный AI-сотрудник внутри Agent Studio компании BBTEC. "
+        "Ты автономный AI-сотрудник внутри Agent Studio. "
         "Работай по роли, цели и ограничениям. Не заявляй, что выполнил внешнее действие, "
         "если инструмент для него не был реально вызван. Не раскрывай внутренние рассуждения; "
-        "показывай только краткий план действий и полезный результат.\n"
+        "показывай краткий проверяемый план и полезный результат.\n"
         f"Роль: {agent.role or agent.name}\n"
         f"Постоянная цель: {agent.objective}\n"
         f"Инструкции: {agent.instructions or 'нет дополнительных инструкций'}\n"
         f"Автономность: {agent.autonomy}.\n"
-        f"Разрешённые инструменты: {agent.tool_policy}.{team_context}"
+        f"Разрешённые инструменты: {agent.tool_policy}.{team_context}{repo}"
     )
     user = (
         f"Задача запуска:\n{run.objective}\n\n"
-        "Сначала дай короткий рабочий план (без скрытых рассуждений), затем выполни ту часть задачи, "
-        "которая возможна без неподтверждённых внешних действий. Если нужен GitHub, публикация, shell "
-        "или другой внешний инструмент, явно перечисли следующий требуемый инструмент."
+        "Сначала дай короткий рабочий план, затем выполни ту часть задачи, которая возможна на текущем шаге. "
+        "Для Dev Studio сначала оцени архитектуру и конкретные файлы из repository context. "
+        "Если для продолжения требуется запись в GitHub, shell/sandbox, публикация или другой внешний инструмент, "
+        "явно перечисли требуемое действие и не утверждай, что оно уже выполнено."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def _provider_reserve(model, provider_cost_rub, fx_snapshot, run_id):
-    configured = ProviderFundingAccount.objects.filter(
-        provider=model.provider,
-        active=True,
-        is_default=True,
-    ).exists()
+    configured = ProviderFundingAccount.objects.filter(provider=model.provider, active=True, is_default=True).exists()
     if not configured:
         if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
-            raise ValidationError(
-                f"Для провайдера {model.provider.slug} не настроен закупочный аккаунт"
-            )
+            raise ValidationError(f"Для провайдера {model.provider.slug} не настроен закупочный аккаунт")
         return None
     if not fx_snapshot or fx_snapshot.rate <= 0:
         if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
             raise ValidationError("Не удалось определить валютный курс закупочного расхода")
         return None
-    native = (Decimal(provider_cost_rub) / Decimal(fx_snapshot.rate)).quantize(
-        NATIVE_STEP, rounding=ROUND_UP
-    )
+    native = (Decimal(provider_cost_rub) / Decimal(fx_snapshot.rate)).quantize(NATIVE_STEP, rounding=ROUND_UP)
     if native <= 0:
         return None
     try:
-        return reserve_provider_spend(
-            provider=model.provider,
-            amount_native=native,
-            source_key=f"agent:{run_id}",
-        )
+        return reserve_provider_spend(provider=model.provider, amount_native=native, source_key=f"agent:{run_id}")
     except ValidationError:
         if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
             raise
@@ -116,9 +107,7 @@ def _provider_settle(provider_reservation, model, result, actual_quote, run_id, 
     if not fx or fx.rate <= 0:
         release_provider_spend(provider_reservation.id)
         return None
-    native = (Decimal(actual_quote.provider_cost_rub) / Decimal(fx.rate)).quantize(
-        NATIVE_STEP, rounding=ROUND_UP
-    )
+    native = (Decimal(actual_quote.provider_cost_rub) / Decimal(fx.rate)).quantize(NATIVE_STEP, rounding=ROUND_UP)
     return settle_provider_spend(
         reservation_id=provider_reservation.id,
         actual_native=native,
@@ -133,15 +122,7 @@ def _provider_settle(provider_reservation, model, result, actual_quote, run_id, 
     )
 
 
-def _mark_failure(
-    run,
-    step,
-    *,
-    code,
-    message,
-    reservation_id=None,
-    provider_reservation_id=None,
-):
+def _mark_failure(run, step, *, code, message, reservation_id=None, provider_reservation_id=None):
     if reservation_id:
         try:
             release(reservation_id)
@@ -166,11 +147,7 @@ def _mark_failure(
 
 def execute_run(run_id):
     with transaction.atomic():
-        run = (
-            AgentRun.objects.select_for_update()
-            .select_related("owner", "agent", "team__director")
-            .get(pk=run_id)
-        )
+        run = AgentRun.objects.select_for_update().select_related("owner", "agent", "team__director", "project").get(pk=run_id)
         if run.state != AgentRun.State.QUEUED:
             return run
         run.state = AgentRun.State.PLANNING
@@ -183,43 +160,43 @@ def execute_run(run_id):
             agent=agent,
             sequence=1,
             node_id="plan-and-execute",
-            title="План и первый результат",
-            action_type="llm",
+            title="Анализ и первый результат",
+            action_type="github_read+llm" if run.team_id else "llm",
             state=AgentStepRun.State.RUNNING,
             started_at=timezone.now(),
-            public_log="Агент анализирует задачу и формирует первый рабочий результат.",
+            public_log="Агент анализирует задачу и готовит проверяемый результат.",
         )
 
     reservation = None
     provider_reservation = None
+    repository_context = None
     try:
         run.refresh_from_db()
         if run.state == AgentRun.State.CANCELED:
             return run
         agent = _subject_agent(run)
+        if run.team_id:
+            if not run.project_id:
+                raise ValidationError("Dev Team не привязана к проекту")
+            repository_context = build_repository_context(run.project)
+            run.tool_call_count = int(repository_context.get("tool_calls") or 0)
+            step.public_log = (
+                f"Repository {repository_context['repository']} прочитан в безопасном read-only режиме. "
+                f"Получено файлов: {len(repository_context['files'])}. Engineering Director анализирует проект."
+            )
+            step.save(update_fields=["public_log"])
+            run.save(update_fields=["tool_call_count", "updated_at"])
         model = _model_for(agent)
-        messages = _messages(run, agent)
+        messages = _messages(run, agent, repository_context)
         output_tokens = min(DEFAULT_MAX_OUTPUT_TOKENS, model.max_output_tokens)
         estimated_input = max(32, estimate_message_tokens(messages) + 16)
         price = active_price(model.slug)
-        preflight = require_margin(
-            quote(
-                price,
-                estimated_input,
-                output_tokens,
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
-                operation_type="agent",
-            )
-        )
+        preflight = require_margin(quote(price, estimated_input, output_tokens, provider_slug=model.provider.slug, model_slug=model.slug, operation_type="agent"))
         budget = Decimal(str(run.team.max_cost_rub_per_run if run.team_id else agent.max_cost_rub_per_run))
         if preflight.user_charge_rub > budget:
             now = timezone.now()
             step.state = AgentStepRun.State.FAILED
-            step.public_log = (
-                f"Запуск остановлен до обращения к модели: расчётный максимум "
-                f"{preflight.user_charge_rub} ₽ превышает лимит {budget} ₽."
-            )
+            step.public_log = f"Запуск остановлен до обращения к модели: расчётный максимум {preflight.user_charge_rub} ₽ превышает лимит {budget} ₽."
             step.finished_at = now
             step.save(update_fields=["state", "public_log", "finished_at"])
             run.state = AgentRun.State.BUDGET_EXCEEDED
@@ -230,42 +207,17 @@ def execute_run(run_id):
             return run
 
         reservation = reserve(run.owner, preflight.user_charge_rub, f"agent-run:{run.id}")
-        provider_reservation = _provider_reserve(
-            model,
-            preflight.provider_cost_rub,
-            preflight.fx_snapshot,
-            run.id,
-        )
+        provider_reservation = _provider_reserve(model, preflight.provider_cost_rub, preflight.fx_snapshot, run.id)
         run.cost_reserved_rub = preflight.user_charge_rub
         run.state = AgentRun.State.RUNNING
         run.save(update_fields=["cost_reserved_rub", "state", "updated_at"])
 
-        result = adapter_for(model).generate(
-            model=model.upstream_model or model.slug,
-            messages=messages,
-            max_output_tokens=output_tokens,
-        )
-        actual_quote = require_margin(
-            quote(
-                price,
-                max(1, result.input_tokens),
-                max(1, result.output_tokens),
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
-                operation_type="agent",
-            )
-        )
+        result = adapter_for(model).generate(model=model.upstream_model or model.slug, messages=messages, max_output_tokens=output_tokens)
+        actual_quote = require_margin(quote(price, max(1, result.input_tokens), max(1, result.output_tokens), provider_slug=model.provider.slug, model_slug=model.slug, operation_type="agent"))
         actual = min(actual_quote.user_charge_rub, reservation.amount_rub)
         settle(reservation.id, actual)
         reservation = None
-        _provider_settle(
-            provider_reservation,
-            model,
-            result,
-            actual_quote,
-            run.id,
-            actual,
-        )
+        _provider_settle(provider_reservation, model, result, actual_quote, run.id, actual)
         provider_reservation = None
 
         now = timezone.now()
@@ -275,50 +227,25 @@ def execute_run(run_id):
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "provider_request_id": result.provider_request_id,
+            "repository": repository_context["repository"] if repository_context else None,
         }
         step.public_log = result.text[:12000]
         step.cost_rub = actual
         step.finished_at = now
         step.save(update_fields=["state", "output_payload", "public_log", "cost_rub", "finished_at"])
-        run.plan = [
-            {
-                "id": "plan-and-execute",
-                "title": "План и первый результат",
-                "state": "completed",
-                "agent": str(agent.id),
-            }
-        ]
-        run.output_payload = {"text": result.text}
+        run.plan = [{"id": "plan-and-execute", "title": "Анализ и первый результат", "state": "completed", "agent": str(agent.id)}]
+        run.output_payload = {
+            "text": result.text,
+            "repository": repository_context["repository"] if repository_context else None,
+            "repository_files": [item["path"] for item in repository_context["files"]] if repository_context else [],
+        }
         run.cost_actual_rub = actual
         run.state = AgentRun.State.COMPLETED
         run.finished_at = now
-        run.save(
-            update_fields=[
-                "plan",
-                "output_payload",
-                "cost_actual_rub",
-                "state",
-                "finished_at",
-                "updated_at",
-            ]
-        )
+        run.save(update_fields=["plan", "output_payload", "cost_actual_rub", "state", "finished_at", "updated_at"])
         return run
     except ProviderError as exc:
-        _mark_failure(
-            run,
-            step,
-            code=exc.code,
-            message=str(exc),
-            reservation_id=getattr(reservation, "id", None),
-            provider_reservation_id=getattr(provider_reservation, "id", None),
-        )
+        _mark_failure(run, step, code=exc.code, message=str(exc), reservation_id=getattr(reservation, "id", None), provider_reservation_id=getattr(provider_reservation, "id", None))
     except Exception as exc:
-        _mark_failure(
-            run,
-            step,
-            code="agent_runtime_failed",
-            message=str(exc),
-            reservation_id=getattr(reservation, "id", None),
-            provider_reservation_id=getattr(provider_reservation, "id", None),
-        )
+        _mark_failure(run, step, code="agent_runtime_failed", message=str(exc), reservation_id=getattr(reservation, "id", None), provider_reservation_id=getattr(provider_reservation, "id", None))
     return run
