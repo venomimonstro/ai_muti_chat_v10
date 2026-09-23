@@ -24,14 +24,15 @@ PUBLIC_SYSTEM_LEVELS = {
 }
 
 
-def public_model_name(value, routing_mode=None):
+def public_model_name(value, routing_mode=None, provider_slug=None):
     raw = str(value or "")
     lowered = raw.casefold()
+    internal = str(provider_slug or "").casefold() == "gigachat" or lowered.startswith("gigachat")
     # Routing mode is the customer contract. The internal model may change or
     # fallback without changing the System level the user selected.
-    if lowered.startswith("gigachat") and routing_mode in PUBLIC_SYSTEM_LEVELS:
+    if internal and routing_mode in PUBLIC_SYSTEM_LEVELS:
         return PUBLIC_SYSTEM_LEVELS[routing_mode]
-    if lowered.startswith("gigachat"):
+    if internal:
         if "lite" in lowered or lowered in {"gigachat-2", "gigachat"}:
             return "System Lite"
         if "max" in lowered:
@@ -70,7 +71,7 @@ class UsageSummaryView(APIView):
             }
 
         raw_by_model = list(
-            qs.values("routed_model", "routing_decision__mode")
+            qs.values("routed_model", "provider_slug", "routing_decision__mode")
             .annotate(
                 requests=Count("id"),
                 cost_rub=Coalesce(Sum("actual_cost_rub"), MONEY_ZERO, output_field=MONEY_FIELD),
@@ -83,7 +84,11 @@ class UsageSummaryView(APIView):
         # customer usage page. Merge fallbacks/internal variants into their public tier.
         merged = {}
         for row in raw_by_model:
-            name = public_model_name(row.get("routed_model"), row.get("routing_decision__mode"))
+            name = public_model_name(
+                row.get("routed_model"),
+                row.get("routing_decision__mode"),
+                row.get("provider_slug"),
+            )
             target = merged.setdefault(
                 name,
                 {"routed_model": name, "requests": 0, "cost_rub": Decimal("0"), "input_tokens": 0, "output_tokens": 0},
