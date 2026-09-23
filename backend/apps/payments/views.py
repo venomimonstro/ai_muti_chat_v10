@@ -58,7 +58,7 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PaymentSerializer
 
     def get_queryset(self):
-        return Payment.objects.filter(user=self.request.user).order_by("-created_at")
+        return Payment.objects.filter(user=self.request.user).select_related("user__wallet").order_by("-created_at")
 
     @action(detail=False, methods=["get"], url_path="readiness")
     def readiness(self, request):
