@@ -17,7 +17,8 @@ def _priced_model(slug, provider, *, price=10, latency=100):
     provider.health_state = Provider.HealthState.HEALTHY
     provider.last_latency_ms = latency
     provider.enabled = True
-    provider.save(update_fields=["health_state", "last_latency_ms", "enabled"])
+    provider.emergency_disabled = False
+    provider.save(update_fields=["health_state", "last_latency_ms", "enabled", "emergency_disabled"])
     model = AIModel.objects.create(
         provider=provider,
         slug=slug,
@@ -39,16 +40,30 @@ def _priced_model(slug, provider, *, price=10, latency=100):
     return model
 
 
+def _activate_policy(version, thresholds):
+    RoutingPolicyVersion.objects.filter(active=True).update(active=False)
+    return RoutingPolicyVersion.objects.create(
+        version=version,
+        active=True,
+        mode_weights=DEFAULT_WEIGHTS,
+        thresholds=thresholds,
+    )
+
+
 @pytest.mark.django_db
 def test_gigachat_adapter_is_external_api_adapter_only():
-    provider = Provider.objects.create(
+    provider, _ = Provider.objects.get_or_create(
         slug="gigachat",
-        name="GigaChat API",
-        adapter_type=Provider.AdapterType.DEEPSEEK_CHAT,
-        api_base_url="https://api.giga.chat/v1",
-        enabled=True,
-        health_state=Provider.HealthState.HEALTHY,
+        defaults={"name": "GigaChat API"},
     )
+    provider.name = "GigaChat API"
+    provider.adapter_type = Provider.AdapterType.DEEPSEEK_CHAT
+    provider.api_base_url = "https://api.giga.chat/v1"
+    provider.enabled = True
+    provider.emergency_disabled = False
+    provider.health_state = Provider.HealthState.HEALTHY
+    provider.save()
+    provider.api_keys.all().delete()
     key = ProviderApiKey(provider=provider, label="test", enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY)
     key.set_secret("authorization-key")
     key.save()
@@ -75,11 +90,9 @@ def test_admin_pinned_medium_model_is_selected_before_higher_score_candidate():
     other_provider = Provider.objects.create(slug="other-api", name="Other API")
     pinned = _priced_model("pinned-medium", pinned_provider, price=20, latency=500)
     _priced_model("other-strong", other_provider, price=5, latency=10)
-    RoutingPolicyVersion.objects.create(
-        version="tier-test-v1",
-        active=True,
-        mode_weights=DEFAULT_WEIGHTS,
-        thresholds={
+    _activate_policy(
+        "tier-test-v1",
+        {
             "default_quality": 0.55,
             "economy_min_quality": 0.60,
             "fallback_price_multiplier": 10,
@@ -105,11 +118,9 @@ def test_unavailable_pinned_model_falls_back_to_another_external_api():
     fallback = _priced_model("fallback-medium", fallback_provider, price=10, latency=60)
     pinned_provider.emergency_disabled = True
     pinned_provider.save(update_fields=["emergency_disabled"])
-    RoutingPolicyVersion.objects.create(
-        version="tier-fallback-v1",
-        active=True,
-        mode_weights=DEFAULT_WEIGHTS,
-        thresholds={
+    _activate_policy(
+        "tier-fallback-v1",
+        {
             "default_quality": 0.55,
             "economy_min_quality": 0.60,
             "fallback_price_multiplier": 2,
