@@ -1,6 +1,6 @@
 "use client";
 
-import {FormEvent,useMemo,useState} from "react";
+import {FormEvent,useMemo,useRef,useState} from "react";
 import {ApiError,api} from "../../lib/api";
 import type {ChatMessage,Conversation} from "../../lib/types";
 import {MarkdownMessage} from "../components/MarkdownMessage";
@@ -17,7 +17,7 @@ const money=(value:string|null|undefined)=>{
 };
 
 export function MessageCard({conversationId,message,onConversation}:{conversationId:string;message:ChatMessage;onConversation:(value:Conversation)=>void}){
- const[editing,setEditing]=useState(false);const[value,setValue]=useState(message.content);const[busy,setBusy]=useState(false);const[error,setError]=useState("");const[details,setDetails]=useState(false);const[copied,setCopied]=useState(false);const[pendingCost,setPendingCost]=useState<PendingCost|null>(null);
+ const[editing,setEditing]=useState(false);const[value,setValue]=useState(message.content);const[busy,setBusy]=useState(false);const[error,setError]=useState("");const[details,setDetails]=useState(false);const[copied,setCopied]=useState(false);const[pendingCost,setPendingCost]=useState<PendingCost|null>(null);const actionLock=useRef(false);
  const sources=useMemo(()=>message.generation?.context?.citations??[],[message.generation]);
  const systemTier=message.generation?.provider==="system";
  const runPaidAction=async(path:string,body:Record<string,unknown>,key:string,label:string,onDone:(result:Conversation)=>void)=>{
@@ -34,9 +34,9 @@ export function MessageCard({conversationId,message,onConversation}:{conversatio
    throw reason;
   }
  };
- const confirmPendingCost=async()=>{if(!pendingCost||busy)return;const action=pendingCost;setBusy(true);setError("");try{await action.execute();setPendingCost(null);}catch(reason){setPendingCost(null);setError(reason instanceof Error?reason.message:"Не удалось выполнить повторный запрос");}finally{setBusy(false)}};
- const edit=async(e:FormEvent)=>{e.preventDefault();if(!value.trim())return;setBusy(true);setError("");try{const key=`web-edit:${crypto.randomUUID()}`;await runPaidAction(`/conversations/${conversationId}/messages/${message.id}/edit/`,{content:value.trim()},key,"Ответить заново на изменённый запрос",result=>{onConversation(result);setEditing(false)});}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось изменить сообщение");}finally{setBusy(false)}};
- const regenerate=async()=>{if(busy)return;setBusy(true);setError("");try{const key=`web-regenerate:${crypto.randomUUID()}`;await runPaidAction(`/conversations/${conversationId}/messages/${message.id}/regenerate/`,{},key,"Создать другой вариант ответа",result=>onConversation(result));}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось создать новый вариант");}finally{setBusy(false)}};
+ const confirmPendingCost=async()=>{if(!pendingCost||busy||actionLock.current)return;const action=pendingCost;actionLock.current=true;setBusy(true);setError("");try{await action.execute();setPendingCost(null);}catch(reason){setPendingCost(null);setError(reason instanceof Error?reason.message:"Не удалось выполнить повторный запрос");}finally{actionLock.current=false;setBusy(false)}};
+ const edit=async(e:FormEvent)=>{e.preventDefault();if(!value.trim()||busy||actionLock.current)return;actionLock.current=true;setBusy(true);setError("");try{const key=`web-edit:${crypto.randomUUID()}`;await runPaidAction(`/conversations/${conversationId}/messages/${message.id}/edit/`,{content:value.trim()},key,"Ответить заново на изменённый запрос",result=>{onConversation(result);setEditing(false)});}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось изменить сообщение");}finally{actionLock.current=false;setBusy(false)}};
+ const regenerate=async()=>{if(busy||actionLock.current)return;actionLock.current=true;setBusy(true);setError("");try{const key=`web-regenerate:${crypto.randomUUID()}`;await runPaidAction(`/conversations/${conversationId}/messages/${message.id}/regenerate/`,{},key,"Создать другой вариант ответа",result=>onConversation(result));}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось создать новый вариант");}finally{actionLock.current=false;setBusy(false)}};
  const copy=async()=>{try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(message.content);else{const area=document.createElement("textarea");area.value=message.content;area.style.position="fixed";area.style.opacity="0";document.body.appendChild(area);area.select();document.execCommand("copy");area.remove();}setCopied(true);window.setTimeout(()=>setCopied(false),1200);}catch{setError("Не удалось скопировать текст. Выделите его вручную.");}};
  const assistantBody=message.status==="streaming"?<div className="streamingText" aria-live="polite">{message.content||"Формируем ответ…"}</div>:<MarkdownMessage content={message.content||"Ответ не получен"}/>;
  const hasCost=message.generation?.cost_rub!==null&&message.generation?.cost_rub!==undefined;
