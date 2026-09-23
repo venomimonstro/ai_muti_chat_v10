@@ -1,7 +1,5 @@
 from rest_framework import serializers
 
-from apps.projects.models import Project
-
 from .models import Agent, AgentApproval, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember
 
 
@@ -22,7 +20,7 @@ class AgentSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        instance = Agent(owner=self.context["request"].user)
+        instance = self.instance or Agent(owner=self.context["request"].user)
         for field, value in attrs.items():
             setattr(instance, field, value)
         instance.clean()
@@ -68,14 +66,16 @@ class AgentStepRunSerializer(serializers.ModelSerializer):
         model = AgentStepRun
         fields = [
             "id", "agent", "agent_name", "sequence", "node_id", "title", "action_type", "state",
-            "public_log", "cost_rub", "attempt", "started_at", "finished_at", "created_at",
+            "public_log", "output_payload", "cost_rub", "attempt", "started_at", "finished_at", "created_at",
         ]
+        read_only_fields = fields
 
 
 class AgentApprovalSerializer(serializers.ModelSerializer):
     class Meta:
         model = AgentApproval
         fields = ["id", "step", "title", "description", "action_payload", "status", "decided_at", "created_at"]
+        read_only_fields = fields
 
 
 class AgentRunSerializer(serializers.ModelSerializer):
@@ -88,8 +88,8 @@ class AgentRunSerializer(serializers.ModelSerializer):
         model = AgentRun
         fields = [
             "id", "agent", "agent_name", "team", "team_name", "project", "state", "objective",
-            "plan", "cost_reserved_rub", "cost_actual_rub", "step_count", "tool_call_count",
-            "handoff_count", "error_code", "error_message", "started_at", "finished_at", "created_at",
-            "updated_at", "steps", "approvals",
+            "input_payload", "output_payload", "plan", "cost_reserved_rub", "cost_actual_rub",
+            "step_count", "tool_call_count", "handoff_count", "error_code", "error_message",
+            "started_at", "finished_at", "created_at", "updated_at", "steps", "approvals",
         ]
         read_only_fields = fields
