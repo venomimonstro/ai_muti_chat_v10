@@ -7,6 +7,8 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from apps.projects.models import Project
+
 from .models import Agent, AgentApproval, AgentRun, AgentTeam, AgentTeamMember
 from .planner import draft_from_description, graph_for_kind
 from .serializers import AgentRunSerializer, AgentSerializer, AgentTeamSerializer
@@ -58,12 +60,32 @@ AGENT_TEMPLATES = [
 
 def _enqueue_run(run):
     from .tasks import execute_agent_run_task
-    transaction.on_commit(lambda: execute_agent_run_task.delay(str(run.id)))
+
+    def enqueue():
+        try:
+            execute_agent_run_task.delay(str(run.id))
+        except Exception as exc:
+            AgentRun.objects.filter(pk=run.id, state=AgentRun.State.QUEUED).update(
+                error_code="queue_unavailable",
+                error_message=str(exc)[:4000],
+            )
+
+    transaction.on_commit(enqueue)
 
 
-def _create_dev_agent(user, *, name, role, objective, level="balanced", tools=None):
+def _owned_project(user, raw_id):
+    if raw_id in {None, ""}:
+        return None
+    project = Project.objects.filter(pk=raw_id, owner=user, archived_at__isnull=True).first()
+    if project is None:
+        raise ValidationError({"project": "Проект недоступен"})
+    return project
+
+
+def _create_dev_agent(user, *, project, name, role, objective, level="balanced", tools=None):
     return Agent.objects.create(
         owner=user,
+        project=project,
         name=name,
         role=role,
         objective=objective,
@@ -99,9 +121,11 @@ class AgentViewSet(viewsets.ModelViewSet):
         description = str(request.data.get("description") or "").strip()
         if len(description) < 12:
             raise ValidationError({"description": "Опишите, что должен делать сотрудник, чуть подробнее"})
+        project = _owned_project(request.user, request.data.get("project"))
         draft = draft_from_description(description)
         agent = Agent.objects.create(
             owner=request.user,
+            project=project,
             name=str(request.data.get("name") or draft["name"]).strip()[:160],
             role=draft["role"],
             objective=draft["objective"],
@@ -120,8 +144,10 @@ class AgentViewSet(viewsets.ModelViewSet):
         template = next((item for item in AGENT_TEMPLATES if item["slug"] == slug), None)
         if not template:
             raise ValidationError({"template": "Шаблон не найден"})
+        project = _owned_project(request.user, request.data.get("project"))
         agent = Agent.objects.create(
             owner=request.user,
+            project=project,
             name=str(request.data.get("name") or template["name"]).strip()[:160],
             role=template["role"],
             objective=str(request.data.get("objective") or template["objective"]).strip(),
@@ -179,11 +205,16 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
         objective = str(request.data.get("objective") or "").strip()
         if not objective:
             raise ValidationError({"objective": "Опишите задачу разработки"})
-        director = _create_dev_agent(request.user, name="Engineering Director", role="Engineering Director", objective="Руководить разработкой: анализировать задачу, строить план, делегировать, принимать результаты и контролировать качество.", level="maximum", tools={"github": True, "files": True, "delegate": True, "approve": True})
-        architect = _create_dev_agent(request.user, name="Software Architect", role="Software Architect", objective="Изучать архитектуру, зависимости и риски до изменения кода. Формировать технический план.", level="maximum", tools={"github": True, "files": True, "write_code": False})
-        engineer = _create_dev_agent(request.user, name="Software Engineer", role="Software Engineer", objective="Вносить минимальные безопасные изменения в код по утверждённому плану и запускать проверки.", tools={"github": True, "files": True, "shell": "sandbox", "write_code": True, "merge": "approval"})
-        qa = _create_dev_agent(request.user, name="QA & Security", role="QA and Security Reviewer", objective="Проверять тесты, регрессии, безопасность и готовность изменений к публикации.", tools={"github": True, "files": True, "shell": "sandbox", "write_code": False})
-        team = AgentTeam.objects.create(owner=request.user, name=str(request.data.get("name") or "Dev Team").strip()[:160], objective=objective, director=director, max_cost_rub_per_run=Decimal("100"), max_handoffs=60)
+        project = _owned_project(request.user, request.data.get("project"))
+        if project is None:
+            raise ValidationError({"project": "Для Dev Studio выберите проект"})
+        if not hasattr(project, "github_repository"):
+            raise ValidationError({"project": "Сначала подключите GitHub repository к проекту"})
+        director = _create_dev_agent(request.user, project=project, name="Engineering Director", role="Engineering Director", objective="Руководить разработкой: анализировать задачу, строить план, делегировать, принимать результаты и контролировать качество.", level="maximum", tools={"github": True, "files": True, "delegate": True, "approve": True})
+        architect = _create_dev_agent(request.user, project=project, name="Software Architect", role="Software Architect", objective="Изучать архитектуру, зависимости и риски до изменения кода. Формировать технический план.", level="maximum", tools={"github": True, "files": True, "write_code": False})
+        engineer = _create_dev_agent(request.user, project=project, name="Software Engineer", role="Software Engineer", objective="Вносить минимальные безопасные изменения в код по утверждённому плану и запускать проверки.", tools={"github": True, "files": True, "shell": "sandbox", "write_code": True, "merge": "approval"})
+        qa = _create_dev_agent(request.user, project=project, name="QA & Security", role="QA and Security Reviewer", objective="Проверять тесты, регрессии, безопасность и готовность изменений к публикации.", tools={"github": True, "files": True, "shell": "sandbox", "write_code": False})
+        team = AgentTeam.objects.create(owner=request.user, project=project, name=str(request.data.get("name") or f"Dev Team · {project.name}").strip()[:160], objective=objective, director=director, max_cost_rub_per_run=Decimal("100"), max_handoffs=60)
         for priority, (agent, role, can_delegate) in enumerate([(director, "Engineering Director", True), (architect, "Architecture", False), (engineer, "Development", False), (qa, "QA & Security", False)], start=1):
             AgentTeamMember.objects.create(team=team, agent=agent, role=role, priority=priority * 10, can_delegate=can_delegate)
         return Response(AgentTeamSerializer(team, context={"request": request}).data, status=status.HTTP_201_CREATED)
@@ -196,6 +227,8 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
             agent = Agent.objects.get(id=request.data.get("agent"), owner=request.user)
         except (Agent.DoesNotExist, ValueError, TypeError):
             raise ValidationError({"agent": "Агент не найден"})
+        if team.project_id and agent.project_id not in {None, team.project_id}:
+            raise ValidationError({"agent": "Агент привязан к другому проекту"})
         AgentTeamMember.objects.update_or_create(team=team, agent=agent, defaults={"role": str(request.data.get("role") or agent.role or agent.name).strip()[:160], "priority": int(request.data.get("priority") or 100), "can_delegate": bool(request.data.get("can_delegate", False)), "enabled": True})
         return Response(AgentTeamSerializer(team, context={"request": request}).data, status=status.HTTP_200_OK)
 
