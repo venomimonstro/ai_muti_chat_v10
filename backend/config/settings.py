@@ -176,13 +176,41 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_SOFT_TIME_LIMIT = int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "300"))
 CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "330"))
 CELERY_BEAT_SCHEDULE = {
+    "system-heartbeat": {
+        "task": "apps.admin_ops.tasks.system_heartbeat_task",
+        "schedule": 60.0,
+    },
     "daily-financial-reconciliation": {
         "task": "apps.billing.tasks.daily_financial_reconciliation",
         "schedule": 86400.0,
     },
+    "payment-reconciliation": {
+        "task": "apps.admin_ops.tasks.payment_reconciliation_task",
+        "schedule": 300.0,
+    },
     "recover-stale-operations": {
         "task": "apps.admin_ops.tasks.recover_stale_operations_task",
         "schedule": 300.0,
+    },
+    "economic-safety-watch": {
+        "task": "apps.admin_ops.tasks.economic_safety_watch_task",
+        "schedule": 300.0,
+    },
+    "billing-integrity-watch": {
+        "task": "apps.admin_ops.tasks.billing_integrity_watch_task",
+        "schedule": 900.0,
+    },
+    "detect-abuse": {
+        "task": "apps.admin_ops.tasks.detect_abuse_task",
+        "schedule": 300.0,
+    },
+    "support-sla-watch": {
+        "task": "apps.admin_ops.tasks.support_sla_watch_task",
+        "schedule": 3600.0,
+    },
+    "official-pricing-sync": {
+        "task": "apps.admin_ops.tasks.official_pricing_sync_task",
+        "schedule": 86400.0,
     },
 }
 SIGNUP_PROMO_RUB = os.getenv("SIGNUP_PROMO_RUB", "25.00")
