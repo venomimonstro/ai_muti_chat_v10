@@ -98,17 +98,22 @@ def _cost_guard(request, *, user, conversation, content):
     return None
 
 
-def _action_client_message_id(user, action, key):
-    """Stable across HTTP retries, unlike uuid4 generated on every attempt."""
-    return uuid.uuid5(uuid.NAMESPACE_URL, f"bbtec-chat-action:{user.id}:{action}:{key}")
+def _action_client_message_id(user, action, key, source_message_id):
+    """Stable across retries and bound to the exact source message."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"bbtec-chat-action:{user.id}:{action}:{source_message_id}:{key}",
+    )
 
 
-def _validate_action_replay(generation, *, conversation, content, client_message_id):
+def _validate_action_replay(
+    generation, *, conversation, client_message_id, content=None
+):
     request_message = generation.user_message
     if (
         request_message.conversation_id != conversation.id
-        or request_message.content != content
         or request_message.client_message_id != client_message_id
+        or (content is not None and request_message.content != content)
     ):
         raise ValidationError("Idempotency-Key уже использован для другой операции")
     return generation
@@ -181,21 +186,13 @@ class EditMessageView(OwnedConversationAction):
             )
         try:
             key = self.idempotency_key(request)
-            client_message_id = _action_client_message_id(request.user, "edit", key)
+            client_message_id = _action_client_message_id(request.user, "edit", key, message_id)
             with transaction.atomic():
                 # Keep the same lock order as normal prepare(): user, then conversation.
                 request.user.__class__.objects.select_for_update().only("pk").get(pk=request.user.pk)
                 conversation = self.conversation(request, conversation_id, lock=True)
                 if conversation is None:
                     return Response({"detail": "Чат не найден"}, status=404)
-                message = visible_messages(conversation).filter(
-                    pk=message_id, role=Message.Role.USER
-                ).first()
-                if message is None:
-                    return Response(
-                        {"detail": "Редактировать можно только своё пользовательское сообщение"},
-                        status=404,
-                    )
                 existing = (
                     Generation.objects.filter(owner=request.user, idempotency_key=key)
                     .select_related("user_message")
@@ -210,6 +207,14 @@ class EditMessageView(OwnedConversationAction):
                     )
                     created = False
                 else:
+                    message = visible_messages(conversation).filter(
+                        pk=message_id, role=Message.Role.USER
+                    ).first()
+                    if message is None:
+                        return Response(
+                            {"detail": "Редактировать можно только своё пользовательское сообщение"},
+                            status=404,
+                        )
                     blocked = _cost_guard(
                         request,
                         user=request.user,
@@ -243,30 +248,16 @@ class RegenerateMessageView(OwnedConversationAction):
     def post(self, request, conversation_id, message_id):
         try:
             key = self.idempotency_key(request)
-            client_message_id = _action_client_message_id(request.user, "regenerate", key)
+            client_message_id = _action_client_message_id(
+                request.user, "regenerate", key, message_id
+            )
             with transaction.atomic():
                 # Serialize same-user paid actions before any branch mutation. A retry
-                # can now observe the already prepared Generation and will not fork twice.
+                # can observe the prepared Generation without needing the old branch.
                 request.user.__class__.objects.select_for_update().only("pk").get(pk=request.user.pk)
                 conversation = self.conversation(request, conversation_id, lock=True)
                 if conversation is None:
                     return Response({"detail": "Чат не найден"}, status=404)
-                assistant = visible_messages(conversation).filter(
-                    pk=message_id, role=Message.Role.ASSISTANT
-                ).first()
-                if assistant is None:
-                    return Response({"detail": "Ответ не найден"}, status=404)
-                ordered = list(visible_messages(conversation).order_by("created_at", "id"))
-                assistant_index = next(
-                    (i for i, item in enumerate(ordered) if item.id == assistant.id), -1
-                )
-                source = next(
-                    (item for item in reversed(ordered[:assistant_index]) if item.role == Message.Role.USER),
-                    None,
-                )
-                if source is None:
-                    return Response({"detail": "Исходный запрос не найден"}, status=400)
-                source_content = source.content
                 existing = (
                     Generation.objects.filter(owner=request.user, idempotency_key=key)
                     .select_related("user_message")
@@ -276,11 +267,26 @@ class RegenerateMessageView(OwnedConversationAction):
                     generation = _validate_action_replay(
                         existing,
                         conversation=conversation,
-                        content=source_content,
                         client_message_id=client_message_id,
                     )
                     created = False
                 else:
+                    assistant = visible_messages(conversation).filter(
+                        pk=message_id, role=Message.Role.ASSISTANT
+                    ).first()
+                    if assistant is None:
+                        return Response({"detail": "Ответ не найден"}, status=404)
+                    ordered = list(visible_messages(conversation).order_by("created_at", "id"))
+                    assistant_index = next(
+                        (i for i, item in enumerate(ordered) if item.id == assistant.id), -1
+                    )
+                    source = next(
+                        (item for item in reversed(ordered[:assistant_index]) if item.role == Message.Role.USER),
+                        None,
+                    )
+                    if source is None:
+                        return Response({"detail": "Исходный запрос не найден"}, status=400)
+                    source_content = source.content
                     blocked = _cost_guard(
                         request,
                         user=request.user,
