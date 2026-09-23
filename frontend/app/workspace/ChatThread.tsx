@@ -8,7 +8,7 @@ import {Icon} from "./Icons";
 import {MessageCard} from "./MessageCard";
 
 const isOptimistic=(message:ChatMessage)=>message.id.startsWith("local-user-")||message.id.startsWith("local-ai-");
-const nearInTime=(a:ChatMessage,b:ChatMessage)=>Math.abs(new Date(a.created_at).getTime()-new Date(b.created_at).getTime())<=120000;
+const nearInTime=(a:ChatMessage,b:ChatMessage)=>Math.abs(new Date(a.created_at).getTime()-new Date(b.created_at).getTime())<=15000;
 
 function displayMessages(messages:ChatMessage[]){
  const persisted=messages.filter(message=>!isOptimistic(message));
