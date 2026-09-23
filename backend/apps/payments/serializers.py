@@ -44,10 +44,8 @@ class PaymentSerializer(serializers.ModelSerializer):
             or Decimal("0.00")
         )
         payment_remaining = max(Decimal("0.00"), obj.amount_rub - refunded - held)
-        try:
-            unused_paid = max(Decimal("0.00"), obj.user.wallet.paid_rub)
-        except obj.user.__class__.wallet.RelatedObjectDoesNotExist:
-            unused_paid = Decimal("0.00")
+        wallet = getattr(obj.user, "wallet", None)
+        unused_paid = max(Decimal("0.00"), wallet.paid_rub if wallet is not None else Decimal("0.00"))
         return f"{min(payment_remaining, unused_paid):.2f}"
 
 
