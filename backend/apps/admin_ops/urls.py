@@ -22,6 +22,7 @@ from .provider_views import (
     ProviderModelConfigView,
     SafeProviderBulkActionView,
 )
+from .routing_policy_views import RoutingTierMatrixView
 from .safety_views import AdminConversationMessagesView, ChatSafetySearchView
 from .setup_views import CommercialProviderHealthView, CommercialSetupView
 from .support_views import CategorizedSupportControlView, SupportStatusReplyView
@@ -67,6 +68,7 @@ urlpatterns = [
     path("ledger/", LedgerInspectorView.as_view(), name="admin-ledger"),
     path("pricing/", PricingManagementView.as_view(), name="admin-pricing"),
     path("quality/", QualityControlView.as_view(), name="admin-quality"),
+    path("routing-tiers/", RoutingTierMatrixView.as_view(), name="admin-routing-tiers"),
     path("incidents/", IncidentControlView.as_view(), name="admin-incidents"),
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
     path("providers/<slug:provider_slug>/credentials/", ProviderCredentialView.as_view(), name="admin-provider-credentials"),
