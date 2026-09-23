@@ -32,14 +32,15 @@ def _clip(text, remaining):
     return text[:remaining]
 
 
-def build_repository_context(project):
+def build_repository_context(project, *, ref=None):
     try:
         binding = project.github_repository
     except Exception as exc:
         raise ValidationError("Dev Studio project has no GitHub repository binding") from exc
 
+    target_ref = str(ref or binding.default_branch).strip()
     tool_calls = 1
-    root = list_repository_directory(binding, "")
+    root = list_repository_directory(binding, "", ref=target_ref)
     items = root.get("items") or []
     tree_lines = [
         f"{item.get('type', '?')}: {item.get('path', item.get('name', ''))}"
@@ -57,7 +58,7 @@ def build_repository_context(project):
         if not entry or entry.get("type") != "dir":
             continue
         try:
-            nested = list_repository_directory(binding, directory)
+            nested = list_repository_directory(binding, directory, ref=target_ref)
             tool_calls += 1
         except ValidationError:
             continue
@@ -73,7 +74,7 @@ def build_repository_context(project):
         if remaining <= 0:
             break
         try:
-            payload = read_repository_file(binding, path)
+            payload = read_repository_file(binding, path, ref=target_ref)
             tool_calls += 1
         except ValidationError:
             continue
@@ -84,6 +85,7 @@ def build_repository_context(project):
         remaining -= len(content)
 
     rendered = "Repository: " + binding.full_name + "\n"
+    rendered += "Ref: " + target_ref + "\n"
     rendered += "Default branch: " + binding.default_branch + "\n"
     rendered += "Write enabled: " + ("yes" if binding.write_enabled else "no") + "\n\n"
     rendered += "Top-level tree:\n" + "\n".join(tree_lines)
@@ -91,6 +93,7 @@ def build_repository_context(project):
         rendered += f"\n\n--- {item['path']} ---\n{item['content']}"
     return {
         "repository": binding.full_name,
+        "ref": target_ref,
         "default_branch": binding.default_branch,
         "write_enabled": binding.write_enabled,
         "tree": tree_lines,
