@@ -86,7 +86,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _default_client_model():
-        queryset = AIModel.objects.filter(enabled=True).select_related(
+        queryset = AIModel.objects.filter(enabled=True).exclude(provider__slug="gigachat").select_related(
             "provider", "current_version"
         ).order_by("provider__priority", "display_name")
         for model in queryset:
@@ -96,71 +96,55 @@ class ConversationSerializer(serializers.ModelSerializer):
                 continue
             try:
                 price = active_price(model.slug)
-                require_margin(
-                    quote(
-                        price,
-                        1_000_000,
-                        0,
-                        provider_slug=model.provider.slug,
-                        model_slug=model.slug,
-                    )
-                )
-                require_margin(
-                    quote(
-                        price,
-                        0,
-                        1_000_000,
-                        provider_slug=model.provider.slug,
-                        model_slug=model.slug,
-                    )
-                )
-            except (DjangoValidationError, Exception):
+                require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
+                require_margin(quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug))
+            except Exception:
                 continue
             return model
         return None
 
     def create(self, validated_data):
+        mode = validated_data.get("routing_mode", Conversation.RoutingMode.MANUAL)
         selected = validated_data.get("selected_model")
-        if not selected or selected == "echo-v1":
-            model = self._default_client_model()
-            if model is None:
-                raise serializers.ValidationError(
-                    {"selected_model": "Нет подключённой модели, доступной клиентскому чату"}
-                )
-            validated_data["selected_model"] = model.slug
+        if mode == Conversation.RoutingMode.MANUAL:
+            if not selected or selected == "echo-v1":
+                model = self._default_client_model()
+                if model is None:
+                    raise serializers.ValidationError(
+                        {"selected_model": "Нет подключённой модели для ручного режима. Выберите AUTO или подключите клиентскую модель."}
+                    )
+                validated_data["selected_model"] = model.slug
+        elif not selected:
+            # AUTO routing chooses the real provider/model only when a generation starts.
+            # Keep the DB-compatible placeholder out of the client-model validation path.
+            validated_data["selected_model"] = "echo-v1"
         return super().create(validated_data)
 
     def validate_selected_model(self, value):
+        # AUTO conversations may carry the legacy placeholder; it is never sent to a provider.
+        routing_mode = self.initial_data.get("routing_mode") if hasattr(self, "initial_data") else None
+        if routing_mode in {
+            Conversation.RoutingMode.ECONOMY,
+            Conversation.RoutingMode.BALANCED,
+            Conversation.RoutingMode.MAXIMUM,
+        } and value == "echo-v1":
+            return value
         try:
             model = AIModel.objects.select_related("provider", "current_version").get(
                 slug=value, enabled=True
             )
         except AIModel.DoesNotExist as exc:
             raise serializers.ValidationError("Модель не найдена") from exc
+        if model.provider.slug == "gigachat":
+            raise serializers.ValidationError("GigaChat используется только внутренним AUTO-маршрутизатором")
         if not model.current_version_id or not model.upstream_model.strip():
             raise serializers.ValidationError("Модель ещё не готова к работе")
         if not provider_available(model.provider):
             raise serializers.ValidationError("Модель временно недоступна")
         try:
             price = active_price(model.slug)
-            require_margin(
-                quote(
-                    price,
-                    1_000_000,
-                    0,
-                    provider_slug=model.provider.slug,
-                    model_slug=model.slug,
-                )
-            )
-            require_margin(
-                quote(
-                    price,
-                    0,
-                    1_000_000,
-                    provider_slug=model.provider.slug,
-                    model_slug=model.slug,
-                )
-            )
+            require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
+            require_margin(quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug))
         except DjangoValidationError as exc:
             raise serializers.ValidationError(
                 "Для модели не настроена безопасная коммерческая цена"
