@@ -1,3 +1,4 @@
+import os
 import time
 from decimal import Decimal
 
@@ -9,6 +10,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework.response import Response
 
+from apps.ai_registry.gigachat_adapter import GigaChatAPIAdapter
 from apps.ai_registry.models import AIModel, ModelVersion, Provider, ProviderApiKey
 from apps.billing.models import PriceVersion
 
@@ -96,6 +98,14 @@ def _openrouter_key_url(provider: Provider):
     return f"{provider.api_base_url.rstrip('/')}/key"
 
 
+def _gigachat_adapter(provider: Provider, secret: str):
+    return GigaChatAPIAdapter(
+        authorization_key=secret,
+        base_url=provider.api_base_url or "https://api.giga.chat/v1",
+        scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
+    )
+
+
 def _extract_models(provider: Provider, payload):
     raw = payload.get("models", []) if provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT else payload.get("data", [])
     result = []
@@ -119,7 +129,7 @@ def _purpose(model_id: str):
         return "Быстрые и недорогие повседневные запросы"
     if any(x in value for x in ("vision", "image", "multimodal")):
         return "Работа с текстом и изображениями"
-    if any(x in value for x in ("opus", "pro", "max", "gpt-5", "grok-4")):
+    if any(x in value for x in ("opus", "pro", "max", "ultra", "gpt-5", "grok-4")):
         return "Максимальное качество для сложных задач"
     return "Универсальный чат, тексты, анализ и рабочие задачи"
 
@@ -153,14 +163,16 @@ def _provider_error_code(response: httpx.Response, prefix="http") -> str:
 
 
 def _check_key(provider: Provider, key: ProviderApiKey):
-    """Validate the actual credential, not merely provider catalog reachability.
-
-    OpenRouter exposes GET /api/v1/key specifically for validating the current
-    bearer key. /models can be reachable independently and therefore must not be
-    treated as proof that an OpenRouter secret is valid.
-    """
     started = time.monotonic()
     now = timezone.now()
+    if provider.slug == "gigachat":
+        health = _gigachat_adapter(provider, key.get_secret()).health_check()
+        key.health_state = ProviderApiKey.HealthState.HEALTHY if health.healthy else ProviderApiKey.HealthState.DEGRADED
+        key.last_error_code = health.error_code
+        key.last_latency_ms = health.latency_ms
+        key.last_checked_at = now
+        key.save(update_fields=["health_state", "last_error_code", "last_latency_ms", "last_checked_at"])
+        return health.healthy
     url = _openrouter_key_url(provider) if provider.slug == "openrouter" else _models_url(provider)
     try:
         response = httpx.get(url, headers=_headers(provider, key.get_secret()), timeout=10, follow_redirects=True)
@@ -193,12 +205,11 @@ def _refresh_balance(provider: Provider, key: ProviderApiKey):
     key.balance_supported = False
     key.balance_amount = None
     key.balance_currency = ""
-    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT and provider.slug != "openrouter":
+    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT and provider.slug not in {"openrouter", "gigachat"}:
         try:
             response = httpx.get(f"{provider.api_base_url.rstrip('/')}/user/balance", headers=_headers(provider, key.get_secret()), timeout=10)
             response.raise_for_status()
-            payload = response.json()
-            balances = payload.get("balance_infos") or []
+            balances = (response.json() or {}).get("balance_infos") or []
             if balances:
                 preferred = next((x for x in balances if x.get("currency") == "USD"), balances[0])
                 key.balance_amount = Decimal(str(preferred.get("total_balance") or "0"))
@@ -207,21 +218,11 @@ def _refresh_balance(provider: Provider, key: ProviderApiKey):
         except Exception:
             pass
     elif provider.slug == "openrouter":
-        # /credits is the authoritative account credit source, but OpenRouter
-        # requires a Management API key for it. Ordinary inference keys are still
-        # valid via /key; a 403 here means only that total credits are unavailable.
         try:
-            response = httpx.get(
-                f"{provider.api_base_url.rstrip('/')}/credits",
-                headers=_headers(provider, key.get_secret()),
-                timeout=10,
-                follow_redirects=True,
-            )
+            response = httpx.get(f"{provider.api_base_url.rstrip('/')}/credits", headers=_headers(provider, key.get_secret()), timeout=10, follow_redirects=True)
             response.raise_for_status()
             data = (response.json() or {}).get("data") or {}
-            total_credits = Decimal(str(data.get("total_credits") or "0"))
-            total_usage = Decimal(str(data.get("total_usage") or "0"))
-            key.balance_amount = total_credits - total_usage
+            key.balance_amount = Decimal(str(data.get("total_credits") or "0")) - Decimal(str(data.get("total_usage") or "0"))
             key.balance_currency = "USD"
             key.balance_supported = True
         except Exception:
@@ -265,21 +266,19 @@ class ProviderKeyCollectionView(AdminAPIView):
         item.set_secret(secret)
         item.save()
         healthy = _check_key(provider, item)
-        if provider.slug == "openrouter" and not healthy:
+        if provider.slug in {"openrouter", "gigachat"} and not healthy:
             error_code = item.last_error_code or "key_validation_failed"
             item.delete()
             provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
             provider.last_checked_at = timezone.now()
             provider.save(update_fields=["health_state", "last_checked_at"])
-            if error_code in {"http_401", "invalid_api_key", "unauthorized"}:
-                detail = "OpenRouter отклонил API-ключ. Проверьте, что вставлен полный ключ sk-or-… и он не удалён в OpenRouter."
-            else:
-                detail = f"OpenRouter не подтвердил API-ключ: {error_code}"
-            return Response({"detail": detail, "code": error_code}, status=400)
+            label_name = "GigaChat" if provider.slug == "gigachat" else "OpenRouter"
+            return Response({"detail": f"{label_name} не подтвердил ключ авторизации: {error_code}", "code": error_code}, status=400)
         _refresh_balance(provider, item)
         provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
         provider.last_checked_at = timezone.now()
-        provider.save(update_fields=["health_state", "last_checked_at"])
+        provider.last_latency_ms = item.last_latency_ms
+        provider.save(update_fields=["health_state", "last_checked_at", "last_latency_ms"])
         audit(request, "provider.key.added", "provider", provider.id, metadata={"provider": provider.slug, "key_id": str(item.id), "healthy": healthy})
         return Response(_key_payload(item), status=201)
 
@@ -317,17 +316,19 @@ class ProviderDiscoveredModelsView(AdminAPIView):
         if not api_key:
             return Response({"detail": "Сначала добавьте рабочий API-ключ"}, status=409)
         try:
-            response = httpx.get(_models_url(provider), headers=_headers(provider, api_key), timeout=15, follow_redirects=True)
+            if provider.slug == "gigachat":
+                adapter = _gigachat_adapter(provider, api_key)
+                response = httpx.get(_models_url(provider), headers=adapter._headers(), timeout=15, follow_redirects=True)
+            else:
+                response = httpx.get(_models_url(provider), headers=_headers(provider, api_key), timeout=15, follow_redirects=True)
             response.raise_for_status()
             models = _extract_models(provider, response.json())
         except httpx.HTTPStatusError as exc:
             return Response({"detail": f"Провайдер вернул HTTP {exc.response.status_code}"}, status=424)
-        except httpx.HTTPError:
+        except Exception:
             return Response({"detail": "Не удалось получить список моделей"}, status=424)
         configured = set(AIModel.objects.filter(provider=provider).values_list("upstream_model", flat=True))
-        enriched = []
-        for item in models:
-            enriched.append({**item, "purpose": _purpose(item["id"]), "selected": item["id"] in configured, "price": _price_for(provider, item["id"])})
+        enriched = [{**item, "purpose": _purpose(item["id"]), "selected": item["id"] in configured, "price": _price_for(provider, item["id"])} for item in models]
         return Response({"provider": provider.slug, "models": enriched})
 
     @transaction.atomic
