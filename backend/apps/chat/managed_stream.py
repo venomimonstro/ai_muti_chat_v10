@@ -13,6 +13,12 @@ from .streaming import run
 logger = logging.getLogger(__name__)
 
 
+PUBLIC_SYSTEM_LEVELS = {
+    "economy": "System Lite",
+    "balanced": "System Pro",
+    "maximum": "System Max",
+}
+
 PROVIDER_ERROR_MESSAGES = {
     "credit_balance_exhausted": (
         "У AI-провайдера закончились API-кредиты. Запрос сохранён, деньги не списаны. "
@@ -123,10 +129,55 @@ def _rewrite_error_chunk_if_needed(generation, chunk):
     return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
+def _publicize_sse_chunk(generation, chunk):
+    """Never expose the internal GigaChat provider/model in customer chat SSE."""
+    if not isinstance(chunk, str) or not chunk.startswith("event: "):
+        return chunk
+    lines = chunk.splitlines()
+    if not lines:
+        return chunk
+    event = lines[0][7:].strip() if lines[0].startswith("event: ") else ""
+    if event not in {"routing", "completed", "recovery"}:
+        return chunk
+    try:
+        data_line = next(line for line in lines if line.startswith("data: "))
+        payload = json.loads(data_line[6:])
+    except Exception:
+        return chunk
+
+    raw_values = [
+        str(payload.get("model") or ""),
+        str(payload.get("model_version") or ""),
+        str(payload.get("provider") or ""),
+        str(payload.get("from_model") or ""),
+    ]
+    internal = payload.get("provider") == "gigachat" or any(value.lower().startswith("gigachat") for value in raw_values)
+    if not internal:
+        return chunk
+
+    try:
+        mode = generation.user_message.conversation.routing_mode
+    except Exception:
+        mode = "balanced"
+    level = PUBLIC_SYSTEM_LEVELS.get(mode, "System Pro")
+    if "model" in payload:
+        payload["model"] = level
+    if "model_version" in payload:
+        payload["model_version"] = level
+    if payload.get("provider") == "gigachat":
+        payload["provider"] = "system"
+    if str(payload.get("from_model") or "").lower().startswith("gigachat"):
+        payload["from_model"] = level
+    if event == "routing" and "explanation" in payload:
+        payload["explanation"] = f"Использован уровень {level}."
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+
 def managed_run(generation, *, adapter=None):
     """Wrap the entire streaming lifecycle so disconnects and error billing stay durable."""
     try:
         for chunk in run(generation, adapter=adapter):
-            yield _rewrite_error_chunk_if_needed(generation, chunk)
+            chunk = _rewrite_error_chunk_if_needed(generation, chunk)
+            yield _publicize_sse_chunk(generation, chunk)
     finally:
         _finalize_unhandled_disconnect(generation)
