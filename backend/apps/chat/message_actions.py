@@ -8,9 +8,10 @@ from rest_framework.views import APIView
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
 from .cost_preview import chat_cost_preview
+from .managed_stream import managed_run
 from .models import Conversation, ConversationBranch, Generation, Message
 from .serializers import MessageSerializer
-from .streaming import prepare, run
+from .streaming import prepare
 from .ux_models import ConversationUIState
 
 
@@ -121,7 +122,10 @@ def _validate_action_replay(
 
 def _run_prepared_generation(generation, created):
     if created:
-        list(run(generation))
+        # Use the same wrapper as the primary chat stream. It reconciles partial
+        # confirmed provider usage back into Generation.actual_cost_rub even when
+        # the low-level provider stream fails after delivering tokens.
+        list(managed_run(generation))
         generation.refresh_from_db()
     return generation
 
