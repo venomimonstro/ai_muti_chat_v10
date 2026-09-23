@@ -1,14 +1,22 @@
+import uuid
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.billing.models import BalanceReservation, Wallet
 
 from .context import SYSTEM_POLICY
 from .managed_stream import _publicize_sse_chunk
 from .models import Conversation, Generation, Message
+from .product_identity import (
+    create_identity_generation,
+    direct_identity_answer,
+    identity_sse,
+)
 from .serializers import MessageSerializer
 
 
@@ -92,3 +100,79 @@ def test_system_identity_policy_is_stable_and_bbtc_owned():
     assert "System Lite" in SYSTEM_POLICY
     assert "System Pro" in SYSTEM_POLICY
     assert "System Max" in SYSTEM_POLICY
+
+
+def test_direct_identity_classifier_only_captures_short_identity_questions():
+    assert direct_identity_answer("Кто ты?") == "Я ваш агент."
+    assert direct_identity_answer("ТЫ КТО?!") == "Я ваш агент."
+    assert direct_identity_answer("Кто тебя создал?") == "Компания BBTEC."
+    assert direct_identity_answer("кто твой разработчик") == "Компания BBTEC."
+    assert direct_identity_answer("Кто ты и напиши мне SEO-стратегию") is None
+    assert direct_identity_answer("Кто ты?", [uuid.uuid4()]) is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_identity_generation_is_free_and_idempotent():
+    user = User.objects.create_user(username="identity-free", email="identity-free@example.test")
+    conversation = Conversation.objects.create(
+        owner=user,
+        routing_mode=Conversation.RoutingMode.BALANCED,
+        selected_model="echo-v1",
+    )
+    client_message_id = uuid.uuid4()
+    first, created = create_identity_generation(
+        user=user,
+        conversation=conversation,
+        content="Кто ты?",
+        client_message_id=client_message_id,
+        idempotency_key="identity-free-key",
+        answer="Я ваш агент.",
+    )
+    second, replay_created = create_identity_generation(
+        user=user,
+        conversation=conversation,
+        content="Кто ты?",
+        client_message_id=client_message_id,
+        idempotency_key="identity-free-key",
+        answer="Я ваш агент.",
+    )
+
+    assert created is True
+    assert replay_created is False
+    assert second.id == first.id
+    assert first.state == Generation.State.COMPLETED
+    assert first.actual_cost_rub == Decimal("0.0000")
+    assert first.reservation_id is None
+    assert first.provider_slug == "system"
+    assert first.routed_model == "System Pro"
+    assert Message.objects.filter(conversation=conversation).count() == 2
+    assert BalanceReservation.objects.count() == 0
+    assert Wallet.objects.filter(user=user).count() == 0
+    stream = "".join(identity_sse(first))
+    assert "Я ваш агент." in stream
+    assert '"cost_rub": "0.0000"' in stream
+    assert "gigachat" not in stream.casefold()
+
+
+@pytest.mark.django_db
+def test_identity_preview_is_zero_cost_even_without_provider_models():
+    user = User.objects.create_user(username="identity-preview", email="identity-preview@example.test")
+    conversation = Conversation.objects.create(
+        owner=user,
+        routing_mode=Conversation.RoutingMode.MAXIMUM,
+        selected_model="echo-v1",
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/preview/",
+        {"content": "Кто тебя создал?", "client_message_id": str(uuid.uuid4()), "file_ids": []},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert Decimal(response.data["estimated_max_rub"]) == Decimal("0")
+    assert response.data["confirmation_required"] is False
+    assert response.data["selected_model"] == "System Max"
+    assert Wallet.objects.filter(user=user).count() == 0
