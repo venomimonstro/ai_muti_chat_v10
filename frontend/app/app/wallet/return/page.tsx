@@ -10,6 +10,8 @@ import styles from "../wallet.module.css";
 type Payment={id:string;amount_rub:string;status:string;receipt_status:string;created_at:string};
 const paymentStatus:Record<string,string>={created:"Создан",pending:"Ожидает подтверждения",succeeded:"Оплачен",canceled:"Отменён"};
 const receiptStatus:Record<string,string>={not_required:"Не требуется",pending:"Ожидается",succeeded:"Сформирован",failed:"Ошибка",legal_review:"Нужна проверка"};
+const canonicalMoney=(value:string|number)=>{const number=Number(value);return Number.isFinite(number)?number.toFixed(2):String(value)};
+const clearTopupReplayState=(payment:Payment)=>{const amount=canonicalMoney(payment.amount_rub);const paymentKey=`pending-topup-payment:${amount}`;if(sessionStorage.getItem(paymentKey)===payment.id){sessionStorage.removeItem(paymentKey);sessionStorage.removeItem(`pending-topup-key:${amount}`);}};
 
 export default function PaymentReturnPage(){
  const [payment,setPayment]=useState<Payment|null>(null);
@@ -37,6 +39,7 @@ export default function PaymentReturnPage(){
       sessionStorage.setItem(marker,"1");
       void trackProductEvent(current.status==="succeeded"?"payment_success":"payment_failed",{payment_id:current.id,amount_rub:current.amount_rub});
      }
+     clearTopupReplayState(current);
      sessionStorage.removeItem("pending-payment-id");
     }else if(current&&tries<8){
      window.setTimeout(()=>void check(),1800);
