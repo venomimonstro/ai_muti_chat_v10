@@ -4,18 +4,16 @@ from unittest.mock import Mock, patch
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.ai_registry.adapters import XAIChatAdapter, adapter_for
+from apps.ai_registry.adapters import OpenRouterChatAdapter, adapter_for
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.billing.models import FxRateSnapshot, PriceVersion
 
 from .openrouter_pricing import sync_openrouter_prices
+from .provider_views import _check_key
 
 
 class OpenRouterIntegrationTests(TestCase):
     def setUp(self):
-        # The OpenRouter provider is created by ai_registry.0009 during test DB
-        # setup. Reuse that canonical row instead of trying to create a second
-        # provider with the same unique slug.
         self.provider = Provider.objects.get(slug="openrouter")
         self.provider.name = "OpenRouter"
         self.provider.enabled = True
@@ -68,11 +66,37 @@ class OpenRouterIntegrationTests(TestCase):
             effective_at=timezone.now(),
         )
 
-    def test_openrouter_uses_openai_compatible_chat_adapter(self):
+    def test_openrouter_uses_dedicated_openai_compatible_chat_adapter(self):
         adapter = adapter_for(self.model)
-        self.assertIsInstance(adapter, XAIChatAdapter)
+        self.assertIsInstance(adapter, OpenRouterChatAdapter)
         self.assertEqual(adapter.base_url, "https://openrouter.ai/api/v1")
         self.assertEqual(adapter.api_key, "sk-or-v1-test-key")
+
+    @patch("apps.admin_ops.provider_views.httpx.get")
+    def test_openrouter_key_is_validated_with_current_key_endpoint(self, get):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "data": {
+                "label": "sk-or-v1-test...key",
+                "limit": 100,
+                "limit_remaining": 75,
+                "usage": 25,
+            }
+        }
+        get.return_value = response
+
+        healthy = _check_key(self.provider, self.key)
+
+        self.assertTrue(healthy)
+        self.key.refresh_from_db()
+        self.assertEqual(self.key.health_state, ProviderApiKey.HealthState.HEALTHY)
+        self.assertEqual(self.key.last_error_code, "")
+        self.assertEqual(get.call_args.args[0], "https://openrouter.ai/api/v1/key")
+        self.assertEqual(
+            get.call_args.kwargs["headers"]["Authorization"],
+            "Bearer sk-or-v1-test-key",
+        )
 
     @patch("apps.admin_ops.openrouter_pricing.httpx.get")
     def test_live_catalog_pricing_creates_usd_price_version(self, get):
