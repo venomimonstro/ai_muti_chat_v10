@@ -53,6 +53,35 @@ services:
     init: true
     stop_grace_period: 30s
     logging: *default-logging
+  sandbox:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "apps.agents.sandbox_server"]
+    environment:
+      SANDBOX_PORT: "8090"
+      SANDBOX_SHARED_SECRET: ${SANDBOX_SHARED_SECRET:-}
+      SANDBOX_TIMEOUT_SECONDS: ${SANDBOX_TIMEOUT_SECONDS:-90}
+      SANDBOX_MAX_BODY_BYTES: ${SANDBOX_MAX_BODY_BYTES:-2097152}
+      SANDBOX_MAX_FILES: ${SANDBOX_MAX_FILES:-300}
+      SANDBOX_MAX_FILE_BYTES: ${SANDBOX_MAX_FILE_BYTES:-524288}
+    read_only: true
+    tmpfs:
+      - /workspace:rw,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 96
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=3).read()"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [sandbox_net]
+    init: true
+    logging: *default-logging
   worker:
     build: ./backend
     restart: unless-stopped
@@ -60,9 +89,11 @@ services:
     command: ["sh", "-c", "exec celery -A config worker -l INFO --concurrency=$${CELERY_CONCURRENCY:-2}"]
     environment:
       CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
+      SANDBOX_URL: http://sandbox:8090
+      SANDBOX_SHARED_SECRET: ${SANDBOX_SHARED_SECRET:-}
     volumes: [media_data:/app/media, logs_data:/app/logs]
-    depends_on: {backend: {condition: service_healthy}}
-    networks: [private]
+    depends_on: {backend: {condition: service_healthy}, sandbox: {condition: service_healthy}}
+    networks: [private, sandbox_net]
     init: true
     stop_grace_period: 45s
     logging: *default-logging
@@ -133,6 +164,7 @@ services:
 
 networks:
   private: {internal: true}
+  sandbox_net: {internal: true}
   edge:
 volumes:
   postgres_data:
