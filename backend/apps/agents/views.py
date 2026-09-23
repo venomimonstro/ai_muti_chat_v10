@@ -8,12 +8,14 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from .models import Agent, AgentApproval, AgentRun, AgentTeam, AgentTeamMember
+from .planner import draft_from_description, graph_for_kind
 from .serializers import AgentRunSerializer, AgentSerializer, AgentTeamSerializer
 
 
 AGENT_TEMPLATES = [
     {
         "slug": "smm-specialist",
+        "kind": "smm",
         "name": "SMM-специалист",
         "role": "SMM specialist",
         "objective": "Планировать и создавать контент, проверять факты, готовить материалы к публикации и анализировать результат.",
@@ -23,6 +25,7 @@ AGENT_TEMPLATES = [
     },
     {
         "slug": "seo-copywriter",
+        "kind": "seo",
         "name": "SEO-копирайтер",
         "role": "SEO copywriter",
         "objective": "Исследовать тему, собирать факты, писать SEO-материалы, проверять дубли и готовить публикацию.",
@@ -32,6 +35,7 @@ AGENT_TEMPLATES = [
     },
     {
         "slug": "software-engineer",
+        "kind": "development",
         "name": "Разработчик",
         "role": "Software Engineer",
         "objective": "Анализировать код, вносить изменения, запускать проверки и подготавливать безопасные изменения проекта.",
@@ -41,6 +45,7 @@ AGENT_TEMPLATES = [
     },
     {
         "slug": "qa-engineer",
+        "kind": "qa",
         "name": "QA-инженер",
         "role": "QA Engineer",
         "objective": "Проверять требования, запускать тесты, искать регрессии и оформлять воспроизводимые дефекты.",
@@ -53,7 +58,6 @@ AGENT_TEMPLATES = [
 
 def _enqueue_run(run):
     from .tasks import execute_agent_run_task
-
     transaction.on_commit(lambda: execute_agent_run_task.delay(str(run.id)))
 
 
@@ -67,6 +71,7 @@ def _create_dev_agent(user, *, name, role, objective, level="balanced", tools=No
         status=Agent.Status.ACTIVE,
         system_level=level,
         tool_policy=tools or {},
+        graph=graph_for_kind("development" if role != "QA and Security Reviewer" else "qa"),
         max_cost_rub_per_run=Decimal("25"),
         max_steps=80,
         max_tool_calls=120,
@@ -88,6 +93,26 @@ class AgentViewSet(viewsets.ModelViewSet):
     def templates(self, request):
         return Response(AGENT_TEMPLATES)
 
+    @action(detail=False, methods=["post"], url_path="from-description")
+    @transaction.atomic
+    def from_description(self, request):
+        description = str(request.data.get("description") or "").strip()
+        if len(description) < 12:
+            raise ValidationError({"description": "Опишите, что должен делать сотрудник, чуть подробнее"})
+        draft = draft_from_description(description)
+        agent = Agent.objects.create(
+            owner=request.user,
+            name=str(request.data.get("name") or draft["name"]).strip()[:160],
+            role=draft["role"],
+            objective=draft["objective"],
+            autonomy=draft["autonomy"],
+            system_level=draft["system_level"],
+            tool_policy=draft["tool_policy"],
+            graph=draft["graph"],
+            status=Agent.Status.DRAFT,
+        )
+        return Response(self.get_serializer(agent).data, status=status.HTTP_201_CREATED)
+
     @action(detail=False, methods=["post"], url_path="from-template")
     @transaction.atomic
     def from_template(self, request):
@@ -103,6 +128,7 @@ class AgentViewSet(viewsets.ModelViewSet):
             autonomy=template["autonomy"],
             system_level=template["system_level"],
             tool_policy=template["tool_policy"],
+            graph=graph_for_kind(template["kind"]),
             status=Agent.Status.DRAFT,
         )
         return Response(AgentSerializer(agent, context={"request": request}).data, status=status.HTTP_201_CREATED)
@@ -142,11 +168,7 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
     serializer_class = AgentTeamSerializer
 
     def get_queryset(self):
-        return (
-            AgentTeam.objects.filter(owner=self.request.user)
-            .select_related("director", "project")
-            .prefetch_related("members__agent")
-        )
+        return AgentTeam.objects.filter(owner=self.request.user).select_related("director", "project").prefetch_related("members__agent")
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
@@ -157,60 +179,13 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
         objective = str(request.data.get("objective") or "").strip()
         if not objective:
             raise ValidationError({"objective": "Опишите задачу разработки"})
-        director = _create_dev_agent(
-            request.user,
-            name="Engineering Director",
-            role="Engineering Director",
-            objective="Руководить разработкой: анализировать задачу, строить план, делегировать, принимать результаты и контролировать качество.",
-            level="maximum",
-            tools={"github": True, "files": True, "delegate": True, "approve": True},
-        )
-        architect = _create_dev_agent(
-            request.user,
-            name="Software Architect",
-            role="Software Architect",
-            objective="Изучать архитектуру, зависимости и риски до изменения кода. Формировать технический план.",
-            level="maximum",
-            tools={"github": True, "files": True, "write_code": False},
-        )
-        engineer = _create_dev_agent(
-            request.user,
-            name="Software Engineer",
-            role="Software Engineer",
-            objective="Вносить минимальные безопасные изменения в код по утверждённому плану и запускать проверки.",
-            tools={"github": True, "files": True, "shell": "sandbox", "write_code": True, "merge": "approval"},
-        )
-        qa = _create_dev_agent(
-            request.user,
-            name="QA & Security",
-            role="QA and Security Reviewer",
-            objective="Проверять тесты, регрессии, безопасность и готовность изменений к публикации.",
-            tools={"github": True, "files": True, "shell": "sandbox", "write_code": False},
-        )
-        team = AgentTeam.objects.create(
-            owner=request.user,
-            name=str(request.data.get("name") or "Dev Team").strip()[:160],
-            objective=objective,
-            director=director,
-            max_cost_rub_per_run=Decimal("100"),
-            max_handoffs=60,
-        )
-        for priority, (agent, role, can_delegate) in enumerate(
-            [
-                (director, "Engineering Director", True),
-                (architect, "Architecture", False),
-                (engineer, "Development", False),
-                (qa, "QA & Security", False),
-            ],
-            start=1,
-        ):
-            AgentTeamMember.objects.create(
-                team=team,
-                agent=agent,
-                role=role,
-                priority=priority * 10,
-                can_delegate=can_delegate,
-            )
+        director = _create_dev_agent(request.user, name="Engineering Director", role="Engineering Director", objective="Руководить разработкой: анализировать задачу, строить план, делегировать, принимать результаты и контролировать качество.", level="maximum", tools={"github": True, "files": True, "delegate": True, "approve": True})
+        architect = _create_dev_agent(request.user, name="Software Architect", role="Software Architect", objective="Изучать архитектуру, зависимости и риски до изменения кода. Формировать технический план.", level="maximum", tools={"github": True, "files": True, "write_code": False})
+        engineer = _create_dev_agent(request.user, name="Software Engineer", role="Software Engineer", objective="Вносить минимальные безопасные изменения в код по утверждённому плану и запускать проверки.", tools={"github": True, "files": True, "shell": "sandbox", "write_code": True, "merge": "approval"})
+        qa = _create_dev_agent(request.user, name="QA & Security", role="QA and Security Reviewer", objective="Проверять тесты, регрессии, безопасность и готовность изменений к публикации.", tools={"github": True, "files": True, "shell": "sandbox", "write_code": False})
+        team = AgentTeam.objects.create(owner=request.user, name=str(request.data.get("name") or "Dev Team").strip()[:160], objective=objective, director=director, max_cost_rub_per_run=Decimal("100"), max_handoffs=60)
+        for priority, (agent, role, can_delegate) in enumerate([(director, "Engineering Director", True), (architect, "Architecture", False), (engineer, "Development", False), (qa, "QA & Security", False)], start=1):
+            AgentTeamMember.objects.create(team=team, agent=agent, role=role, priority=priority * 10, can_delegate=can_delegate)
         return Response(AgentTeamSerializer(team, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="members")
@@ -221,16 +196,7 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
             agent = Agent.objects.get(id=request.data.get("agent"), owner=request.user)
         except (Agent.DoesNotExist, ValueError, TypeError):
             raise ValidationError({"agent": "Агент не найден"})
-        AgentTeamMember.objects.update_or_create(
-            team=team,
-            agent=agent,
-            defaults={
-                "role": str(request.data.get("role") or agent.role or agent.name).strip()[:160],
-                "priority": int(request.data.get("priority") or 100),
-                "can_delegate": bool(request.data.get("can_delegate", False)),
-                "enabled": True,
-            },
-        )
+        AgentTeamMember.objects.update_or_create(team=team, agent=agent, defaults={"role": str(request.data.get("role") or agent.role or agent.name).strip()[:160], "priority": int(request.data.get("priority") or 100), "can_delegate": bool(request.data.get("can_delegate", False)), "enabled": True})
         return Response(AgentTeamSerializer(team, context={"request": request}).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
@@ -242,14 +208,7 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
         objective = str(request.data.get("objective") or team.objective).strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу команды"})
-        run = AgentRun.objects.create(
-            owner=request.user,
-            team=team,
-            project=team.project,
-            objective=objective,
-            input_payload=request.data.get("input") or {},
-            state=AgentRun.State.QUEUED,
-        )
+        run = AgentRun.objects.create(owner=request.user, team=team, project=team.project, objective=objective, input_payload=request.data.get("input") or {}, state=AgentRun.State.QUEUED)
         _enqueue_run(run)
         return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)
 
@@ -258,11 +217,7 @@ class AgentRunViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = AgentRunSerializer
 
     def get_queryset(self):
-        queryset = (
-            AgentRun.objects.filter(owner=self.request.user)
-            .select_related("agent", "team", "project")
-            .prefetch_related("steps__agent", "approvals")
-        )
+        queryset = AgentRun.objects.filter(owner=self.request.user).select_related("agent", "team", "project").prefetch_related("steps__agent", "approvals")
         agent_id = str(self.request.query_params.get("agent") or "").strip()
         team_id = str(self.request.query_params.get("team") or "").strip()
         if agent_id:
@@ -301,6 +256,8 @@ class AgentRunViewSet(viewsets.ReadOnlyModelViewSet):
             run.state = AgentRun.State.CANCELED
             run.finished_at = timezone.now()
         elif run.state == AgentRun.State.WAITING_APPROVAL:
-            run.state = AgentRun.State.RUNNING
+            run.state = AgentRun.State.QUEUED
+            run.finished_at = None
+            _enqueue_run(run)
         run.save(update_fields=["state", "finished_at", "updated_at"])
         return Response(self.get_serializer(run).data)
