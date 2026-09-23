@@ -1,5 +1,6 @@
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -10,11 +11,18 @@ from apps.ai_registry.reliability import provider_available
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
+from apps.procurement.models import ProviderFundingAccount
+from apps.procurement.services import (
+    release_provider_spend,
+    reserve_provider_spend,
+    settle_provider_spend,
+)
 
 from .models import AgentRun, AgentStepRun
 
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1200
+NATIVE_STEP = Decimal("0.000001")
 
 
 def _subject_agent(run: AgentRun):
@@ -68,10 +76,80 @@ def _messages(run, agent):
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _mark_failure(run, step, *, code, message, reservation_id=None):
+def _provider_reserve(model, provider_cost_rub, fx_snapshot, run_id):
+    configured = ProviderFundingAccount.objects.filter(
+        provider=model.provider,
+        active=True,
+        is_default=True,
+    ).exists()
+    if not configured:
+        if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
+            raise ValidationError(
+                f"Для провайдера {model.provider.slug} не настроен закупочный аккаунт"
+            )
+        return None
+    if not fx_snapshot or fx_snapshot.rate <= 0:
+        if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
+            raise ValidationError("Не удалось определить валютный курс закупочного расхода")
+        return None
+    native = (Decimal(provider_cost_rub) / Decimal(fx_snapshot.rate)).quantize(
+        NATIVE_STEP, rounding=ROUND_UP
+    )
+    if native <= 0:
+        return None
+    try:
+        return reserve_provider_spend(
+            provider=model.provider,
+            amount_native=native,
+            source_key=f"agent:{run_id}",
+        )
+    except ValidationError:
+        if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
+            raise
+        return None
+
+
+def _provider_settle(provider_reservation, model, result, actual_quote, run_id, customer_charge):
+    if not provider_reservation:
+        return None
+    fx = actual_quote.fx_snapshot
+    if not fx or fx.rate <= 0:
+        release_provider_spend(provider_reservation.id)
+        return None
+    native = (Decimal(actual_quote.provider_cost_rub) / Decimal(fx.rate)).quantize(
+        NATIVE_STEP, rounding=ROUND_UP
+    )
+    return settle_provider_spend(
+        reservation_id=provider_reservation.id,
+        actual_native=native,
+        nominal_cost_rub=actual_quote.provider_cost_rub,
+        customer_charge_rub=customer_charge,
+        source_type="agent",
+        source_id=str(run_id),
+        model_slug=model.slug,
+        provider_request_id=result.provider_request_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+    )
+
+
+def _mark_failure(
+    run,
+    step,
+    *,
+    code,
+    message,
+    reservation_id=None,
+    provider_reservation_id=None,
+):
     if reservation_id:
         try:
             release(reservation_id)
+        except Exception:
+            pass
+    if provider_reservation_id:
+        try:
+            release_provider_spend(provider_reservation_id)
         except Exception:
             pass
     now = timezone.now()
@@ -113,6 +191,7 @@ def execute_run(run_id):
         )
 
     reservation = None
+    provider_reservation = None
     try:
         run.refresh_from_db()
         if run.state == AgentRun.State.CANCELED:
@@ -149,7 +228,14 @@ def execute_run(run_id):
             run.finished_at = now
             run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
             return run
+
         reservation = reserve(run.owner, preflight.user_charge_rub, f"agent-run:{run.id}")
+        provider_reservation = _provider_reserve(
+            model,
+            preflight.provider_cost_rub,
+            preflight.fx_snapshot,
+            run.id,
+        )
         run.cost_reserved_rub = preflight.user_charge_rub
         run.state = AgentRun.State.RUNNING
         run.save(update_fields=["cost_reserved_rub", "state", "updated_at"])
@@ -172,6 +258,15 @@ def execute_run(run_id):
         actual = min(actual_quote.user_charge_rub, reservation.amount_rub)
         settle(reservation.id, actual)
         reservation = None
+        _provider_settle(
+            provider_reservation,
+            model,
+            result,
+            actual_quote,
+            run.id,
+            actual,
+        )
+        provider_reservation = None
 
         now = timezone.now()
         step.state = AgentStepRun.State.COMPLETED
@@ -215,6 +310,7 @@ def execute_run(run_id):
             code=exc.code,
             message=str(exc),
             reservation_id=getattr(reservation, "id", None),
+            provider_reservation_id=getattr(provider_reservation, "id", None),
         )
     except Exception as exc:
         _mark_failure(
@@ -223,5 +319,6 @@ def execute_run(run_id):
             code="agent_runtime_failed",
             message=str(exc),
             reservation_id=getattr(reservation, "id", None),
+            provider_reservation_id=getattr(provider_reservation, "id", None),
         )
     return run
