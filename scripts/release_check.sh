@@ -22,7 +22,12 @@ bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
 done
-python -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo 'Python 3 interpreter is required for release checks (python3/python not found)' >&2
+  exit 1
+fi
+"$PYTHON_BIN" -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
 
 printf '[3/12] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
