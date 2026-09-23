@@ -2,6 +2,7 @@
 .composerRight{display:flex;align-items:center;gap:7px;margin-left:auto}
 .composerTierSlot{display:flex;align-items:center;min-width:0}
 .systemTierPicker{display:inline-flex;align-items:center;min-width:0}
+.systemTierPicker .srOnly{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 .systemTierPicker select{appearance:auto;width:auto;max-width:148px;min-height:34px;border:0;border-radius:10px;background:transparent;color:#555;padding:7px 6px;font-size:12px;font-weight:650;line-height:1;box-shadow:none;cursor:pointer;outline:none}
 .systemTierPicker select:hover{background:#f1f1f3;color:#222}
 .systemTierPicker select:focus-visible{box-shadow:0 0 0 3px rgba(23,23,23,.08)}
