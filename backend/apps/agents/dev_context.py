@@ -5,7 +5,7 @@ from apps.github_integration.services import list_repository_directory, read_rep
 
 MAX_CONTEXT_CHARS = 60000
 MAX_FILES = 12
-ROOT_CANDIDATES = {
+ROOT_CANDIDATES = (
     "README.md",
     "README.rst",
     "README.txt",
@@ -19,10 +19,10 @@ ROOT_CANDIDATES = {
     "compose.yml",
     "compose.yaml",
     "manage.py",
-}
+)
 NESTED_CANDIDATES = {
-    "backend": {"requirements.txt", "pyproject.toml", "manage.py", "Dockerfile"},
-    "frontend": {"package.json", "next.config.js", "next.config.mjs", "next.config.ts", "Dockerfile"},
+    "backend": ("requirements.txt", "pyproject.toml", "manage.py", "Dockerfile"),
+    "frontend": ("package.json", "next.config.js", "next.config.mjs", "next.config.ts", "Dockerfile"),
 }
 
 
@@ -38,6 +38,7 @@ def build_repository_context(project):
     except Exception as exc:
         raise ValidationError("Dev Studio project has no GitHub repository binding") from exc
 
+    tool_calls = 1
     root = list_repository_directory(binding, "")
     items = root.get("items") or []
     tree_lines = [
@@ -57,6 +58,7 @@ def build_repository_context(project):
             continue
         try:
             nested = list_repository_directory(binding, directory)
+            tool_calls += 1
         except ValidationError:
             continue
         names = {str(item.get("name") or ""): item for item in nested.get("items") or []}
@@ -72,6 +74,7 @@ def build_repository_context(project):
             break
         try:
             payload = read_repository_file(binding, path)
+            tool_calls += 1
         except ValidationError:
             continue
         content = _clip(str(payload.get("content") or ""), remaining)
@@ -92,5 +95,6 @@ def build_repository_context(project):
         "write_enabled": binding.write_enabled,
         "tree": tree_lines,
         "files": files,
+        "tool_calls": tool_calls,
         "rendered": rendered[:MAX_CONTEXT_CHARS],
     }
