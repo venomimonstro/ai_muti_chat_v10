@@ -137,7 +137,7 @@ class HTTPAdapter:
     def _health_get(self, *, url: str, headers: dict) -> AdapterHealth:
         started=time.monotonic()
         try:
-            response=httpx.get(url,headers=headers,timeout=min(settings.AI_PROVIDER_TIMEOUT_SECONDS,10))
+            response=httpx.get(url,headers=headers,timeout=min(settings.AI_PROVIDER_TIMEOUT_SECONDS,10),follow_redirects=True)
             response.raise_for_status()
             return AdapterHealth(True,int((time.monotonic()-started)*1000))
         except httpx.HTTPError as exc:
@@ -153,12 +153,6 @@ def _http_error(exc: httpx.HTTPError) -> ProviderError:
 
 
 def _openai_stream_error(event: dict) -> ProviderError:
-    """Normalize Responses API error and response.failed SSE envelopes.
-
-    OpenAI may send either a top-level `error` event or a `response.failed`
-    envelope whose actual error lives under `response.error`. Preserve the
-    provider code/message so runtime diagnostics and admin logs are actionable.
-    """
     event_type = str(event.get("type") or "")
     response = event.get("response") if isinstance(event.get("response"), dict) else {}
     error = event.get("error") if isinstance(event.get("error"), dict) else {}
@@ -173,11 +167,25 @@ def _openai_stream_error(event: dict) -> ProviderError:
         "authentication_error",
         "permission_denied",
         "insufficient_quota",
+        "credit_balance_exhausted",
         "model_not_found",
         "billing_hard_limit_reached",
     }
     retryable = code not in non_retryable and not code.startswith("invalid_")
     return ProviderError(message, code=code[:120], retryable=retryable)
+
+
+def _openrouter_stream_error(event: dict) -> ProviderError:
+    error = event.get("error") if isinstance(event.get("error"), dict) else {}
+    metadata = error.get("metadata") if isinstance(error.get("metadata"), dict) else {}
+    code = str(error.get("code") or error.get("type") or metadata.get("error_code") or "openrouter_error")
+    message = str(error.get("message") or metadata.get("raw") or event.get("message") or "OpenRouter request failed")
+    non_retryable_codes = {
+        "401", "402", "403", "404",
+        "invalid_api_key", "insufficient_credits", "model_not_found", "permission_denied",
+    }
+    retryable = code not in non_retryable_codes and not code.startswith("4")
+    return ProviderError(message, code=f"openrouter_{code}"[:120], retryable=retryable)
 
 
 class OpenAIResponsesAdapter(HTTPAdapter):
@@ -292,6 +300,50 @@ class XAIChatAdapter(DeepSeekChatAdapter):
     def capabilities(self):return {"text","streaming","vision","tools"}
 
 
+class OpenRouterChatAdapter(XAIChatAdapter):
+    def __init__(self,*,api_key:str,base_url:str="https://openrouter.ai/api/v1"):super().__init__(api_key=api_key,base_url=base_url)
+    def stream(self,*,model:str,messages:list[dict],max_output_tokens:int):
+        payload={
+            "model":model,
+            "messages":[{"role":item["role"],"content":_openai_chat_content(item["content"])} for item in messages],
+            "max_tokens":max_output_tokens,
+            "stream":True,
+            "stream_options":{"include_usage":True},
+        }
+        request_id="";usage={};saw_event=False
+        try:
+            with httpx.stream("POST",f"{self.base_url}/chat/completions",headers=self.headers,json=payload,timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):continue
+                    data=line[5:].strip()
+                    if not data or data=="[DONE]":continue
+                    event=json.loads(data);saw_event=True
+                    if isinstance(event.get("error"),dict):raise _openrouter_stream_error(event)
+                    request_id=event.get("id",request_id);usage=event.get("usage") or usage;choices=event.get("choices") or []
+                    if choices:
+                        delta=choices[0].get("delta") or {}
+                        text=delta.get("content") or ""
+                        if text:yield ProviderStreamEvent(kind="delta",text_delta=text)
+                if not saw_event:
+                    raise ProviderError("OpenRouter stream ended without events",code="openrouter_empty_stream",retryable=True)
+                yield ProviderStreamEvent(kind="completed",provider_request_id=request_id,input_tokens=usage.get("prompt_tokens",0),output_tokens=usage.get("completion_tokens",0))
+        except httpx.HTTPStatusError as exc:
+            response=exc.response
+            try:
+                payload=response.json();error=payload.get("error") if isinstance(payload,dict) else None
+                if isinstance(error,dict):raise _openrouter_stream_error({"error":error}) from exc
+            except ProviderError:
+                raise
+            except Exception:
+                pass
+            raise _http_error(exc) from exc
+        except httpx.HTTPError as exc:raise _http_error(exc) from exc
+        except json.JSONDecodeError as exc:raise ProviderError("Invalid OpenRouter stream",code="openrouter_invalid_stream") from exc
+    def health_check(self):return self._health_get(url=f"{self.base_url}/key",headers=self.headers)
+    def capabilities(self):return {"text","streaming","vision","tools"}
+
+
 class GeminiGenerateContentAdapter(HTTPAdapter):
     def __init__(self,*,api_key:str,base_url:str="https://generativelanguage.googleapis.com/v1beta"):
         if not api_key:raise ProviderError("Provider credential is not configured",code="credential_missing",retryable=False)
@@ -340,6 +392,7 @@ def adapter_for(model: AIModel):
     provider=model.provider
     if provider.adapter_type==Provider.AdapterType.ECHO:return EchoProviderAdapter()
     api_key=provider.get_api_key()
+    if provider.slug=="openrouter":return OpenRouterChatAdapter(api_key=api_key,base_url=provider.api_base_url or os.getenv("OPENROUTER_API_BASE_URL","https://openrouter.ai/api/v1"))
     if provider.adapter_type==Provider.AdapterType.OPENAI_RESPONSES:return OpenAIResponsesAdapter(api_key=api_key,base_url=provider.api_base_url or os.getenv("OPENAI_API_BASE_URL","https://api.openai.com/v1"))
     if provider.adapter_type==Provider.AdapterType.ANTHROPIC_MESSAGES:return AnthropicMessagesAdapter(api_key=api_key,base_url=provider.api_base_url or os.getenv("ANTHROPIC_API_BASE_URL","https://api.anthropic.com/v1"))
     if provider.adapter_type==Provider.AdapterType.DEEPSEEK_CHAT:return DeepSeekChatAdapter(api_key=api_key,base_url=provider.api_base_url or os.getenv("DEEPSEEK_API_BASE_URL","https://api.deepseek.com"))
