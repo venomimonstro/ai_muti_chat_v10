@@ -16,6 +16,12 @@ from apps.billing.services import release
 from .cost_preview import chat_cost_preview
 from .managed_stream import managed_run
 from .models import Conversation, Generation, Message
+from .product_identity import (
+    create_identity_generation,
+    direct_identity_answer,
+    identity_preview,
+    identity_sse,
+)
 from .serializers import SendMessageSerializer
 from .streaming import prepare
 
@@ -78,12 +84,16 @@ class ChatCostPreviewView(APIView):
         serializer = SendMessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         conversation = _conversation(request.user, conversation_id)
+        content = serializer.validated_data["content"]
+        file_ids = serializer.validated_data.get("file_ids") or []
+        if direct_identity_answer(content, file_ids) is not None:
+            return Response(_serialize_preview(identity_preview(conversation)))
         try:
             value = chat_cost_preview(
                 user=request.user,
                 conversation=conversation,
-                content=serializer.validated_data["content"],
-                file_ids=serializer.validated_data.get("file_ids") or [],
+                content=content,
+                file_ids=file_ids,
             )
         except (ValidationError, AIModel.DoesNotExist) as exc:
             raise APIValidationError({"detail": getattr(exc, "messages", [str(exc)])}) from exc
@@ -101,12 +111,40 @@ class ConfirmedConversationStreamView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         conversation = _conversation(request.user, conversation_id)
+        content = serializer.validated_data["content"]
+        client_message_id = serializer.validated_data["client_message_id"]
+        file_ids = serializer.validated_data.get("file_ids") or []
+
+        identity_answer = direct_identity_answer(content, file_ids)
+        if identity_answer is not None:
+            try:
+                generation, _created = create_identity_generation(
+                    user=request.user,
+                    conversation=conversation,
+                    content=content,
+                    client_message_id=client_message_id,
+                    idempotency_key=key,
+                    answer=identity_answer,
+                )
+            except ValidationError as exc:
+                return Response(
+                    {"detail": getattr(exc, "messages", [str(exc)])},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            response = StreamingHttpResponse(
+                identity_sse(generation),
+                content_type="text/event-stream; charset=utf-8",
+            )
+            response["Cache-Control"] = "no-cache, no-transform"
+            response["X-Accel-Buffering"] = "no"
+            return response
+
         try:
             preview = chat_cost_preview(
                 user=request.user,
                 conversation=conversation,
-                content=serializer.validated_data["content"],
-                file_ids=serializer.validated_data.get("file_ids") or [],
+                content=content,
+                file_ids=file_ids,
             )
         except (ValidationError, AIModel.DoesNotExist) as exc:
             raise APIValidationError({"detail": getattr(exc, "messages", [str(exc)])}) from exc
