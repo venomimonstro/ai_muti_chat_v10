@@ -8,9 +8,9 @@ from rest_framework.views import APIView
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
 from .cost_preview import chat_cost_preview
-from .models import Conversation, ConversationBranch, Message
+from .models import Conversation, ConversationBranch, Generation, Message
 from .serializers import MessageSerializer
-from .services import generate_reply
+from .streaming import prepare, run
 from .ux_models import ConversationUIState
 
 
@@ -98,6 +98,29 @@ def _cost_guard(request, *, user, conversation, content):
     return None
 
 
+def _action_client_message_id(user, action, key):
+    """Stable across HTTP retries, unlike uuid4 generated on every attempt."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"bbtec-chat-action:{user.id}:{action}:{key}")
+
+
+def _validate_action_replay(generation, *, conversation, content, client_message_id):
+    request_message = generation.user_message
+    if (
+        request_message.conversation_id != conversation.id
+        or request_message.content != content
+        or request_message.client_message_id != client_message_id
+    ):
+        raise ValidationError("Idempotency-Key уже использован для другой операции")
+    return generation
+
+
+def _run_prepared_generation(generation, created):
+    if created:
+        list(run(generation))
+        generation.refresh_from_db()
+    return generation
+
+
 class OwnedConversationAction(APIView):
     def conversation(self, request, conversation_id, *, lock=False):
         # Do not join nullable ui_state/active_branch while taking a row lock:
@@ -158,7 +181,10 @@ class EditMessageView(OwnedConversationAction):
             )
         try:
             key = self.idempotency_key(request)
+            client_message_id = _action_client_message_id(request.user, "edit", key)
             with transaction.atomic():
+                # Keep the same lock order as normal prepare(): user, then conversation.
+                request.user.__class__.objects.select_for_update().only("pk").get(pk=request.user.pk)
                 conversation = self.conversation(request, conversation_id, lock=True)
                 if conversation is None:
                     return Response({"detail": "Чат не найден"}, status=404)
@@ -170,27 +196,43 @@ class EditMessageView(OwnedConversationAction):
                         {"detail": "Редактировать можно только своё пользовательское сообщение"},
                         status=404,
                     )
-                blocked = _cost_guard(
-                    request,
-                    user=request.user,
-                    conversation=conversation,
-                    content=content,
+                existing = (
+                    Generation.objects.filter(owner=request.user, idempotency_key=key)
+                    .select_related("user_message")
+                    .first()
                 )
-                if blocked is not None:
-                    return blocked
-                self._fork_before(
-                    conversation=conversation,
-                    user=request.user,
-                    target=message,
-                    title="Редактирование сообщения",
-                )
-            generate_reply(
-                user=request.user,
-                conversation=conversation,
-                content=content,
-                client_message_id=uuid.uuid4(),
-                idempotency_key=key,
-            )
+                if existing is not None:
+                    generation = _validate_action_replay(
+                        existing,
+                        conversation=conversation,
+                        content=content,
+                        client_message_id=client_message_id,
+                    )
+                    created = False
+                else:
+                    blocked = _cost_guard(
+                        request,
+                        user=request.user,
+                        conversation=conversation,
+                        content=content,
+                    )
+                    if blocked is not None:
+                        return blocked
+                    self._fork_before(
+                        conversation=conversation,
+                        user=request.user,
+                        target=message,
+                        title="Редактирование сообщения",
+                    )
+                    generation, created = prepare(
+                        user=request.user,
+                        conversation=conversation,
+                        content=content,
+                        client_message_id=client_message_id,
+                        idempotency_key=key,
+                        file_ids=[],
+                    )
+            _run_prepared_generation(generation, created)
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=400)
         conversation.refresh_from_db()
@@ -201,7 +243,11 @@ class RegenerateMessageView(OwnedConversationAction):
     def post(self, request, conversation_id, message_id):
         try:
             key = self.idempotency_key(request)
+            client_message_id = _action_client_message_id(request.user, "regenerate", key)
             with transaction.atomic():
+                # Serialize same-user paid actions before any branch mutation. A retry
+                # can now observe the already prepared Generation and will not fork twice.
+                request.user.__class__.objects.select_for_update().only("pk").get(pk=request.user.pk)
                 conversation = self.conversation(request, conversation_id, lock=True)
                 if conversation is None:
                     return Response({"detail": "Чат не найден"}, status=404)
@@ -221,27 +267,43 @@ class RegenerateMessageView(OwnedConversationAction):
                 if source is None:
                     return Response({"detail": "Исходный запрос не найден"}, status=400)
                 source_content = source.content
-                blocked = _cost_guard(
-                    request,
-                    user=request.user,
-                    conversation=conversation,
-                    content=source_content,
+                existing = (
+                    Generation.objects.filter(owner=request.user, idempotency_key=key)
+                    .select_related("user_message")
+                    .first()
                 )
-                if blocked is not None:
-                    return blocked
-                self._fork_before(
-                    conversation=conversation,
-                    user=request.user,
-                    target=source,
-                    title="Новый вариант ответа",
-                )
-            generate_reply(
-                user=request.user,
-                conversation=conversation,
-                content=source_content,
-                client_message_id=uuid.uuid4(),
-                idempotency_key=key,
-            )
+                if existing is not None:
+                    generation = _validate_action_replay(
+                        existing,
+                        conversation=conversation,
+                        content=source_content,
+                        client_message_id=client_message_id,
+                    )
+                    created = False
+                else:
+                    blocked = _cost_guard(
+                        request,
+                        user=request.user,
+                        conversation=conversation,
+                        content=source_content,
+                    )
+                    if blocked is not None:
+                        return blocked
+                    self._fork_before(
+                        conversation=conversation,
+                        user=request.user,
+                        target=source,
+                        title="Новый вариант ответа",
+                    )
+                    generation, created = prepare(
+                        user=request.user,
+                        conversation=conversation,
+                        content=source_content,
+                        client_message_id=client_message_id,
+                        idempotency_key=key,
+                        file_ids=[],
+                    )
+            _run_prepared_generation(generation, created)
         except ValidationError as exc:
             return Response({"detail": str(exc)}, status=400)
         conversation.refresh_from_db()
