@@ -46,6 +46,12 @@ function applyTestUserHeader(headers: Headers, path: string) {
   if (id) headers.set("X-Test-User", id);
 }
 
+export function setTestUserMode(userId: string) {
+  if (typeof window === "undefined") return;
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) throw new Error("Некорректный идентификатор тестового пользователя");
+  try { sessionStorage.setItem(TEST_USER_KEY, userId); } catch {}
+}
+
 export function clearTestUserMode() {
   if (typeof window === "undefined") return;
   try { sessionStorage.removeItem(TEST_USER_KEY); } catch {}
