@@ -8,7 +8,7 @@ from apps.accounts.models import User
 from apps.chat.models import Conversation, Generation, Message
 
 
-def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, model="model-a"):
+def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, model="model-a", state=Generation.State.COMPLETED):
     conversation = Conversation.objects.create(owner=user, title="usage")
     request = Message.objects.create(conversation=conversation, role=Message.Role.USER, content="test")
     response = Message.objects.create(conversation=conversation, role=Message.Role.ASSISTANT, content="ok")
@@ -16,7 +16,7 @@ def make_generation(user, cost="1.2500", input_tokens=100, output_tokens=50, mod
         owner=user,
         user_message=request,
         assistant_message=response,
-        state=Generation.State.COMPLETED,
+        state=state,
         model=model,
         routed_model=model,
         idempotency_key=f"usage-{user.id}-{request.id}",
@@ -42,6 +42,28 @@ def test_usage_summary_is_user_scoped():
     assert Decimal(response.data["thirty_days"]["cost_rub"]) == Decimal("2.5000")
     assert response.data["thirty_days"]["input_tokens"] == 200
     assert response.data["thirty_days"]["output_tokens"] == 80
+
+
+@pytest.mark.django_db
+def test_usage_includes_confirmed_partial_charge_after_cancel():
+    user = User.objects.create_user(username="usage-cancelled", email="cancelled@example.test", password="test-password-123")
+    make_generation(
+        user,
+        cost="0.7500",
+        input_tokens=120,
+        output_tokens=25,
+        state=Generation.State.CANCELLED,
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.get("/api/v1/auth/usage/")
+
+    assert response.status_code == 200
+    assert response.data["thirty_days"]["requests"] == 1
+    assert Decimal(response.data["thirty_days"]["cost_rub"]) == Decimal("0.7500")
+    assert response.data["thirty_days"]["input_tokens"] == 120
+    assert response.data["thirty_days"]["output_tokens"] == 25
 
 
 @pytest.mark.django_db
