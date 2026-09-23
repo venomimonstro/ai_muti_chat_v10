@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import {FormEvent,useState} from "react";
-import {api,ensureCsrf} from "../../lib/api";
+import {api,ensureCsrf,setTestUserMode} from "../../lib/api";
 import styles from "../auth.module.css";
 
-type LoginUser={role?:string;status?:string;is_staff?:boolean;is_superuser?:boolean};
+type LoginUser={id?:string;role?:string;status?:string;is_staff?:boolean;is_superuser?:boolean;test_user_mode?:boolean;test_user_id?:string};
 
 function isPlatformAdmin(user:LoginUser){
   return user.role==="platform_admin"||user.is_staff===true||user.is_superuser===true;
@@ -23,18 +23,24 @@ export default function LoginPage(){
     const f=new FormData(e.currentTarget);
     try{
       await ensureCsrf();
-      await api<LoginUser>("/auth/login/",{
+      const result=await api<LoginUser>("/auth/login/",{
         method:"POST",
         body:JSON.stringify({username:f.get("username"),password:f.get("password")}),
       });
 
-      const current=await api<LoginUser>("/auth/me/",{
-        signal:AbortSignal.timeout(5000),
-      });
-      if(current.status!=="active") throw new Error("Аккаунт администратора неактивен");
+      // If a platform-admin session already exists in this browser, backend
+      // deliberately keeps it untouched and authenticates this tab as the
+      // requested client via X-Test-User. sessionStorage is tab-scoped, so the
+      // admin console in neighbouring tabs remains the real administrator.
+      if(result.test_user_mode&&result.test_user_id){
+        setTestUserMode(result.test_user_id);
+        window.location.replace("/app");
+        return;
+      }
 
-      const destination=isPlatformAdmin(current)?"/admin-console":"/app";
-      window.location.replace(destination);
+      const current=await api<LoginUser>("/auth/me/",{signal:AbortSignal.timeout(5000)});
+      if(current.status!=="active") throw new Error("Аккаунт неактивен");
+      window.location.replace(isPlatformAdmin(current)?"/admin-console":"/app");
     }catch(r){
       setError(r instanceof Error?r.message:"Не удалось войти");
       setBusy(false);
