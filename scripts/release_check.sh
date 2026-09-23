@@ -14,17 +14,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf '[1/11] Secret scan\n'
+printf '[1/12] Secret scan\n'
 bash ./scripts/security_scan.sh
 
-printf '[2/11] Shell and smoke-script syntax\n'
+printf '[2/12] Shell and smoke-script syntax\n'
 bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
 done
 python -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
 
-printf '[3/11] Compose syntax\n'
+printf '[3/12] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
 APP_DOMAIN=release-check.example.test \
 ACME_EMAIL=ops@example.test \
@@ -35,24 +35,27 @@ REDIS_PASSWORD=release-check-redis-password \
 PUBLIC_API_URL=https://release-check.example.test/api/v1 \
 docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 
-printf '[4/11] Build isolated test stack\n'
+printf '[4/12] Build isolated test stack\n'
 docker compose -f "$TEST_COMPOSE" build backend-test
 docker compose -f "$TEST_COMPOSE" up -d postgres
 
-printf '[5/11] Backend lint\n'
+printf '[5/12] Backend lint\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check .
 
-printf '[6/11] Backend tests on PostgreSQL/pgvector\n'
+printf '[6/12] Backend tests on PostgreSQL/pgvector\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q
 
-printf '[7/11] Django checks and migration drift\n'
+printf '[7/12] Django checks and migration drift\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
 
-printf '[8/11] Economic safety invariants\n'
+printf '[8/12] Economic safety invariants\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py economic_safety_check
 
-printf '[9/11] Frontend production build\n'
+printf '[9/12] Billing ledger integrity\n'
+docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py billing_integrity_check
+
+printf '[10/12] Frontend production build\n'
 docker build \
   --target builder \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
@@ -61,10 +64,10 @@ docker build \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
   -t ai-workspace-frontend-test frontend
 
-printf '[10/11] Frontend lint\n'
+printf '[11/12] Frontend lint\n'
 docker run --rm ai-workspace-frontend-builder sh -c 'npm run lint'
 
-printf '[11/11] Frontend runtime route smoke\n'
+printf '[12/12] Frontend runtime route smoke\n'
 docker run -d --rm --name "$FRONTEND_SMOKE_CONTAINER" \
   -p "127.0.0.1:${FRONTEND_SMOKE_PORT}:3000" ai-workspace-frontend-test >/dev/null
 READY=false
