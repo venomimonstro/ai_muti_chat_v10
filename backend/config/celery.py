@@ -25,6 +25,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.economic_safety_watch_task",
         "schedule": 300.0,
     },
+    "billing-ledger-integrity-watch": {
+        "task": "apps.admin_ops.tasks.billing_integrity_watch_task",
+        "schedule": 900.0,
+    },
     "official-ai-pricing-daily": {
         "task": "apps.admin_ops.tasks.official_pricing_sync_task",
         "schedule": 86400.0,
