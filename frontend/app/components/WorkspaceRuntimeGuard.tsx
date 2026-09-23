@@ -52,6 +52,7 @@ export default function WorkspaceRuntimeGuard() {
   const submitLocked = useRef(false);
   const observedSending = useRef(false);
   const unlockTimer = useRef<number | null>(null);
+  const normalizedManual = useRef("");
 
   useEffect(() => {
     if (!isWorkspace()) return;
@@ -60,9 +61,22 @@ export default function WorkspaceRuntimeGuard() {
       if (disposed) return;
       const nextTarget = composerTarget();
       if (nextTarget) setTarget((current) => current === nextTarget ? current : nextTarget);
-      setSending(Boolean(document.querySelector(".sendButton.stop")));
+      const activeSending = Boolean(document.querySelector(".sendButton.stop"));
+      setSending(activeSending);
       const source = routingSelect();
       if (!source) return;
+      if (source.value.startsWith("model:") && !source.disabled && !activeSending) {
+        // Customer Workspace no longer exposes raw provider/model selection. Make
+        // the actual routing agree with the visible default instead of merely
+        // relabelling a legacy/manual conversation as System Pro.
+        if (normalizedManual.current !== source.value) {
+          normalizedManual.current = source.value;
+          setMode("balanced");
+          dispatchRouting(source, "auto:balanced");
+        }
+        return;
+      }
+      normalizedManual.current = "";
       setMode(readPublicMode());
     };
     sync();
