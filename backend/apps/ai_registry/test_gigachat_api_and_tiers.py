@@ -84,6 +84,21 @@ def test_gigachat_adapter_is_external_api_adapter_only():
 
 
 @pytest.mark.django_db
+def test_gigachat_adapter_prefers_persisted_scope():
+    provider, _ = Provider.objects.get_or_create(slug="gigachat", defaults={"name": "GigaChat API"})
+    provider.auth_config = {"scope": "GIGACHAT_API_B2B"}
+    provider.save(update_fields=["auth_config"])
+
+    adapter = GigaChatAPIAdapter(
+        authorization_key="authorization-key",
+        base_url="https://api.giga.chat/v1",
+        scope="GIGACHAT_API_PERS",
+    )
+
+    assert adapter.scope == "GIGACHAT_API_B2B"
+
+
+@pytest.mark.django_db
 def test_admin_pinned_medium_model_is_selected_before_higher_score_candidate():
     user = User.objects.create_user(username="tier-user", email="tier@example.com", password="password123")
     pinned_provider = Provider.objects.create(slug="pinned-api", name="Pinned API")
