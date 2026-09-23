@@ -128,6 +128,28 @@ def economic_safety_watch_task():
 
 
 @shared_task
+def billing_integrity_watch_task():
+    """Reconcile materialized wallet balances against the immutable ledger."""
+    output = io.StringIO()
+    try:
+        call_command("billing_integrity_check", stdout=output)
+    except CommandError as exc:
+        bucket = timezone.now().strftime("%Y-%m-%d-%H")
+        _notify_platform_admins(
+            dedupe_key=f"billing-integrity:{bucket}",
+            title="Нарушена целостность пользовательского баланса",
+            body=(
+                "Кошелёк, резервы или ledger не сходятся. Автоматическая проверка "
+                "остановилась с ошибкой; до выяснения причины не выполняйте ручные корректировки."
+            ),
+            action_url="/admin-console/finance",
+            level=Notification.Level.WARNING,
+        )
+        raise RuntimeError(f"billing_integrity_check failed: {exc}") from exc
+    return output.getvalue().strip()
+
+
+@shared_task
 def support_sla_watch_task():
     max_hours = max(1, int(os.getenv("SUPPORT_MAX_UNANSWERED_HOURS", "48")))
     now = timezone.now()
