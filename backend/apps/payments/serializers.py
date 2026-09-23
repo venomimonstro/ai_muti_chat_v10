@@ -26,23 +26,26 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_refundable_rub(self, obj):
         if obj.status != Payment.Status.SUCCEEDED:
             return "0.00"
-        refund_states = {Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED}
+        open_refund_states = {Refund.Status.CREATED, Refund.Status.PENDING}
+        completed_refund_states = {Refund.Status.SUCCEEDED}
         request_states = {
             RefundRequest.Status.PENDING,
             RefundRequest.Status.APPROVED,
             RefundRequest.Status.PROCESSING,
         }
-        # .all() uses the prefetch cache on payment-list responses and remains
-        # correct for single-payment serializer calls after create/sync.
+        refunds = list(obj.refunds.all())
+        requests = list(obj.refund_requests.all())
+        # Customer actions are serialized per payment: while any refund operation
+        # is open, starting another one is intentionally unavailable.
+        if any(item.status in open_refund_states for item in refunds) or any(
+            item.status in request_states for item in requests
+        ):
+            return "0.00"
         refunded = sum(
-            (item.amount_rub for item in obj.refunds.all() if item.status in refund_states),
+            (item.amount_rub for item in refunds if item.status in completed_refund_states),
             Decimal("0.00"),
         )
-        held = sum(
-            (item.amount_rub for item in obj.refund_requests.all() if item.status in request_states),
-            Decimal("0.00"),
-        )
-        payment_remaining = max(Decimal("0.00"), obj.amount_rub - refunded - held)
+        payment_remaining = max(Decimal("0.00"), obj.amount_rub - refunded)
         wallet = getattr(obj.user, "wallet", None)
         unused_paid = max(Decimal("0.00"), wallet.paid_rub if wallet is not None else Decimal("0.00"))
         return f"{min(payment_remaining, unused_paid):.2f}"
