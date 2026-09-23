@@ -40,6 +40,7 @@ class Provider(models.Model):
     region = models.CharField(max_length=64, blank=True)
     adapter_type = models.CharField(max_length=32, choices=AdapterType.choices, default=AdapterType.ECHO)
     api_base_url = models.URLField(blank=True)
+    auth_config = models.JSONField(default=dict, blank=True)
     credential_env = models.CharField(max_length=100, blank=True)
     credential_secret = models.TextField(blank=True, editable=False)
     health_state = models.CharField(max_length=16, choices=HealthState.choices, default=HealthState.UNKNOWN)
@@ -76,8 +77,6 @@ class Provider(models.Model):
 
     def get_api_key(self) -> str:
         try:
-            # If procurement accounting is configured, the physical provider
-            # request must use the same key whose purchased balance is reserved.
             funding = (
                 self.funding_accounts.filter(active=True, is_default=True, api_key__isnull=False, api_key__enabled=True)
                 .select_related("api_key")
@@ -88,12 +87,8 @@ class Provider(models.Model):
                 if value:
                     return value
         except Exception:
-            # Procurement app may not be migrated yet during bootstrap. Fall back
-            # to the normal key pool without making provider startup dependent on it.
             pass
         try:
-            # Never randomly choose a degraded key while a verified healthy key
-            # exists. Within each health tier respect the administrator priority.
             for health_state in ("healthy", "unknown", "degraded"):
                 keys = self.api_keys.filter(
                     enabled=True,
