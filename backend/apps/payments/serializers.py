@@ -43,8 +43,12 @@ class PaymentSerializer(serializers.ModelSerializer):
             ).aggregate(total=Sum("amount_rub"))["total"]
             or Decimal("0.00")
         )
-        remaining = max(Decimal("0.00"), obj.amount_rub - refunded - held)
-        return f"{remaining:.2f}"
+        payment_remaining = max(Decimal("0.00"), obj.amount_rub - refunded - held)
+        try:
+            unused_paid = max(Decimal("0.00"), obj.user.wallet.paid_rub)
+        except obj.user.__class__.wallet.RelatedObjectDoesNotExist:
+            unused_paid = Decimal("0.00")
+        return f"{min(payment_remaining, unused_paid):.2f}"
 
 
 class CreatePaymentSerializer(serializers.Serializer):
