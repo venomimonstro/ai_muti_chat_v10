@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from decimal import Decimal
@@ -162,6 +163,20 @@ def create_identity_generation(
             status=Message.Status.COMPLETED,
         )
         level = public_system_level(locked)
+        routing = {
+            "decision_id": "",
+            "mode": locked.routing_mode,
+            "task_taxonomy": "product_identity",
+            "selected_model": level,
+            "model_version": level,
+            "exact_api_id": "",
+            "explanation": f"Использован уровень {level}.",
+            "policy_version": "local-product-identity-v1",
+            "classification_confidence": 1.0,
+            "required_capabilities": [],
+            "estimated_cost_rub": "0.0000",
+            "candidates": [],
+        }
         generation = Generation.objects.create(
             owner=user,
             user_message=user_message,
@@ -173,17 +188,7 @@ def create_identity_generation(
             idempotency_key=idempotency_key,
             actual_cost_rub=ZERO,
             completed_at=timezone.now(),
-            context_snapshot={
-                "local_product_identity": True,
-                "routing": {
-                    "mode": locked.routing_mode,
-                    "selected_model": level,
-                    "model_version": level,
-                    "exact_api_id": "",
-                    "explanation": f"Использован уровень {level}.",
-                    "candidates": [],
-                },
-            },
+            context_snapshot={"local_product_identity": True, "routing": routing},
         )
 
     for message in (user_message, assistant):
@@ -201,8 +206,8 @@ def identity_sse(generation):
         "event: generation\n"
         f'data: {{"id":"{generation.id}","state":"streaming","correlation_id":"{generation.correlation_id}"}}\n\n'
     )
-    yield "event: delta\ndata: " + __import__("json").dumps({"text": text}, ensure_ascii=False) + "\n\n"
-    yield "event: completed\ndata: " + __import__("json").dumps(
+    yield f"event: delta\ndata: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
+    yield "event: completed\ndata: " + json.dumps(
         {
             "state": "completed",
             "cost_rub": "0.0000",
