@@ -13,7 +13,7 @@ from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 from apps.memory_store.models import MemoryCandidate
 
 from .mfa import SESSION_MFA_KEY
-from .models import Notification, SupportRequest, UserPreference
+from .models import Notification, SupportRequest, User, UserPreference
 from .security_views import send_verification_email
 from .serializers import (
     ChangePasswordSerializer,
@@ -51,6 +51,30 @@ class LoginView(APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
+
+        # Browser tabs share the same Django session cookie. A platform admin who
+        # signs into a client account in another tab must never have the real admin
+        # session replaced. Instead authenticate the supplied credentials, leave
+        # the admin session untouched and let that tab switch to X-Test-User mode.
+        real_user = getattr(request, "user", None)
+        if (
+            getattr(real_user, "is_authenticated", False)
+            and getattr(real_user, "role", None) == User.Role.PLATFORM_ADMIN
+            and real_user.id != user.id
+        ):
+            if user.role == User.Role.PLATFORM_ADMIN:
+                return Response(
+                    {"detail": "Другого администратора платформы нельзя открывать в пользовательском тестовом режиме."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            payload = UserSerializer(user).data
+            payload["test_user_mode"] = True
+            payload["test_user_id"] = str(user.id)
+            response = Response(payload)
+            response["X-Test-User-Active"] = "1"
+            response["X-Test-User-Id"] = str(user.id)
+            return response
+
         login(request, user)
         request.session.pop(SESSION_MFA_KEY, None)
         return Response(UserSerializer(user).data)
@@ -60,6 +84,8 @@ class LogoutView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        # PlatformAdminTestUserMiddleware intercepts tab-scoped impersonated
+        # logout before this view. A request reaching here is a real logout.
         request.session.pop(SESSION_MFA_KEY, None)
         logout(request)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -116,6 +142,8 @@ class LogoutAllView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        # Impersonated requests are intercepted by middleware, so this can only
+        # revoke sessions for the real authenticated account.
         user_id = str(request.user.id)
         for session in Session.objects.filter(expire_date__gte=timezone.now()):
             if session.get_decoded().get("_auth_user_id") == user_id:
