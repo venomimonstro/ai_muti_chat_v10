@@ -14,6 +14,18 @@ MONEY_FIELD = DecimalField(max_digits=14, decimal_places=4)
 MONEY_ZERO = Value(Decimal("0.0000"), output_field=MONEY_FIELD)
 
 
+def public_model_name(value):
+    raw = str(value or "")
+    lowered = raw.casefold()
+    if lowered.startswith("gigachat"):
+        if "lite" in lowered or lowered in {"gigachat-2", "gigachat"}:
+            return "System Lite"
+        if "max" in lowered:
+            return "System Max"
+        return "System Pro"
+    return raw
+
+
 class UsageSummaryView(APIView):
     def get(self, request):
         now = timezone.now()
@@ -40,7 +52,7 @@ class UsageSummaryView(APIView):
                 "output_tokens": row["output_tokens"],
             }
 
-        by_model = list(
+        raw_by_model = list(
             qs.values("routed_model")
             .annotate(
                 requests=Count("id"),
@@ -50,6 +62,21 @@ class UsageSummaryView(APIView):
             )
             .order_by("-cost_rub")[:20]
         )
+        # Never leak the internal GigaChat provider/model vocabulary through the
+        # customer usage page. Merge rows if legacy/current slugs map to one tier.
+        merged = {}
+        for row in raw_by_model:
+            name = public_model_name(row.get("routed_model"))
+            target = merged.setdefault(
+                name,
+                {"routed_model": name, "requests": 0, "cost_rub": Decimal("0"), "input_tokens": 0, "output_tokens": 0},
+            )
+            target["requests"] += row["requests"]
+            target["cost_rub"] += row["cost_rub"]
+            target["input_tokens"] += row["input_tokens"]
+            target["output_tokens"] += row["output_tokens"]
+        by_model = sorted(merged.values(), key=lambda item: item["cost_rub"], reverse=True)[:20]
+
         daily = list(
             qs.annotate(day=TruncDate("completed_at"))
             .values("day")
