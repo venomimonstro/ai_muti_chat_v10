@@ -42,6 +42,30 @@ class TabScopedImpersonationTests(TestCase):
         self.assertEqual(me.status_code, 200)
         self.assertEqual(me.data["id"], str(self.admin.id))
 
+    def test_normal_user_login_in_second_tab_preserves_real_admin_session(self):
+        original_session_key = self.client.session.session_key
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"username": self.target.username, "password": "password123!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["test_user_mode"])
+        self.assertEqual(response.data["test_user_id"], str(self.target.id))
+        self.assertEqual(response.headers.get("X-Test-User-Active"), "1")
+        self.assertEqual(self.client.session.session_key, original_session_key)
+
+        admin_me = self.client.get("/api/v1/auth/me/")
+        self.assertEqual(admin_me.status_code, 200)
+        self.assertEqual(admin_me.data["id"], str(self.admin.id))
+
+        target_me = self.client.get(
+            "/api/v1/auth/me/",
+            HTTP_X_TEST_USER=str(self.target.id),
+        )
+        self.assertEqual(target_me.status_code, 200)
+        self.assertEqual(target_me.data["id"], str(self.target.id))
+
     def test_logout_in_test_user_tab_never_logs_out_real_admin(self):
         response = self.client.post(
             "/api/v1/auth/logout/",
