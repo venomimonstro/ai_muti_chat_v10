@@ -8,9 +8,10 @@ import {Icon} from "../workspace/Icons";
 const primary=[
  {href:"/app",label:"Чат",icon:"plus" as const},
  {href:"/app/projects",label:"Проекты",icon:"folder" as const},
+ {href:"/app/agents",label:"Агенты",icon:"brain" as const},
+ {href:"/app/dev",label:"Dev Studio",icon:"zap" as const},
  {href:"/app/images",label:"Изображения",icon:"spark" as const},
  {href:"/app/compare",label:"Сравнение",icon:"scale" as const},
- {href:"/app/development",label:"Разработка",icon:"zap" as const},
 ];
 const account=[
  {href:"/app/usage",label:"Использование",icon:"brain" as const},
