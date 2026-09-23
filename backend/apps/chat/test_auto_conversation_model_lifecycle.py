@@ -24,3 +24,16 @@ def test_auto_explicit_legacy_placeholder_validates_without_client_model_lookup(
         data={"title": "AUTO", "routing_mode": "economy", "selected_model": "echo-v1"}
     )
     assert serializer.is_valid(), serializer.errors
+
+
+@pytest.mark.django_db
+def test_auto_ignores_stale_manual_model_from_browser():
+    user = User.objects.create_user(username="auto-stale", email="auto-stale@example.com", password="password123")
+    serializer = ConversationSerializer(
+        data={"title": "AUTO", "routing_mode": "maximum", "selected_model": "removed-model-from-old-browser"}
+    )
+    serializer.is_valid(raise_exception=True)
+    conversation = serializer.save(owner=user)
+
+    assert conversation.routing_mode == Conversation.RoutingMode.MAXIMUM
+    assert conversation.selected_model == "echo-v1"
