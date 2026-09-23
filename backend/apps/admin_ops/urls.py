@@ -8,9 +8,9 @@ from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
 from .metrics_views import OperationalMetricsView
+from .owner_destructive_views import OwnerProcurementLedgerView, OwnerProviderKeyDetailView
 from .pricing_views import PricingManagementView
 from .procurement_breakdown_views import ProcurementBreakdownView
-from .procurement_ledger_views import ProcurementLedgerView
 from .procurement_views import ProcurementEconomicsView
 from .promo_credit_views import AdminPromoCreditView
 from .provider_activation_views import ProviderClientActivationView
@@ -18,7 +18,6 @@ from .provider_views import (
     ProviderCredentialView,
     ProviderDiscoveredModelsView,
     ProviderKeyCollectionView,
-    ProviderKeyDetailView,
     ProviderModelConfigView,
     SafeProviderBulkActionView,
 )
@@ -61,7 +60,7 @@ urlpatterns = [
     path("drills/", OperationalDrillStatusView.as_view(), name="admin-drills"),
     path("finance/", FinanceControlView.as_view(), name="admin-finance"),
     path("procurement/", ProcurementEconomicsView.as_view(), name="admin-procurement"),
-    path("procurement/ledger/", ProcurementLedgerView.as_view(), name="admin-procurement-ledger"),
+    path("procurement/ledger/", OwnerProcurementLedgerView.as_view(), name="admin-procurement-ledger"),
     path("procurement/overheads/", PricingOverheadPolicyView.as_view(), name="admin-pricing-overheads"),
     path("procurement/breakdown/", ProcurementBreakdownView.as_view(), name="admin-procurement-breakdown"),
     path("payments/", PaymentInspectorView.as_view(), name="admin-payments"),
@@ -73,7 +72,7 @@ urlpatterns = [
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
     path("providers/<slug:provider_slug>/credentials/", ProviderCredentialView.as_view(), name="admin-provider-credentials"),
     path("providers/<slug:provider_slug>/keys/", ProviderKeyCollectionView.as_view(), name="admin-provider-keys"),
-    path("providers/<slug:provider_slug>/keys/<uuid:key_id>/", ProviderKeyDetailView.as_view(), name="admin-provider-key-detail"),
+    path("providers/<slug:provider_slug>/keys/<uuid:key_id>/", OwnerProviderKeyDetailView.as_view(), name="admin-provider-key-detail"),
     path("providers/<slug:provider_slug>/discover-models/", ProviderDiscoveredModelsView.as_view(), name="admin-provider-discover-models"),
     path("providers/<slug:provider_slug>/activate-models/", ProviderClientActivationView.as_view(), name="admin-provider-activate-models"),
     path("providers/<slug:provider_slug>/models/<uuid:model_id>/", ProviderModelConfigView.as_view(), name="admin-provider-model-config"),
