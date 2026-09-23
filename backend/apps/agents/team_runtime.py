@@ -1,6 +1,5 @@
-from decimal import ROUND_UP, Decimal
+from decimal import Decimal
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -9,60 +8,19 @@ from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
-from apps.procurement.models import ProviderFundingAccount
-from apps.procurement.services import release_provider_spend, reserve_provider_spend, settle_provider_spend
 
+from .accounting import (
+    release_agent_provider_spend,
+    reserve_agent_provider_spend,
+    settle_agent_provider_spend,
+)
 from .dev_context import build_repository_context
 from .models import AgentRun, AgentStepRun
 from .runtime import _model_for
 
 
 OUTPUT_TOKENS = 1200
-NATIVE_STEP = Decimal("0.000001")
 MAX_PREVIOUS_CHARS = 18000
-
-
-def _provider_reserve(model, provider_cost_rub, fx_snapshot, source_key):
-    configured = ProviderFundingAccount.objects.filter(provider=model.provider, active=True, is_default=True).exists()
-    if not configured:
-        if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
-            raise ValidationError(f"Для провайдера {model.provider.slug} не настроен закупочный аккаунт")
-        return None
-    if not fx_snapshot or fx_snapshot.rate <= 0:
-        if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
-            raise ValidationError("Не удалось определить FX для закупочного расхода")
-        return None
-    native = (Decimal(provider_cost_rub) / Decimal(fx_snapshot.rate)).quantize(NATIVE_STEP, rounding=ROUND_UP)
-    if native <= 0:
-        return None
-    try:
-        return reserve_provider_spend(provider=model.provider, amount_native=native, source_key=source_key)
-    except ValidationError:
-        if getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False):
-            raise
-        return None
-
-
-def _provider_settle(reservation, model, result, actual_quote, source_id, customer_charge):
-    if not reservation:
-        return None
-    fx = actual_quote.fx_snapshot
-    if not fx or fx.rate <= 0:
-        release_provider_spend(reservation.id)
-        return None
-    native = (Decimal(actual_quote.provider_cost_rub) / Decimal(fx.rate)).quantize(NATIVE_STEP, rounding=ROUND_UP)
-    return settle_provider_spend(
-        reservation_id=reservation.id,
-        actual_native=native,
-        nominal_cost_rub=actual_quote.provider_cost_rub,
-        customer_charge_rub=customer_charge,
-        source_type="agent",
-        source_id=source_id,
-        model_slug=model.slug,
-        provider_request_id=result.provider_request_id,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-    )
 
 
 def _messages(run, agent, role, repository_context, previous):
@@ -96,7 +54,7 @@ def _fail(run, step, code, message, customer_reservation=None, provider_reservat
             pass
     if provider_reservation:
         try:
-            release_provider_spend(provider_reservation.id)
+            release_agent_provider_spend(provider_reservation)
         except Exception:
             pass
     now = timezone.now()
@@ -192,9 +150,7 @@ def execute_team_run(run_id):
             )
             if total + preflight.user_charge_rub > budget:
                 step.state = AgentStepRun.State.SKIPPED
-                step.public_log = (
-                    f"Шаг не запущен: расчётная стоимость превысила общий лимит команды {budget} ₽."
-                )
+                step.public_log = f"Шаг не запущен: расчётная стоимость превысила общий лимит команды {budget} ₽."
                 step.finished_at = timezone.now()
                 step.save(update_fields=["state", "public_log", "finished_at"])
                 run.state = AgentRun.State.BUDGET_EXCEEDED
@@ -208,7 +164,12 @@ def execute_team_run(run_id):
             billing_key = f"agent-run:{run.id}:step:{sequence}"
             provider_key = f"agent:{run.id}:step:{sequence}"
             customer_reservation = reserve(run.owner, preflight.user_charge_rub, billing_key)
-            provider_reservation = _provider_reserve(model, preflight.provider_cost_rub, preflight.fx_snapshot, provider_key)
+            provider_reservation = reserve_agent_provider_spend(
+                model=model,
+                provider_cost_rub=preflight.provider_cost_rub,
+                fx_snapshot=preflight.fx_snapshot,
+                source_key=provider_key,
+            )
             result = adapter_for(model).generate(
                 model=model.upstream_model or model.slug,
                 messages=messages,
@@ -225,17 +186,17 @@ def execute_team_run(run_id):
                 )
             )
             actual = min(actual_quote.user_charge_rub, customer_reservation.amount_rub)
-            settle(customer_reservation.id, actual)
-            customer_reservation = None
-            _provider_settle(
-                provider_reservation,
-                model,
-                result,
-                actual_quote,
-                f"{run.id}:step:{sequence}",
-                actual,
+            settle_agent_provider_spend(
+                reservation=provider_reservation,
+                model=model,
+                result=result,
+                actual_quote=actual_quote,
+                source_id=f"{run.id}:step:{sequence}",
+                customer_charge=actual,
             )
             provider_reservation = None
+            settle(customer_reservation.id, actual)
+            customer_reservation = None
             total += actual
             previous.append({"role": role, "text": result.text[:9000]})
             step.state = AgentStepRun.State.COMPLETED
