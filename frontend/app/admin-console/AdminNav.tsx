@@ -7,6 +7,7 @@ import styles from "./admin.module.css";
 const links=[
 ["Обзор","/admin-console"],
 ["AI-провайдеры","/admin-console/providers"],
+["Интернет и live-данные","/admin-console/live-tools"],
 ["Экономика и закупки API","/admin-console/procurement"],
 ["Пользователи","/admin-console/users"],
 ["Финансы","/admin-console/finance"],
