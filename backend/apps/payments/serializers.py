@@ -1,6 +1,5 @@
 from decimal import Decimal
 
-from django.db.models import Sum
 from rest_framework import serializers
 
 from .models import Payment, Refund, RefundRequest
@@ -27,21 +26,21 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_refundable_rub(self, obj):
         if obj.status != Payment.Status.SUCCEEDED:
             return "0.00"
-        refunded = (
-            obj.refunds.filter(
-                status__in=[Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED]
-            ).aggregate(total=Sum("amount_rub"))["total"]
-            or Decimal("0.00")
+        refund_states = {Refund.Status.CREATED, Refund.Status.PENDING, Refund.Status.SUCCEEDED}
+        request_states = {
+            RefundRequest.Status.PENDING,
+            RefundRequest.Status.APPROVED,
+            RefundRequest.Status.PROCESSING,
+        }
+        # .all() uses the prefetch cache on payment-list responses and remains
+        # correct for single-payment serializer calls after create/sync.
+        refunded = sum(
+            (item.amount_rub for item in obj.refunds.all() if item.status in refund_states),
+            Decimal("0.00"),
         )
-        held = (
-            obj.refund_requests.filter(
-                status__in=[
-                    RefundRequest.Status.PENDING,
-                    RefundRequest.Status.APPROVED,
-                    RefundRequest.Status.PROCESSING,
-                ]
-            ).aggregate(total=Sum("amount_rub"))["total"]
-            or Decimal("0.00")
+        held = sum(
+            (item.amount_rub for item in obj.refund_requests.all() if item.status in request_states),
+            Decimal("0.00"),
         )
         payment_remaining = max(Decimal("0.00"), obj.amount_rub - refunded - held)
         wallet = getattr(obj.user, "wallet", None)
