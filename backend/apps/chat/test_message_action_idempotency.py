@@ -21,7 +21,7 @@ def test_regenerate_same_key_replays_without_second_branch(monkeypatch):
     )
     branch = ensure_active_branch(conversation, user)
     conversation.refresh_from_db()
-    source = Message.objects.create(
+    Message.objects.create(
         conversation=conversation,
         branch=branch,
         role=Message.Role.USER,
@@ -68,7 +68,7 @@ def test_regenerate_same_key_replays_without_second_branch(monkeypatch):
         return generation, True
 
     monkeypatch.setattr(message_actions, "prepare", fake_prepare)
-    monkeypatch.setattr(message_actions, "run", lambda generation: iter(()))
+    monkeypatch.setattr(message_actions, "managed_run", lambda generation: iter(()))
 
     client = APIClient()
     client.force_authenticate(user)
