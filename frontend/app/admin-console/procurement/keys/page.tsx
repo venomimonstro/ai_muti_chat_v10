@@ -25,6 +25,7 @@ export default function ProcurementKeysPage(){
   useEffect(()=>{void load()},[]);
 
   const makeDefault=async(accountId:string)=>{setBusy(true);setError("");setNotice("");try{await api("/admin/procurement/ledger/",{method:"POST",body:JSON.stringify({action:"set_default",account_id:accountId})});setNotice("Ключ назначен основным закупочным ключом провайдера.");await load()}catch(e){setError(e instanceof Error?e.message:"Не удалось назначить основной ключ")}finally{setBusy(false)}};
+  const deleteKey=async(k:LedgerKey)=>{if(!window.confirm(`Удалить API-ключ «${k.label}»? Секрет будет удалён безвозвратно. История уже проведённых закупок и расходов останется в финансовом журнале.`))return;setBusy(true);setError("");setNotice("");try{await api(`/admin/providers/${k.provider}/keys/${k.id}/`,{method:"DELETE"});setNotice(`Ключ «${k.label}» удалён. Связанная финансовая история сохранена без секрета.`);await load()}catch(e){setError(e instanceof Error?e.message:"Не удалось удалить API-ключ")}finally{setBusy(false)}};
 
   return <>
     <header className={styles.header}><div><h1>API-ключи и остатки</h1><p>Отдельный реестр ключей: технический статус, наш закупочный остаток и фактический balance провайдера, если его API это поддерживает.</p></div><button className={styles.button} disabled={busy} onClick={()=>void load()}>Обновить</button></header>
@@ -32,14 +33,14 @@ export default function ProcurementKeysPage(){
     {error&&<div className={`${styles.notice} ${styles.error}`}>{error}</div>}
     {data&&<section className={styles.section}>
       {data.keys.length===0?<p>API-ключи ещё не добавлены. Добавьте их в разделе «AI-провайдеры».</p>:<table className={styles.table}>
-        <thead><tr><th>Провайдер / ключ</th><th>Статус API</th><th>Наш закупочный остаток</th><th>Баланс провайдера</th><th>Роль</th><th></th></tr></thead>
+        <thead><tr><th>Провайдер / ключ</th><th>Статус API</th><th>Наш закупочный остаток</th><th>Баланс провайдера</th><th>Роль</th><th>Действия</th></tr></thead>
         <tbody>{data.keys.map(k=><tr key={k.id}>
           <td><b>{k.provider_name} · {k.label}</b><br/><small>{k.masked}</small></td>
           <td className={k.health_state==="healthy"?styles.good:styles.warn}>{health[k.health_state]||k.health_state}</td>
           <td>{k.account_id?<><b>{num(k.ledger_available_native)} {k.account_currency}</b><br/><small>израсходовано {num(k.ledger_spent_native)} {k.account_currency}</small>{Number(k.ledger_reserved_native??0)>0&&<><br/><small>зарезервировано {num(k.ledger_reserved_native)} {k.account_currency}</small></>}</>:<><b>Закупок ещё не было</b><br/><small>закупочного счёта нет</small></>}</td>
           <td>{k.provider_balance_supported&&k.provider_balance_amount!=null?<><b>{k.provider_balance_amount} {k.provider_balance_currency}</b><br/><small>получено напрямую от провайдера</small></>:<><span>Не предоставляется</span><br/><small>этот API-ключ не раскрывает provider balance</small></>}</td>
           <td>{k.is_default?<span className={styles.good}>Основной закупочный ключ</span>:k.account_id?<span>Учёт ведётся</span>:<span className={styles.warn}>Нет закупочного счёта</span>}</td>
-          <td>{k.account_id&&!k.is_default&&<button className={styles.button} disabled={busy} onClick={()=>void makeDefault(k.account_id!)}>Сделать основным</button>}</td>
+          <td><div className={styles.actions}>{k.account_id&&!k.is_default&&<button className={styles.button} disabled={busy} onClick={()=>void makeDefault(k.account_id!)}>Сделать основным</button>}<button className={`${styles.button} ${styles.danger}`} disabled={busy} onClick={()=>void deleteKey(k)}>Удалить ключ</button></div></td>
         </tr>)}</tbody>
       </table>}
     </section>}
