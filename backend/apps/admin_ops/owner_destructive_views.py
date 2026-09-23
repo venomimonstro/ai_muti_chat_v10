@@ -1,4 +1,7 @@
+from decimal import Decimal
+
 from django.db import transaction
+from django.db.models import Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.response import Response
@@ -9,6 +12,9 @@ from apps.procurement.models import ProviderFundingAccount, ProviderPurchase, Pr
 from .procurement_ledger_views import ProcurementLedgerView, _purchase_payload, _unfund_order
 from .provider_views import ProviderKeyDetailView
 from .services import audit
+
+
+ZERO = Decimal("0")
 
 
 class OwnerProviderKeyDetailView(ProviderKeyDetailView):
@@ -50,7 +56,7 @@ class OwnerProviderKeyDetailView(ProviderKeyDetailView):
 
 
 class OwnerProcurementLedgerView(ProcurementLedgerView):
-    """Lets the owner archive purchase documents without corrupting immutable spend allocations."""
+    """Lets the owner remove purchase documents without corrupting immutable spend allocations."""
 
     def get(self, request):
         response = super().get(request)
@@ -59,7 +65,7 @@ class OwnerProcurementLedgerView(ProcurementLedgerView):
                 row["deletable"] = row.get("state") != ProviderPurchase.State.DELETED
                 if row.get("operations_count", 0):
                     row["delete_mode"] = "archive"
-                    row["delete_hint"] = "Будет убран из рабочего списка; использованная история FIFO останется для корректного учёта."
+                    row["delete_hint"] = "Неиспользованный остаток будет снят; использованная FIFO-история сохранится для корректного учёта."
                 else:
                     row["delete_mode"] = "delete"
         return response
@@ -77,14 +83,24 @@ class OwnerProcurementLedgerView(ProcurementLedgerView):
         if purchase.state == ProviderPurchase.State.DELETED:
             return Response({"detail": "Закупочный ордер уже удалён"}, status=400)
         account = ProviderFundingAccount.objects.select_for_update().get(pk=purchase.account_id)
-        has_allocations = ProviderSpendAllocation.objects.filter(purchase=purchase).exists()
+        allocated = ProviderSpendAllocation.objects.filter(purchase=purchase).aggregate(value=Sum("native_amount"))["value"] or ZERO
+        has_allocations = allocated > ZERO
         now = timezone.now()
 
-        if not has_allocations and purchase.state == ProviderPurchase.State.ACTIVE:
-            _unfund_order(purchase, account)
-        # If the lot has already participated in FIFO, its immutable allocations and
-        # funded amount remain part of accounting. We only archive the document from
-        # the active admin register; deleting those facts would corrupt realized cost.
+        if purchase.state == ProviderPurchase.State.ACTIVE:
+            if not has_allocations:
+                _unfund_order(purchase, account)
+            else:
+                # Preserve the already-consumed lot in immutable FIFO history, but
+                # remove the unconsumed credit from the operational funding balance.
+                unused = max(ZERO, purchase.credit_native - allocated)
+                new_funded = account.funded_native - unused
+                required = account.spent_native + account.reserved_native
+                if new_funded < required:
+                    return Response({"detail": "Нельзя удалить пополнение: его неиспользованный остаток уже нужен активному резерву."}, status=409)
+                account.funded_native = new_funded
+                account.save(update_fields=["funded_native", "updated_at"])
+
         ProviderPurchase.objects.filter(pk=purchase.pk).update(
             state=ProviderPurchase.State.DELETED,
             deleted_at=now,
@@ -96,7 +112,11 @@ class OwnerProcurementLedgerView(ProcurementLedgerView):
             "procurement.purchase_owner_deleted",
             "provider_purchase",
             str(purchase.id),
-            {"document_number": purchase.document_number, "preserved_fifo_history": has_allocations},
+            {
+                "document_number": purchase.document_number,
+                "preserved_fifo_history": has_allocations,
+                "allocated_native": str(allocated),
+            },
         )
         payload = _purchase_payload(purchase)
         payload["archived_history_preserved"] = has_allocations
