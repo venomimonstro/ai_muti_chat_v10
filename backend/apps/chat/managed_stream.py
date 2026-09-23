@@ -3,6 +3,7 @@ import logging
 
 from django.utils import timezone
 
+from apps.ai_registry.models import AIModel
 from apps.billing.models import BalanceReservation
 from apps.billing.services import release
 
@@ -129,6 +130,27 @@ def _rewrite_error_chunk_if_needed(generation, chunk):
     return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
+def _model_is_internal(slug):
+    slug = str(slug or "")
+    if not slug:
+        return False
+    if slug.casefold().startswith("gigachat"):
+        return True
+    return AIModel.objects.filter(slug=slug, provider__slug="gigachat").exists()
+
+
+def _generation_route_is_internal(generation):
+    if str(generation.provider_slug or "").casefold() == "gigachat":
+        return True
+    if _model_is_internal(generation.model):
+        return True
+    try:
+        selected = generation.routing_decision.selected_model
+        return selected.provider.slug == "gigachat"
+    except Exception:
+        return False
+
+
 def _publicize_sse_chunk(generation, chunk):
     """Never expose the internal GigaChat provider/model in customer chat SSE."""
     if not isinstance(chunk, str) or not chunk.startswith("event: "):
@@ -145,14 +167,12 @@ def _publicize_sse_chunk(generation, chunk):
     except Exception:
         return chunk
 
-    raw_values = [
-        str(payload.get("model") or ""),
-        str(payload.get("model_version") or ""),
-        str(payload.get("provider") or ""),
-        str(payload.get("from_model") or ""),
-    ]
-    internal = payload.get("provider") == "gigachat" or any(value.lower().startswith("gigachat") for value in raw_values)
-    if not internal:
+    provider_internal = str(payload.get("provider") or "").casefold() == "gigachat"
+    model_internal = _model_is_internal(payload.get("model"))
+    from_model_internal = _model_is_internal(payload.get("from_model"))
+    if event == "routing" and not model_internal:
+        model_internal = _generation_route_is_internal(generation)
+    if not (provider_internal or model_internal or from_model_internal):
         return chunk
 
     try:
@@ -160,15 +180,15 @@ def _publicize_sse_chunk(generation, chunk):
     except Exception:
         mode = "balanced"
     level = PUBLIC_SYSTEM_LEVELS.get(mode, "System Pro")
-    if "model" in payload:
+    if model_internal and "model" in payload:
         payload["model"] = level
-    if "model_version" in payload:
+    if model_internal and "model_version" in payload:
         payload["model_version"] = level
-    if payload.get("provider") == "gigachat":
+    if provider_internal:
         payload["provider"] = "system"
-    if str(payload.get("from_model") or "").lower().startswith("gigachat"):
+    if from_model_internal:
         payload["from_model"] = level
-    if event == "routing" and "explanation" in payload:
+    if event == "routing" and "explanation" in payload and model_internal:
         payload["explanation"] = f"Использован уровень {level}."
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
