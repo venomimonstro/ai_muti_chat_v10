@@ -63,16 +63,19 @@ def _payload(policy):
     options = []
     for model in models:
         problems = _readiness(model)
+        ready = not problems
         options.append({
             "slug": model.slug,
             "display_name": model.display_name,
             "upstream_model": model.upstream_model,
             "provider": model.provider.slug,
             "provider_name": model.provider.name,
-            "provider_enabled": model.provider.enabled and not model.provider.emergency_disabled,
+            # Compatibility with current frontend: selectable means it is safe to
+            # assign. PATCH will switch provider/model enabled flags on atomically.
+            "provider_enabled": ready,
             "provider_health": model.provider.health_state,
             "model_enabled": model.enabled,
-            "ready": not problems,
+            "ready": ready,
             "blockers": problems,
         })
     tiers = []
@@ -128,12 +131,9 @@ class RoutingTierMatrixView(AdminAPIView):
                     "blockers": problems,
                 }, status=409)
             provider = model.provider
-            update_fields = []
             if not provider.enabled:
                 provider.enabled = True
-                update_fields.append("enabled")
-            if update_fields:
-                provider.save(update_fields=update_fields)
+                provider.save(update_fields=["enabled"])
             if not model.enabled:
                 model.enabled = True
                 model.save(update_fields=["enabled"])
