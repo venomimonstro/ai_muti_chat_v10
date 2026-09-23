@@ -51,6 +51,12 @@ AGENT_TEMPLATES = [
 ]
 
 
+def _enqueue_run(run):
+    from .tasks import execute_agent_run_task
+
+    transaction.on_commit(lambda: execute_agent_run_task.delay(str(run.id)))
+
+
 def _create_dev_agent(user, *, name, role, objective, level="balanced", tools=None):
     return Agent.objects.create(
         owner=user,
@@ -128,6 +134,7 @@ class AgentViewSet(viewsets.ModelViewSet):
             state=AgentRun.State.QUEUED,
             cost_reserved_rub=Decimal("0"),
         )
+        _enqueue_run(run)
         return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)
 
 
@@ -243,6 +250,7 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
             input_payload=request.data.get("input") or {},
             state=AgentRun.State.QUEUED,
         )
+        _enqueue_run(run)
         return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)
 
 
