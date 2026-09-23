@@ -65,9 +65,13 @@ def _enqueue_run(run):
         try:
             execute_agent_run_task.delay(str(run.id))
         except Exception as exc:
+            now = timezone.now()
             AgentRun.objects.filter(pk=run.id, state=AgentRun.State.QUEUED).update(
+                state=AgentRun.State.FAILED,
                 error_code="queue_unavailable",
                 error_message=str(exc)[:4000],
+                finished_at=now,
+                updated_at=now,
             )
 
     transaction.on_commit(enqueue)
