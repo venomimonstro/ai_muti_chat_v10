@@ -11,8 +11,14 @@ const isOptimistic=(message:ChatMessage)=>message.id.startsWith("local-user-")||
 const nearInTime=(a:ChatMessage,b:ChatMessage)=>Math.abs(new Date(a.created_at).getTime()-new Date(b.created_at).getTime())<=15000;
 
 function displayMessages(messages:ChatMessage[]){
- const persisted=messages.filter(message=>!isOptimistic(message));
- return messages.filter(message=>{
+ const seenIds=new Set<string>();
+ const unique=messages.filter(message=>{
+  if(seenIds.has(message.id))return false;
+  seenIds.add(message.id);
+  return true;
+ });
+ const persisted=unique.filter(message=>!isOptimistic(message));
+ return unique.filter(message=>{
   if(!isOptimistic(message))return true;
   return !persisted.some(server=>{
    if(server.role!==message.role||!nearInTime(server,message))return false;
