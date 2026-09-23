@@ -79,21 +79,83 @@ def _parse_yandex_xml(raw_xml: str, limit: int) -> list[SearchResult]:
     return results
 
 
+def _yandex_search_config() -> dict:
+    """Load admin-managed credentials first, keeping env vars as backward-compatible fallback."""
+    config = {
+        "api_key": "",
+        "folder_id": "",
+        "endpoint": "",
+        "search_type": "",
+        "region": "",
+        "source": "none",
+    }
+    try:
+        from apps.ai_registry.models import Provider
+
+        provider = Provider.objects.filter(slug="yandex-search").first()
+        if provider is not None:
+            auth = provider.auth_config or {}
+            config.update(
+                {
+                    "api_key": provider.get_api_key(),
+                    "folder_id": str(auth.get("folder_id") or "").strip(),
+                    "endpoint": str(
+                        auth.get("endpoint")
+                        or provider.api_base_url
+                        or "https://searchapi.api.cloud.yandex.net/v2/web/search"
+                    ).strip(),
+                    "search_type": str(auth.get("search_type") or "SEARCH_TYPE_RU").strip(),
+                    "region": str(auth.get("region") or "225").strip(),
+                    "source": "admin",
+                }
+            )
+    except Exception:
+        # Search must still work during migrations/startup if the DB is temporarily unavailable.
+        pass
+
+    if not config["api_key"]:
+        config["api_key"] = os.getenv("YANDEX_SEARCH_API_KEY", "").strip() or os.getenv("SEARCH_API_KEY", "").strip()
+    if not config["folder_id"]:
+        config["folder_id"] = os.getenv("YANDEX_SEARCH_FOLDER_ID", "").strip() or os.getenv("FOLDER_ID", "").strip()
+    if not config["endpoint"]:
+        config["endpoint"] = os.getenv(
+            "YANDEX_SEARCH_API_URL",
+            "https://searchapi.api.cloud.yandex.net/v2/web/search",
+        ).strip()
+    if not config["search_type"]:
+        config["search_type"] = os.getenv("YANDEX_SEARCH_TYPE", "SEARCH_TYPE_RU").strip()
+    if not config["region"]:
+        config["region"] = os.getenv("YANDEX_SEARCH_REGION", "225").strip()
+    if config["source"] == "none" and config["api_key"]:
+        config["source"] = "environment"
+    return config
+
+
+def yandex_search_status() -> dict:
+    config = _yandex_search_config()
+    return {
+        "configured": bool(config["api_key"] and config["folder_id"]),
+        "credential_source": config["source"],
+        "folder_configured": bool(config["folder_id"]),
+        "endpoint": config["endpoint"],
+        "search_type": config["search_type"],
+        "region": config["region"],
+    }
+
+
 def _search_yandex(query: str, *, limit: int) -> list[SearchResult]:
-    api_key = os.getenv("YANDEX_SEARCH_API_KEY", "").strip() or os.getenv("SEARCH_API_KEY", "").strip()
-    folder_id = os.getenv("YANDEX_SEARCH_FOLDER_ID", "").strip() or os.getenv("FOLDER_ID", "").strip()
+    config = _yandex_search_config()
+    api_key = config["api_key"]
+    folder_id = config["folder_id"]
     if not api_key or not folder_id:
         raise WebToolError("Yandex Search API is not configured")
-    endpoint = os.getenv(
-        "YANDEX_SEARCH_API_URL",
-        "https://searchapi.api.cloud.yandex.net/v2/web/search",
-    ).strip()
+    endpoint = config["endpoint"]
     _assert_public_http_url(endpoint)
     timeout = float(os.getenv("WEB_TOOL_TIMEOUT_SECONDS", "12"))
     max_results = max(1, min(limit, int(os.getenv("WEB_SEARCH_MAX_RESULTS", "8"))))
     body = {
         "query": {
-            "searchType": os.getenv("YANDEX_SEARCH_TYPE", "SEARCH_TYPE_RU"),
+            "searchType": config["search_type"],
             "queryText": query[:400],
             "familyMode": "FAMILY_MODE_NONE",
             "fixTypoMode": "FIX_TYPO_MODE_ON",
@@ -104,11 +166,11 @@ def _search_yandex(query: str, *, limit: int) -> list[SearchResult]:
             "docsInGroup": "1",
         },
         "maxPassages": "2",
-        "region": os.getenv("YANDEX_SEARCH_REGION", "225"),
+        "region": config["region"],
         "l10n": "LOCALIZATION_RU",
         "folderId": folder_id,
         "responseFormat": "FORMAT_XML",
-        "userAgent": "AIWorkspace-WebTool/2.0",
+        "userAgent": "AIWorkspace-WebTool/2.1",
     }
     try:
         response = httpx.post(
@@ -126,6 +188,8 @@ def _search_yandex(query: str, *, limit: int) -> list[SearchResult]:
         raw_xml = base64.b64decode(encoded, validate=True).decode("utf-8", errors="replace")
     except WebToolError:
         raise
+    except httpx.HTTPStatusError as exc:
+        raise WebToolError(f"Yandex Search HTTP {exc.response.status_code}") from exc
     except (httpx.HTTPError, ValueError, TypeError, binascii.Error) as exc:
         raise WebToolError("Yandex Search provider failed") from exc
     results = _parse_yandex_xml(raw_xml, max_results)
@@ -145,7 +209,7 @@ def _search_searx(query: str, *, limit: int) -> list[SearchResult]:
         response = httpx.get(
             f"{base_url}/search",
             params={"q": query, "format": "json", "language": "auto", "safesearch": 1},
-            headers={"User-Agent": "AIWorkspace-WebTool/2.0"},
+            headers={"User-Agent": "AIWorkspace-WebTool/2.1"},
             timeout=timeout,
             follow_redirects=False,
         )
@@ -169,7 +233,8 @@ def _search_searx(query: str, *, limit: int) -> list[SearchResult]:
 
 
 def search_web(query: str, *, limit: int = 5) -> list[SearchResult]:
-    if os.getenv("YANDEX_SEARCH_API_KEY", "").strip() or os.getenv("SEARCH_API_KEY", "").strip():
+    config = _yandex_search_config()
+    if config["api_key"] and config["folder_id"]:
         return _search_yandex(query, limit=limit)
     return _search_searx(query, limit=limit)
 
