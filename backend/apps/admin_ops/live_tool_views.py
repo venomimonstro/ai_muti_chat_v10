@@ -129,6 +129,8 @@ class LiveToolCheckView(AdminAPIView):
 
         if kind in {"all", "yandex"}:
             try:
+                if not yandex_search_status()["configured"]:
+                    raise WebToolError("Yandex Search API is not configured")
                 items = search_web("официальный сайт Яндекс", limit=3)
                 result["yandex"] = {
                     "ok": True,
@@ -160,4 +162,4 @@ class LiveToolCheckView(AdminAPIView):
                     )
 
         audit(request, "live_tools.check", "live_tools", metadata={"kind": kind, "failed": failed})
-        return Response({"ok": not failed, "checks": result}, status=200 if not failed else 503)
+        return Response({"ok": not failed, "checks": result})
