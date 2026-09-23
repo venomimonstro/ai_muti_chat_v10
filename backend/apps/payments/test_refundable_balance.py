@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from apps.accounts.models import User
-from apps.billing.services import credit, reserve, settle
+from apps.billing.services import credit, debit_paid, reserve, settle
 
 from .models import Payment, Refund, RefundRequest
 from .serializers import PaymentSerializer
@@ -31,7 +31,7 @@ def fund(user, amount="100.00"):
 
 
 @pytest.mark.django_db
-def test_payment_serializer_reports_only_currently_refundable_amount(user):
+def test_open_refund_operation_makes_payment_temporarily_unavailable_for_another_request(user):
     fund(user)
     item = payment(user)
     Refund.objects.create(
@@ -49,7 +49,7 @@ def test_payment_serializer_reports_only_currently_refundable_amount(user):
         status=RefundRequest.Status.PENDING,
     )
 
-    assert PaymentSerializer(item).data["refundable_rub"] == "50.00"
+    assert PaymentSerializer(item).data["refundable_rub"] == "0.00"
 
 
 @pytest.mark.django_db
@@ -72,6 +72,22 @@ def test_canceled_refund_and_rejected_request_do_not_reduce_refundable_amount(us
     )
 
     assert PaymentSerializer(item).data["refundable_rub"] == "100.00"
+
+
+@pytest.mark.django_db
+def test_completed_partial_refund_reduces_remaining_refundable_amount(user):
+    fund(user)
+    item = payment(user)
+    debit_paid(user, Decimal("30.00"), "refund", "completed-refund")
+    Refund.objects.create(
+        payment=item,
+        provider_refund_id="refund-succeeded",
+        idempotency_key="refund-3",
+        amount_rub=Decimal("30.00"),
+        status=Refund.Status.SUCCEEDED,
+    )
+
+    assert PaymentSerializer(item).data["refundable_rub"] == "70.00"
 
 
 @pytest.mark.django_db
