@@ -4,9 +4,11 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.github_integration.models import GitHubInstallation, GitHubRepositoryBinding
 from apps.projects.models import Project
 
 from .models import Agent, AgentRun, AgentTeam
+from .tasks import execute_agent_run_task
 
 
 @pytest.mark.django_db
@@ -135,3 +137,62 @@ def test_dev_team_requires_owned_project_with_github_binding():
 
     assert response.status_code == 400
     assert not AgentTeam.objects.filter(owner=user).exists()
+
+
+@pytest.mark.django_db
+def test_dev_team_bootstrap_creates_four_owned_project_agents():
+    user = User.objects.create_user(username="dev-team-ready", email="dev-team-ready@example.com", password="StrongPass123!")
+    project = Project.objects.create(owner=user, name="Ready repo")
+    installation = GitHubInstallation.objects.create(
+        owner=user,
+        installation_id=77101,
+        account_login="dev-team-ready",
+        account_type="User",
+        permissions={"contents": "write"},
+    )
+    GitHubRepositoryBinding.objects.create(
+        project=project,
+        installation=installation,
+        repository_id=88101,
+        full_name="dev-team-ready/repo",
+        default_branch="main",
+        write_enabled=True,
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    created = client.post(
+        "/api/v1/agent-teams/bootstrap-dev/",
+        {"objective": "Исправить проект и проверить тесты", "project": str(project.id)},
+        format="json",
+    )
+
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["project"] == str(project.id)
+    assert len(payload["members"]) == 4
+    assert {item["role"] for item in payload["members"]} == {
+        "Engineering Director",
+        "Architecture",
+        "Development",
+        "QA & Security",
+    }
+    assert Agent.objects.filter(owner=user, project=project).count() == 4
+
+
+@pytest.mark.django_db
+def test_celery_task_routes_team_runs_to_team_runtime():
+    user = User.objects.create_user(username="task-route", email="task-route@example.com", password="StrongPass123!")
+    project = Project.objects.create(owner=user, name="Task route")
+    director = Agent.objects.create(owner=user, project=project, name="Director", role="Engineering Director")
+    team = AgentTeam.objects.create(owner=user, project=project, name="Team", director=director, objective="Do work")
+    run = AgentRun.objects.create(owner=user, team=team, project=project, objective="Do work")
+
+    with patch("apps.agents.tasks.execute_team_run", return_value=run) as team_runtime, patch(
+        "apps.agents.tasks.execute_run"
+    ) as single_runtime:
+        result = execute_agent_run_task.run(str(run.id))
+
+    assert result == {"run_id": str(run.id), "state": run.state}
+    team_runtime.assert_called_once_with(str(run.id))
+    single_runtime.assert_not_called()
