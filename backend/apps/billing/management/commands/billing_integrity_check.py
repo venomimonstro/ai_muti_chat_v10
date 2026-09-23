@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Sum
 
 from apps.billing.models import BalanceReservation, RequestCost, Wallet
@@ -105,6 +105,5 @@ class Command(BaseCommand):
             )
         )
         if failures:
-            self.stderr.write(self.style.ERROR("BILLING_INTEGRITY_FAILED"))
-        else:
-            self.stdout.write(self.style.SUCCESS("BILLING_INTEGRITY_OK"))
+            raise CommandError("BILLING_INTEGRITY_FAILED")
+        self.stdout.write(self.style.SUCCESS("BILLING_INTEGRITY_OK"))
