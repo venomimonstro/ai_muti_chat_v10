@@ -7,6 +7,11 @@ from .models import RefundRequest
 from .services import create_refund_request
 
 CENT = Decimal("0.01")
+OPEN_STATUSES = {
+    RefundRequest.Status.PENDING,
+    RefundRequest.Status.APPROVED,
+    RefundRequest.Status.PROCESSING,
+}
 
 
 def _amount(value):
@@ -40,6 +45,24 @@ def create_refund_request_idempotent(*, user, payment, amount, reason, idempoten
         ):
             raise ValidationError("Idempotency-Key уже использован для другой заявки")
         return existing
+
+    # A lost browser response must not let the customer accidentally create a
+    # second hold with another key/amount. One payment may have only one open
+    # customer request; another partial request is allowed after it is resolved.
+    open_request = (
+        RefundRequest.objects.filter(
+            user=user,
+            payment=payment,
+            status__in=OPEN_STATUSES,
+        )
+        .order_by("created_at")
+        .first()
+    )
+    if open_request is not None:
+        raise ValidationError(
+            "По этому платежу уже есть заявка на возврат в обработке. "
+            "Дождитесь её завершения перед новой заявкой."
+        )
 
     request = create_refund_request(
         user=user,
