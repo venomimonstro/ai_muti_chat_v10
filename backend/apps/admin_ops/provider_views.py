@@ -1,3 +1,4 @@
+import base64
 import os
 import time
 from decimal import Decimal
@@ -10,7 +11,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework.response import Response
 
-from apps.ai_registry.gigachat_adapter import GigaChatAPIAdapter
+from apps.ai_registry.gigachat_adapter import GigaChatAPIAdapter, VALID_SCOPES
 from apps.ai_registry.models import AIModel, ModelVersion, Provider, ProviderApiKey
 from apps.billing.models import PriceVersion
 
@@ -66,6 +67,12 @@ def _key_payload(item: ProviderApiKey):
     }
 
 
+def _gigachat_scope(provider: Provider) -> str:
+    config = provider.auth_config or {}
+    value = str(config.get("scope") or os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")).strip()
+    return value if value in VALID_SCOPES else "GIGACHAT_API_PERS"
+
+
 def _credential_payload(provider: Provider):
     return {
         "id": str(provider.id),
@@ -78,6 +85,7 @@ def _credential_payload(provider: Provider):
         "health_state": provider.health_state,
         "last_checked_at": provider.last_checked_at,
         "last_latency_ms": provider.last_latency_ms,
+        "gigachat_scope": _gigachat_scope(provider) if provider.slug == "gigachat" else None,
         "keys": [_key_payload(item) for item in provider.api_keys.all()],
     }
 
@@ -102,7 +110,7 @@ def _gigachat_adapter(provider: Provider, secret: str):
     return GigaChatAPIAdapter(
         authorization_key=secret,
         base_url=provider.api_base_url or "https://api.giga.chat/v1",
-        scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
+        scope=_gigachat_scope(provider),
     )
 
 
@@ -239,6 +247,7 @@ class ProviderCredentialView(AdminAPIView):
     @transaction.atomic
     def patch(self, request, provider_slug):
         provider = get_object_or_404(Provider.objects.select_for_update(), slug=provider_slug)
+        update_fields = []
         if "api_base_url" in request.data:
             base_url = str(request.data.get("api_base_url") or "").strip()
             if base_url:
@@ -247,8 +256,19 @@ class ProviderCredentialView(AdminAPIView):
                 except Exception:
                     return Response({"detail": "Некорректный URL API"}, status=400)
                 provider.api_base_url = base_url
-                provider.health_state = Provider.HealthState.UNKNOWN
-                provider.save(update_fields=["api_base_url", "health_state"])
+                update_fields.append("api_base_url")
+        if provider.slug == "gigachat" and "gigachat_scope" in request.data:
+            scope = str(request.data.get("gigachat_scope") or "").strip()
+            if scope not in VALID_SCOPES:
+                return Response({"detail": "Некорректный Scope GigaChat"}, status=400)
+            config = dict(provider.auth_config or {})
+            config["scope"] = scope
+            provider.auth_config = config
+            update_fields.append("auth_config")
+        if update_fields:
+            provider.health_state = Provider.HealthState.UNKNOWN
+            update_fields.append("health_state")
+            provider.save(update_fields=list(dict.fromkeys(update_fields)))
         return Response(_credential_payload(provider))
 
 
@@ -257,9 +277,26 @@ class ProviderKeyCollectionView(AdminAPIView):
     def post(self, request, provider_slug):
         provider = get_object_or_404(Provider, slug=provider_slug)
         secret = str(request.data.get("api_key") or "").strip()
-        if not secret:
+        if provider.slug == "gigachat":
+            scope = str(request.data.get("scope") or _gigachat_scope(provider)).strip()
+            if scope not in VALID_SCOPES:
+                return Response({"detail": "Выберите корректный Scope GigaChat"}, status=400)
+            config = dict(provider.auth_config or {})
+            config["scope"] = scope
+            provider.auth_config = config
+            provider.health_state = Provider.HealthState.UNKNOWN
+            provider.save(update_fields=["auth_config", "health_state"])
+            client_id = str(request.data.get("client_id") or "").strip()
+            client_secret = str(request.data.get("client_secret") or "").strip()
+            if not secret and (client_id or client_secret):
+                if not client_id or not client_secret:
+                    return Response({"detail": "Для подключения по Client ID укажите и Client ID, и Client Secret"}, status=400)
+                secret = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+            if not secret:
+                return Response({"detail": "Укажите Authorization Key либо пару Client ID + Client Secret"}, status=400)
+        elif not secret:
             return Response({"detail": "Вставьте API-ключ"}, status=400)
-        label = str(request.data.get("label") or f"Ключ {provider.api_keys.count()+1}").strip()[:120]
+        label = str(request.data.get("label") or ("GigaChat OAuth" if provider.slug == "gigachat" else f"Ключ {provider.api_keys.count()+1}")).strip()[:120]
         if provider.api_keys.filter(label=label).exists():
             label = f"{label} {provider.api_keys.count()+1}"[:120]
         item = ProviderApiKey(provider=provider, label=label, priority=provider.api_keys.count() * 10 + 10)
@@ -272,8 +309,18 @@ class ProviderKeyCollectionView(AdminAPIView):
             provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
             provider.last_checked_at = timezone.now()
             provider.save(update_fields=["health_state", "last_checked_at"])
-            label_name = "GigaChat" if provider.slug == "gigachat" else "OpenRouter"
-            return Response({"detail": f"{label_name} не подтвердил ключ авторизации: {error_code}", "code": error_code}, status=400)
+            if provider.slug == "gigachat":
+                if error_code == "gigachat_oauth_http_401":
+                    detail = "GigaChat отклонил Authorization Key. Проверьте Authorization Key либо Client ID + Client Secret."
+                elif error_code == "gigachat_oauth_http_400":
+                    detail = "GigaChat отклонил OAuth-запрос. Проверьте Scope и тип проекта GigaChat API."
+                elif error_code == "gigachat_oauth_network":
+                    detail = "Не удалось соединиться с OAuth GigaChat. Проверьте сеть и доверенные сертификаты на сервере."
+                else:
+                    detail = f"GigaChat не подтвердил авторизацию: {error_code}"
+            else:
+                detail = f"OpenRouter не подтвердил ключ авторизации: {error_code}"
+            return Response({"detail": detail, "code": error_code}, status=400)
         _refresh_balance(provider, item)
         provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
         provider.last_checked_at = timezone.now()
