@@ -8,6 +8,7 @@ from django.utils import timezone
 from .generic_team_runtime import execute_generic_team_run
 from .graph_runtime import execute_graph_run
 from .models import Agent, AgentApproval, AgentRun, AgentTeam
+from .readiness import agent_readiness
 from .run_views import create_single_agent_run
 from .runtime import execute_run
 from .team_runtime import execute_team_run
@@ -70,6 +71,22 @@ def enqueue_agent_run(run_id):
         return False
 
 
+def _failed_not_ready_run(*, schedule, agent, objective, readiness, now):
+    message = "; ".join(readiness.get("blockers") or ["Сотрудник не готов к автономному запуску"])
+    return AgentRun.objects.create(
+        owner=schedule.owner,
+        agent=agent,
+        project=agent.project,
+        objective=objective,
+        input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
+        state=AgentRun.State.FAILED,
+        error_code="agent_not_ready",
+        error_message=message[:4000],
+        started_at=now,
+        finished_at=now,
+    )
+
+
 @shared_task(max_retries=0)
 def dispatch_due_agent_schedules(limit=50):
     from .schedule_models import AgentSchedule
@@ -83,6 +100,7 @@ def dispatch_due_agent_schedules(limit=50):
     launched = 0
     skipped = 0
     waiting_approval = 0
+    not_ready = 0
     for schedule_id in due_ids:
         with transaction.atomic():
             schedule = (
@@ -97,7 +115,7 @@ def dispatch_due_agent_schedules(limit=50):
             schedule.next_run_at = schedule.compute_next_run(after=now)
 
             if schedule.agent_id:
-                subject = Agent.objects.select_for_update().get(pk=schedule.agent_id)
+                subject = Agent.objects.select_for_update().select_related("project").get(pk=schedule.agent_id)
                 if subject.status != Agent.Status.ACTIVE:
                     schedule.save(update_fields=["next_run_at", "updated_at"])
                     skipped += 1
@@ -115,8 +133,6 @@ def dispatch_due_agent_schedules(limit=50):
                 objective = (schedule.objective or subject.objective).strip()
                 project = subject.project
 
-            # Concurrency is an invariant, not an optional client preference.
-            # One employee/team can never have two billable active runs.
             if active:
                 schedule.save(update_fields=["next_run_at", "updated_at"])
                 skipped += 1
@@ -127,16 +143,27 @@ def dispatch_due_agent_schedules(limit=50):
                 continue
 
             if schedule.agent_id:
-                run = create_single_agent_run(
-                    owner=schedule.owner,
-                    agent=subject,
-                    objective=objective,
-                    input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
-                )
-                if run.state == AgentRun.State.WAITING_APPROVAL:
-                    waiting_approval += 1
+                readiness = agent_readiness(subject)
+                if not readiness["ready"]:
+                    run = _failed_not_ready_run(
+                        schedule=schedule,
+                        agent=subject,
+                        objective=objective,
+                        readiness=readiness,
+                        now=now,
+                    )
+                    not_ready += 1
                 else:
-                    launched += 1
+                    run = create_single_agent_run(
+                        owner=schedule.owner,
+                        agent=subject,
+                        objective=objective,
+                        input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
+                    )
+                    if run.state == AgentRun.State.WAITING_APPROVAL:
+                        waiting_approval += 1
+                    else:
+                        launched += 1
             else:
                 run = AgentRun.objects.create(
                     owner=schedule.owner,
@@ -157,6 +184,7 @@ def dispatch_due_agent_schedules(limit=50):
         "checked": len(due_ids),
         "launched": launched,
         "waiting_approval": waiting_approval,
+        "not_ready": not_ready,
         "skipped": skipped,
     }
 
