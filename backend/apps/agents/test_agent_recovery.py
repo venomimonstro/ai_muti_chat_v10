@@ -13,7 +13,7 @@ from .recovery import recover_stale_agent_runs
 
 
 @pytest.mark.django_db(transaction=True)
-def test_stale_agent_run_releases_customer_reserve_and_fails_run(monkeypatch):
+def test_stale_agent_run_releases_all_customer_reserve_formats_and_fails_run(monkeypatch):
     monkeypatch.setenv("AGENT_STALE_TIMEOUT_SECONDS", "1200")
     user = get_user_model().objects.create_user(
         username="agent-recovery",
@@ -45,24 +45,24 @@ def test_stale_agent_run_releases_customer_reserve_and_fails_run(monkeypatch):
         state=AgentStepRun.State.RUNNING,
         started_at=timezone.now() - timedelta(hours=1),
     )
-    reservation = reserve(
-        user,
-        Decimal("5.00"),
-        f"agent-run:{run.id}:step:1",
-    )
-    stale_at = timezone.now() - timedelta(hours=1)
-    AgentRun.objects.filter(pk=run.pk).update(updated_at=stale_at)
+    reservations = [
+        reserve(user, Decimal("3.00"), f"agent-run:{run.id}"),
+        reserve(user, Decimal("4.00"), f"agent-run:{run.id}:step:1"),
+        reserve(user, Decimal("5.00"), f"agent-team:{run.id}:step:2"),
+    ]
+    AgentRun.objects.filter(pk=run.pk).update(updated_at=timezone.now() - timedelta(hours=1))
 
     assert recover_stale_agent_runs() == 1
 
     run.refresh_from_db()
     step.refresh_from_db()
-    reservation.refresh_from_db()
     user.wallet.refresh_from_db()
     assert run.state == AgentRun.State.FAILED
     assert run.error_code == "stale_agent_run_recovered"
     assert step.state == AgentStepRun.State.FAILED
-    assert reservation.state == BalanceReservation.State.RELEASED
+    for reservation in reservations:
+        reservation.refresh_from_db()
+        assert reservation.state == BalanceReservation.State.RELEASED
     assert user.wallet.reserved_rub == Decimal("0.0000")
     assert user.wallet.available_rub == Decimal("20.0000")
 
