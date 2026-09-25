@@ -14,10 +14,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf '[1/12] Secret scan\n'
+printf '[1/13] Secret scan\n'
 bash ./scripts/security_scan.sh
 
-printf '[2/12] Shell and smoke-script syntax\n'
+printf '[2/13] Shell and smoke-script syntax\n'
 bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
@@ -29,7 +29,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 "$PYTHON_BIN" -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
 
-printf '[3/12] Compose syntax\n'
+printf '[3/13] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
 APP_DOMAIN=release-check.example.test \
 ACME_EMAIL=ops@example.test \
@@ -40,27 +40,30 @@ REDIS_PASSWORD=release-check-redis-password \
 PUBLIC_API_URL=https://release-check.example.test/api/v1 \
 docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 
-printf '[4/12] Build isolated test stack\n'
+printf '[4/13] Build isolated test stack\n'
 docker compose -f "$TEST_COMPOSE" build backend-test
 docker compose -f "$TEST_COMPOSE" up -d postgres
 
-printf '[5/12] Backend lint\n'
+printf '[5/13] Backend lint\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check .
 
-printf '[6/12] Backend tests on PostgreSQL/pgvector\n'
+printf '[6/13] Backend tests on PostgreSQL/pgvector\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q
 
-printf '[7/12] Django checks and migration drift\n'
+printf '[7/13] Django checks and migration drift\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
 
-printf '[8/12] Economic safety invariants\n'
+printf '[8/13] Economic safety invariants\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py economic_safety_check
 
-printf '[9/12] Billing ledger integrity\n'
+printf '[9/13] Billing ledger integrity\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py billing_integrity_check
 
-printf '[10/12] Frontend production build\n'
+printf '[10/13] Agent Studio integrity\n'
+docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_system_audit
+
+printf '[11/13] Frontend production build\n'
 docker build \
   --target builder \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
@@ -69,10 +72,10 @@ docker build \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
   -t ai-workspace-frontend-test frontend
 
-printf '[11/12] Frontend lint\n'
+printf '[12/13] Frontend lint\n'
 docker run --rm ai-workspace-frontend-builder sh -c 'npm run lint'
 
-printf '[12/12] Frontend runtime route smoke\n'
+printf '[13/13] Frontend runtime route smoke\n'
 docker run -d --rm --name "$FRONTEND_SMOKE_CONTAINER" \
   -p "127.0.0.1:${FRONTEND_SMOKE_PORT}:3000" ai-workspace-frontend-test >/dev/null
 READY=false
@@ -84,7 +87,7 @@ for _attempt in $(seq 1 30); do
   sleep 1
 done
 [[ "$READY" == true ]] || { echo 'Frontend runtime did not become ready' >&2; exit 1; }
-for route in / /pricing /faq /login /register /api /use-cases/marketing /app /app/account /app/wallet /app/usage /app/settings /app/projects /app/projects/00000000-0000-0000-0000-000000000000/github /app/help /app/notifications /app/images /app/compare /admin-console /admin-console/system /admin-console/providers /admin-console/finance /admin-console/security /admin-console/operations /admin-console/drills /admin-console/compliance /sitemap.xml /robots.txt; do
+for route in / /pricing /faq /login /register /api /use-cases/marketing /app /app/account /app/wallet /app/usage /app/settings /app/projects /app/projects/00000000-0000-0000-0000-000000000000/github /app/help /app/notifications /app/images /app/compare /app/agents /app/teams /app/schedules /app/dev /admin-console /admin-console/system /admin-console/providers /admin-console/finance /admin-console/security /admin-console/operations /admin-console/drills /admin-console/compliance /sitemap.xml /robots.txt; do
   curl -fsS --max-time 5 "http://127.0.0.1:${FRONTEND_SMOKE_PORT}${route}" >/dev/null || {
     echo "Frontend route failed: ${route}" >&2
     exit 1
