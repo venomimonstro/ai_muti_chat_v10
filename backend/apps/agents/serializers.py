@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Agent, AgentApproval, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember
+from .models import Agent, AgentApproval, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember, AgentVersion
 
 
 class AgentSerializer(serializers.ModelSerializer):
@@ -25,6 +25,15 @@ class AgentSerializer(serializers.ModelSerializer):
             setattr(instance, field, value)
         instance.clean()
         return attrs
+
+
+class AgentVersionSerializer(serializers.ModelSerializer):
+    created_by = serializers.CharField(source="created_by.email", read_only=True)
+
+    class Meta:
+        model = AgentVersion
+        fields = ["id", "version", "snapshot", "created_by", "created_at"]
+        read_only_fields = fields
 
 
 class AgentTeamMemberSerializer(serializers.ModelSerializer):
