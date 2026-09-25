@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
+from .dev_pr_views import DevRunPullRequestView
 from .schedule_views import AgentScheduleViewSet
 from .team_builder_views import AgentTeamBootstrapView
 from .team_config_views import AgentTeamDirectorView, AgentTeamMemberDetailView
@@ -31,6 +32,11 @@ urlpatterns = [
         "agent-teams/<uuid:team_id>/director/",
         AgentTeamDirectorView.as_view(),
         name="agent-team-director",
+    ),
+    path(
+        "agent-runs/<uuid:run_id>/pull-request/",
+        DevRunPullRequestView.as_view(),
+        name="agent-dev-run-pull-request",
     ),
     *router.urls,
 ]
