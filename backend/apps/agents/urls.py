@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
+from .dev_bootstrap_views import DevTeamBootstrapView
 from .dev_pr_views import DevRunPullRequestView
 from .memory_views import AgentMemoryItemView, AgentMemoryView
 from .operations_views import AgentOperationsSummaryView
@@ -35,6 +36,7 @@ urlpatterns = [
         name="agent-version-restore",
     ),
     path("agent-teams/bootstrap/", AgentTeamBootstrapView.as_view(), name="agent-team-bootstrap"),
+    path("agent-teams/bootstrap-dev/", DevTeamBootstrapView.as_view(), name="agent-team-bootstrap-dev"),
     path(
         "agent-teams/<uuid:team_id>/members/<uuid:member_id>/",
         AgentTeamMemberDetailView.as_view(),
