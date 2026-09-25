@@ -4,6 +4,7 @@ import Link from "next/link";
 import {useParams,useRouter} from "next/navigation";
 import {useEffect,useState} from "react";
 import {api} from "../../../../lib/api";
+import AgentConnectionsPanel from "../AgentConnectionsPanel";
 import AgentGraphEditor from "../AgentGraphEditor";
 import AgentMemoryPanel from "../AgentMemoryPanel";
 import AgentSchedulePanel from "../AgentSchedulePanel";
@@ -42,6 +43,7 @@ export default function AgentDetailPage(){
     <article style={{border:"1px solid #ddd",borderRadius:18,padding:20}}><h3 style={{marginTop:0}}>Автономность</h3><select value={agent.autonomy} onChange={e=>setAgent({...agent,autonomy:e.target.value})} style={{width:"100%",padding:10,borderRadius:10}}>{autonomyOptions.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><h3>Мощность</h3><select value={agent.system_level} onChange={e=>setAgent({...agent,system_level:e.target.value})} style={{width:"100%",padding:10,borderRadius:10}}>{levelOptions.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><h3>Лимит на запуск</h3><input inputMode="decimal" value={agent.max_cost_rub_per_run} onChange={e=>setAgent({...agent,max_cost_rub_per_run:e.target.value})} style={{width:"100%",boxSizing:"border-box",padding:10,borderRadius:10,border:"1px solid #ccc"}}/><button onClick={()=>void patch({autonomy:agent.autonomy,system_level:agent.system_level,max_cost_rub_per_run:agent.max_cost_rub_per_run})} disabled={busy==="save"} style={{marginTop:12,padding:"9px 12px",borderRadius:9,border:"1px solid #ccc"}}>Сохранить режим</button></article>
     <AgentSchedulePanel agentId={id} defaultObjective={agent.objective} active={agent.status==="active"}/>
     <article style={{border:"1px solid #ddd",borderRadius:18,padding:20}}><h3 style={{marginTop:0}}>Разрешения и инструменты</h3><p style={{fontSize:13,opacity:.62,marginTop:-4}}>Агент не сможет использовать инструмент, который здесь выключен. Внешние публикации и merge требуют подтверждения.</p><AgentToolPolicy policy={agent.tool_policy||{}} disabled={busy==="save"} onSave={async tool_policy=>{await patch({tool_policy});}}/></article>
+    <AgentConnectionsPanel agentId={id}/>
     <article style={{border:"1px solid #ddd",borderRadius:18,padding:20}}><h3 style={{marginTop:0}}>Версии</h3><AgentVersions agentId={id} refreshToken={versionRefresh} onRestored={async()=>{await load();setVersionRefresh(value=>value+1);setNotice("Версия восстановлена.")}}/></article>
     <article style={{border:"1px solid #ddd",borderRadius:18,padding:20}}><h3 style={{marginTop:0}}>Последние запуски</h3>{runs.length?runs.slice(0,8).map(item=><Link key={item.id} href={`/app/runs/${item.id}`} style={{display:"block",padding:"9px 0",borderBottom:"1px solid #eee",textDecoration:"none",color:"inherit"}}><strong>{stateLabel[item.state]||item.state}</strong><div style={{fontSize:12,opacity:.6,marginTop:3}}>{item.step_count} шагов · {Number(item.cost_actual_rub||0).toFixed(2)} ₽</div></Link>):<p style={{opacity:.65}}>Запусков пока нет.</p>}</article>
    </aside>
