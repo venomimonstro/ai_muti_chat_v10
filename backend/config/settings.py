@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     "apps.procurement",
     "apps.admin_ops",
     "apps.agents",
+    "apps.connections",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
