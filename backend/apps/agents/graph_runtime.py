@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -15,6 +16,7 @@ from .accounting import (
     settle_agent_provider_spend,
 )
 from .file_context import project_file_context
+from .image_tool import generate_agent_image
 from .memory import memory_context_for_agent
 from .models import AgentApproval, AgentRun, AgentStepRun
 from .runtime import _model_for
@@ -22,7 +24,7 @@ from .runtime import _model_for
 OUTPUT_TOKENS = 1200
 MAX_CONTEXT_CHARS = 18000
 SUPPORTED_LLM_NODES = {"llm", "review", "analytics", "research", "web"}
-UNSUPPORTED_EXTERNAL_NODES = {"image", "publish", "github_write", "sandbox", "code"}
+UNSUPPORTED_EXTERNAL_NODES = {"publish", "github_write", "sandbox", "code"}
 
 
 def _release_customer(reservation):
@@ -34,9 +36,9 @@ def _release_customer(reservation):
 
 
 def _release_provider(reservation):
-    if reservation:
+    if provider:
         try:
-            release_agent_provider_spend(reservation)
+            release_agent_provider_spend(provider)
         except Exception:
             pass
 
@@ -164,10 +166,14 @@ def _handle_approval(run, agent, node, sequence):
     return True
 
 
-def _skip_external(run, agent, node, sequence):
+def _skip_external(run, agent, node, sequence, reason=None):
     node_id = str(node.get("id") or f"external-{sequence}")
     node_type = str(node.get("type") or "external")
     title = str(node.get("title") or node_id)[:240]
+    explanation = reason or (
+        f"реальный инструмент {node_type} пока не подключён к Agent Runtime. "
+        "Система не имитирует внешнее действие."
+    )
     AgentStepRun.objects.get_or_create(
         run=run,
         node_id=node_id,
@@ -178,13 +184,82 @@ def _skip_external(run, agent, node, sequence):
             "title": title,
             "action_type": node_type,
             "state": AgentStepRun.State.SKIPPED,
-            "public_log": f"Шаг «{title}» не выполнен: реальный инструмент {node_type} пока не подключён к Agent Runtime. Система не имитирует внешнее действие.",
+            "public_log": f"Шаг «{title}» не выполнен: {explanation}",
             "started_at": timezone.now(),
             "finished_at": timezone.now(),
         },
     )
     run.step_count = max(run.step_count, sequence)
     run.save(update_fields=["step_count", "updated_at"])
+
+
+def _run_image_node(run, agent, node, sequence, budget):
+    node_id = str(node.get("id") or f"image-{sequence}")
+    title = str(node.get("title") or "Создать изображение")[:240]
+    if run.steps.filter(node_id=node_id, state=AgentStepRun.State.COMPLETED).exists():
+        return None
+    if not bool((agent.tool_policy or {}).get("images")):
+        _skip_external(run, agent, node, sequence, "у агента нет разрешения на генерацию изображений")
+        return None
+
+    step = AgentStepRun.objects.create(
+        run=run,
+        agent=agent,
+        sequence=sequence,
+        node_id=node_id,
+        title=title,
+        action_type="image",
+        state=AgentStepRun.State.RUNNING,
+        public_log="Image Studio создаёт изображение.",
+        started_at=timezone.now(),
+    )
+    try:
+        current_total = Decimal(str(run.cost_actual_rub or 0))
+        remaining = max(Decimal("0"), budget - current_total)
+        previous = _previous_text(run)
+        prompt = str(node.get("prompt") or previous or run.objective).strip()
+        result = generate_agent_image(
+            run=run,
+            node=node,
+            prompt=prompt,
+            max_cost_rub=remaining,
+        )
+        actual = Decimal(str(result.get("actual_cost_rub") or 0))
+        run.refresh_from_db(fields=["state", "cost_actual_rub"])
+        if run.state == AgentRun.State.CANCELED:
+            step.state = AgentStepRun.State.COMPLETED
+            step.public_log = (
+                "Пользователь остановил workflow после запуска Image Studio. "
+                "Фактически возникшая стоимость изображения учтена."
+            )
+        else:
+            step.state = AgentStepRun.State.COMPLETED
+            step.public_log = f"Изображение создано. Image Studio generation: {result['generation_id']}."
+        step.output_payload = {"image_generation": result}
+        step.cost_rub = actual
+        step.finished_at = timezone.now()
+        step.save(update_fields=["state", "output_payload", "public_log", "cost_rub", "finished_at"])
+        run.cost_actual_rub = Decimal(str(run.cost_actual_rub or 0)) + actual
+        run.tool_call_count += 1
+        run.step_count = max(run.step_count, sequence)
+        run.save(update_fields=["cost_actual_rub", "tool_call_count", "step_count", "updated_at"])
+        return run if run.state == AgentRun.State.CANCELED else None
+    except ValidationError as exc:
+        message = str(exc)
+        if "превышает оставшийся лимит" in message:
+            step.state = AgentStepRun.State.SKIPPED
+            step.public_log = f"Шаг не запущен: {message}"
+            step.finished_at = timezone.now()
+            step.save(update_fields=["state", "public_log", "finished_at"])
+            run.state = AgentRun.State.BUDGET_EXCEEDED
+            run.error_code = "agent_image_budget_exceeded"
+            run.error_message = message[:4000]
+            run.finished_at = timezone.now()
+            run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+            return run
+        return _fail(run, step, "agent_image_failed", message)
+    except Exception as exc:
+        return _fail(run, step, "agent_image_failed", str(exc))
 
 
 def _run_llm_node(run, agent, node, sequence, budget):
@@ -229,7 +304,14 @@ def _run_llm_node(run, agent, node, sequence, budget):
         estimated_input = max(32, estimate_message_tokens(messages) + 16)
         price = active_price(model.slug)
         preflight = require_margin(
-            quote(price, estimated_input, output_tokens, provider_slug=model.provider.slug, model_slug=model.slug, operation_type="agent")
+            quote(
+                price,
+                estimated_input,
+                output_tokens,
+                provider_slug=model.provider.slug,
+                model_slug=model.slug,
+                operation_type="agent",
+            )
         )
         total = Decimal(str(run.cost_actual_rub or 0))
         if total + preflight.user_charge_rub > budget:
@@ -253,9 +335,20 @@ def _run_llm_node(run, agent, node, sequence, budget):
         run.state = AgentRun.State.RUNNING
         run.tool_call_count += tool_calls
         run.save(update_fields=["state", "tool_call_count", "updated_at"])
-        result = adapter_for(model).generate(model=model.upstream_model or model.slug, messages=messages, max_output_tokens=output_tokens)
+        result = adapter_for(model).generate(
+            model=model.upstream_model or model.slug,
+            messages=messages,
+            max_output_tokens=output_tokens,
+        )
         actual_quote = require_margin(
-            quote(price, max(1, result.input_tokens), max(1, result.output_tokens), provider_slug=model.provider.slug, model_slug=model.slug, operation_type="agent")
+            quote(
+                price,
+                max(1, result.input_tokens),
+                max(1, result.output_tokens),
+                provider_slug=model.provider.slug,
+                model_slug=model.slug,
+                operation_type="agent",
+            )
         )
         actual = min(actual_quote.user_charge_rub, customer.amount_rub)
         settle_agent_provider_spend(
@@ -304,7 +397,12 @@ def _run_llm_node(run, agent, node, sequence, budget):
 
 def execute_graph_run(run_id):
     with transaction.atomic():
-        run = AgentRun.objects.select_for_update().select_related("owner", "agent", "project").prefetch_related("steps", "approvals").get(pk=run_id)
+        run = (
+            AgentRun.objects.select_for_update()
+            .select_related("owner", "agent", "project")
+            .prefetch_related("steps", "approvals")
+            .get(pk=run_id)
+        )
         if run.state != AgentRun.State.QUEUED:
             return run
         agent = run.agent
@@ -323,16 +421,24 @@ def execute_graph_run(run_id):
 
     budget = Decimal(str(agent.max_cost_rub_per_run))
     for sequence, node in enumerate(nodes, start=1):
-        run.refresh_from_db(fields=["state", "cost_actual_rub", "step_count"])
+        run.refresh_from_db(fields=["state", "cost_actual_rub", "step_count", "tool_call_count"])
         if run.state == AgentRun.State.CANCELED:
             return run
         node_id = str(node.get("id") or f"node-{sequence}")
         node_type = str(node.get("type") or "llm").strip().lower()
-        if run.steps.filter(node_id=node_id, state__in=[AgentStepRun.State.COMPLETED, AgentStepRun.State.SKIPPED]).exists():
+        if run.steps.filter(
+            node_id=node_id,
+            state__in=[AgentStepRun.State.COMPLETED, AgentStepRun.State.SKIPPED],
+        ).exists():
             continue
         if node_type == "approval":
             if _handle_approval(run, agent, node, sequence):
                 return run
+            continue
+        if node_type == "image":
+            terminal = _run_image_node(run, agent, node, sequence, budget)
+            if terminal is not None:
+                return terminal
             continue
         if node_type in UNSUPPORTED_EXTERNAL_NODES:
             _skip_external(run, agent, node, sequence)
@@ -351,6 +457,7 @@ def execute_graph_run(run_id):
     final_text = ""
     web_sources = []
     file_sources = []
+    image_generations = []
     for step in completed:
         payload = step.output_payload or {}
         text = str(payload.get("text") or "").strip()
@@ -358,15 +465,22 @@ def execute_graph_run(run_id):
             final_text = text
         web_sources.extend(payload.get("web_sources") or [])
         file_sources.extend(payload.get("file_sources") or [])
+        if payload.get("image_generation"):
+            image_generations.append(payload["image_generation"])
     run.state = AgentRun.State.COMPLETED
     run.output_payload = {
         "text": final_text,
         "workflow": "graph",
         "web_sources": list({item["id"]: item for item in web_sources if item.get("id")}.values()),
         "file_sources": list({item["id"]: item for item in file_sources if item.get("id")}.values()),
+        "image_generations": image_generations,
     }
     run.plan = [
-        {"id": str(node.get("id") or f"node-{index}"), "title": str(node.get("title") or "Шаг"), "type": str(node.get("type") or "llm")}
+        {
+            "id": str(node.get("id") or f"node-{index}"),
+            "title": str(node.get("title") or "Шаг"),
+            "type": str(node.get("type") or "llm"),
+        }
         for index, node in enumerate(nodes, start=1)
     ]
     run.finished_at = timezone.now()
