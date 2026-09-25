@@ -34,7 +34,14 @@ def execute_agent_run_task(self, run_id):
         has_graph = bool(graph.get("nodes"))
         # GitHub/code agents remain on the specialized runtime. Ordinary visual
         # employees execute their actual graph node-by-node.
-        run = execute_graph_run(run_id) if has_graph and not bool(tools.get("github")) else execute_run(run_id)
+        if has_graph and not bool(tools.get("github")):
+            run = execute_graph_run(run_id)
+            if run.state == AgentRun.State.COMPLETED:
+                from .publish_runtime import finalize_graph_publish_nodes
+
+                run = finalize_graph_publish_nodes(run.id)
+        else:
+            run = execute_run(run_id)
     else:
         role = str(subject.get("team__director__role") or "").strip().casefold()
         is_legacy_dev = role == "engineering director"
