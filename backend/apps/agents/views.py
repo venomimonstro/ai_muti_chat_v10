@@ -357,7 +357,16 @@ class AgentRunViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = AgentRunSerializer
 
     def get_queryset(self):
-        queryset = AgentRun.objects.filter(owner=self.request.user).select_related("agent", "team", "project").prefetch_related("steps__agent", "approvals")
+        queryset = (
+            AgentRun.objects.filter(owner=self.request.user)
+            .select_related("agent", "team", "project")
+            .prefetch_related(
+                "steps__agent",
+                "approvals",
+                "handoffs__from_agent",
+                "handoffs__to_agent",
+            )
+        )
         agent_id = str(self.request.query_params.get("agent") or "").strip()
         team_id = str(self.request.query_params.get("team") or "").strip()
         if agent_id:
