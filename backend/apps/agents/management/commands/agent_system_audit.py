@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count
 from django.utils import timezone
@@ -27,6 +28,16 @@ class Command(BaseCommand):
         warnings = []
 
         self.stdout.write("=== AGENT SYSTEM AUDIT ===")
+
+        beat_tasks = {
+            str((entry or {}).get("task") or "")
+            for entry in getattr(settings, "CELERY_BEAT_SCHEDULE", {}).values()
+            if isinstance(entry, dict)
+        }
+        if "apps.agents.tasks.dispatch_due_agent_schedules" not in beat_tasks:
+            failures.append("autonomy: dispatch_due_agent_schedules is not configured in Celery Beat")
+        if "apps.admin_ops.tasks.recover_stale_operations_task" not in beat_tasks:
+            failures.append("autonomy: stale-operation watchdog is not configured in Celery Beat")
 
         agents = Agent.objects.select_related("owner", "project")
         for agent in agents:
