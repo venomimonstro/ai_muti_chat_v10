@@ -84,13 +84,14 @@ class AgentApprovalSerializer(serializers.ModelSerializer):
 class AgentRunSerializer(serializers.ModelSerializer):
     agent_name = serializers.CharField(source="agent.name", read_only=True)
     team_name = serializers.CharField(source="team.name", read_only=True)
+    team_kind = serializers.CharField(source="team.kind", read_only=True)
     steps = AgentStepRunSerializer(many=True, read_only=True)
     approvals = AgentApprovalSerializer(many=True, read_only=True)
 
     class Meta:
         model = AgentRun
         fields = [
-            "id", "agent", "agent_name", "team", "team_name", "project", "state", "objective",
+            "id", "agent", "agent_name", "team", "team_name", "team_kind", "project", "state", "objective",
             "input_payload", "output_payload", "plan", "cost_reserved_rub", "cost_actual_rub",
             "step_count", "tool_call_count", "handoff_count", "error_code", "error_message",
             "started_at", "finished_at", "created_at", "updated_at", "steps", "approvals",
