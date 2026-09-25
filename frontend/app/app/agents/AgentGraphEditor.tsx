@@ -8,7 +8,7 @@ type ConditionOperator="contains"|"not_contains"|"is_empty"|"not_empty";
 type Node={
  id:string;title:string;type:string;status?:PublishStatus;prompt?:string;post_title?:string;slug?:string;
  condition_source?:ConditionSource;operator?:ConditionOperator;value?:string;on_true?:string;on_false?:string;
- notification_title?:string;message?:string;
+ notification_title?:string;message?:string;wait_minutes?:number;
 };
 type Graph={version?:number;nodes?:Node[];edges?:Array<{from:string;to:string}>};
 type Props={graph:Graph;disabled?:boolean;onSave:(graph:Graph)=>Promise<void>};
@@ -23,11 +23,13 @@ const types=[
  ["analytics","Аналитика"],
  ["condition","Условие"],
  ["approval","Подтверждение пользователя"],
+ ["wait","Подождать"],
  ["notify","Уведомить пользователя"],
  ["publish","Публикация"],
  ["finish","Завершить workflow"],
 ] as const;
 const allowedTypes=new Set(types.map(([value])=>value));
+const waitOptions=[[5,"5 минут"],[30,"30 минут"],[60,"1 час"],[360,"6 часов"],[1440,"1 день"]] as const;
 
 const normalize=(nodes:Node[],version=1):Graph=>({
  version,
@@ -52,14 +54,15 @@ export default function AgentGraphEditor({graph,disabled,onSave}:Props){
   value:type==="condition"?(item.value||""):undefined,
   on_true:type==="condition"?item.on_true:undefined,
   on_false:type==="condition"?item.on_false:undefined,
+  wait_minutes:type==="wait"?(item.wait_minutes||60):undefined,
  }:item));
  const move=(index:number,delta:number)=>setNodes(current=>{const target=index+delta;if(target<0||target>=current.length)return current;const next=[...current];[next[index],next[target]]=[next[target],next[index]];return next});
  const remove=(index:number)=>setNodes(current=>{const removed=current[index]?.id;return current.filter((_,i)=>i!==index).map(node=>({...node,on_true:node.on_true===removed?undefined:node.on_true,on_false:node.on_false===removed?undefined:node.on_false}))});
  const add=()=>setNodes(current=>[...current,{id:safeId("Новый шаг",current.length),title:"Новый шаг",type:"llm"}]);
- const save=async()=>{setBusy(true);setError("");try{const cleaned=nodes.map((node,index)=>{const type=allowedTypes.has(node.type as typeof types[number][0])?node.type:"llm";const next:Node={...node,id:node.id||safeId(node.title,index),title:node.title.trim()||`Шаг ${index+1}`,type};if(type==="publish")next.status=node.status==="publish"?"publish":"draft";else delete next.status;if(type!=="condition"){delete next.condition_source;delete next.operator;delete next.value;delete next.on_true;delete next.on_false;}if(type!=="notify"){delete next.notification_title;delete next.message;}return next});await onSave(normalize(cleaned,Number(graph.version||1)+1));}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось сохранить карту")}finally{setBusy(false)}};
+ const save=async()=>{setBusy(true);setError("");try{const cleaned=nodes.map((node,index)=>{const type=allowedTypes.has(node.type as typeof types[number][0])?node.type:"llm";const next:Node={...node,id:node.id||safeId(node.title,index),title:node.title.trim()||`Шаг ${index+1}`,type};if(type==="publish")next.status=node.status==="publish"?"publish":"draft";else delete next.status;if(type!=="condition"){delete next.condition_source;delete next.operator;delete next.value;delete next.on_true;delete next.on_false;}if(type!=="notify"){delete next.notification_title;delete next.message;}if(type!=="wait")delete next.wait_minutes;return next});await onSave(normalize(cleaned,Number(graph.version||1)+1));}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось сохранить карту")}finally{setBusy(false)}};
  const targets=(currentId:string)=>nodes.filter(item=>item.id!==currentId);
  return <div>
-  <div style={{padding:"10px 12px",border:"1px solid #e2e2e2",borderRadius:11,marginBottom:12,fontSize:13,opacity:.72}}>Карта исполняется сервером. Условие реально меняет маршрут workflow; уведомление создаётся в AI Workspace. GitHub, код и sandbox настраиваются отдельно в Dev Studio.</div>
+  <div style={{padding:"10px 12px",border:"1px solid #e2e2e2",borderRadius:11,marginBottom:12,fontSize:13,opacity:.72}}>Карта исполняется сервером. Условие меняет маршрут, «Подождать» переживает перезапуск worker, уведомление создаётся в AI Workspace. GitHub, код и sandbox настраиваются отдельно в Dev Studio.</div>
   <div style={{display:"grid",gap:10}}>{nodes.map((node,index)=><div key={node.id} style={{border:"1px solid #ddd",borderRadius:13,padding:10}}>
    <div style={{display:"grid",gridTemplateColumns:"36px minmax(0,1fr) 190px auto",gap:8,alignItems:"center"}}>
     <div style={{width:30,height:30,borderRadius:999,border:"1px solid #bbb",display:"grid",placeItems:"center",fontWeight:700}}>{index+1}</div>
@@ -74,6 +77,7 @@ export default function AgentGraphEditor({graph,disabled,onSave}:Props){
     <label style={{display:"grid",gap:5,fontSize:13}}>Если Да<select value={node.on_true||""} onChange={event=>update(index,{on_true:event.target.value||undefined})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="">Следующий шаг</option>{targets(node.id).map(target=><option key={target.id} value={target.id}>{target.title}</option>)}</select></label>
     <label style={{display:"grid",gap:5,fontSize:13}}>Если Нет<select value={node.on_false||""} onChange={event=>update(index,{on_false:event.target.value||undefined})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="">Следующий шаг</option>{targets(node.id).map(target=><option key={target.id} value={target.id}>{target.title}</option>)}</select></label>
    </div>}
+   {node.type==="wait"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,.7fr) minmax(220px,1.3fr)",gap:10,margin:"10px 0 0 44px"}}><label style={{display:"grid",gap:5,fontSize:13}}>Сколько ждать<select value={waitOptions.some(([value])=>value===(node.wait_minutes||60))?node.wait_minutes||60:"custom"} onChange={event=>event.target.value!=="custom"&&update(index,{wait_minutes:Number(event.target.value)})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}>{waitOptions.map(([value,label])=><option key={value} value={value}>{label}</option>)}<option value="custom">Своё значение</option></select></label><label style={{display:"grid",gap:5,fontSize:13}}>Минуты<input type="number" min={1} max={10080} value={node.wait_minutes||60} onChange={event=>update(index,{wait_minutes:Math.max(1,Math.min(10080,Number(event.target.value)||1))})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}/><span style={{fontSize:11,opacity:.58}}>От 1 минуты до 7 дней. Worker во время ожидания не занят.</span></label></div>}
    {node.type==="notify"&&<div style={{display:"grid",gap:9,margin:"10px 0 0 44px"}}><label style={{display:"grid",gap:5,fontSize:13}}>Заголовок уведомления<input value={node.notification_title||""} onChange={event=>update(index,{notification_title:event.target.value})} placeholder="Например: Пост готов к проверке" disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}/></label><label style={{display:"grid",gap:5,fontSize:13}}>Сообщение<textarea rows={2} value={node.message||""} onChange={event=>update(index,{message:event.target.value})} placeholder="Можно оставить пустым — будет использован результат предыдущего шага" disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9,resize:"vertical"}}/></label></div>}
    {node.type==="finish"&&<div style={{fontSize:12,opacity:.65,margin:"10px 0 0 44px"}}>После этого блока workflow завершается успешно. Шаги ниже по этой ветке не выполняются.</div>}
    {node.type==="publish"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,.8fr) minmax(220px,1.2fr)",gap:10,margin:"10px 0 0 44px"}}><label style={{display:"grid",gap:5,fontSize:13}}>Что сделать в WordPress<select value={node.status||"draft"} onChange={event=>update(index,{status:event.target.value as PublishStatus})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="draft">Сохранить как черновик</option><option value="publish">Опубликовать сразу</option></select></label><div style={{fontSize:12,opacity:.65,alignSelf:"end",paddingBottom:8}}>{(node.status||"draft")==="publish"?"Материал станет публичным после выполнения policy/подтверждения.":"Безопасный режим: материал появится в WordPress как черновик."}</div></div>}
