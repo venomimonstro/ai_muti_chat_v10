@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
+from .team_builder_views import AgentTeamBootstrapView
 from .views import AgentRunViewSet, AgentTeamViewSet, AgentViewSet
 
 router = DefaultRouter()
@@ -17,5 +18,6 @@ urlpatterns = [
         AgentVersionRestoreView.as_view(),
         name="agent-version-restore",
     ),
+    path("agent-teams/bootstrap/", AgentTeamBootstrapView.as_view(), name="agent-team-bootstrap"),
     *router.urls,
 ]
