@@ -4,6 +4,7 @@ from apps.connections.models import AgentConnectionBinding, ExternalConnection
 
 from .models import Agent
 from .runtime import _model_for
+from .wait_runtime import MAX_WAIT_MINUTES, MIN_WAIT_MINUTES
 
 
 RUNTIME_NODE_TYPES = {
@@ -18,6 +19,7 @@ RUNTIME_NODE_TYPES = {
     "analytics",
     "condition",
     "notify",
+    "wait",
     "finish",
 }
 
@@ -61,20 +63,27 @@ def agent_readiness(agent: Agent):
         add_action("fix_graph_ids", "Пересохраните карту действий")
 
     for node in nodes:
-        if str(node.get("type") or "").strip().lower() != "condition":
-            continue
-        node_title = str(node.get("title") or "Условие")
-        operator = str(node.get("operator") or "contains").strip().lower()
-        if operator not in CONDITION_OPERATORS:
-            blockers.append(f"«{node_title}»: выбрано неподдерживаемое условие")
-        if operator in {"contains", "not_contains"} and not str(node.get("value") or "").strip():
-            blockers.append(f"«{node_title}»: укажите текст для проверки")
-        for field, label in (("on_true", "Да"), ("on_false", "Нет")):
-            target = str(node.get(field) or "").strip()
-            if target and target not in known_ids:
-                blockers.append(f"«{node_title}»: ветка «{label}» ведёт к отсутствующему шагу")
-        if str(node.get("on_true") or "").strip() == str(node.get("id") or "").strip() or str(node.get("on_false") or "").strip() == str(node.get("id") or "").strip():
-            blockers.append(f"«{node_title}»: условие не может вести само в себя")
+        node_type = str(node.get("type") or "").strip().lower()
+        node_title = str(node.get("title") or "Шаг")
+        if node_type == "condition":
+            operator = str(node.get("operator") or "contains").strip().lower()
+            if operator not in CONDITION_OPERATORS:
+                blockers.append(f"«{node_title}»: выбрано неподдерживаемое условие")
+            if operator in {"contains", "not_contains"} and not str(node.get("value") or "").strip():
+                blockers.append(f"«{node_title}»: укажите текст для проверки")
+            for field, label in (("on_true", "Да"), ("on_false", "Нет")):
+                target = str(node.get(field) or "").strip()
+                if target and target not in known_ids:
+                    blockers.append(f"«{node_title}»: ветка «{label}» ведёт к отсутствующему шагу")
+            if str(node.get("on_true") or "").strip() == str(node.get("id") or "").strip() or str(node.get("on_false") or "").strip() == str(node.get("id") or "").strip():
+                blockers.append(f"«{node_title}»: условие не может вести само в себя")
+        elif node_type == "wait":
+            try:
+                minutes = int(node.get("wait_minutes") or 60)
+            except (TypeError, ValueError):
+                minutes = 0
+            if not MIN_WAIT_MINUTES <= minutes <= MAX_WAIT_MINUTES:
+                blockers.append(f"«{node_title}»: ожидание должно быть от 1 минуты до 7 дней")
 
     public_model = PUBLIC_LEVELS.get(agent.system_level, "System Pro")
     if not visual_workflow:
