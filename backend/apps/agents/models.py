@@ -69,11 +69,19 @@ class AgentVersion(models.Model):
 
 
 class AgentTeam(models.Model):
+    class Kind(models.TextChoices):
+        GENERIC = "generic", "Универсальная"
+        MARKETING = "marketing", "Маркетинг"
+        CONTENT = "content", "Контент"
+        SALES = "sales", "Продажи"
+        DEVELOPMENT = "development", "Разработка"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="agent_teams")
     project = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True, related_name="agent_teams")
     name = models.CharField(max_length=160)
     objective = models.TextField(blank=True)
+    kind = models.CharField(max_length=24, choices=Kind.choices, default=Kind.GENERIC, db_index=True)
     director = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name="directed_teams")
     active = models.BooleanField(default=True)
     max_cost_rub_per_run = models.DecimalField(max_digits=12, decimal_places=4, default=50)
@@ -87,6 +95,8 @@ class AgentTeam(models.Model):
     def clean(self):
         if self.director_id and self.owner_id and self.director.owner_id != self.owner_id:
             raise ValidationError("Руководитель команды должен принадлежать владельцу команды")
+        if self.kind == self.Kind.DEVELOPMENT and not self.project_id:
+            raise ValidationError("Команда разработки должна быть привязана к проекту")
 
 
 class AgentTeamMember(models.Model):
