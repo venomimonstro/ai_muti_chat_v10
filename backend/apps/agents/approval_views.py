@@ -5,16 +5,18 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import AgentApproval, AgentRun
+from .dev_context import build_repository_context
+from .models import AgentApproval, AgentRun, AgentTeam
 from .readiness import agent_readiness
 from .serializers import AgentRunSerializer
+from .team_readiness import team_readiness
 
 
 class SafeAgentApprovalDecisionView(APIView):
     @transaction.atomic
     def post(self, request, run_id, approval_id):
         run = get_object_or_404(
-            AgentRun.objects.select_for_update().select_related("agent", "team"),
+            AgentRun.objects.select_for_update().select_related("agent", "team", "team__director", "project"),
             id=run_id,
             owner=request.user,
         )
@@ -28,15 +30,33 @@ class SafeAgentApprovalDecisionView(APIView):
         if decision not in {AgentApproval.Status.APPROVED, AgentApproval.Status.REJECTED}:
             raise ValidationError({"decision": "Используйте approved или rejected"})
 
-        # A human decision may arrive hours later. Revalidate a single agent
-        # before changing the approval state so a revoked model/tool/WordPress
-        # connection cannot resume a paid workflow with stale assumptions.
-        if decision == AgentApproval.Status.APPROVED and run.agent_id:
-            readiness = agent_readiness(run.agent)
-            if not readiness["ready"]:
-                raise ValidationError(
-                    {"detail": "Перед продолжением восстановите готовность сотрудника: " + "; ".join(readiness["blockers"])}
+        # A human decision may arrive hours later. Revalidate dependencies before
+        # changing the approval state so stale permissions cannot resume work.
+        if decision == AgentApproval.Status.APPROVED:
+            if run.agent_id:
+                readiness = agent_readiness(run.agent)
+                if not readiness["ready"]:
+                    raise ValidationError(
+                        {"detail": "Перед продолжением восстановите готовность сотрудника: " + "; ".join(readiness["blockers"])}
+                    )
+            elif run.team_id:
+                readiness = team_readiness(run.team)
+                if not readiness["ready"]:
+                    raise ValidationError(
+                        {"detail": "Перед продолжением восстановите готовность команды: " + "; ".join(readiness["blockers"])}
+                    )
+                payload = approval.action_payload or {}
+                is_dev_write = (
+                    run.team.kind == AgentTeam.Kind.DEVELOPMENT
+                    and str(payload.get("kind") or "") == "github_changes"
                 )
+                if is_dev_write:
+                    try:
+                        build_repository_context(run.project)
+                    except Exception as exc:
+                        raise ValidationError(
+                            {"detail": f"GitHub repository недоступен. Изменения не подтверждены: {exc}"}
+                        ) from exc
 
         now = timezone.now()
         approval.status = decision
