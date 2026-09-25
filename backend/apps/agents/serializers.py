@@ -4,6 +4,26 @@ from .models import Agent, AgentApproval, AgentRun, AgentStepRun, AgentTeam, Age
 from .tool_policy import validate_tool_policy
 
 
+def _ancestor_node_ids(edges, node_id):
+    reverse = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("from") or "").strip()
+        target = str(edge.get("to") or "").strip()
+        if source and target:
+            reverse.setdefault(target, set()).add(source)
+    ancestors = set()
+    stack = list(reverse.get(str(node_id), set()))
+    while stack:
+        current = stack.pop()
+        if current in ancestors:
+            continue
+        ancestors.add(current)
+        stack.extend(reverse.get(current, set()))
+    return ancestors
+
+
 class AgentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Agent
@@ -37,21 +57,24 @@ class AgentSerializer(serializers.ModelSerializer):
 
         graph = instance.graph if isinstance(instance.graph, dict) else {}
         nodes = list(graph.get("nodes") or [])
-        approval_seen = False
-        for node in nodes:
-            node_type = str((node or {}).get("type") or "llm").strip().lower()
-            if node_type == "approval":
-                approval_seen = True
-            if node_type != "publish":
-                continue
-            if policy == "disabled":
-                raise serializers.ValidationError(
-                    {"tool_policy": "В карте есть публикация, но инструмент publish отключён"}
-                )
-            if policy == "approval" and not approval_seen:
-                raise serializers.ValidationError(
-                    {"graph": "Перед публикацией добавьте блок подтверждения пользователя"}
-                )
+        edges = list(graph.get("edges") or [])
+        node_types = {
+            str((node or {}).get("id") or "").strip(): str((node or {}).get("type") or "llm").strip().lower()
+            for node in nodes
+            if isinstance(node, dict)
+        }
+        publish_nodes = [node_id for node_id, node_type in node_types.items() if node_type == "publish"]
+        approval_nodes = {node_id for node_id, node_type in node_types.items() if node_type == "approval"}
+        if publish_nodes and policy == "disabled":
+            raise serializers.ValidationError(
+                {"tool_policy": "В карте есть публикация, но инструмент publish отключён"}
+            )
+        if policy == "approval":
+            for publish_node in publish_nodes:
+                if not (_ancestor_node_ids(edges, publish_node) & approval_nodes):
+                    raise serializers.ValidationError(
+                        {"graph": f"Перед публикацией «{publish_node}» добавьте блок подтверждения в той же цепочке workflow"}
+                    )
         return attrs
 
 
