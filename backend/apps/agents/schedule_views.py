@@ -80,7 +80,9 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         validated_data.pop("next_run_at", None)
         scheduling_fields = {"cadence", "interval_minutes", "local_time", "timezone_name", "weekdays"}
-        recompute = bool(scheduling_fields.intersection(validated_data.keys()))
+        was_enabled = bool(instance.enabled)
+        will_enable = bool(validated_data.get("enabled", instance.enabled))
+        recompute = bool(scheduling_fields.intersection(validated_data.keys())) or (not was_enabled and will_enable)
         for key, value in validated_data.items():
             setattr(instance, key, value)
         instance.full_clean()
