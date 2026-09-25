@@ -66,6 +66,10 @@ def notify_autonomous_run_state(sender, instance, **kwargs):
         else:
             body = f"{_subject_name(instance)} не завершил задачу. В журнале сохранена причина ошибки."
         level = Notification.Level.WARNING
+    elif instance.state == AgentRun.State.CANCELED and instance.error_code == "agent_approval_expired":
+        title = "Подтверждение автономной задачи истекло"
+        body = f"{_subject_name(instance)} не выполнил действие без вашего подтверждения. Запуск безопасно завершён."
+        level = Notification.Level.WARNING
     else:
         return
 
