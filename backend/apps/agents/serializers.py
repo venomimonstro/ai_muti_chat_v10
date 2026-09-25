@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import Agent, AgentApproval, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember, AgentVersion
+from .tool_policy import validate_tool_policy
 
 
 class AgentSerializer(serializers.ModelSerializer):
@@ -18,6 +19,9 @@ class AgentSerializer(serializers.ModelSerializer):
         if value and value.owner_id != self.context["request"].user.id:
             raise serializers.ValidationError("Проект недоступен")
         return value
+
+    def validate_tool_policy(self, value):
+        return validate_tool_policy(value)
 
     def validate(self, attrs):
         instance = self.instance or Agent(owner=self.context["request"].user)
@@ -59,7 +63,8 @@ class AgentTeamSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         user = self.context["request"].user
-        director = attrs.get("director") or getattr(self.instance, "director", None)
+        current_director = getattr(self.instance, "director", None)
+        director = attrs.get("director") or current_director
         project = attrs.get("project") or getattr(self.instance, "project", None)
         kind = attrs.get("kind") or getattr(self.instance, "kind", AgentTeam.Kind.GENERIC)
         if director and director.owner_id != user.id:
@@ -68,6 +73,11 @@ class AgentTeamSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"project": "Проект недоступен"})
         if kind == AgentTeam.Kind.DEVELOPMENT and not project:
             raise serializers.ValidationError({"project": "Команда разработки должна быть привязана к проекту"})
+        if self.instance and "director" in attrs and director and director.id != self.instance.director_id:
+            if not AgentTeamMember.objects.filter(team=self.instance, agent=director, enabled=True).exists():
+                raise serializers.ValidationError(
+                    {"director": "Новый руководитель должен быть активным участником команды"}
+                )
         return attrs
 
 
