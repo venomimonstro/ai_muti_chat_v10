@@ -43,7 +43,7 @@ class AgentTeamSerializer(serializers.ModelSerializer):
     class Meta:
         model = AgentTeam
         fields = [
-            "id", "project", "name", "objective", "director", "director_name", "active",
+            "id", "project", "name", "objective", "kind", "director", "director_name", "active",
             "max_cost_rub_per_run", "max_handoffs", "members", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "director_name", "members", "created_at", "updated_at"]
@@ -52,10 +52,13 @@ class AgentTeamSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
         director = attrs.get("director") or getattr(self.instance, "director", None)
         project = attrs.get("project") or getattr(self.instance, "project", None)
+        kind = attrs.get("kind") or getattr(self.instance, "kind", AgentTeam.Kind.GENERIC)
         if director and director.owner_id != user.id:
             raise serializers.ValidationError({"director": "Агент недоступен"})
         if project and project.owner_id != user.id:
             raise serializers.ValidationError({"project": "Проект недоступен"})
+        if kind == AgentTeam.Kind.DEVELOPMENT and not project:
+            raise serializers.ValidationError({"project": "Команда разработки должна быть привязана к проекту"})
         return attrs
 
 
