@@ -28,6 +28,30 @@ class AgentSerializer(serializers.ModelSerializer):
         for field, value in attrs.items():
             setattr(instance, field, value)
         instance.clean()
+
+        policy = str((instance.tool_policy or {}).get("publish") or "disabled").strip().lower()
+        if policy == "auto" and instance.autonomy != Agent.Autonomy.AUTONOMOUS:
+            raise serializers.ValidationError(
+                {"tool_policy": "Автопубликация доступна только полностью автономному агенту"}
+            )
+
+        graph = instance.graph if isinstance(instance.graph, dict) else {}
+        nodes = list(graph.get("nodes") or [])
+        approval_seen = False
+        for node in nodes:
+            node_type = str((node or {}).get("type") or "llm").strip().lower()
+            if node_type == "approval":
+                approval_seen = True
+            if node_type != "publish":
+                continue
+            if policy == "disabled":
+                raise serializers.ValidationError(
+                    {"tool_policy": "В карте есть публикация, но инструмент publish отключён"}
+                )
+            if policy == "approval" and not approval_seen:
+                raise serializers.ValidationError(
+                    {"graph": "Перед публикацией добавьте блок подтверждения пользователя"}
+                )
         return attrs
 
 
