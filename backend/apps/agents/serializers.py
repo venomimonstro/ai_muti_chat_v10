@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.db.models import Q
 from rest_framework import serializers
 
 from .models import Agent, AgentApproval, AgentHandoff, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember, AgentVersion
@@ -15,6 +16,15 @@ ACTIVE_RUN_STATES = {
     AgentRun.State.WAITING_APPROVAL,
     AgentRun.State.REVIEWING,
 }
+
+
+def agent_has_active_run(agent):
+    if not agent or not agent.pk:
+        return False
+    return AgentRun.objects.filter(
+        Q(agent_id=agent.pk) | Q(team__members__agent_id=agent.pk, team__members__enabled=True),
+        state__in=ACTIVE_RUN_STATES,
+    ).exists()
 
 
 def _ancestor_node_ids(edges, node_id):
@@ -57,6 +67,11 @@ class AgentSerializer(serializers.ModelSerializer):
         return validate_tool_policy(value)
 
     def validate(self, attrs):
+        if self.instance is not None and attrs and agent_has_active_run(self.instance):
+            raise serializers.ValidationError(
+                {"detail": "Нельзя менять конфигурацию AI-сотрудника во время активного запуска. Сначала завершите или остановите задачу."}
+            )
+
         instance = self.instance or Agent(owner=self.context["request"].user)
         for field, value in attrs.items():
             setattr(instance, field, value)
