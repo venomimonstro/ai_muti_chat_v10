@@ -16,8 +16,12 @@ RUNTIME_NODE_TYPES = {
     "approval",
     "publish",
     "analytics",
+    "condition",
+    "notify",
+    "finish",
 }
 
+CONDITION_OPERATORS = {"contains", "not_contains", "is_empty", "not_empty"}
 PUBLIC_LEVELS = {
     "economy": "System Lite",
     "balanced": "System Pro",
@@ -50,6 +54,28 @@ def agent_readiness(agent: Agent):
     visual_workflow = bool(nodes)
     checks["graph"] = visual_workflow
 
+    node_ids = [str(node.get("id") or "").strip() for node in nodes]
+    known_ids = {node_id for node_id in node_ids if node_id}
+    if len(known_ids) != len(node_ids):
+        blockers.append("У каждого шага карты должен быть уникальный ID")
+        add_action("fix_graph_ids", "Пересохраните карту действий")
+
+    for node in nodes:
+        if str(node.get("type") or "").strip().lower() != "condition":
+            continue
+        node_title = str(node.get("title") or "Условие")
+        operator = str(node.get("operator") or "contains").strip().lower()
+        if operator not in CONDITION_OPERATORS:
+            blockers.append(f"«{node_title}»: выбрано неподдерживаемое условие")
+        if operator in {"contains", "not_contains"} and not str(node.get("value") or "").strip():
+            blockers.append(f"«{node_title}»: укажите текст для проверки")
+        for field, label in (("on_true", "Да"), ("on_false", "Нет")):
+            target = str(node.get(field) or "").strip()
+            if target and target not in known_ids:
+                blockers.append(f"«{node_title}»: ветка «{label}» ведёт к отсутствующему шагу")
+        if str(node.get("on_true") or "").strip() == str(node.get("id") or "").strip() or str(node.get("on_false") or "").strip() == str(node.get("id") or "").strip():
+            blockers.append(f"«{node_title}»: условие не может вести само в себя")
+
     public_model = PUBLIC_LEVELS.get(agent.system_level, "System Pro")
     if not visual_workflow:
         checks["runtime_nodes"] = True
@@ -64,13 +90,17 @@ def agent_readiness(agent: Agent):
             blockers.append("Карта содержит шаги Dev Studio или неподдерживаемые действия: " + ", ".join(unsupported))
             add_action("fix_graph", "Удалите неподдерживаемые шаги из карты действий")
 
-        try:
-            _model_for(agent)
+        needs_model = any(node_type in {"llm", "review", "analytics", "research", "web", "files"} for node_type in node_types)
+        if needs_model:
+            try:
+                _model_for(agent)
+                checks["model"] = True
+            except ValidationError as exc:
+                checks["model"] = False
+                blockers.append(str(exc))
+                add_action("model_unavailable", f"Уровень {public_model} сейчас недоступен. Проверьте маршрутизацию у администратора")
+        else:
             checks["model"] = True
-        except ValidationError as exc:
-            checks["model"] = False
-            blockers.append(str(exc))
-            add_action("model_unavailable", f"Уровень {public_model} сейчас недоступен. Проверьте маршрутизацию у администратора")
 
     policy = agent.tool_policy or {}
     if any(node_type in {"web", "research"} for node_type in node_types):
