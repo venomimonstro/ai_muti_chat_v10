@@ -81,3 +81,75 @@ def test_agent_graph_rejects_unknown_node_and_foreign_owner():
     assert response.status_code == 404
     agent.refresh_from_db()
     assert agent.name == "Safe agent"
+
+
+@pytest.mark.django_db
+def test_publish_approval_must_be_on_same_graph_path():
+    user = User.objects.create_user(username="publish-path-user", password="StrongPass123!")
+    agent = Agent.objects.create(owner=user, name="Publisher", objective="Publish", system_level="balanced")
+    client = APIClient()
+    client.force_authenticate(user)
+
+    unsafe = client.patch(
+        f"/api/v1/agents/{agent.id}/config/",
+        {
+            "tool_policy": {"publish": "approval"},
+            "graph": {
+                "nodes": [
+                    {"id": "draft", "title": "Draft", "type": "llm"},
+                    {"id": "approve-other", "title": "Approve other", "type": "approval"},
+                    {"id": "publish", "title": "Publish", "type": "publish"},
+                ],
+                "edges": [{"from": "draft", "to": "publish"}],
+            },
+        },
+        format="json",
+    )
+    assert unsafe.status_code == 400
+    assert "graph" in unsafe.data
+
+    safe = client.patch(
+        f"/api/v1/agents/{agent.id}/config/",
+        {
+            "tool_policy": {"publish": "approval"},
+            "graph": {
+                "nodes": [
+                    {"id": "draft", "title": "Draft", "type": "llm"},
+                    {"id": "approve", "title": "Approve", "type": "approval"},
+                    {"id": "publish", "title": "Publish", "type": "publish"},
+                ],
+                "edges": [
+                    {"from": "draft", "to": "approve"},
+                    {"from": "approve", "to": "publish"},
+                ],
+            },
+        },
+        format="json",
+    )
+    assert safe.status_code == 200
+
+
+@pytest.mark.django_db
+def test_auto_publish_requires_autonomous_agent():
+    user = User.objects.create_user(username="publish-auto-user", password="StrongPass123!")
+    agent = Agent.objects.create(owner=user, name="Publisher", objective="Publish", system_level="balanced")
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.patch(
+        f"/api/v1/agents/{agent.id}/config/",
+        {
+            "autonomy": Agent.Autonomy.SEMI_AUTONOMOUS,
+            "tool_policy": {"publish": "auto"},
+            "graph": {
+                "nodes": [
+                    {"id": "draft", "title": "Draft", "type": "llm"},
+                    {"id": "publish", "title": "Publish", "type": "publish"},
+                ],
+                "edges": [{"from": "draft", "to": "publish"}],
+            },
+        },
+        format="json",
+    )
+    assert response.status_code == 400
+    assert "tool_policy" in response.data
