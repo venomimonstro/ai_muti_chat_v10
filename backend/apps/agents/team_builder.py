@@ -7,12 +7,12 @@ def infer_team_kind(description: str) -> str:
     text = str(description or "").casefold()
     if any(word in text for word in ("разработ", "код", "github", "программ", "backend", "frontend")):
         return "development"
-    if any(word in text for word in ("маркет", "smm", "seo", "соцсет", "реклам", "контент")):
-        return "marketing"
-    if any(word in text for word in ("стать", "редактор", "копирайт", "блог", "медиа")):
-        return "content"
-    if any(word in text for word in ("продаж", "лид", "клиент", "crm")):
+    if any(word in text for word in ("продаж", "лид", "клиент", "crm", "коммерческ")):
         return "sales"
+    if any(word in text for word in ("стать", "редактор", "копирайт", "блог", "медиа", "контент", "seo")):
+        return "content"
+    if any(word in text for word in ("маркет", "smm", "соцсет", "реклам", "таргет", "бренд")):
+        return "marketing"
     return "generic"
 
 
