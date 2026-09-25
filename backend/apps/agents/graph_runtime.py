@@ -24,8 +24,8 @@ from .runtime import _model_for
 
 OUTPUT_TOKENS = 1200
 MAX_CONTEXT_CHARS = 18000
-SUPPORTED_LLM_NODES = {"llm", "review", "analytics", "research", "web"}
-UNSUPPORTED_EXTERNAL_NODES = {"publish", "github_write", "sandbox", "code"}
+SUPPORTED_LLM_NODES = {"llm", "review", "analytics", "research", "web", "files"}
+UNSUPPORTED_EXTERNAL_NODES = {"publish", "github_write", "sandbox", "code", "handoff", "wait", "finish", "github_read"}
 
 
 def _release_customer(reservation):
