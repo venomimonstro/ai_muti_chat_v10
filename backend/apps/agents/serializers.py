@@ -7,6 +7,16 @@ from .models import Agent, AgentApproval, AgentHandoff, AgentRun, AgentStepRun, 
 from .tool_policy import validate_tool_policy
 
 
+ACTIVE_RUN_STATES = {
+    AgentRun.State.QUEUED,
+    AgentRun.State.PLANNING,
+    AgentRun.State.RUNNING,
+    AgentRun.State.WAITING_TOOL,
+    AgentRun.State.WAITING_APPROVAL,
+    AgentRun.State.REVIEWING,
+}
+
+
 def _ancestor_node_ids(edges, node_id):
     reverse = {}
     for edge in edges:
@@ -135,10 +145,24 @@ class AgentTeamSerializer(serializers.ModelSerializer):
         if kind == AgentTeam.Kind.DEVELOPMENT and not project:
             raise serializers.ValidationError({"project": "Команда разработки должна быть привязана к проекту"})
         if self.instance and "director" in attrs and director and director.id != self.instance.director_id:
+            if self.instance.kind == AgentTeam.Kind.DEVELOPMENT:
+                raise serializers.ValidationError({"director": "Руководитель Dev Team является структурной ролью и не меняется вручную"})
             if not AgentTeamMember.objects.filter(team=self.instance, agent=director, enabled=True).exists():
                 raise serializers.ValidationError(
                     {"director": "Новый руководитель должен быть активным участником команды"}
                 )
+
+        if self.instance:
+            active_run = AgentRun.objects.filter(team=self.instance, state__in=ACTIVE_RUN_STATES).exists()
+            if active_run:
+                if attrs.get("active") is False and self.instance.active:
+                    raise serializers.ValidationError({"active": "Нельзя ставить команду на паузу во время активного запуска"})
+                if "max_cost_rub_per_run" in attrs and attrs["max_cost_rub_per_run"] != self.instance.max_cost_rub_per_run:
+                    raise serializers.ValidationError({"max_cost_rub_per_run": "Нельзя менять бюджет во время активного запуска"})
+                if "project" in attrs and attrs["project"] != self.instance.project:
+                    raise serializers.ValidationError({"project": "Нельзя менять проект во время активного запуска"})
+                if "kind" in attrs and attrs["kind"] != self.instance.kind:
+                    raise serializers.ValidationError({"kind": "Нельзя менять тип команды во время активного запуска"})
         return attrs
 
 
