@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from apps.accounts.models import Notification
 
-from .models import AgentApproval, AgentRun, AgentStepRun
+from .models import AgentApproval, AgentHandoff, AgentRun, AgentStepRun
 
 
 @receiver(post_save, sender=AgentApproval)
@@ -29,6 +29,47 @@ def sync_approval_step_state(sender, instance, **kwargs):
             public_log="Действие не выполнено: подтверждение отклонено или истекло.",
             finished_at=instance.decided_at or timezone.now(),
         )
+
+
+@receiver(post_save, sender=AgentStepRun)
+def persist_generic_team_handoff(sender, instance, **kwargs):
+    """Record actual role-to-role transfers without another LLM/tool call."""
+    if instance.state != AgentStepRun.State.COMPLETED or not str(instance.node_id or "").startswith("team-member-"):
+        return
+    run = AgentRun.objects.filter(pk=instance.run_id, team__isnull=False).first()
+    if run is None or instance.sequence <= 1:
+        return
+    previous = (
+        AgentStepRun.objects.filter(
+            run_id=instance.run_id,
+            state=AgentStepRun.State.COMPLETED,
+            sequence__lt=instance.sequence,
+            node_id__startswith="team-member-",
+        )
+        .select_related("agent")
+        .order_by("-sequence", "-created_at")
+        .first()
+    )
+    if previous is None or previous.agent_id == instance.agent_id:
+        return
+    context_text = str((previous.output_payload or {}).get("text") or previous.public_log or "").strip()[:8000]
+    result_text = str((instance.output_payload or {}).get("text") or instance.public_log or "").strip()[:8000]
+    task = f"{instance.node_id}: передать этап роли «{instance.title}»"
+    handoff, created = AgentHandoff.objects.get_or_create(
+        run_id=instance.run_id,
+        from_agent_id=previous.agent_id,
+        to_agent_id=instance.agent_id,
+        task=task,
+        defaults={
+            "context": {"text": context_text, "from_step_id": str(previous.id)},
+            "result": {"text": result_text, "to_step_id": str(instance.id)},
+            "completed_at": instance.finished_at or timezone.now(),
+        },
+    )
+    if not created and handoff.completed_at is None:
+        handoff.result = {"text": result_text, "to_step_id": str(instance.id)}
+        handoff.completed_at = instance.finished_at or timezone.now()
+        handoff.save(update_fields=["result", "completed_at"])
 
 
 def _scheduled_trigger(run):
