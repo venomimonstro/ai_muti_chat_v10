@@ -3,6 +3,7 @@ import re
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
+from django.utils.text import slugify
 
 from apps.connections.models import AgentConnectionBinding, ExternalConnection
 from apps.connections.wordpress import create_wordpress_post
@@ -99,6 +100,15 @@ def _can_publish(run, step):
     raise ValidationError("Автономная публикация не разрешена политикой агента")
 
 
+def _stable_publish_slug(run, step, node, title):
+    configured = str(node.get("slug") or "").strip()
+    base = slugify(configured or title, allow_unicode=True).strip("-") or "ai-workspace"
+    node_slug = slugify(str(step.node_id or "publish"), allow_unicode=True).strip("-") or "publish"
+    suffix = f"{str(run.id).split('-')[0]}-{node_slug[:32]}"
+    max_base = max(1, 190 - len(suffix))
+    return f"{base[:max_base].rstrip('-')}-{suffix}"[:200]
+
+
 def _mark_failure(run, step, message):
     now = timezone.now()
     step.state = AgentStepRun.State.FAILED
@@ -159,12 +169,14 @@ def finalize_graph_publish_nodes(run_id):
             if target_status not in {"draft", "publish"}:
                 raise ValidationError("Узел publish поддерживает только draft или publish")
 
+            title = str(node.get("post_title") or "").strip() or _title(run, text)
+            stable_slug = _stable_publish_slug(run, step, node, title)
             result = create_wordpress_post(
                 connection,
-                title=str(node.get("post_title") or "").strip() or _title(run, text),
+                title=title,
                 content=text,
                 status=target_status,
-                slug=str(node.get("slug") or "").strip(),
+                slug=stable_slug,
             )
             publication = {
                 **result,
@@ -174,7 +186,7 @@ def finalize_graph_publish_nodes(run_id):
             step.state = AgentStepRun.State.COMPLETED
             step.output_payload = {"wordpress_publication": publication}
             step.public_log = (
-                f"WordPress: {'опубликовано' if result.get('status') == 'publish' else 'сохранено как черновик'}. "
+                f"WordPress: {'найдена существующая запись' if result.get('existing') else ('опубликовано' if result.get('status') == 'publish' else 'сохранено как черновик')}. "
                 f"Post ID: {result.get('post_id')}."
             )
             step.finished_at = timezone.now()
