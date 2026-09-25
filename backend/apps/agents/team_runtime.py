@@ -18,6 +18,7 @@ from .accounting import (
 from .dev_changes import developer_output_contract, parse_change_proposal
 from .dev_context import build_repository_context
 from .dev_execution import apply_approved_changes, enrich_changes_with_snapshot
+from .limits import effective_remaining_budget
 from .models import AgentApproval, AgentRun, AgentStepRun
 from .runtime import _model_for
 
@@ -177,16 +178,33 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
                 operation_type="agent",
             )
         )
-        if total + preflight.user_charge_rub > budget:
+        team_remaining = max(Decimal("0"), budget - total)
+        agent_remaining, agent_budget = effective_remaining_budget(agent, run=run)
+        effective_remaining = min(team_remaining, agent_remaining)
+        if preflight.user_charge_rub > effective_remaining:
             if _is_canceled(run):
                 _mark_step_canceled(step)
                 return None, total, run
             step.state = AgentStepRun.State.SKIPPED
-            step.public_log = f"Шаг не запущен: расчётная стоимость превысила общий лимит команды {budget} ₽."
+            if agent_remaining <= team_remaining:
+                step.public_log = (
+                    f"{role}: шаг не запущен из-за лимита сотрудника. "
+                    f"Расчётный максимум {preflight.user_charge_rub} ₽, доступно {agent_remaining} ₽. "
+                    f"За запуск {agent_budget['run_spend']}/{agent_budget['run_limit']} ₽; "
+                    f"сегодня {agent_budget['day_spend']}/{agent_budget['day_limit']} ₽; "
+                    f"за месяц {agent_budget['month_spend']}/{agent_budget['month_limit']} ₽."
+                )
+                error_code = "agent_period_budget_exceeded"
+            else:
+                step.public_log = (
+                    f"Шаг не запущен: расчётный максимум {preflight.user_charge_rub} ₽ превышает "
+                    f"остаток бюджета Dev Team {team_remaining} ₽."
+                )
+                error_code = "team_budget_exceeded"
             step.finished_at = timezone.now()
             step.save(update_fields=["state", "public_log", "finished_at"])
             run.state = AgentRun.State.BUDGET_EXCEEDED
-            run.error_code = "team_budget_exceeded"
+            run.error_code = error_code
             run.error_message = step.public_log
             run.step_count = sequence
             run.finished_at = timezone.now()
@@ -250,6 +268,10 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             "provider_request_id": result.provider_request_id,
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
+            "budget_before": {
+                "team_remaining_rub": str(team_remaining),
+                "agent_remaining_rub": str(agent_remaining),
+            },
         }
         step.public_log = result.text[:12000]
         step.cost_rub = actual
