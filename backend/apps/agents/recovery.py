@@ -11,6 +11,7 @@ from apps.procurement.models import ProviderSpendReservation
 from apps.procurement.services import release_provider_spend
 
 from .models import AgentApproval, AgentRun, AgentStepRun
+from .wait_runtime import wait_metadata
 
 
 RECOVERABLE_STATES = (
@@ -23,8 +24,6 @@ RECOVERABLE_STATES = (
 
 
 def _timeout_seconds():
-    # Agent workers have their own hard time limit. Keep recovery comfortably
-    # above it so a slow but live worker is never raced by the watchdog.
     return max(1200, int(os.getenv("AGENT_STALE_TIMEOUT_SECONDS", "1800")))
 
 
@@ -74,6 +73,10 @@ def _release_provider_reservations(run_id):
 def recover_agent_run(run_id):
     run = AgentRun.objects.select_for_update().filter(pk=run_id).first()
     if run is None:
+        return False
+    # WAITING_TOOL is also used by the visual Agent Studio `wait` node. A
+    # durable, explicitly scheduled wait is healthy state, not a dead worker.
+    if run.state == AgentRun.State.WAITING_TOOL and wait_metadata(run):
         return False
     if run.state not in RECOVERABLE_STATES or run.updated_at >= _cutoff():
         return False
