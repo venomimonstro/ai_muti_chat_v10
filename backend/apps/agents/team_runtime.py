@@ -52,6 +52,11 @@ def _messages(run, agent, role, repository_context, previous):
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _is_canceled(run):
+    run.refresh_from_db(fields=["state", "finished_at"])
+    return run.state == AgentRun.State.CANCELED
+
+
 def _release_customer(reservation):
     if not reservation:
         return
@@ -61,13 +66,31 @@ def _release_customer(reservation):
         pass
 
 
+def _release_provider(reservation):
+    if not reservation:
+        return
+    try:
+        release_agent_provider_spend(reservation)
+    except Exception:
+        pass
+
+
+def _mark_step_canceled(step, message="Запуск отменён пользователем до следующего действия."):
+    if step is None:
+        return
+    step.state = AgentStepRun.State.SKIPPED
+    step.public_log = message
+    step.finished_at = timezone.now()
+    step.save(update_fields=["state", "public_log", "finished_at"])
+
+
 def _fail(run, step, code, message, customer_reservation=None, provider_reservation=None):
     _release_customer(customer_reservation)
-    if provider_reservation:
-        try:
-            release_agent_provider_spend(provider_reservation)
-        except Exception:
-            pass
+    _release_provider(provider_reservation)
+    if _is_canceled(run):
+        if step and step.state == AgentStepRun.State.RUNNING:
+            _mark_step_canceled(step, "Запуск отменён пользователем. Незавершённые резервы освобождены.")
+        return run
     now = timezone.now()
     if step:
         step.state = AgentStepRun.State.FAILED
@@ -97,7 +120,34 @@ def _next_sequence(run):
     return int(value) + 1
 
 
+def _finish_stage_after_cancel(run, step, result, actual, total):
+    now = timezone.now()
+    step.state = AgentStepRun.State.COMPLETED
+    step.output_payload = {
+        "canceled_after_provider": True,
+        "provider_request_id": result.provider_request_id,
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+    }
+    step.public_log = (
+        "Пользователь остановил Dev Studio после отправки запроса модели. "
+        "Фактически возникшая стоимость учтена; результат не передан следующему агенту."
+    )
+    step.cost_rub = actual
+    step.finished_at = now
+    step.save(update_fields=["state", "output_payload", "public_log", "cost_rub", "finished_at"])
+    AgentRun.objects.filter(pk=run.pk, state=AgentRun.State.CANCELED).update(
+        cost_actual_rub=total,
+        finished_at=now,
+        updated_at=now,
+    )
+    run.refresh_from_db()
+    return run
+
+
 def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, total, budget):
+    if _is_canceled(run):
+        return None, total, run
     step = AgentStepRun.objects.create(
         run=run,
         agent=agent,
@@ -128,6 +178,9 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             )
         )
         if total + preflight.user_charge_rub > budget:
+            if _is_canceled(run):
+                _mark_step_canceled(step)
+                return None, total, run
             step.state = AgentStepRun.State.SKIPPED
             step.public_log = f"Шаг не запущен: расчётная стоимость превысила общий лимит команды {budget} ₽."
             step.finished_at = timezone.now()
@@ -140,6 +193,9 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             run.save(update_fields=["state", "error_code", "error_message", "step_count", "finished_at", "updated_at"])
             return None, total, run
 
+        if _is_canceled(run):
+            _mark_step_canceled(step)
+            return None, total, run
         customer_reservation = reserve(run.owner, preflight.user_charge_rub, f"agent-run:{run.id}:step:{sequence}")
         provider_reservation = reserve_agent_provider_spend(
             model=model,
@@ -147,6 +203,14 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             fx_snapshot=preflight.fx_snapshot,
             source_key=f"agent:{run.id}:step:{sequence}",
         )
+        if _is_canceled(run):
+            _release_customer(customer_reservation)
+            customer_reservation = None
+            _release_provider(provider_reservation)
+            provider_reservation = None
+            _mark_step_canceled(step, "Запуск отменён до обращения к модели; резерв освобождён.")
+            return None, total, run
+
         result = adapter_for(model).generate(
             model=model.upstream_model or model.slug,
             messages=messages,
@@ -175,6 +239,10 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
         settle(customer_reservation.id, actual)
         customer_reservation = None
         total += actual
+
+        if _is_canceled(run):
+            return None, total, _finish_stage_after_cancel(run, step, result, actual, total)
+
         step.state = AgentStepRun.State.COMPLETED
         step.output_payload = {
             "text": result.text,
@@ -207,7 +275,11 @@ def _member_by_role(members, role):
 
 
 def _await_write_approval(run, developer_step, changes, repository_context):
+    if _is_canceled(run):
+        return run
     enriched = enrich_changes_with_snapshot(changes, repository_context)
+    if _is_canceled(run):
+        return run
     approval = AgentApproval.objects.create(
         run=run,
         step=developer_step,
@@ -240,6 +312,8 @@ def _await_write_approval(run, developer_step, changes, repository_context):
 
 
 def _continue_approved_write(run, approval, members, total, budget):
+    if _is_canceled(run):
+        return run
     changes = list((approval.action_payload or {}).get("changes") or [])
     developer_member = _member_by_role(members, "Development")
     developer = developer_member.agent if developer_member else run.team.director
@@ -255,6 +329,9 @@ def _continue_approved_write(run, approval, members, total, budget):
         public_log="Проверяем подтверждённые изменения в sandbox.",
         started_at=timezone.now(),
     )
+    if _is_canceled(run):
+        _mark_step_canceled(write_step, "Запуск отменён до записи изменений в GitHub.")
+        return run
     try:
         execution = apply_approved_changes(project=run.project, run_id=run.id, changes=changes)
     except Exception as exc:
@@ -273,6 +350,8 @@ def _continue_approved_write(run, approval, members, total, budget):
     run.input_payload = {**(run.input_payload or {}), "phase": "reviewing_changes", "working_branch": execution.get("branch")}
     run.save(update_fields=["step_count", "tool_call_count", "input_payload", "updated_at"])
 
+    if _is_canceled(run):
+        return run
     try:
         branch_context = build_repository_context(run.project, ref=execution.get("branch"))
         run.tool_call_count += int(branch_context.get("tool_calls") or 0)
@@ -287,6 +366,8 @@ def _continue_approved_write(run, approval, members, total, budget):
         review_stages.append((qa_member.agent, "QA & Security"))
     review_stages.append((run.team.director, "Final Review"))
     for agent, role in review_stages:
+        if _is_canceled(run):
+            return run
         sequence = _next_sequence(run)
         text, total, terminal = _run_llm_stage(
             run=run,
@@ -302,6 +383,8 @@ def _continue_approved_write(run, approval, members, total, budget):
             return terminal
         previous.append({"role": role, "text": text[:9000]})
 
+    if _is_canceled(run):
+        return run
     final_text = previous[-1]["text"] if previous else ""
     run.output_payload = {
         "text": final_text,
@@ -346,12 +429,16 @@ def execute_team_run(run_id):
     total = Decimal(str(run.cost_actual_rub or 0))
     budget = Decimal(str(run.team.max_cost_rub_per_run))
 
+    if _is_canceled(run):
+        return run
     approved = run.approvals.filter(
         status=AgentApproval.Status.APPROVED,
         action_payload__kind="github_changes",
     ).order_by("-decided_at", "-created_at").first()
     phase = str((run.input_payload or {}).get("phase") or "")
     if approved and phase == "awaiting_github_approval":
+        if _is_canceled(run):
+            return run
         run.state = AgentRun.State.RUNNING
         run.save(update_fields=["state", "updated_at"])
         return _continue_approved_write(run, approved, members, total, budget)
@@ -359,11 +446,15 @@ def execute_team_run(run_id):
     if run.steps.exists():
         return _fail(run, None, "invalid_team_resume", "Запуск команды нельзя безопасно повторить с текущей фазы")
 
+    if _is_canceled(run):
+        return run
     try:
         repository_context = build_repository_context(run.project)
     except Exception as exc:
         return _fail(run, None, "repository_context_failed", str(exc))
 
+    if _is_canceled(run):
+        return run
     run.plan = [
         {"id": "director", "title": "Engineering Director", "state": "pending"},
         {"id": "architecture", "title": "Architecture", "state": "pending"},
@@ -381,6 +472,8 @@ def execute_team_run(run_id):
     primary_roles = ("Engineering Director", "Architecture", "Development")
     developer_step = None
     for role in primary_roles:
+        if _is_canceled(run):
+            return run
         member = _member_by_role(members, role)
         if not member:
             continue
@@ -401,6 +494,8 @@ def execute_team_run(run_id):
         if role == "Development":
             developer_step = run.steps.filter(sequence=sequence).first()
 
+    if _is_canceled(run):
+        return run
     if developer_step:
         try:
             changes = parse_change_proposal((developer_step.output_payload or {}).get("text") or "")
@@ -418,6 +513,8 @@ def execute_team_run(run_id):
         final_stages.append((qa_member.agent, "QA & Security"))
     final_stages.append((run.team.director, "Final Review"))
     for agent, role in final_stages:
+        if _is_canceled(run):
+            return run
         sequence = _next_sequence(run)
         text, total, terminal = _run_llm_stage(
             run=run,
@@ -433,6 +530,8 @@ def execute_team_run(run_id):
             return terminal
         previous.append({"role": role, "text": text[:9000]})
 
+    if _is_canceled(run):
+        return run
     final_text = previous[-1]["text"] if previous else ""
     run.output_payload = {
         "text": final_text,
