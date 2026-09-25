@@ -1,5 +1,4 @@
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import Q
 
 from apps.ai_registry.models import RoutingPolicyVersion
 from apps.agents.models import Agent, AgentRun, AgentTeam
@@ -15,8 +14,6 @@ class Command(BaseCommand):
 
         self.stdout.write("=== AGENT SYSTEM AUDIT ===")
 
-        bad_team_owners = AgentTeam.objects.exclude(director__owner_id=models_owner_id()).count() if False else 0
-        # Explicit queryset loops keep this command compatible with SQLite test environments too.
         for team in AgentTeam.objects.select_related("owner", "director", "project").prefetch_related("members__agent"):
             if team.director.owner_id != team.owner_id:
                 failures.append(f"team={team.id}: director belongs to another owner")
@@ -72,8 +69,3 @@ class Command(BaseCommand):
         if failures:
             raise CommandError(f"Agent system audit failed: {len(failures)} problem(s)")
         self.stdout.write(self.style.SUCCESS("AGENT_SYSTEM_AUDIT_OK"))
-
-
-def models_owner_id():
-    # Kept out of queryset expressions intentionally; see compatibility note in handle().
-    return None
