@@ -1,10 +1,13 @@
+from datetime import timedelta
+
 from celery import shared_task
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
 from .generic_team_runtime import execute_generic_team_run
 from .graph_runtime import execute_graph_run
-from .models import Agent, AgentRun, AgentTeam
+from .models import Agent, AgentApproval, AgentRun, AgentTeam
 from .run_views import create_single_agent_run
 from .runtime import execute_run
 from .team_runtime import execute_team_run
@@ -141,3 +144,73 @@ def dispatch_due_agent_schedules(limit=50):
         "waiting_approval": waiting_approval,
         "skipped": skipped,
     }
+
+
+@shared_task(max_retries=0)
+def expire_stale_agent_approvals(limit=500):
+    """Expire unattended human approvals without performing the protected action.
+
+    WAITING_APPROVAL is intentionally excluded from generic stale-run recovery: a
+    human may legitimately take hours to respond. This task gives that state an
+    explicit, configurable lifetime instead of leaving runs blocked forever.
+    """
+    hours = max(1, int(getattr(settings, "AGENT_APPROVAL_TIMEOUT_HOURS", 72)))
+    cutoff = timezone.now() - timedelta(hours=hours)
+    approval_ids = list(
+        AgentApproval.objects.filter(
+            status=AgentApproval.Status.PENDING,
+            created_at__lt=cutoff,
+        )
+        .order_by("created_at")
+        .values_list("id", flat=True)[: max(1, min(int(limit), 2000))]
+    )
+    expired = 0
+    canceled_runs = 0
+    for approval_id in approval_ids:
+        with transaction.atomic():
+            approval = (
+                AgentApproval.objects.select_for_update()
+                .select_related("run")
+                .filter(
+                    pk=approval_id,
+                    status=AgentApproval.Status.PENDING,
+                    created_at__lt=cutoff,
+                )
+                .first()
+            )
+            if approval is None:
+                continue
+            now = timezone.now()
+            approval.status = AgentApproval.Status.EXPIRED
+            approval.decided_at = now
+            approval.save(update_fields=["status", "decided_at"])
+            expired += 1
+
+            run = AgentRun.objects.select_for_update().get(pk=approval.run_id)
+            if run.state != AgentRun.State.WAITING_APPROVAL:
+                continue
+            # If another pending approval still exists, the run remains waiting.
+            # Otherwise the protected operation is abandoned and the run becomes
+            # terminal. No LLM/tool/provider call is started by this cleanup.
+            has_other_pending = run.approvals.filter(status=AgentApproval.Status.PENDING).exists()
+            if has_other_pending:
+                continue
+            run.state = AgentRun.State.CANCELED
+            run.error_code = "agent_approval_expired"
+            run.error_message = (
+                f"Подтверждение не получено в течение {hours} ч. "
+                "Защищённое действие не выполнялось. Запуск можно повторить."
+            )
+            run.finished_at = now
+            run.save(
+                update_fields=[
+                    "state",
+                    "error_code",
+                    "error_message",
+                    "finished_at",
+                    "updated_at",
+                ]
+            )
+            canceled_runs += 1
+
+    return {"checked": len(approval_ids), "expired": expired, "canceled_runs": canceled_runs}
