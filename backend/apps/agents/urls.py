@@ -9,6 +9,7 @@ from .schedule_views import AgentScheduleViewSet
 from .team_builder_views import AgentTeamBootstrapView
 from .team_config_views import AgentTeamDirectorView, AgentTeamMemberDetailView
 from .views import AgentRunViewSet, AgentTeamViewSet, AgentViewSet
+from .wordpress_views import AgentRunWordPressView
 
 router = DefaultRouter()
 router.register("agents", AgentViewSet, basename="agent")
@@ -46,6 +47,11 @@ urlpatterns = [
         "agent-runs/<uuid:run_id>/pull-request/",
         DevRunPullRequestView.as_view(),
         name="agent-dev-run-pull-request",
+    ),
+    path(
+        "agent-runs/<uuid:run_id>/wordpress/",
+        AgentRunWordPressView.as_view(),
+        name="agent-run-wordpress",
     ),
     *router.urls,
 ]
