@@ -165,7 +165,10 @@ def finalize_graph_publish_nodes(run_id):
                 ),
                 {},
             )
-            target_status = str(node.get("status") or "publish").strip().lower()
+            # Safe default: legacy/new publish nodes without an explicit status
+            # must create a WordPress draft. Going live is always an explicit
+            # visual-builder choice, additionally protected by agent policy.
+            target_status = str(node.get("status") or "draft").strip().lower()
             if target_status not in {"draft", "publish"}:
                 raise ValidationError("Узел publish поддерживает только draft или publish")
 
