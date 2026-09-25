@@ -137,3 +137,64 @@ def test_schedule_skip_does_not_fake_last_run_timestamp():
     assert schedule.last_run_at is None
     assert schedule.last_run_id is None
     delay.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_resuming_paused_schedule_recomputes_future_slot():
+    user = User.objects.create_user(username="schedule-resume", email="schedule-resume@example.com", password="StrongPass123!")
+    agent = Agent.objects.create(owner=user, name="Paused agent", objective="Work", status=Agent.Status.ACTIVE)
+    schedule = AgentSchedule.objects.create(
+        owner=user,
+        agent=agent,
+        name="Paused",
+        enabled=False,
+        cadence=AgentSchedule.Cadence.INTERVAL,
+        interval_minutes=60,
+        next_run_at=timezone.now()-timedelta(days=2),
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.patch(
+        f"/api/v1/agent-schedules/{schedule.id}/",
+        {"enabled": True},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    schedule.refresh_from_db()
+    assert schedule.enabled is True
+    assert schedule.next_run_at > timezone.now() + timedelta(minutes=50)
+
+
+@pytest.mark.django_db
+def test_run_now_is_idempotent_and_does_not_move_calendar_slot():
+    user = User.objects.create_user(username="schedule-now", email="schedule-now@example.com", password="StrongPass123!")
+    agent = Agent.objects.create(owner=user, name="Run now agent", objective="Work now", status=Agent.Status.ACTIVE)
+    original_next = timezone.now() + timedelta(hours=8)
+    schedule = AgentSchedule.objects.create(
+        owner=user,
+        agent=agent,
+        name="Later",
+        cadence=AgentSchedule.Cadence.INTERVAL,
+        interval_minutes=60,
+        next_run_at=original_next,
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    with patch("apps.agents.tasks.execute_agent_run_task.delay") as delay:
+        first = client.post(f"/api/v1/agent-schedules/{schedule.id}/run-now/", {}, format="json")
+        second = client.post(f"/api/v1/agent-schedules/{schedule.id}/run-now/", {}, format="json")
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert first.data["id"] == second.data["id"]
+    assert AgentRun.objects.filter(agent=agent).count() == 1
+    run = AgentRun.objects.get(agent=agent)
+    assert run.input_payload["trigger"] == "schedule_run_now"
+    schedule.refresh_from_db()
+    assert schedule.last_run_id == run.id
+    assert schedule.last_run_at is not None
+    assert schedule.next_run_at == original_next
+    delay.assert_called_once_with(str(run.id))
