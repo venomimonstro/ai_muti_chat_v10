@@ -15,6 +15,15 @@ from .serializers import AgentRunSerializer, AgentSerializer, AgentTeamSerialize
 from .team_builder import team_draft
 
 
+ACTIVE_RUN_STATES = {
+    AgentRun.State.QUEUED,
+    AgentRun.State.PLANNING,
+    AgentRun.State.RUNNING,
+    AgentRun.State.WAITING_TOOL,
+    AgentRun.State.WAITING_APPROVAL,
+    AgentRun.State.REVIEWING,
+}
+
 AGENT_TEMPLATES = [
     {
         "slug": "smm-specialist",
@@ -176,9 +185,17 @@ class AgentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def run(self, request, pk=None):
-        agent = self.get_object()
+        scoped = self.get_object()
+        agent = Agent.objects.select_for_update().get(pk=scoped.pk)
         if agent.status != Agent.Status.ACTIVE:
             raise ValidationError({"detail": "Сначала активируйте агента"})
+        existing = (
+            AgentRun.objects.filter(owner=request.user, agent=agent, state__in=ACTIVE_RUN_STATES)
+            .order_by("-created_at")
+            .first()
+        )
+        if existing is not None:
+            return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
         objective = str(request.data.get("objective") or agent.objective).strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу запуска"})
@@ -310,9 +327,17 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def run(self, request, pk=None):
-        team = self.get_object()
+        scoped = self.get_object()
+        team = AgentTeam.objects.select_for_update().get(pk=scoped.pk)
         if not team.active:
             raise ValidationError({"detail": "Команда приостановлена"})
+        existing = (
+            AgentRun.objects.filter(owner=request.user, team=team, state__in=ACTIVE_RUN_STATES)
+            .order_by("-created_at")
+            .first()
+        )
+        if existing is not None:
+            return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
         objective = str(request.data.get("objective") or team.objective).strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу команды"})
