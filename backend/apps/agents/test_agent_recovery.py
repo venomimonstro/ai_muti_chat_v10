@@ -8,8 +8,8 @@ from django.utils import timezone
 from apps.billing.models import BalanceReservation
 from apps.billing.services import credit, reserve
 
-from .models import Agent, AgentRun, AgentStepRun
-from .recovery import recover_stale_agent_runs
+from .models import Agent, AgentApproval, AgentRun, AgentStepRun
+from .recovery import expire_stale_agent_approvals, recover_stale_agent_runs
 
 
 @pytest.mark.django_db(transaction=True)
@@ -95,3 +95,80 @@ def test_waiting_approval_is_never_recovered_as_stale(monkeypatch):
     run.refresh_from_db()
     assert run.state == AgentRun.State.WAITING_APPROVAL
     assert run.error_code == ""
+
+
+@pytest.mark.django_db(transaction=True)
+def test_pending_approval_expires_and_unblocks_run(monkeypatch):
+    monkeypatch.setenv("AGENT_APPROVAL_TIMEOUT_HOURS", "24")
+    user = get_user_model().objects.create_user(
+        username="agent-expired-approval",
+        email="agent-expired-approval@example.test",
+        password="test-password",
+    )
+    agent = Agent.objects.create(
+        owner=user,
+        name="Approval Agent",
+        objective="Wait safely",
+        status=Agent.Status.ACTIVE,
+        autonomy=Agent.Autonomy.CONTROLLED,
+    )
+    run = AgentRun.objects.create(
+        owner=user,
+        agent=agent,
+        objective="Wait",
+        state=AgentRun.State.WAITING_APPROVAL,
+    )
+    approval = AgentApproval.objects.create(
+        run=run,
+        requested_by_agent=agent,
+        title="Confirm",
+        action_payload={"kind": "controlled_run_start"},
+    )
+    AgentApproval.objects.filter(pk=approval.pk).update(created_at=timezone.now() - timedelta(hours=25))
+
+    assert expire_stale_agent_approvals() == 1
+
+    approval.refresh_from_db()
+    run.refresh_from_db()
+    assert approval.status == AgentApproval.Status.EXPIRED
+    assert approval.decided_at is not None
+    assert run.state == AgentRun.State.CANCELED
+    assert run.error_code == "agent_approval_expired"
+    assert run.finished_at is not None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_decided_approval_is_never_expired(monkeypatch):
+    monkeypatch.setenv("AGENT_APPROVAL_TIMEOUT_HOURS", "24")
+    user = get_user_model().objects.create_user(
+        username="agent-decided-approval",
+        email="agent-decided-approval@example.test",
+        password="test-password",
+    )
+    agent = Agent.objects.create(
+        owner=user,
+        name="Approved Agent",
+        objective="Approved work",
+        status=Agent.Status.ACTIVE,
+    )
+    run = AgentRun.objects.create(
+        owner=user,
+        agent=agent,
+        objective="Approved",
+        state=AgentRun.State.RUNNING,
+    )
+    approval = AgentApproval.objects.create(
+        run=run,
+        requested_by_agent=agent,
+        title="Already approved",
+        status=AgentApproval.Status.APPROVED,
+        decided_by=user,
+        decided_at=timezone.now() - timedelta(hours=25),
+    )
+    AgentApproval.objects.filter(pk=approval.pk).update(created_at=timezone.now() - timedelta(days=7))
+
+    assert expire_stale_agent_approvals() == 0
+    approval.refresh_from_db()
+    run.refresh_from_db()
+    assert approval.status == AgentApproval.Status.APPROVED
+    assert run.state == AgentRun.State.RUNNING
