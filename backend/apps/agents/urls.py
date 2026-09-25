@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .approval_views import SafeAgentApprovalDecisionView
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
 from .dev_bootstrap_views import DevTeamBootstrapView
 from .dev_pr_views import DevRunPullRequestView
@@ -48,6 +49,11 @@ urlpatterns = [
         "agent-teams/<uuid:team_id>/director/",
         AgentTeamDirectorView.as_view(),
         name="agent-team-director",
+    ),
+    path(
+        "agent-runs/<uuid:run_id>/approvals/<uuid:approval_id>/decision/",
+        SafeAgentApprovalDecisionView.as_view(),
+        name="agent-safe-approval-decision",
     ),
     path(
         "agent-runs/<uuid:run_id>/pull-request/",
