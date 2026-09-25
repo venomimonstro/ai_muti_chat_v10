@@ -19,6 +19,7 @@ from .accounting import (
 )
 from .dev_context import build_repository_context
 from .file_context import project_file_context
+from .limits import effective_remaining_budget
 from .memory import memory_context_for_agent
 from .models import AgentRun, AgentStepRun
 
@@ -248,15 +249,29 @@ def execute_run(run_id):
                 operation_type="agent",
             )
         )
-        budget = Decimal(str(run.team.max_cost_rub_per_run if run.team_id else agent.max_cost_rub_per_run))
+        budget_snapshot = None
+        if run.agent_id:
+            budget, budget_snapshot = effective_remaining_budget(agent, run=run)
+        else:
+            budget = Decimal(str(run.team.max_cost_rub_per_run))
         if preflight.user_charge_rub > budget:
             now = timezone.now()
             step.state = AgentStepRun.State.FAILED
-            step.public_log = f"Запуск остановлен до обращения к модели: расчётный максимум {preflight.user_charge_rub} ₽ превышает лимит {budget} ₽."
+            if budget_snapshot is not None:
+                step.public_log = (
+                    f"Запуск остановлен до обращения к модели: расчётный максимум {preflight.user_charge_rub} ₽ "
+                    f"превышает доступный остаток {budget} ₽. "
+                    f"Сегодня использовано {budget_snapshot['day_spend']}/{budget_snapshot['day_limit']} ₽, "
+                    f"в этом месяце {budget_snapshot['month_spend']}/{budget_snapshot['month_limit']} ₽."
+                )
+                error_code = "agent_period_budget_exceeded"
+            else:
+                step.public_log = f"Запуск остановлен до обращения к модели: расчётный максимум {preflight.user_charge_rub} ₽ превышает лимит {budget} ₽."
+                error_code = "agent_budget_exceeded"
             step.finished_at = now
             step.save(update_fields=["state", "public_log", "finished_at"])
             run.state = AgentRun.State.BUDGET_EXCEEDED
-            run.error_code = "agent_budget_exceeded"
+            run.error_code = error_code
             run.error_message = step.public_log
             run.finished_at = now
             run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
