@@ -1,9 +1,22 @@
+from datetime import timedelta
+
 from celery import shared_task
+from django.db import transaction
+from django.utils import timezone
 
 from .generic_team_runtime import execute_generic_team_run
-from .models import AgentRun, AgentTeam
+from .models import Agent, AgentRun, AgentTeam
 from .runtime import execute_run
 from .team_runtime import execute_team_run
+
+ACTIVE_RUN_STATES = {
+    AgentRun.State.QUEUED,
+    AgentRun.State.PLANNING,
+    AgentRun.State.RUNNING,
+    AgentRun.State.WAITING_TOOL,
+    AgentRun.State.WAITING_APPROVAL,
+    AgentRun.State.REVIEWING,
+}
 
 
 @shared_task(bind=True, max_retries=0, soft_time_limit=900, time_limit=930)
@@ -25,3 +38,69 @@ def execute_agent_run_task(self, run_id):
         else:
             run = execute_generic_team_run(run_id)
     return {"run_id": str(run.id), "state": run.state}
+
+
+@shared_task(max_retries=0)
+def dispatch_due_agent_schedules(limit=50):
+    from .schedule_models import AgentSchedule
+
+    now = timezone.now()
+    due_ids = list(
+        AgentSchedule.objects.filter(enabled=True, next_run_at__lte=now)
+        .order_by("next_run_at")
+        .values_list("id", flat=True)[: max(1, min(int(limit), 200))]
+    )
+    launched = 0
+    skipped = 0
+    for schedule_id in due_ids:
+        with transaction.atomic():
+            schedule = (
+                AgentSchedule.objects.select_for_update()
+                .select_related("agent", "team")
+                .filter(pk=schedule_id, enabled=True, next_run_at__lte=now)
+                .first()
+            )
+            if schedule is None:
+                continue
+            schedule.next_run_at = now + timedelta(minutes=max(5, int(schedule.interval_minutes)))
+            schedule.last_run_at = now
+
+            if schedule.agent_id:
+                if schedule.agent.status != Agent.Status.ACTIVE:
+                    schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                    skipped += 1
+                    continue
+                active = AgentRun.objects.filter(agent_id=schedule.agent_id, state__in=ACTIVE_RUN_STATES).exists()
+                objective = (schedule.objective or schedule.agent.objective).strip()
+            else:
+                if not schedule.team.active:
+                    schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                    skipped += 1
+                    continue
+                active = AgentRun.objects.filter(team_id=schedule.team_id, state__in=ACTIVE_RUN_STATES).exists()
+                objective = (schedule.objective or schedule.team.objective).strip()
+
+            if schedule.skip_if_running and active:
+                schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                skipped += 1
+                continue
+            if not objective:
+                schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                skipped += 1
+                continue
+
+            run = AgentRun.objects.create(
+                owner=schedule.owner,
+                agent=schedule.agent,
+                team=schedule.team,
+                project=schedule.agent.project if schedule.agent_id else schedule.team.project,
+                objective=objective,
+                input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
+                state=AgentRun.State.QUEUED,
+            )
+            schedule.last_run = run
+            schedule.save(update_fields=["next_run_at", "last_run_at", "last_run", "updated_at"])
+            transaction.on_commit(lambda run_id=str(run.id): execute_agent_run_task.delay(run_id))
+            launched += 1
+
+    return {"checked": len(due_ids), "launched": launched, "skipped": skipped}
