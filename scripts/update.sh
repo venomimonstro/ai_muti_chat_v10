@@ -108,6 +108,11 @@ compose exec -T backend python manage.py check --deploy
 compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
 compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"
 
+printf 'Проверяем production billing и Agent Runtime...\n'
+compose exec -T backend python manage.py billing_integrity_check
+compose exec -T backend python manage.py agent_system_audit
+compose exec -T backend python manage.py agent_billing_audit
+
 trap - ERR
 printf 'Обновление завершено.\n'
 printf 'Commit: %s -> %s\n' "${PREVIOUS_SHA:-unknown}" "$(git -c safe.directory="${PROJECT_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
