@@ -35,8 +35,6 @@ def execute_agent_run_task(self, run_id):
         graph = subject.get("agent__graph") or {}
         tools = subject.get("agent__tool_policy") or {}
         has_graph = bool(graph.get("nodes"))
-        # GitHub/code agents remain on the specialized runtime. Ordinary visual
-        # employees execute their actual graph node-by-node.
         if has_graph and not bool(tools.get("github")):
             run = execute_graph_run(run_id)
             if run.state == AgentRun.State.COMPLETED:
@@ -96,8 +94,6 @@ def dispatch_due_agent_schedules(limit=50):
             if schedule is None:
                 continue
 
-            # Advance the cursor before any downstream work so a failed/slow
-            # launch cannot make the same due row fire repeatedly every minute.
             schedule.next_run_at = schedule.compute_next_run(after=now)
 
             if schedule.agent_id:
@@ -119,7 +115,9 @@ def dispatch_due_agent_schedules(limit=50):
                 objective = (schedule.objective or subject.objective).strip()
                 project = subject.project
 
-            if schedule.skip_if_running and active:
+            # Concurrency is an invariant, not an optional client preference.
+            # One employee/team can never have two billable active runs.
+            if active:
                 schedule.save(update_fields=["next_run_at", "updated_at"])
                 skipped += 1
                 continue
@@ -165,12 +163,6 @@ def dispatch_due_agent_schedules(limit=50):
 
 @shared_task(max_retries=0)
 def expire_stale_agent_approvals(limit=500):
-    """Expire unattended human approvals without performing the protected action.
-
-    WAITING_APPROVAL is intentionally excluded from generic stale-run recovery: a
-    human may legitimately take hours to respond. This task gives that state an
-    explicit, configurable lifetime instead of leaving runs blocked forever.
-    """
     hours = max(1, int(getattr(settings, "AGENT_APPROVAL_TIMEOUT_HOURS", 72)))
     cutoff = timezone.now() - timedelta(hours=hours)
     approval_ids = list(
@@ -206,9 +198,6 @@ def expire_stale_agent_approvals(limit=500):
             run = AgentRun.objects.select_for_update().get(pk=approval.run_id)
             if run.state != AgentRun.State.WAITING_APPROVAL:
                 continue
-            # If another pending approval still exists, the run remains waiting.
-            # Otherwise the protected operation is abandoned and the run becomes
-            # terminal. No LLM/tool/provider call is started by this cleanup.
             has_other_pending = run.approvals.filter(status=AgentApproval.Status.PENDING).exists()
             if has_other_pending:
                 continue
