@@ -92,11 +92,22 @@ class AgentVersionSerializer(serializers.ModelSerializer):
 
 class AgentTeamMemberSerializer(serializers.ModelSerializer):
     agent_name = serializers.CharField(source="agent.name", read_only=True)
+    agent_system_level = serializers.CharField(source="agent.system_level", read_only=True)
+    agent_max_cost_rub_per_run = serializers.DecimalField(source="agent.max_cost_rub_per_run", max_digits=12, decimal_places=4, read_only=True)
+    agent_max_cost_rub_per_day = serializers.DecimalField(source="agent.max_cost_rub_per_day", max_digits=12, decimal_places=4, read_only=True)
+    agent_max_cost_rub_per_month = serializers.DecimalField(source="agent.max_cost_rub_per_month", max_digits=12, decimal_places=4, read_only=True)
 
     class Meta:
         model = AgentTeamMember
-        fields = ["id", "agent", "agent_name", "role", "priority", "can_delegate", "enabled"]
-        read_only_fields = ["id", "agent_name"]
+        fields = [
+            "id", "agent", "agent_name", "role", "priority", "can_delegate", "enabled",
+            "agent_system_level", "agent_max_cost_rub_per_run", "agent_max_cost_rub_per_day",
+            "agent_max_cost_rub_per_month",
+        ]
+        read_only_fields = [
+            "id", "agent_name", "agent_system_level", "agent_max_cost_rub_per_run",
+            "agent_max_cost_rub_per_day", "agent_max_cost_rub_per_month",
+        ]
 
 
 class AgentTeamSerializer(serializers.ModelSerializer):
