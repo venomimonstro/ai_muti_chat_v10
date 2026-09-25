@@ -10,12 +10,23 @@ from .models import Agent, AgentApproval, AgentRun, AgentStepRun
 from .publish_runtime import finalize_graph_publish_nodes
 
 
-def _fixture(*, approved=True, with_connection=True):
+def _fixture(*, approved=True, with_connection=True, unrelated_approval=False):
     user = get_user_model().objects.create_user(
-        username=f"publisher-{approved}-{with_connection}",
-        email=f"publisher-{approved}-{with_connection}@example.test",
+        username=f"publisher-{approved}-{with_connection}-{unrelated_approval}",
+        email=f"publisher-{approved}-{with_connection}-{unrelated_approval}@example.test",
         password="test-password",
     )
+    nodes = [
+        {"id": "draft", "title": "Draft", "type": "llm"},
+        {"id": "approve", "title": "Approve", "type": "approval"},
+        {"id": "publish", "title": "Publish", "type": "publish", "status": "publish"},
+    ]
+    edges = [
+        {"from": "draft", "to": "approve"},
+        {"from": "approve", "to": "publish"},
+    ]
+    if unrelated_approval:
+        nodes.append({"id": "other-approve", "title": "Other approval", "type": "approval"})
     agent = Agent.objects.create(
         owner=user,
         name="SEO Publisher",
@@ -23,14 +34,7 @@ def _fixture(*, approved=True, with_connection=True):
         autonomy=Agent.Autonomy.SEMI_AUTONOMOUS,
         status=Agent.Status.ACTIVE,
         tool_policy={"web": True, "publish": "approval"},
-        graph={
-            "nodes": [
-                {"id": "draft", "title": "Draft", "type": "llm"},
-                {"id": "approve", "title": "Approve", "type": "approval"},
-                {"id": "publish", "title": "Publish", "type": "publish", "status": "publish"},
-            ],
-            "edges": [],
-        },
+        graph={"nodes": nodes, "edges": edges},
     )
     run = AgentRun.objects.create(
         owner=user,
@@ -75,6 +79,28 @@ def _fixture(*, approved=True, with_connection=True):
             decided_at=timezone.now(),
             action_payload={"kind": "workflow_approval", "node_id": "approve"},
         )
+    if unrelated_approval:
+        other_step = AgentStepRun.objects.create(
+            run=run,
+            agent=agent,
+            sequence=2,
+            node_id="other-approve",
+            title="Other approval",
+            action_type="approval",
+            state=AgentStepRun.State.COMPLETED,
+            started_at=timezone.now(),
+            finished_at=timezone.now(),
+        )
+        AgentApproval.objects.create(
+            run=run,
+            step=other_step,
+            requested_by_agent=agent,
+            title="Approve unrelated action",
+            status=AgentApproval.Status.APPROVED,
+            decided_by=user,
+            decided_at=timezone.now(),
+            action_payload={"kind": "workflow_approval", "node_id": "other-approve"},
+        )
     publish_step = AgentStepRun.objects.create(
         run=run,
         agent=agent,
@@ -112,6 +138,19 @@ def _fixture(*, approved=True, with_connection=True):
 @pytest.mark.django_db(transaction=True)
 def test_publish_requires_approved_workflow_step():
     run, step = _fixture(approved=False, with_connection=True)
+    with patch("apps.agents.publish_runtime.create_wordpress_post") as create_post:
+        result = finalize_graph_publish_nodes(run.id)
+    result.refresh_from_db()
+    step.refresh_from_db()
+    assert result.state == AgentRun.State.FAILED
+    assert result.error_code == "wordpress_publish_failed"
+    assert step.state == AgentStepRun.State.FAILED
+    create_post.assert_not_called()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_unrelated_approval_does_not_authorize_publish():
+    run, step = _fixture(approved=False, with_connection=True, unrelated_approval=True)
     with patch("apps.agents.publish_runtime.create_wordpress_post") as create_post:
         result = finalize_graph_publish_nodes(run.id)
     result.refresh_from_db()
