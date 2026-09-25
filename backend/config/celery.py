@@ -41,6 +41,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.support_sla_watch_task",
         "schedule": 900.0,
     },
+    "dispatch-autonomous-agents": {
+        "task": "apps.agents.tasks.dispatch_due_agent_schedules",
+        "schedule": 60.0,
+    },
 }
 
 
