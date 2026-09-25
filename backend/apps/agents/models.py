@@ -51,7 +51,23 @@ class Agent(models.Model):
     def clean(self):
         if self.system_level not in {"economy", "balanced", "maximum"}:
             raise ValidationError("system_level должен быть economy, balanced или maximum")
-        if self.max_steps < 1 or self.max_tool_calls < 1 or self.max_runtime_seconds < 1:
+        if (
+            self.max_cost_rub_per_run <= 0
+            or self.max_cost_rub_per_day <= 0
+            or self.max_cost_rub_per_month <= 0
+        ):
+            raise ValidationError("Денежные лимиты агента должны быть больше нуля")
+        if self.max_cost_rub_per_day < self.max_cost_rub_per_run:
+            raise ValidationError("Дневной лимит не может быть меньше лимита одного запуска")
+        if self.max_cost_rub_per_month < self.max_cost_rub_per_day:
+            raise ValidationError("Месячный лимит не может быть меньше дневного лимита")
+        if (
+            self.max_steps < 1
+            or self.max_tool_calls < 1
+            or self.max_handoffs < 1
+            or self.max_retries_per_step < 1
+            or self.max_runtime_seconds < 1
+        ):
             raise ValidationError("Лимиты агента должны быть положительными")
 
 
@@ -97,6 +113,8 @@ class AgentTeam(models.Model):
             raise ValidationError("Руководитель команды должен принадлежать владельцу команды")
         if self.kind == self.Kind.DEVELOPMENT and not self.project_id:
             raise ValidationError("Команда разработки должна быть привязана к проекту")
+        if self.max_cost_rub_per_run <= 0 or self.max_handoffs < 1:
+            raise ValidationError("Лимит бюджета и передач команды должен быть положительным")
 
 
 class AgentTeamMember(models.Model):
