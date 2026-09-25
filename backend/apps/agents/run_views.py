@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Agent, AgentApproval, AgentRun
+from .readiness import require_agent_ready
 from .serializers import AgentRunSerializer
 
 
@@ -22,9 +23,9 @@ ACTIVE_RUN_STATES = {
 
 
 def enqueue_agent_run(run):
-    from .tasks import execute_agent_run_task
+    from .tasks import enqueue_agent_run as safe_enqueue_agent_run
 
-    transaction.on_commit(lambda: execute_agent_run_task.delay(str(run.id)))
+    transaction.on_commit(lambda run_id=str(run.id): safe_enqueue_agent_run(run_id))
 
 
 def create_single_agent_run(*, owner, agent, objective, input_payload=None):
@@ -72,6 +73,10 @@ class SafeAgentRunView(APIView):
         )
         if existing is not None:
             return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
+        try:
+            require_agent_ready(agent)
+        except Exception as exc:
+            raise ValidationError({"detail": f"Сотрудник не готов к запуску: {exc}"}) from exc
         objective = str(request.data.get("objective") or agent.objective).strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу запуска"})
