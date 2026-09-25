@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.conf import settings
 from rest_framework import serializers
 
 from .models import Agent, AgentApproval, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember, AgentVersion
@@ -141,9 +144,18 @@ class AgentStepRunSerializer(serializers.ModelSerializer):
 
 
 class AgentApprovalSerializer(serializers.ModelSerializer):
+    expires_at = serializers.SerializerMethodField()
+
+    def get_expires_at(self, obj):
+        hours = max(1, int(getattr(settings, "AGENT_APPROVAL_TIMEOUT_HOURS", 72)))
+        return obj.created_at + timedelta(hours=hours)
+
     class Meta:
         model = AgentApproval
-        fields = ["id", "step", "title", "description", "action_payload", "status", "decided_at", "created_at"]
+        fields = [
+            "id", "step", "title", "description", "action_payload", "status",
+            "decided_at", "created_at", "expires_at",
+        ]
         read_only_fields = fields
 
 
