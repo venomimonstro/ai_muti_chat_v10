@@ -135,6 +135,8 @@ class Command(BaseCommand):
                 continue
             if subject.owner_id != schedule.owner_id:
                 failures.append(f"schedule={schedule.id}: owner mismatch")
+            if not schedule.skip_if_running:
+                failures.append(f"schedule={schedule.id}: overlapping runs are not allowed")
             if schedule.interval_minutes < 5:
                 failures.append(f"schedule={schedule.id}: interval below 5 minutes")
             if schedule.cadence != AgentSchedule.Cadence.INTERVAL and schedule.local_time is None:
