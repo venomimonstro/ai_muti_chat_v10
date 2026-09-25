@@ -1,11 +1,48 @@
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError as DjangoValidationError
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .branching import create_repository_branch
 from .models import GitHubOperationLog
+from .services import list_repository_directory
 from .views import _binding_for
+
+
+class GitHubRepositoryHealthView(APIView):
+    def get(self, request, project_id):
+        binding = _binding_for(request.user, project_id)
+        read_ok = False
+        error = ""
+        item_count = 0
+        try:
+            tree = list_repository_directory(binding, "", ref=binding.default_branch)
+            item_count = len(tree.get("items") or [])
+            read_ok = True
+            binding.last_synced_at = timezone.now()
+            binding.save(update_fields=["last_synced_at", "updated_at"])
+        except (DjangoValidationError, ImproperlyConfigured) as exc:
+            error = str(exc)[:500]
+
+        permissions = binding.installation.permissions or {}
+        contents_permission = str(permissions.get("contents") or "").strip().lower()
+        write_permission_known = contents_permission in {"write", "admin"}
+        write_ready = bool(read_ok and binding.write_enabled and write_permission_known)
+        return Response(
+            {
+                "healthy": read_ok,
+                "read_ok": read_ok,
+                "write_ready": write_ready,
+                "write_enabled": bool(binding.write_enabled),
+                "contents_permission": contents_permission or "unknown",
+                "repository": binding.full_name,
+                "default_branch": binding.default_branch,
+                "root_items": item_count,
+                "checked_at": timezone.now(),
+                "error": error,
+            }
+        )
 
 
 class GitHubWorkingBranchView(APIView):
