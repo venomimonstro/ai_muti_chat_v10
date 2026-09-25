@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .dev_views import GitHubWorkingBranchView
+from .dev_views import GitHubRepositoryHealthView, GitHubWorkingBranchView
 from .flow_views import GitHubOAuthCallbackView, GitHubSetupView
 from .mutation_views import GitHubFileCreateView, GitHubFileDeleteView
 from .safety import github_guard
@@ -35,6 +35,11 @@ urlpatterns = [
         "projects/<uuid:project_id>/github/",
         github_guard(GitHubProjectBindingView.as_view()),
         name="github-project-binding",
+    ),
+    path(
+        "projects/<uuid:project_id>/github/health/",
+        github_guard(GitHubRepositoryHealthView.as_view()),
+        name="github-project-health",
     ),
     path(
         "projects/<uuid:project_id>/github/tree/",
