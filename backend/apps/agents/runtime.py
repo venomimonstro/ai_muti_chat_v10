@@ -90,7 +90,14 @@ def _mark_failure(run, step, *, code, message, reservation=None, provider_reserv
             release_agent_provider_spend(provider_reservation)
         except Exception:
             pass
+    run.refresh_from_db(fields=["state"])
     now = timezone.now()
+    if run.state == AgentRun.State.CANCELED:
+        step.state = AgentStepRun.State.SKIPPED
+        step.public_log = "Запуск отменён пользователем. Незавершённые резервы освобождены."
+        step.finished_at = now
+        step.save(update_fields=["state", "public_log", "finished_at"])
+        return
     step.state = AgentStepRun.State.FAILED
     step.public_log = f"Ошибка выполнения: {message}"[:4000]
     step.finished_at = now
@@ -100,6 +107,33 @@ def _mark_failure(run, step, *, code, message, reservation=None, provider_reserv
     run.error_message = str(message)[:4000]
     run.finished_at = now
     run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+
+
+def _finish_canceled_after_provider(run, step, result, actual, repository_context=None):
+    now = timezone.now()
+    step.state = AgentStepRun.State.COMPLETED
+    step.output_payload = {
+        "canceled_after_provider": True,
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "provider_request_id": result.provider_request_id,
+        "repository": repository_context["repository"] if repository_context else None,
+    }
+    step.public_log = (
+        "Пользователь остановил запуск после отправки запроса провайдеру. "
+        "Фактически возникшая стоимость учтена, результат модели не опубликован."
+    )
+    step.cost_rub = actual
+    step.finished_at = now
+    step.save(update_fields=["state", "output_payload", "public_log", "cost_rub", "finished_at"])
+    AgentRun.objects.filter(pk=run.pk, state=AgentRun.State.CANCELED).update(
+        cost_actual_rub=actual,
+        cost_reserved_rub=Decimal("0"),
+        finished_at=now,
+        updated_at=now,
+    )
+    run.refresh_from_db()
+    return run
 
 
 def execute_run(run_id):
@@ -130,6 +164,10 @@ def execute_run(run_id):
     try:
         run.refresh_from_db()
         if run.state == AgentRun.State.CANCELED:
+            step.state = AgentStepRun.State.SKIPPED
+            step.public_log = "Запуск отменён до обращения к модели."
+            step.finished_at = timezone.now()
+            step.save(update_fields=["state", "public_log", "finished_at"])
             return run
         agent = _subject_agent(run)
         if run.team_id:
@@ -211,6 +249,10 @@ def execute_run(run_id):
         settle(reservation.id, actual)
         reservation = None
 
+        run.refresh_from_db(fields=["state"])
+        if run.state == AgentRun.State.CANCELED:
+            return _finish_canceled_after_provider(run, step, result, actual, repository_context)
+
         now = timezone.now()
         step.state = AgentStepRun.State.COMPLETED
         step.output_payload = {
@@ -231,9 +273,10 @@ def execute_run(run_id):
             "repository_files": [item["path"] for item in repository_context["files"]] if repository_context else [],
         }
         run.cost_actual_rub = actual
+        run.cost_reserved_rub = Decimal("0")
         run.state = AgentRun.State.COMPLETED
         run.finished_at = now
-        run.save(update_fields=["plan", "output_payload", "cost_actual_rub", "state", "finished_at", "updated_at"])
+        run.save(update_fields=["plan", "output_payload", "cost_actual_rub", "cost_reserved_rub", "state", "finished_at", "updated_at"])
         return run
     except ProviderError as exc:
         _mark_failure(run, step, code=exc.code, message=str(exc), reservation=reservation, provider_reservation=provider_reservation)
