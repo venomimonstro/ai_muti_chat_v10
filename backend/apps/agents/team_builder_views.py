@@ -68,6 +68,7 @@ class AgentTeamBootstrapView(APIView):
             project=project,
             name=str(request.data.get("name") or draft["name"]).strip()[:160],
             objective=description,
+            kind=draft["kind"],
             director=director,
             max_cost_rub_per_run=Decimal(str(request.data.get("max_cost_rub_per_run") or "75")),
             max_handoffs=40,
