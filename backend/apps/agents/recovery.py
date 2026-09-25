@@ -44,7 +44,8 @@ def _release_customer_reservations(run_id):
     reservation_ids = BalanceReservation.objects.filter(
         Q(idempotency_key=f"agent-run:{run_id}")
         | Q(idempotency_key__startswith=f"agent-run:{run_id}:step:")
-        | Q(idempotency_key__startswith=f"agent-team:{run_id}:step:"),
+        | Q(idempotency_key__startswith=f"agent-team:{run_id}:step:")
+        | Q(idempotency_key__startswith=f"agent-graph:{run_id}:"),
         state=BalanceReservation.State.ACTIVE,
     ).values_list("id", flat=True)
     released = 0
@@ -59,7 +60,8 @@ def _release_provider_reservations(run_id):
     reservation_ids = ProviderSpendReservation.objects.filter(
         Q(source_key=f"agent:{run_id}")
         | Q(source_key__startswith=f"agent:{run_id}:step:")
-        | Q(source_key__startswith=f"agent-team:{run_id}:step:"),
+        | Q(source_key__startswith=f"agent-team:{run_id}:step:")
+        | Q(source_key__startswith=f"agent-graph:{run_id}:"),
         state=ProviderSpendReservation.State.ACTIVE,
     ).values_list("id", flat=True)
     released = 0
