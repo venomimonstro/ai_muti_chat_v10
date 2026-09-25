@@ -11,6 +11,7 @@ from .models import Agent, AgentApproval, AgentRun, AgentTeam
 from .readiness import agent_readiness
 from .run_views import create_single_agent_run
 from .runtime import execute_run
+from .team_readiness import team_readiness
 from .team_runtime import execute_team_run
 
 ACTIVE_RUN_STATES = {
@@ -87,6 +88,22 @@ def _failed_not_ready_run(*, schedule, agent, objective, readiness, now):
     )
 
 
+def _failed_team_not_ready_run(*, schedule, team, objective, readiness, now):
+    message = "; ".join(readiness.get("blockers") or ["Команда не готова к автономному запуску"])
+    return AgentRun.objects.create(
+        owner=schedule.owner,
+        team=team,
+        project=team.project,
+        objective=objective,
+        input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
+        state=AgentRun.State.FAILED,
+        error_code="team_not_ready",
+        error_message=message[:4000],
+        started_at=now,
+        finished_at=now,
+    )
+
+
 @shared_task(max_retries=0)
 def dispatch_due_agent_schedules(limit=50):
     from .schedule_models import AgentSchedule
@@ -124,7 +141,12 @@ def dispatch_due_agent_schedules(limit=50):
                 objective = (schedule.objective or subject.objective).strip()
                 project = subject.project
             else:
-                subject = AgentTeam.objects.select_for_update().get(pk=schedule.team_id)
+                subject = (
+                    AgentTeam.objects.select_for_update()
+                    .select_related("director", "project")
+                    .prefetch_related("members__agent")
+                    .get(pk=schedule.team_id)
+                )
                 if not subject.active:
                     schedule.save(update_fields=["next_run_at", "updated_at"])
                     skipped += 1
@@ -165,16 +187,27 @@ def dispatch_due_agent_schedules(limit=50):
                     else:
                         launched += 1
             else:
-                run = AgentRun.objects.create(
-                    owner=schedule.owner,
-                    team=subject,
-                    project=project,
-                    objective=objective,
-                    input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
-                    state=AgentRun.State.QUEUED,
-                )
-                transaction.on_commit(lambda run_id=str(run.id): enqueue_agent_run(run_id))
-                launched += 1
+                readiness = team_readiness(subject)
+                if not readiness["ready"]:
+                    run = _failed_team_not_ready_run(
+                        schedule=schedule,
+                        team=subject,
+                        objective=objective,
+                        readiness=readiness,
+                        now=now,
+                    )
+                    not_ready += 1
+                else:
+                    run = AgentRun.objects.create(
+                        owner=schedule.owner,
+                        team=subject,
+                        project=project,
+                        objective=objective,
+                        input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
+                        state=AgentRun.State.QUEUED,
+                    )
+                    transaction.on_commit(lambda run_id=str(run.id): enqueue_agent_run(run_id))
+                    launched += 1
 
             schedule.last_run_at = now
             schedule.last_run = run
