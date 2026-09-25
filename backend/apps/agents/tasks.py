@@ -7,6 +7,7 @@ from django.utils import timezone
 from .generic_team_runtime import execute_generic_team_run
 from .graph_runtime import execute_graph_run
 from .models import Agent, AgentRun, AgentTeam
+from .run_views import create_single_agent_run
 from .runtime import execute_run
 from .team_runtime import execute_team_run
 
@@ -58,6 +59,7 @@ def dispatch_due_agent_schedules(limit=50):
     )
     launched = 0
     skipped = 0
+    waiting_approval = 0
     for schedule_id in due_ids:
         with transaction.atomic():
             schedule = (
@@ -99,18 +101,34 @@ def dispatch_due_agent_schedules(limit=50):
                 skipped += 1
                 continue
 
-            run = AgentRun.objects.create(
-                owner=schedule.owner,
-                agent=subject if schedule.agent_id else None,
-                team=subject if schedule.team_id else None,
-                project=project,
-                objective=objective,
-                input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
-                state=AgentRun.State.QUEUED,
-            )
+            if schedule.agent_id:
+                run = create_single_agent_run(
+                    owner=schedule.owner,
+                    agent=subject,
+                    objective=objective,
+                    input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
+                )
+                if run.state == AgentRun.State.WAITING_APPROVAL:
+                    waiting_approval += 1
+                else:
+                    launched += 1
+            else:
+                run = AgentRun.objects.create(
+                    owner=schedule.owner,
+                    team=subject,
+                    project=project,
+                    objective=objective,
+                    input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
+                    state=AgentRun.State.QUEUED,
+                )
+                transaction.on_commit(lambda run_id=str(run.id): execute_agent_run_task.delay(run_id))
+                launched += 1
             schedule.last_run = run
             schedule.save(update_fields=["next_run_at", "last_run_at", "last_run", "updated_at"])
-            transaction.on_commit(lambda run_id=str(run.id): execute_agent_run_task.delay(run_id))
-            launched += 1
 
-    return {"checked": len(due_ids), "launched": launched, "skipped": skipped}
+    return {
+        "checked": len(due_ids),
+        "launched": launched,
+        "waiting_approval": waiting_approval,
+        "skipped": skipped,
+    }
