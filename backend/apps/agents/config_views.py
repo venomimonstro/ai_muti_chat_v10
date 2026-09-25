@@ -6,19 +6,10 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Agent, AgentRun, AgentVersion
-from .serializers import AgentSerializer
+from .models import Agent, AgentVersion
+from .serializers import AgentSerializer, agent_has_active_run
 from .versioning import create_agent_version, restore_agent_version
 
-
-ACTIVE_RUN_STATES = {
-    AgentRun.State.QUEUED,
-    AgentRun.State.PLANNING,
-    AgentRun.State.RUNNING,
-    AgentRun.State.WAITING_TOOL,
-    AgentRun.State.WAITING_APPROVAL,
-    AgentRun.State.REVIEWING,
-}
 
 ALLOWED_NODE_TYPES = {
     "llm",
@@ -91,7 +82,7 @@ def _validate_graph(graph):
 
 
 def _ensure_agent_idle(agent):
-    if AgentRun.objects.filter(agent=agent, state__in=ACTIVE_RUN_STATES).exists():
+    if agent_has_active_run(agent):
         raise ValidationError({"detail": "Нельзя менять конфигурацию агента во время активного запуска. Сначала завершите или остановите задачу."})
 
 
