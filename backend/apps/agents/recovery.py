@@ -10,7 +10,7 @@ from apps.billing.services import release
 from apps.procurement.models import ProviderSpendReservation
 from apps.procurement.services import release_provider_spend
 
-from .models import AgentRun, AgentStepRun
+from .models import AgentApproval, AgentRun, AgentStepRun
 
 
 RECOVERABLE_STATES = (
@@ -28,8 +28,16 @@ def _timeout_seconds():
     return max(1200, int(os.getenv("AGENT_STALE_TIMEOUT_SECONDS", "1800")))
 
 
+def _approval_timeout_hours():
+    return max(1, int(os.getenv("AGENT_APPROVAL_TIMEOUT_HOURS", "72")))
+
+
 def _cutoff():
     return timezone.now() - timedelta(seconds=_timeout_seconds())
+
+
+def _approval_cutoff():
+    return timezone.now() - timedelta(hours=_approval_timeout_hours())
 
 
 def _release_customer_reservations(run_id):
@@ -103,6 +111,61 @@ def recover_agent_run(run_id):
         ]
     )
     return True
+
+
+@transaction.atomic
+def expire_agent_approval(approval_id):
+    approval = (
+        AgentApproval.objects.select_for_update()
+        .select_related("run")
+        .filter(pk=approval_id)
+        .first()
+    )
+    if approval is None or approval.status != AgentApproval.Status.PENDING:
+        return False
+    if approval.created_at >= _approval_cutoff():
+        return False
+
+    run = AgentRun.objects.select_for_update().get(pk=approval.run_id)
+    now = timezone.now()
+    approval.status = AgentApproval.Status.EXPIRED
+    approval.decided_at = now
+    approval.save(update_fields=["status", "decided_at"])
+
+    if run.state == AgentRun.State.WAITING_APPROVAL:
+        released_customer = _release_customer_reservations(run.id)
+        released_provider = _release_provider_reservations(run.id)
+        run.state = AgentRun.State.CANCELED
+        run.error_code = "agent_approval_expired"
+        run.error_message = (
+            f"Подтверждение не было получено за {_approval_timeout_hours()} ч. "
+            f"Действие отменено безопасно; освобождено резервов: user={released_customer}, provider={released_provider}."
+        )
+        run.finished_at = now
+        run.save(
+            update_fields=[
+                "state",
+                "error_code",
+                "error_message",
+                "finished_at",
+                "updated_at",
+            ]
+        )
+    return True
+
+
+def expire_stale_agent_approvals():
+    approval_ids = list(
+        AgentApproval.objects.filter(
+            status=AgentApproval.Status.PENDING,
+            created_at__lt=_approval_cutoff(),
+            run__state=AgentRun.State.WAITING_APPROVAL,
+        ).values_list("id", flat=True)[:500]
+    )
+    expired = 0
+    for approval_id in approval_ids:
+        expired += int(expire_agent_approval(approval_id))
+    return expired
 
 
 def recover_stale_agent_runs():
