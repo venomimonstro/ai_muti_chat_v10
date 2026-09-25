@@ -4,6 +4,7 @@ import Link from "next/link";
 import {useParams,useRouter} from "next/navigation";
 import {useEffect,useState} from "react";
 import {api} from "../../../../lib/api";
+import TeamFlowMap from "../TeamFlowMap";
 
 type Member={id:string;agent:string;agent_name:string;role:string;priority:number;can_delegate:boolean;enabled:boolean};
 type Team={id:string;name:string;objective:string;kind:string;director:string;director_name:string;active:boolean;max_cost_rub_per_run:string;max_handoffs:number;members:Member[]};
@@ -25,6 +26,7 @@ export default function TeamDetailPage(){
  return <main style={{maxWidth:1180,margin:"0 auto",padding:"30px 20px 70px"}}>
   <header style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"flex-start",marginBottom:24}}><div><Link href="/app/teams" style={{textDecoration:"none",opacity:.65}}>← Все команды</Link><h1 style={{fontSize:36,margin:"10px 0 6px"}}>{team.name}</h1><div style={{opacity:.62}}>Руководитель: {team.director_name} · {team.active?"работает":"пауза"}</div></div><button onClick={()=>void patchTeam({active:!team.active})} disabled={!!busy} style={{padding:"10px 13px",border:"1px solid #ccc",borderRadius:10,background:"transparent"}}>{team.active?"Поставить на паузу":"Включить команду"}</button></header>
   {notice&&<div style={{padding:12,border:"1px solid #7da78a",borderRadius:11,marginBottom:14}}>{notice}</div>}{error&&<div style={{padding:12,border:"1px solid #c96d74",borderRadius:11,marginBottom:14}}>{error}</div>}
+  <article style={{border:"1px solid #ddd",borderRadius:18,padding:20,marginBottom:18}}><div style={{fontSize:12,opacity:.55,textTransform:"uppercase"}}>Как работает команда</div><h2 style={{margin:"7px 0 12px"}}>Карта передачи задачи</h2><TeamFlowMap members={team.members} director={team.director}/><div style={{fontSize:12,opacity:.58,marginTop:10}}>Порядок соответствует приоритетам участников. После каждого этапа результат сохраняется как handoff и передаётся следующей роли.</div></article>
   <div style={{display:"grid",gridTemplateColumns:"minmax(0,1.2fr) minmax(300px,.8fr)",gap:18}}>
    <section style={{display:"grid",gap:16}}>
     <article style={{border:"1px solid #ddd",borderRadius:18,padding:20}}><h2 style={{marginTop:0}}>Цель команды</h2><textarea rows={5} value={team.objective} onChange={e=>setTeam({...team,objective:e.target.value})} style={{width:"100%",boxSizing:"border-box",padding:12,border:"1px solid #ccc",borderRadius:10,resize:"vertical"}}/><button disabled={busy==="team"} onClick={()=>void patchTeam({objective:team.objective})} style={{marginTop:10,padding:"9px 12px",border:0,borderRadius:9,fontWeight:700}}>Сохранить цель</button></article>
