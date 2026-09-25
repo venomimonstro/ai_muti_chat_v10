@@ -16,6 +16,7 @@ from .accounting import (
     settle_agent_provider_spend,
 )
 from .file_context import project_file_context
+from .limits import effective_remaining_budget
 from .memory import memory_context_for_agent
 from .models import AgentRun, AgentStepRun
 from .runtime import _model_for
@@ -188,13 +189,27 @@ def execute_generic_team_run(run_id):
             preflight = require_margin(
                 quote(price, estimated_input, output_tokens, provider_slug=model.provider.slug, model_slug=model.slug, operation_type="agent")
             )
-            if total + preflight.user_charge_rub > budget:
+
+            team_remaining = max(Decimal("0"), budget - total)
+            member_remaining, member_budget = effective_remaining_budget(member.agent, run=run)
+            effective_remaining = min(team_remaining, member_remaining)
+            if preflight.user_charge_rub > effective_remaining:
                 step.state = AgentStepRun.State.SKIPPED
-                step.public_log = f"Шаг не запущен: общий лимит команды {budget} ₽ может быть превышен."
+                if member_remaining <= team_remaining:
+                    step.public_log = (
+                        "Шаг не запущен: достигнут персональный лимит AI-сотрудника. "
+                        f"Остаток на запуск/день/месяц: {member_remaining} ₽ "
+                        f"(день {member_budget['day_spend']}/{member_budget['day_limit']} ₽, "
+                        f"месяц {member_budget['month_spend']}/{member_budget['month_limit']} ₽)."
+                    )
+                    code = "agent_period_budget_exceeded"
+                else:
+                    step.public_log = f"Шаг не запущен: общий лимит команды {budget} ₽ может быть превышен."
+                    code = "team_budget_exceeded"
                 step.finished_at = timezone.now()
                 step.save(update_fields=["state", "public_log", "finished_at"])
                 run.state = AgentRun.State.BUDGET_EXCEEDED
-                run.error_code = "team_budget_exceeded"
+                run.error_code = code
                 run.error_message = step.public_log
                 run.finished_at = timezone.now()
                 run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
