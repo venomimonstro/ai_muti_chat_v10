@@ -52,19 +52,47 @@ def _wordpress_connection(agent):
     return connection
 
 
-def _approved_for_publish(run, publish_sequence):
+def _ancestor_node_ids(agent, node_id):
+    graph = agent.graph or {}
+    edges = graph.get("edges") or [] if isinstance(graph, dict) else []
+    reverse = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("from") or "").strip()
+        target = str(edge.get("to") or "").strip()
+        if source and target:
+            reverse.setdefault(target, set()).add(source)
+
+    ancestors = set()
+    stack = list(reverse.get(str(node_id), set()))
+    while stack:
+        current = stack.pop()
+        if current in ancestors:
+            continue
+        ancestors.add(current)
+        stack.extend(reverse.get(current, set()))
+    return ancestors
+
+
+def _approved_for_publish(run, publish_step):
+    ancestors = _ancestor_node_ids(run.agent, publish_step.node_id)
+    if not ancestors:
+        return False
     return AgentApproval.objects.filter(
         run=run,
         status=AgentApproval.Status.APPROVED,
-        step__sequence__lt=publish_sequence,
+        action_payload__kind="workflow_approval",
+        action_payload__node_id__in=ancestors,
+        step__sequence__lt=publish_step.sequence,
     ).exists()
 
 
 def _can_publish(run, step):
     policy = str((run.agent.tool_policy or {}).get("publish") or "").strip().lower()
     if policy == "approval":
-        if not _approved_for_publish(run, step.sequence):
-            raise ValidationError("Публикация требует подтверждения пользователя перед узлом publish")
+        if not _approved_for_publish(run, step):
+            raise ValidationError("Публикация требует подтверждения пользователя в этой ветке workflow перед узлом publish")
         return True
     if policy in {"auto", "autonomous", "true"} and run.agent.autonomy == run.agent.Autonomy.AUTONOMOUS:
         return True
