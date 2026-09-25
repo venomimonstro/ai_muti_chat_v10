@@ -6,7 +6,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .generic_team_runtime import execute_generic_team_run
-from .graph_runtime import execute_graph_run
+from .graph_runtime_v2 import execute_graph_run_v2
 from .models import Agent, AgentApproval, AgentRun, AgentTeam
 from .readiness import agent_readiness
 from .run_views import create_single_agent_run
@@ -38,7 +38,7 @@ def execute_agent_run_task(self, run_id):
         tools = subject.get("agent__tool_policy") or {}
         has_graph = bool(graph.get("nodes"))
         if has_graph and not bool(tools.get("github")):
-            run = execute_graph_run(run_id)
+            run = execute_graph_run_v2(run_id)
             if run.state == AgentRun.State.COMPLETED:
                 from .publish_runtime import finalize_graph_publish_nodes
 
