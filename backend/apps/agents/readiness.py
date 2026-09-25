@@ -32,23 +32,31 @@ def agent_readiness(agent: Agent):
     graph = agent.graph if isinstance(agent.graph, dict) else {}
     nodes = [node for node in (graph.get("nodes") or []) if isinstance(node, dict)]
     node_types = [str(node.get("type") or "llm").strip().lower() for node in nodes]
-    checks["graph"] = bool(nodes)
-    if not nodes:
-        blockers.append("Карта действий пуста")
+    visual_workflow = bool(nodes)
+    checks["graph"] = visual_workflow
 
-    unsupported = sorted({node_type for node_type in node_types if node_type not in RUNTIME_NODE_TYPES})
-    checks["runtime_nodes"] = not unsupported
-    if unsupported:
-        blockers.append("Карта содержит шаги Dev Studio или неподдерживаемые действия: " + ", ".join(unsupported))
-
-    try:
-        model = _model_for(agent)
+    if not visual_workflow:
+        # Legacy/simple agents are still supported by execute_run(). That runtime
+        # resolves the model before any customer/provider reservation, so keeping
+        # them usable does not create a billing risk.
+        checks["runtime_nodes"] = True
         checks["model"] = True
-        model_name = model.slug
-    except ValidationError as exc:
-        checks["model"] = False
+        warnings.append("Используется простой режим без визуальной карты. Модель будет проверена непосредственно перед выполнением без списания средств.")
         model_name = ""
-        blockers.append(str(exc))
+    else:
+        unsupported = sorted({node_type for node_type in node_types if node_type not in RUNTIME_NODE_TYPES})
+        checks["runtime_nodes"] = not unsupported
+        if unsupported:
+            blockers.append("Карта содержит шаги Dev Studio или неподдерживаемые действия: " + ", ".join(unsupported))
+
+        try:
+            model = _model_for(agent)
+            checks["model"] = True
+            model_name = model.slug
+        except ValidationError as exc:
+            checks["model"] = False
+            model_name = ""
+            blockers.append(str(exc))
 
     policy = agent.tool_policy or {}
     if any(node_type in {"web", "research"} for node_type in node_types):
