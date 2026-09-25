@@ -6,10 +6,19 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Agent, AgentVersion
+from .models import Agent, AgentRun, AgentVersion
 from .serializers import AgentSerializer
 from .versioning import create_agent_version, restore_agent_version
 
+
+ACTIVE_RUN_STATES = {
+    AgentRun.State.QUEUED,
+    AgentRun.State.PLANNING,
+    AgentRun.State.RUNNING,
+    AgentRun.State.WAITING_TOOL,
+    AgentRun.State.WAITING_APPROVAL,
+    AgentRun.State.REVIEWING,
+}
 
 ALLOWED_NODE_TYPES = {
     "llm",
@@ -81,10 +90,16 @@ def _validate_graph(graph):
     return {"version": int(graph.get("version") or 1), "nodes": nodes, "edges": edges}
 
 
+def _ensure_agent_idle(agent):
+    if AgentRun.objects.filter(agent=agent, state__in=ACTIVE_RUN_STATES).exists():
+        raise ValidationError({"detail": "Нельзя менять конфигурацию агента во время активного запуска. Сначала завершите или остановите задачу."})
+
+
 class AgentConfigView(APIView):
     @transaction.atomic
     def patch(self, request, agent_id):
         agent = get_object_or_404(Agent.objects.select_for_update(), id=agent_id, owner=request.user)
+        _ensure_agent_idle(agent)
         payload = dict(request.data)
         if "graph" in payload:
             payload["graph"] = _validate_graph(payload["graph"])
@@ -122,6 +137,7 @@ class AgentVersionRestoreView(APIView):
     @transaction.atomic
     def post(self, request, agent_id, version_id):
         agent = get_object_or_404(Agent.objects.select_for_update(), id=agent_id, owner=request.user)
+        _ensure_agent_idle(agent)
         version = get_object_or_404(AgentVersion, id=version_id, agent=agent)
         restore_agent_version(agent, version, request.user)
         return Response(AgentSerializer(agent, context={"request": request}).data)
