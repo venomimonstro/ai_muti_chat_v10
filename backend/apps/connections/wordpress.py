@@ -84,16 +84,44 @@ def _post_payload(payload, fallback_status):
     }
 
 
+def find_wordpress_post_by_slug(connection, slug):
+    slug = str(slug or "").strip()
+    if not slug:
+        return None
+    payload = _request(
+        connection,
+        "GET",
+        "/wp-json/wp/v2/posts",
+        params={"slug": slug[:200], "context": "edit", "per_page": 1},
+        error_message="WordPress не ответил при проверке существующей записи",
+    )
+    if not isinstance(payload, list) or not payload:
+        return None
+    result = _post_payload(payload[0], str(payload[0].get("status") or "draft"))
+    result["existing"] = True
+    return result
+
+
 def create_wordpress_post(connection, *, title, content, status="draft", slug=""):
     if status not in {"draft", "publish"}:
         raise ValidationError("WordPress поддерживает только draft или publish")
     title = str(title or "").strip()
     content = str(content or "").strip()
+    slug = str(slug or "").strip()[:200]
     if not title or not content:
         raise ValidationError("Для публикации нужны заголовок и текст")
+
+    # WordPress core has no generic Idempotency-Key support. A stable unique
+    # slug therefore acts as our retry key: if a worker dies after WordPress
+    # accepted the POST but before our DB commit, the retry reuses that post.
+    if slug:
+        existing = find_wordpress_post_by_slug(connection, slug)
+        if existing is not None:
+            return existing
+
     body = {"title": title[:500], "content": content, "status": status}
     if slug:
-        body["slug"] = str(slug).strip()[:200]
+        body["slug"] = slug
     payload = _request(
         connection,
         "POST",
@@ -101,7 +129,9 @@ def create_wordpress_post(connection, *, title, content, status="draft", slug=""
         json=body,
         error_message="WordPress не принял публикацию",
     )
-    return _post_payload(payload, status)
+    result = _post_payload(payload, status)
+    result["existing"] = False
+    return result
 
 
 def update_wordpress_post(connection, *, post_id, status=None, title=None, content=None):
