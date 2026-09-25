@@ -7,7 +7,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Agent, AgentTeam, AgentTeamMember
+from .models import Agent, AgentRun, AgentTeam, AgentTeamMember
 from .serializers import AgentTeamSerializer
 from .versioning import create_agent_version
 
@@ -23,12 +23,26 @@ DEV_STRUCTURAL_ROLES = {
     "Development",
     "QA & Security",
 }
+ACTIVE_RUN_STATES = {
+    AgentRun.State.QUEUED,
+    AgentRun.State.PLANNING,
+    AgentRun.State.RUNNING,
+    AgentRun.State.WAITING_TOOL,
+    AgentRun.State.WAITING_APPROVAL,
+    AgentRun.State.REVIEWING,
+}
+
+
+def _ensure_team_idle(team):
+    if AgentRun.objects.filter(team=team, state__in=ACTIVE_RUN_STATES).exists():
+        raise ValidationError({"detail": "Нельзя менять состав или роли команды во время активного запуска"})
 
 
 class AgentTeamMemberDetailView(APIView):
     @transaction.atomic
     def patch(self, request, team_id, member_id):
         team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
+        _ensure_team_idle(team)
         member = get_object_or_404(
             AgentTeamMember.objects.select_for_update().select_related("agent"),
             id=member_id,
@@ -114,6 +128,7 @@ class AgentTeamMemberDetailView(APIView):
     @transaction.atomic
     def delete(self, request, team_id, member_id):
         team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
+        _ensure_team_idle(team)
         member = get_object_or_404(AgentTeamMember.objects.select_for_update(), id=member_id, team=team)
         if team.kind == AgentTeam.Kind.DEVELOPMENT and member.role in DEV_STRUCTURAL_ROLES:
             raise ValidationError({"detail": "Обязательного участника Dev Team нельзя удалить"})
@@ -128,6 +143,7 @@ class AgentTeamDirectorView(APIView):
     @transaction.atomic
     def post(self, request, team_id):
         team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
+        _ensure_team_idle(team)
         if team.kind == AgentTeam.Kind.DEVELOPMENT:
             raise ValidationError({"agent": "Руководитель Dev Team является структурной ролью и не меняется вручную"})
         agent = get_object_or_404(Agent, id=request.data.get("agent"), owner=request.user)
