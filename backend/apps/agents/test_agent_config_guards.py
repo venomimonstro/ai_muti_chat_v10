@@ -3,7 +3,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 
-from .models import Agent, AgentRun, AgentVersion
+from .models import Agent, AgentRun, AgentTeam, AgentTeamMember, AgentVersion
 
 
 @pytest.mark.django_db
@@ -37,6 +37,12 @@ def test_agent_config_is_frozen_during_active_run():
     )
 
     assert response.status_code == 400
+    direct = client.patch(
+        f"/api/v1/agents/{agent.id}/",
+        {"instructions": "Direct bypass"},
+        format="json",
+    )
+    assert direct.status_code == 400
     agent.refresh_from_db()
     assert agent.instructions == ""
     assert AgentVersion.objects.filter(agent=agent).count() == 0
@@ -99,3 +105,59 @@ def test_agent_version_restore_is_frozen_during_active_run():
     assert response.status_code == 400
     agent.refresh_from_db()
     assert agent.name == "Versioned agent"
+
+
+@pytest.mark.django_db
+def test_team_member_agent_config_is_frozen_during_team_run():
+    user = User.objects.create_user(
+        username="team-member-config-guard",
+        email="team-member-config-guard@example.com",
+        password="StrongPass123!",
+    )
+    director = Agent.objects.create(
+        owner=user,
+        name="Director",
+        role="Director",
+        objective="Direct",
+        status=Agent.Status.ACTIVE,
+    )
+    worker = Agent.objects.create(
+        owner=user,
+        name="Worker",
+        role="Worker",
+        objective="Work",
+        status=Agent.Status.ACTIVE,
+    )
+    team = AgentTeam.objects.create(
+        owner=user,
+        name="Team",
+        objective="Team work",
+        director=director,
+    )
+    AgentTeamMember.objects.create(team=team, agent=director, role="Director", priority=10, can_delegate=True)
+    AgentTeamMember.objects.create(team=team, agent=worker, role="Worker", priority=20)
+    AgentRun.objects.create(
+        owner=user,
+        team=team,
+        objective="Active team work",
+        state=AgentRun.State.RUNNING,
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    config = client.patch(
+        f"/api/v1/agents/{worker.id}/config/",
+        {"instructions": "Changed during team run"},
+        format="json",
+    )
+    assert config.status_code == 400
+
+    direct = client.patch(
+        f"/api/v1/agents/{worker.id}/",
+        {"instructions": "Direct team bypass"},
+        format="json",
+    )
+    assert direct.status_code == 400
+
+    worker.refresh_from_db()
+    assert worker.instructions == ""
