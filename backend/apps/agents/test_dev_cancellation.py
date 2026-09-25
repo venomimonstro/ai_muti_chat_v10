@@ -6,7 +6,7 @@ import pytest
 from apps.accounts.models import User
 from apps.projects.models import Project
 
-from .models import Agent, AgentApproval, AgentRun, AgentTeam
+from .models import Agent, AgentApproval, AgentRun, AgentTeam, AgentTeamMember
 from .team_runtime import _continue_approved_write, _run_llm_stage
 
 
@@ -96,3 +96,82 @@ def test_canceled_dev_run_never_writes_to_github_after_approval(dev_subjects):
     result.refresh_from_db()
     assert result.state == AgentRun.State.CANCELED
     apply_changes.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_cancel_during_github_write_stops_all_followup_stages(dev_subjects):
+    user, project, director, team = dev_subjects
+    developer = Agent.objects.create(
+        owner=user,
+        project=project,
+        name="Software Engineer",
+        role="Software Engineer",
+        objective="Implement approved changes",
+        status=Agent.Status.ACTIVE,
+    )
+    members = [
+        AgentTeamMember.objects.create(
+            team=team,
+            agent=director,
+            role="Engineering Director",
+            priority=10,
+            can_delegate=True,
+        ),
+        AgentTeamMember.objects.create(
+            team=team,
+            agent=developer,
+            role="Development",
+            priority=20,
+        ),
+    ]
+    run = AgentRun.objects.create(
+        owner=user,
+        team=team,
+        project=project,
+        objective="Do work",
+        state=AgentRun.State.QUEUED,
+        input_payload={"phase": "awaiting_github_approval"},
+    )
+    approval = AgentApproval.objects.create(
+        run=run,
+        requested_by_agent=developer,
+        title="GitHub write",
+        status=AgentApproval.Status.APPROVED,
+        action_payload={
+            "kind": "github_changes",
+            "changes": [
+                {
+                    "path": "README.md",
+                    "operation": "update",
+                    "content": "safe change",
+                    "reason": "test",
+                }
+            ],
+        },
+    )
+
+    def apply_then_cancel(*, project, run_id, changes):
+        AgentRun.objects.filter(pk=run_id).update(state=AgentRun.State.CANCELED)
+        return {
+            "branch": "agent/test-branch",
+            "sandbox": {"command": "pytest"},
+            "changes": [{"path": "README.md", "operation": "update"}],
+        }
+
+    with patch("apps.agents.team_runtime.apply_approved_changes", side_effect=apply_then_cancel), patch(
+        "apps.agents.team_runtime.build_repository_context"
+    ) as build_context, patch("apps.agents.team_runtime._run_llm_stage") as run_llm:
+        result = _continue_approved_write(
+            run=run,
+            approval=approval,
+            members=members,
+            total=Decimal("0"),
+            budget=Decimal("100"),
+        )
+
+    result.refresh_from_db()
+    assert result.state == AgentRun.State.CANCELED
+    assert result.input_payload.get("phase") == "reviewing_changes"
+    assert result.steps.filter(node_id="approved-github-write").count() == 1
+    build_context.assert_not_called()
+    run_llm.assert_not_called()
