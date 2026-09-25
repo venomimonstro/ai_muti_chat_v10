@@ -8,6 +8,7 @@ from .dev_pr_views import DevRunPullRequestView
 from .memory_views import AgentMemoryItemView, AgentMemoryView
 from .operations_views import AgentOperationsSummaryView
 from .readiness_views import AgentReadinessView
+from .repeat_views import AgentRunRepeatView
 from .run_views import SafeAgentRunView
 from .schedule_views import AgentScheduleViewSet
 from .team_builder_views import AgentTeamBootstrapView
@@ -57,6 +58,11 @@ urlpatterns = [
         "agent-runs/<uuid:run_id>/approvals/<uuid:approval_id>/decision/",
         SafeAgentApprovalDecisionView.as_view(),
         name="agent-safe-approval-decision",
+    ),
+    path(
+        "agent-runs/<uuid:run_id>/repeat/",
+        AgentRunRepeatView.as_view(),
+        name="agent-run-repeat",
     ),
     path(
         "agent-runs/<uuid:run_id>/pull-request/",
