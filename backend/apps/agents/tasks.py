@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
@@ -70,13 +68,15 @@ def dispatch_due_agent_schedules(limit=50):
             )
             if schedule is None:
                 continue
-            schedule.next_run_at = now + timedelta(minutes=max(5, int(schedule.interval_minutes)))
-            schedule.last_run_at = now
+
+            # Advance the cursor before any downstream work so a failed/slow
+            # launch cannot make the same due row fire repeatedly every minute.
+            schedule.next_run_at = schedule.compute_next_run(after=now)
 
             if schedule.agent_id:
                 subject = Agent.objects.select_for_update().get(pk=schedule.agent_id)
                 if subject.status != Agent.Status.ACTIVE:
-                    schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                    schedule.save(update_fields=["next_run_at", "updated_at"])
                     skipped += 1
                     continue
                 active = AgentRun.objects.filter(agent_id=subject.id, state__in=ACTIVE_RUN_STATES).exists()
@@ -85,7 +85,7 @@ def dispatch_due_agent_schedules(limit=50):
             else:
                 subject = AgentTeam.objects.select_for_update().get(pk=schedule.team_id)
                 if not subject.active:
-                    schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                    schedule.save(update_fields=["next_run_at", "updated_at"])
                     skipped += 1
                     continue
                 active = AgentRun.objects.filter(team_id=subject.id, state__in=ACTIVE_RUN_STATES).exists()
@@ -93,11 +93,11 @@ def dispatch_due_agent_schedules(limit=50):
                 project = subject.project
 
             if schedule.skip_if_running and active:
-                schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                schedule.save(update_fields=["next_run_at", "updated_at"])
                 skipped += 1
                 continue
             if not objective:
-                schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
+                schedule.save(update_fields=["next_run_at", "updated_at"])
                 skipped += 1
                 continue
 
@@ -123,6 +123,8 @@ def dispatch_due_agent_schedules(limit=50):
                 )
                 transaction.on_commit(lambda run_id=str(run.id): execute_agent_run_task.delay(run_id))
                 launched += 1
+
+            schedule.last_run_at = now
             schedule.last_run = run
             schedule.save(update_fields=["next_run_at", "last_run_at", "last_run", "updated_at"])
 
