@@ -18,7 +18,7 @@ from .accounting import (
 from .file_context import project_file_context
 from .image_tool import generate_agent_image
 from .limits import effective_remaining_budget
-from .memory import memory_context_for_agent
+from .memory import memory_snapshot_for_run
 from .models import AgentApproval, AgentRun, AgentStepRun
 from .runtime import _model_for
 
@@ -87,7 +87,7 @@ def _previous_text(run):
 
 
 def _messages(run, agent, node, *, web_context="", file_context=""):
-    memory_text, _ = memory_context_for_agent(agent)
+    memory_text, _ = memory_snapshot_for_run(run, agent)
     previous = _previous_text(run)
     context = []
     if memory_text:
