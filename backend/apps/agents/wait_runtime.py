@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -30,11 +31,7 @@ def wait_is_due(run, *, now=None):
 
 
 def handle_wait_node(run, agent, node, sequence):
-    """Pause a graph run durably or complete an already elapsed wait.
-
-    Returns True when execution must stop for now, False when the graph can
-    continue immediately.
-    """
+    """Pause a graph run durably or complete an already elapsed wait."""
     node_id = str(node.get("id") or f"wait-{sequence}")
     title = str(node.get("title") or "Подождать")[:240]
     now = timezone.now()
@@ -94,3 +91,26 @@ def handle_wait_node(run, agent, node, sequence):
     run.step_count = max(run.step_count, sequence)
     run.save(update_fields=["input_payload", "state", "step_count", "updated_at"])
     return True
+
+
+def resume_due_waits(*, limit=200):
+    """Requeue waits that reached resume_at without keeping a worker occupied."""
+    now = timezone.now()
+    candidate_ids = list(
+        AgentRun.objects.filter(state=AgentRun.State.WAITING_TOOL)
+        .order_by("updated_at")
+        .values_list("id", flat=True)[: max(1, min(int(limit), 1000))]
+    )
+    resumed = 0
+    for run_id in candidate_ids:
+        with transaction.atomic():
+            run = AgentRun.objects.select_for_update().filter(pk=run_id, state=AgentRun.State.WAITING_TOOL).first()
+            if run is None or not wait_metadata(run) or not wait_is_due(run, now=now):
+                continue
+            run.state = AgentRun.State.QUEUED
+            run.save(update_fields=["state", "updated_at"])
+            from .tasks import enqueue_agent_run
+
+            transaction.on_commit(lambda current_id=str(run.id): enqueue_agent_run(current_id))
+            resumed += 1
+    return resumed
