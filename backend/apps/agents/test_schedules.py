@@ -60,7 +60,7 @@ def test_daily_schedule_computes_next_local_time():
         timezone_name="Europe/Moscow",
         next_run_at=timezone.now(),
     )
-    after = datetime(2026, 9, 25, 5, 30, tzinfo=dt_timezone.utc)  # 08:30 Moscow
+    after = datetime(2026, 9, 25, 5, 30, tzinfo=dt_timezone.utc)
     next_run = schedule.compute_next_run(after=after)
     assert next_run == datetime(2026, 9, 25, 6, 0, tzinfo=dt_timezone.utc)
 
@@ -78,7 +78,6 @@ def test_weekday_schedule_skips_weekend():
         timezone_name="Europe/Moscow",
         next_run_at=timezone.now(),
     )
-    # Friday 25 Sep 2026, already after 09:00 Moscow -> Monday 28 Sep 09:00 Moscow.
     after = datetime(2026, 9, 25, 10, 0, tzinfo=dt_timezone.utc)
     next_run = schedule.compute_next_run(after=after)
     assert next_run == datetime(2026, 9, 28, 6, 0, tzinfo=dt_timezone.utc)
@@ -137,6 +136,56 @@ def test_schedule_skip_does_not_fake_last_run_timestamp():
     assert schedule.last_run_at is None
     assert schedule.last_run_id is None
     delay.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_legacy_skip_if_running_false_cannot_create_parallel_billable_run():
+    user = User.objects.create_user(username="schedule-overlap-legacy", email="schedule-overlap-legacy@example.com", password="StrongPass123!")
+    agent = Agent.objects.create(owner=user, name="Legacy busy agent", objective="Work", status=Agent.Status.ACTIVE)
+    existing = AgentRun.objects.create(owner=user, agent=agent, objective="Existing", state=AgentRun.State.RUNNING)
+    schedule = AgentSchedule.objects.create(
+        owner=user,
+        agent=agent,
+        name="Legacy unsafe flag",
+        cadence=AgentSchedule.Cadence.INTERVAL,
+        interval_minutes=30,
+        next_run_at=timezone.now()-timedelta(minutes=1),
+        skip_if_running=False,
+    )
+
+    with patch("apps.agents.tasks.execute_agent_run_task.delay") as delay:
+        result = dispatch_due_agent_schedules.run()
+
+    assert result["launched"] == 0
+    assert result["skipped"] == 1
+    assert list(AgentRun.objects.filter(agent=agent).values_list("id", flat=True)) == [existing.id]
+    delay.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_api_rejects_disabling_parallel_run_guard():
+    user = User.objects.create_user(username="schedule-guard-api", email="schedule-guard-api@example.com", password="StrongPass123!")
+    agent = Agent.objects.create(owner=user, name="Guarded agent", objective="Work", status=Agent.Status.ACTIVE)
+    schedule = AgentSchedule.objects.create(
+        owner=user,
+        agent=agent,
+        name="Guarded",
+        cadence=AgentSchedule.Cadence.INTERVAL,
+        interval_minutes=60,
+        next_run_at=timezone.now()+timedelta(hours=1),
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.patch(
+        f"/api/v1/agent-schedules/{schedule.id}/",
+        {"skip_if_running": False},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    schedule.refresh_from_db()
+    assert schedule.skip_if_running is True
 
 
 @pytest.mark.django_db
