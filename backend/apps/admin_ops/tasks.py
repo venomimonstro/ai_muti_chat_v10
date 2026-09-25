@@ -26,9 +26,10 @@ def system_heartbeat_task():
 @shared_task
 def recover_stale_operations_task():
     result = recover_stale_operations()
-    from apps.agents.recovery import recover_stale_agent_runs
+    from apps.agents.recovery import expire_stale_agent_approvals, recover_stale_agent_runs
 
     result["agent_runs"] = recover_stale_agent_runs()
+    result["agent_approvals"] = expire_stale_agent_approvals()
     return result
 
 
