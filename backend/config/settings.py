@@ -181,6 +181,7 @@ CELERY_BEAT_SCHEDULE = {
     "system-heartbeat": {"task": "apps.admin_ops.tasks.system_heartbeat_task", "schedule": 60.0},
     "agent-schedule-dispatch": {"task": "apps.agents.tasks.dispatch_due_agent_schedules", "schedule": 60.0},
     "agent-approval-expiry": {"task": "apps.agents.tasks.expire_stale_agent_approvals", "schedule": 900.0},
+    "external-connection-health-watch": {"task": "apps.connections.tasks.check_external_connections", "schedule": 21600.0},
     "daily-financial-reconciliation": {"task": "apps.billing.tasks.daily_financial_reconciliation", "schedule": 86400.0},
     "payment-reconciliation": {"task": "apps.admin_ops.tasks.payment_reconciliation_task", "schedule": 300.0},
     "recover-stale-operations": {"task": "apps.admin_ops.tasks.recover_stale_operations_task", "schedule": 300.0},
