@@ -37,6 +37,7 @@ export function Sidebar(props:Props){
   <nav className="sidePrimaryNav" aria-label="Основные разделы">
    <Link href="/app/projects" title="Проекты"><Icon name="folder"/><span>Проекты</span></Link>
    <Link href="/app/agents" title="AI-сотрудники"><Icon name="brain"/><span>Агенты</span></Link>
+   <Link href="/app/teams" title="Команды AI-сотрудников"><Icon name="brain"/><span>Команды</span></Link>
    <Link href="/app/dev" title="AI-команда разработки"><Icon name="zap"/><span>Dev Studio</span></Link>
    <Link href="/app/images" title="Изображения"><Icon name="spark"/><span>Изображения</span></Link>
    <Link href="/app/compare" title="Сравнение моделей"><Icon name="scale"/><span>Сравнить модели</span></Link>
