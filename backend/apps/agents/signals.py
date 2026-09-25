@@ -86,17 +86,32 @@ def _subject_name(run):
 
 @receiver(post_save, sender=AgentRun)
 def notify_autonomous_run_state(sender, instance, **kwargs):
+    # Human approval is important regardless of how the run was started. A
+    # manually launched controlled agent may keep working after the user leaves
+    # the run page, so every WAITING_APPROVAL state gets a deduplicated inbox
+    # notification.
+    if instance.state == AgentRun.State.WAITING_APPROVAL:
+        Notification.objects.get_or_create(
+            user=instance.owner,
+            dedupe_key=f"agent-run:{instance.id}:waiting_approval",
+            defaults={
+                "title": "AI-сотрудник ждёт подтверждения",
+                "body": f"{_subject_name(instance)} подготовил следующий шаг и ждёт вашего решения.",
+                "level": Notification.Level.WARNING,
+                "action_url": f"/app/runs/{instance.id}",
+            },
+        )
+        return
+
+    # Background schedules additionally notify about terminal outcomes because
+    # the user may not have an open browser tab when the work finishes.
     if not _scheduled_trigger(instance):
         return
 
     title = ""
     body = ""
     level = Notification.Level.INFO
-    if instance.state == AgentRun.State.WAITING_APPROVAL:
-        title = "AI-сотрудник ждёт подтверждения"
-        body = f"{_subject_name(instance)} подготовил следующий шаг и ждёт вашего решения."
-        level = Notification.Level.WARNING
-    elif instance.state == AgentRun.State.COMPLETED:
+    if instance.state == AgentRun.State.COMPLETED:
         title = "Автономная задача выполнена"
         body = f"{_subject_name(instance)} завершил задачу. Откройте журнал, чтобы посмотреть результат."
         level = Notification.Level.SUCCESS
