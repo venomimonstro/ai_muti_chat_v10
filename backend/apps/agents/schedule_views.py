@@ -118,6 +118,25 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
             .order_by("next_run_at", "name")
         )
 
+    @action(detail=True, methods=["get"])
+    def history(self, request, pk=None):
+        schedule = self.get_object()
+        limit_raw = str(request.query_params.get("limit") or "10").strip()
+        try:
+            limit = max(1, min(int(limit_raw), 50))
+        except ValueError:
+            raise serializers.ValidationError({"limit": "Используйте число от 1 до 50"})
+        runs = (
+            AgentRun.objects.filter(
+                owner=request.user,
+                input_payload__schedule_id=str(schedule.id),
+            )
+            .select_related("agent", "team", "project")
+            .prefetch_related("steps__agent", "approvals")
+            .order_by("-created_at")[:limit]
+        )
+        return Response(AgentRunSerializer(runs, many=True).data)
+
     @action(detail=True, methods=["post"], url_path="run-now")
     @transaction.atomic
     def run_now(self, request, pk=None):
