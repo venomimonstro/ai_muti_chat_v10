@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .generic_team_runtime import execute_generic_team_run
+from .graph_runtime import execute_graph_run
 from .models import Agent, AgentRun, AgentTeam
 from .runtime import execute_run
 from .team_runtime import execute_team_run
@@ -23,13 +24,18 @@ ACTIVE_RUN_STATES = {
 def execute_agent_run_task(self, run_id):
     subject = (
         AgentRun.objects.filter(pk=run_id)
-        .values("team_id", "team__kind", "team__director__role")
+        .values("agent_id", "agent__graph", "agent__tool_policy", "team_id", "team__kind", "team__director__role")
         .first()
     )
     if subject is None:
         return {"run_id": str(run_id), "state": "missing"}
     if not subject["team_id"]:
-        run = execute_run(run_id)
+        graph = subject.get("agent__graph") or {}
+        tools = subject.get("agent__tool_policy") or {}
+        has_graph = bool(graph.get("nodes"))
+        # GitHub/code agents remain on the specialized runtime. Ordinary visual
+        # employees execute their actual graph node-by-node.
+        run = execute_graph_run(run_id) if has_graph and not bool(tools.get("github")) else execute_run(run_id)
     else:
         role = str(subject.get("team__director__role") or "").strip().casefold()
         is_legacy_dev = role == "engineering director"
@@ -66,8 +72,6 @@ def dispatch_due_agent_schedules(limit=50):
             schedule.last_run_at = now
 
             if schedule.agent_id:
-                # Use the same subject-row lock as the manual run endpoint. This makes
-                # schedule/manual races serialize across workers and browser tabs.
                 subject = Agent.objects.select_for_update().get(pk=schedule.agent_id)
                 if subject.status != Agent.Status.ACTIVE:
                     schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
