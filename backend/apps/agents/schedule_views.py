@@ -81,8 +81,6 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
         return instance
 
     def create(self, validated_data):
-        # next_run_at is derived by the server. A client cannot schedule a hidden
-        # arbitrary timestamp that disagrees with the visible cadence settings.
         validated_data.pop("next_run_at", None)
         placeholder = timezone.now() + timedelta(minutes=max(5, int(validated_data.get("interval_minutes", 1440))))
         instance = AgentSchedule.objects.create(
@@ -181,9 +179,9 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
                 input_payload={"trigger": "schedule_run_now", "schedule_id": str(schedule.id)},
                 state=AgentRun.State.QUEUED,
             )
-            from .tasks import execute_agent_run_task
+            from .tasks import enqueue_agent_run
 
-            transaction.on_commit(lambda run_id=str(run.id): execute_agent_run_task.delay(run_id))
+            transaction.on_commit(lambda run_id=str(run.id): enqueue_agent_run(run_id))
 
         schedule.last_run_at = timezone.now()
         schedule.last_run = run
