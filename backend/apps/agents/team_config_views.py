@@ -17,6 +17,12 @@ AGENT_BUDGET_FIELDS = (
     "max_cost_rub_per_day",
     "max_cost_rub_per_month",
 )
+DEV_STRUCTURAL_ROLES = {
+    "Engineering Director",
+    "Architecture",
+    "Development",
+    "QA & Security",
+}
 
 
 class AgentTeamMemberDetailView(APIView):
@@ -30,6 +36,7 @@ class AgentTeamMemberDetailView(APIView):
         )
         agent = Agent.objects.select_for_update().get(pk=member.agent_id, owner=request.user)
 
+        structural_dev_member = team.kind == AgentTeam.Kind.DEVELOPMENT and member.role in DEV_STRUCTURAL_ROLES
         role = request.data.get("role")
         priority = request.data.get("priority")
         enabled = request.data.get("enabled")
@@ -38,6 +45,8 @@ class AgentTeamMemberDetailView(APIView):
             role = str(role).strip()
             if not role or len(role) > 160:
                 raise ValidationError({"role": "Укажите корректную роль"})
+            if structural_dev_member and role != member.role:
+                raise ValidationError({"role": "Обязательную роль Dev Team нельзя переименовать"})
             member.role = role
         if priority is not None:
             try:
@@ -53,6 +62,8 @@ class AgentTeamMemberDetailView(APIView):
                     raise ValidationError({"priority": "Руководитель должен оставаться первым этапом команды"})
             member.priority = priority
         if enabled is not None:
+            if structural_dev_member and not bool(enabled):
+                raise ValidationError({"enabled": "Обязательного участника Dev Team нельзя отключить"})
             member.enabled = bool(enabled)
         if can_delegate is not None:
             member.can_delegate = bool(can_delegate)
@@ -104,6 +115,8 @@ class AgentTeamMemberDetailView(APIView):
     def delete(self, request, team_id, member_id):
         team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
         member = get_object_or_404(AgentTeamMember.objects.select_for_update(), id=member_id, team=team)
+        if team.kind == AgentTeam.Kind.DEVELOPMENT and member.role in DEV_STRUCTURAL_ROLES:
+            raise ValidationError({"detail": "Обязательного участника Dev Team нельзя удалить"})
         if member.agent_id == team.director_id:
             raise ValidationError({"detail": "Сначала назначьте другого руководителя команды"})
         member.delete()
@@ -115,6 +128,8 @@ class AgentTeamDirectorView(APIView):
     @transaction.atomic
     def post(self, request, team_id):
         team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
+        if team.kind == AgentTeam.Kind.DEVELOPMENT:
+            raise ValidationError({"agent": "Руководитель Dev Team является структурной ролью и не меняется вручную"})
         agent = get_object_or_404(Agent, id=request.data.get("agent"), owner=request.user)
         member = AgentTeamMember.objects.select_for_update().filter(team=team, agent=agent, enabled=True).first()
         if member is None:
