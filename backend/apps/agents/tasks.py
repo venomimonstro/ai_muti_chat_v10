@@ -13,6 +13,7 @@ from .run_views import create_single_agent_run
 from .runtime import execute_run
 from .team_readiness import team_readiness
 from .team_runtime import execute_team_run
+from .wait_runtime import resume_due_waits
 
 ACTIVE_RUN_STATES = {
     AgentRun.State.QUEUED,
@@ -108,6 +109,7 @@ def _failed_team_not_ready_run(*, schedule, team, objective, readiness, now):
 def dispatch_due_agent_schedules(limit=50):
     from .schedule_models import AgentSchedule
 
+    resumed_waits = resume_due_waits(limit=200)
     now = timezone.now()
     due_ids = list(
         AgentSchedule.objects.filter(enabled=True, next_run_at__lte=now)
@@ -219,6 +221,7 @@ def dispatch_due_agent_schedules(limit=50):
         "waiting_approval": waiting_approval,
         "not_ready": not_ready,
         "skipped": skipped,
+        "resumed_waits": resumed_waits,
     }
 
 
