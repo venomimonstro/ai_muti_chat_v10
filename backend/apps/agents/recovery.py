@@ -2,6 +2,7 @@ import os
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.billing.models import BalanceReservation
@@ -32,9 +33,11 @@ def _cutoff():
 
 
 def _release_customer_reservations(run_id):
-    prefix = f"agent-run:{run_id}:step:"
+    run_id = str(run_id)
     reservation_ids = BalanceReservation.objects.filter(
-        idempotency_key__startswith=prefix,
+        Q(idempotency_key=f"agent-run:{run_id}")
+        | Q(idempotency_key__startswith=f"agent-run:{run_id}:step:")
+        | Q(idempotency_key__startswith=f"agent-team:{run_id}:step:"),
         state=BalanceReservation.State.ACTIVE,
     ).values_list("id", flat=True)
     released = 0
@@ -45,9 +48,11 @@ def _release_customer_reservations(run_id):
 
 
 def _release_provider_reservations(run_id):
-    prefix = f"agent:{run_id}:step:"
+    run_id = str(run_id)
     reservation_ids = ProviderSpendReservation.objects.filter(
-        source_key__startswith=prefix,
+        Q(source_key=f"agent:{run_id}")
+        | Q(source_key__startswith=f"agent:{run_id}:step:")
+        | Q(source_key__startswith=f"agent-team:{run_id}:step:"),
         state=ProviderSpendReservation.State.ACTIVE,
     ).values_list("id", flat=True)
     released = 0
