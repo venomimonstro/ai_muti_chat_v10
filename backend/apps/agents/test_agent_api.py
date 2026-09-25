@@ -7,7 +7,7 @@ from apps.accounts.models import User
 from apps.github_integration.models import GitHubInstallation, GitHubRepositoryBinding
 from apps.projects.models import Project
 
-from .models import Agent, AgentRun, AgentTeam
+from .models import Agent, AgentApproval, AgentRun, AgentTeam
 from .tasks import execute_agent_run_task
 
 
@@ -83,7 +83,12 @@ def test_agent_cannot_bind_to_another_users_project():
 @pytest.mark.django_db
 def test_agent_run_requires_activation_and_is_queued_once():
     user = User.objects.create_user(username="agent-runner", email="agent-runner@example.com", password="StrongPass123!")
-    agent = Agent.objects.create(owner=user, name="Разработчик", objective="Исправлять проект")
+    agent = Agent.objects.create(
+        owner=user,
+        name="Разработчик",
+        objective="Исправлять проект",
+        autonomy=Agent.Autonomy.SEMI_AUTONOMOUS,
+    )
     client = APIClient()
     client.force_authenticate(user)
 
@@ -100,6 +105,30 @@ def test_agent_run_requires_activation_and_is_queued_once():
     assert started.json()["state"] == "queued"
     run = AgentRun.objects.get(pk=started.json()["id"])
     delay.assert_called_once_with(str(run.id))
+
+
+@pytest.mark.django_db
+def test_controlled_agent_waits_for_approval_before_enqueue():
+    user = User.objects.create_user(username="agent-controlled", email="agent-controlled@example.com", password="StrongPass123!")
+    agent = Agent.objects.create(
+        owner=user,
+        name="Контролируемый агент",
+        objective="Подготовить результат",
+        autonomy=Agent.Autonomy.CONTROLLED,
+        status=Agent.Status.ACTIVE,
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    with patch("apps.agents.tasks.execute_agent_run_task.delay") as delay:
+        started = client.post(f"/api/v1/agents/{agent.id}/run/", {}, format="json")
+
+    assert started.status_code == 201
+    assert started.json()["state"] == "waiting_approval"
+    run = AgentRun.objects.get(pk=started.json()["id"])
+    approval = AgentApproval.objects.get(run=run)
+    assert approval.action_payload["kind"] == "controlled_run_start"
+    delay.assert_not_called()
 
 
 @pytest.mark.django_db
