@@ -43,3 +43,31 @@ def memory_context_for_agent(agent):
     if not blocks:
         return "", []
     return "\n".join(blocks), refs
+
+
+def memory_snapshot_for_run(run, agent):
+    """Return a stable memory snapshot for this agent within one run.
+
+    Agent memory remains editable while work is running, but those edits are
+    intentionally visible only to subsequent runs. Visual workflows and team
+    runtimes may call this helper many times; every call for the same run/agent
+    returns the exact same text and references captured on first use.
+    """
+    payload = dict(run.input_payload or {})
+    snapshots = dict(payload.get("memory_snapshots") or {})
+    key = str(agent.id)
+    existing = snapshots.get(key)
+    if isinstance(existing, dict):
+        text = str(existing.get("text") or "")
+        refs = [str(value) for value in (existing.get("refs") or [])]
+        return text, refs
+
+    text, refs = memory_context_for_agent(agent)
+    snapshots[key] = {
+        "text": text,
+        "refs": [str(value) for value in refs],
+    }
+    payload["memory_snapshots"] = snapshots
+    run.input_payload = payload
+    run.save(update_fields=["input_payload", "updated_at"])
+    return text, refs
