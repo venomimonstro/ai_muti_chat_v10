@@ -180,6 +180,7 @@ CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "330"))
 CELERY_BEAT_SCHEDULE = {
     "system-heartbeat": {"task": "apps.admin_ops.tasks.system_heartbeat_task", "schedule": 60.0},
     "agent-schedule-dispatch": {"task": "apps.agents.tasks.dispatch_due_agent_schedules", "schedule": 60.0},
+    "agent-approval-expiry": {"task": "apps.agents.tasks.expire_stale_agent_approvals", "schedule": 900.0},
     "daily-financial-reconciliation": {"task": "apps.billing.tasks.daily_financial_reconciliation", "schedule": 86400.0},
     "payment-reconciliation": {"task": "apps.admin_ops.tasks.payment_reconciliation_task", "schedule": 300.0},
     "recover-stale-operations": {"task": "apps.admin_ops.tasks.recover_stale_operations_task", "schedule": 300.0},
@@ -227,6 +228,7 @@ B2B_API_MAX_MESSAGE_CHARS = int(os.getenv("B2B_API_MAX_MESSAGE_CHARS", "100000")
 B2B_API_RUNNING_TIMEOUT_SECONDS = int(os.getenv("B2B_API_RUNNING_TIMEOUT_SECONDS", "600"))
 B2B_TRUST_PROXY_IP_HEADER = os.getenv("B2B_TRUST_PROXY_IP_HEADER", "false").lower() == "true"
 OPERATION_STALE_TIMEOUT_SECONDS = int(os.getenv("OPERATION_STALE_TIMEOUT_SECONDS", "900"))
+AGENT_APPROVAL_TIMEOUT_HOURS = int(os.getenv("AGENT_APPROVAL_TIMEOUT_HOURS", "72"))
 AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY_ENABLED", "false").lower() == "true"
 AUTO_MEMORY_MAX_CANDIDATES = int(os.getenv("AUTO_MEMORY_MAX_CANDIDATES", "3"))
 SMART_CONTEXT_RECENT_TURNS = int(os.getenv("SMART_CONTEXT_RECENT_TURNS", "6"))
