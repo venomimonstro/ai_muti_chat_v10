@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.conf import settings
 from rest_framework import serializers
 
-from .models import Agent, AgentApproval, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember, AgentVersion
+from .models import Agent, AgentApproval, AgentHandoff, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember, AgentVersion
 from .tool_policy import validate_tool_policy
 
 
@@ -170,12 +170,26 @@ class AgentApprovalSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class AgentHandoffSerializer(serializers.ModelSerializer):
+    from_agent_name = serializers.CharField(source="from_agent.name", read_only=True)
+    to_agent_name = serializers.CharField(source="to_agent.name", read_only=True)
+
+    class Meta:
+        model = AgentHandoff
+        fields = [
+            "id", "from_agent", "from_agent_name", "to_agent", "to_agent_name",
+            "task", "context", "result", "created_at", "completed_at",
+        ]
+        read_only_fields = fields
+
+
 class AgentRunSerializer(serializers.ModelSerializer):
     agent_name = serializers.CharField(source="agent.name", read_only=True)
     team_name = serializers.CharField(source="team.name", read_only=True)
     team_kind = serializers.CharField(source="team.kind", read_only=True)
     steps = AgentStepRunSerializer(many=True, read_only=True)
     approvals = AgentApprovalSerializer(many=True, read_only=True)
+    handoffs = AgentHandoffSerializer(many=True, read_only=True)
 
     class Meta:
         model = AgentRun
@@ -183,6 +197,6 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "id", "agent", "agent_name", "team", "team_name", "team_kind", "project", "state", "objective",
             "input_payload", "output_payload", "plan", "cost_reserved_rub", "cost_actual_rub",
             "step_count", "tool_call_count", "handoff_count", "error_code", "error_message",
-            "started_at", "finished_at", "created_at", "updated_at", "steps", "approvals",
+            "started_at", "finished_at", "created_at", "updated_at", "steps", "approvals", "handoffs",
         ]
         read_only_fields = fields
