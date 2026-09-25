@@ -17,6 +17,7 @@ from .accounting import (
 )
 from .file_context import project_file_context
 from .image_tool import generate_agent_image
+from .limits import effective_remaining_budget
 from .memory import memory_context_for_agent
 from .models import AgentApproval, AgentRun, AgentStepRun
 from .runtime import _model_for
@@ -35,7 +36,7 @@ def _release_customer(reservation):
             pass
 
 
-def _release_provider(reservation):
+def _release_provider(provider):
     if provider:
         try:
             release_agent_provider_spend(provider)
@@ -63,6 +64,15 @@ def _fail(run, step, code, message, customer=None, provider=None):
     run.error_code = str(code)[:120]
     run.error_message = str(message)[:4000]
     run.finished_at = now
+    run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+    return run
+
+
+def _budget_exceeded(run, message, code="agent_budget_exceeded"):
+    run.state = AgentRun.State.BUDGET_EXCEEDED
+    run.error_code = code
+    run.error_message = str(message)[:4000]
+    run.finished_at = timezone.now()
     run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
     return run
 
@@ -193,7 +203,7 @@ def _skip_external(run, agent, node, sequence, reason=None):
     run.save(update_fields=["step_count", "updated_at"])
 
 
-def _run_image_node(run, agent, node, sequence, budget):
+def _run_image_node(run, agent, node, sequence, remaining_budget):
     node_id = str(node.get("id") or f"image-{sequence}")
     title = str(node.get("title") or "Создать изображение")[:240]
     if run.steps.filter(node_id=node_id, state=AgentStepRun.State.COMPLETED).exists():
@@ -214,18 +224,16 @@ def _run_image_node(run, agent, node, sequence, budget):
         started_at=timezone.now(),
     )
     try:
-        current_total = Decimal(str(run.cost_actual_rub or 0))
-        remaining = max(Decimal("0"), budget - current_total)
         previous = _previous_text(run)
         prompt = str(node.get("prompt") or previous or run.objective).strip()
         result = generate_agent_image(
             run=run,
             node=node,
             prompt=prompt,
-            max_cost_rub=remaining,
+            max_cost_rub=remaining_budget,
         )
         actual = Decimal(str(result.get("actual_cost_rub") or 0))
-        run.refresh_from_db(fields=["state", "cost_actual_rub"])
+        run.refresh_from_db(fields=["state", "cost_actual_rub", "tool_call_count"])
         if run.state == AgentRun.State.CANCELED:
             step.state = AgentStepRun.State.COMPLETED
             step.public_log = (
@@ -251,18 +259,13 @@ def _run_image_node(run, agent, node, sequence, budget):
             step.public_log = f"Шаг не запущен: {message}"
             step.finished_at = timezone.now()
             step.save(update_fields=["state", "public_log", "finished_at"])
-            run.state = AgentRun.State.BUDGET_EXCEEDED
-            run.error_code = "agent_image_budget_exceeded"
-            run.error_message = message[:4000]
-            run.finished_at = timezone.now()
-            run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
-            return run
+            return _budget_exceeded(run, message, code="agent_image_budget_exceeded")
         return _fail(run, step, "agent_image_failed", message)
     except Exception as exc:
         return _fail(run, step, "agent_image_failed", str(exc))
 
 
-def _run_llm_node(run, agent, node, sequence, budget):
+def _run_llm_node(run, agent, node, sequence, remaining_budget):
     node_id = str(node.get("id") or f"node-{sequence}")
     title = str(node.get("title") or node_id)[:240]
     node_type = str(node.get("type") or "llm")
@@ -313,18 +316,15 @@ def _run_llm_node(run, agent, node, sequence, budget):
                 operation_type="agent",
             )
         )
-        total = Decimal(str(run.cost_actual_rub or 0))
-        if total + preflight.user_charge_rub > budget:
+        if preflight.user_charge_rub > remaining_budget:
             step.state = AgentStepRun.State.SKIPPED
-            step.public_log = f"Шаг не запущен: лимит запуска {budget} ₽ может быть превышен."
+            step.public_log = (
+                f"Шаг не запущен: расчётный максимум {preflight.user_charge_rub} ₽ "
+                f"превышает оставшийся лимит {remaining_budget} ₽."
+            )
             step.finished_at = timezone.now()
             step.save(update_fields=["state", "public_log", "finished_at"])
-            run.state = AgentRun.State.BUDGET_EXCEEDED
-            run.error_code = "agent_budget_exceeded"
-            run.error_message = step.public_log
-            run.finished_at = timezone.now()
-            run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
-            return run
+            return _budget_exceeded(run, step.public_log)
         customer = reserve(run.owner, preflight.user_charge_rub, f"agent-graph:{run.id}:{node_id}")
         provider_reservation = reserve_agent_provider_spend(
             model=model,
@@ -362,7 +362,7 @@ def _run_llm_node(run, agent, node, sequence, budget):
         provider_reservation = None
         settle(customer.id, actual)
         customer = None
-        run.refresh_from_db(fields=["state"])
+        run.refresh_from_db(fields=["state", "cost_actual_rub"])
         if run.state == AgentRun.State.CANCELED:
             step.state = AgentStepRun.State.COMPLETED
             step.public_log = "Запуск остановлен после обращения к модели; фактическая стоимость учтена, результат не опубликован."
@@ -395,6 +395,17 @@ def _run_llm_node(run, agent, node, sequence, budget):
         return _fail(run, step, "graph_node_failed", str(exc), customer, provider_reservation)
 
 
+def _planned_tool_calls(agent, node_type):
+    count = 0
+    if node_type == "image" and bool((agent.tool_policy or {}).get("images")):
+        count += 1
+    if node_type in {"web", "research"} and bool((agent.tool_policy or {}).get("web")):
+        count += 1
+    if node_type in SUPPORTED_LLM_NODES and bool((agent.tool_policy or {}).get("files")) and agent.project_id:
+        count += 1
+    return count
+
+
 def execute_graph_run(run_id):
     with transaction.atomic():
         run = (
@@ -419,11 +430,18 @@ def execute_graph_run(run_id):
     if len(nodes) > agent.max_steps:
         return _fail(run, None, "graph_step_limit", f"Карта содержит {len(nodes)} шагов при лимите {agent.max_steps}")
 
-    budget = Decimal(str(agent.max_cost_rub_per_run))
     for sequence, node in enumerate(nodes, start=1):
-        run.refresh_from_db(fields=["state", "cost_actual_rub", "step_count", "tool_call_count"])
+        run.refresh_from_db(fields=["state", "cost_actual_rub", "step_count", "tool_call_count", "started_at"])
         if run.state == AgentRun.State.CANCELED:
             return run
+        if run.started_at and (timezone.now() - run.started_at).total_seconds() > agent.max_runtime_seconds:
+            return _fail(
+                run,
+                None,
+                "agent_runtime_timeout",
+                f"Достигнут лимит времени запуска: {agent.max_runtime_seconds} секунд",
+            )
+
         node_id = str(node.get("id") or f"node-{sequence}")
         node_type = str(node.get("type") or "llm").strip().lower()
         if run.steps.filter(
@@ -431,12 +449,32 @@ def execute_graph_run(run_id):
             state__in=[AgentStepRun.State.COMPLETED, AgentStepRun.State.SKIPPED],
         ).exists():
             continue
+
+        needed_tools = _planned_tool_calls(agent, node_type)
+        if run.tool_call_count + needed_tools > agent.max_tool_calls:
+            return _fail(
+                run,
+                None,
+                "agent_tool_limit_exceeded",
+                f"Достигнут лимит вызовов инструментов: {agent.max_tool_calls}",
+            )
+
+        remaining_budget, snapshot = effective_remaining_budget(agent, run=run)
+        if remaining_budget <= 0 and node_type in SUPPORTED_LLM_NODES | {"image"}:
+            message = (
+                "Лимит расходов агента исчерпан. "
+                f"За запуск: {snapshot['run_spend']}/{snapshot['run_limit']} ₽; "
+                f"сегодня: {snapshot['day_spend']}/{snapshot['day_limit']} ₽; "
+                f"за месяц: {snapshot['month_spend']}/{snapshot['month_limit']} ₽."
+            )
+            return _budget_exceeded(run, message, code="agent_period_budget_exceeded")
+
         if node_type == "approval":
             if _handle_approval(run, agent, node, sequence):
                 return run
             continue
         if node_type == "image":
-            terminal = _run_image_node(run, agent, node, sequence, budget)
+            terminal = _run_image_node(run, agent, node, sequence, remaining_budget)
             if terminal is not None:
                 return terminal
             continue
@@ -446,7 +484,7 @@ def execute_graph_run(run_id):
         if node_type not in SUPPORTED_LLM_NODES:
             _skip_external(run, agent, node, sequence)
             continue
-        terminal = _run_llm_node(run, agent, node, sequence, budget)
+        terminal = _run_llm_node(run, agent, node, sequence, remaining_budget)
         if terminal is not None:
             return terminal
 
