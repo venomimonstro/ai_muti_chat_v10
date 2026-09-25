@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 
-from .models import Agent, AgentRun, AgentTeam, AgentTeamMember
+from .models import Agent, AgentApproval, AgentRun, AgentTeam, AgentTeamMember
 from .schedule_models import AgentSchedule
 from .tasks import dispatch_due_agent_schedules
 
@@ -139,6 +139,7 @@ def test_due_schedule_creates_single_queued_run_and_enqueues_after_commit():
         name="Autonomous Copywriter",
         objective="Write article",
         status=Agent.Status.ACTIVE,
+        autonomy=Agent.Autonomy.SEMI_AUTONOMOUS,
     )
     schedule = AgentSchedule.objects.create(
         owner=user,
@@ -155,9 +156,41 @@ def test_due_schedule_creates_single_queued_run_and_enqueues_after_commit():
         result = dispatch_due_agent_schedules.run()
 
     assert result["launched"] == 1
+    assert result["waiting_approval"] == 0
     assert AgentRun.objects.filter(agent=agent, state=AgentRun.State.QUEUED).count() == 1
     schedule.refresh_from_db()
     assert schedule.last_run_id is not None
-    # transaction.on_commit callbacks may run after the task body in Django tests;
-    # the durable assertion is that exactly one queued run was created and linked.
     assert delay.call_count in {0, 1}
+
+
+@pytest.mark.django_db
+def test_controlled_schedule_waits_for_user_approval_and_does_not_enqueue():
+    user = User.objects.create_user(username="schedule-controlled", email="schedule-controlled@example.com", password="StrongPass123!")
+    agent = Agent.objects.create(
+        owner=user,
+        name="Controlled SMM",
+        objective="Prepare content",
+        status=Agent.Status.ACTIVE,
+        autonomy=Agent.Autonomy.CONTROLLED,
+    )
+    schedule = AgentSchedule.objects.create(
+        owner=user,
+        agent=agent,
+        name="Daily controlled",
+        objective="Prepare today's post",
+        enabled=True,
+        interval_minutes=1440,
+        next_run_at=timezone.now() - timedelta(minutes=1),
+        skip_if_running=True,
+    )
+
+    with patch("apps.agents.tasks.execute_agent_run_task.delay") as delay:
+        result = dispatch_due_agent_schedules.run()
+
+    assert result["launched"] == 0
+    assert result["waiting_approval"] == 1
+    run = AgentRun.objects.get(agent=agent, state=AgentRun.State.WAITING_APPROVAL)
+    assert AgentApproval.objects.filter(run=run, action_payload__kind="controlled_run_start").exists()
+    delay.assert_not_called()
+    schedule.refresh_from_db()
+    assert schedule.last_run_id == run.id
