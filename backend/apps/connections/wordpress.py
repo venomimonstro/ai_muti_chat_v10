@@ -35,28 +35,52 @@ def _endpoint(connection, path):
     return url
 
 
-def check_wordpress(connection):
+def _request(connection, method, path, *, params=None, json=None, error_message):
     try:
-        response = httpx.get(
-            _endpoint(connection, "/wp-json/wp/v2/users/me"),
-            params={"context": "edit"},
+        response = httpx.request(
+            method,
+            _endpoint(connection, path),
+            params=params,
+            json=json,
             auth=_auth(connection),
             headers={"User-Agent": "AIWorkspace-WordPress/1.0"},
             timeout=TIMEOUT,
             follow_redirects=False,
         )
         response.raise_for_status()
-        payload = response.json()
+        return response.json()
     except ValidationError:
         raise
     except (httpx.HTTPError, ValueError) as exc:
-        raise ValidationError("Не удалось авторизоваться в WordPress. Проверьте URL, пользователя и Application Password") from exc
+        raise ValidationError(error_message) from exc
+
+
+def check_wordpress(connection):
+    payload = _request(
+        connection,
+        "GET",
+        "/wp-json/wp/v2/users/me",
+        params={"context": "edit"},
+        error_message="Не удалось авторизоваться в WordPress. Проверьте URL, пользователя и Application Password",
+    )
     user_id = payload.get("id")
     if not user_id:
         raise ValidationError("WordPress не подтвердил текущего пользователя")
     return {
         "user_id": int(user_id),
         "name": str(payload.get("name") or payload.get("slug") or connection.username)[:160],
+    }
+
+
+def _post_payload(payload, fallback_status):
+    post_id = payload.get("id")
+    if not post_id:
+        raise ValidationError("WordPress вернул некорректный ответ при сохранении записи")
+    return {
+        "post_id": int(post_id),
+        "status": str(payload.get("status") or fallback_status),
+        "url": str(payload.get("link") or ""),
+        "slug": str(payload.get("slug") or ""),
     }
 
 
@@ -70,27 +94,39 @@ def create_wordpress_post(connection, *, title, content, status="draft", slug=""
     body = {"title": title[:500], "content": content, "status": status}
     if slug:
         body["slug"] = str(slug).strip()[:200]
+    payload = _request(
+        connection,
+        "POST",
+        "/wp-json/wp/v2/posts",
+        json=body,
+        error_message="WordPress не принял публикацию",
+    )
+    return _post_payload(payload, status)
+
+
+def update_wordpress_post(connection, *, post_id, status=None, title=None, content=None):
     try:
-        response = httpx.post(
-            _endpoint(connection, "/wp-json/wp/v2/posts"),
-            json=body,
-            auth=_auth(connection),
-            headers={"User-Agent": "AIWorkspace-WordPress/1.0"},
-            timeout=TIMEOUT,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except ValidationError:
-        raise
-    except (httpx.HTTPError, ValueError) as exc:
-        raise ValidationError("WordPress не принял публикацию") from exc
-    post_id = payload.get("id")
-    if not post_id:
-        raise ValidationError("WordPress вернул некорректный ответ при создании записи")
-    return {
-        "post_id": int(post_id),
-        "status": str(payload.get("status") or status),
-        "url": str(payload.get("link") or ""),
-        "slug": str(payload.get("slug") or ""),
-    }
+        post_id = int(post_id)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Некорректный WordPress post id") from exc
+    if post_id <= 0:
+        raise ValidationError("Некорректный WordPress post id")
+    body = {}
+    if status is not None:
+        if status not in {"draft", "publish"}:
+            raise ValidationError("WordPress поддерживает только draft или publish")
+        body["status"] = status
+    if title is not None:
+        body["title"] = str(title).strip()[:500]
+    if content is not None:
+        body["content"] = str(content).strip()
+    if not body:
+        raise ValidationError("Нет изменений для WordPress записи")
+    payload = _request(
+        connection,
+        "POST",
+        f"/wp-json/wp/v2/posts/{post_id}",
+        json=body,
+        error_message="WordPress не обновил запись",
+    )
+    return _post_payload(payload, status or "draft")
