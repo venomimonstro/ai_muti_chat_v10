@@ -60,7 +60,10 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
         local_time = attrs.get("local_time", getattr(self.instance, "local_time", None))
         timezone_name = str(attrs.get("timezone_name", getattr(self.instance, "timezone_name", "Europe/Moscow")))
         weekdays = list(attrs.get("weekdays", getattr(self.instance, "weekdays", [])) or [])
+        skip_if_running = bool(attrs.get("skip_if_running", getattr(self.instance, "skip_if_running", True)))
 
+        if not skip_if_running:
+            raise serializers.ValidationError({"skip_if_running": "Параллельные запуски одного сотрудника или команды запрещены"})
         if interval < 5:
             raise serializers.ValidationError({"interval_minutes": "Минимальный интервал — 5 минут"})
         try:
@@ -82,6 +85,7 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop("next_run_at", None)
+        validated_data["skip_if_running"] = True
         placeholder = timezone.now() + timedelta(minutes=max(5, int(validated_data.get("interval_minutes", 1440))))
         instance = AgentSchedule.objects.create(
             owner=self.context["request"].user,
@@ -92,6 +96,7 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         validated_data.pop("next_run_at", None)
+        validated_data["skip_if_running"] = True
         scheduling_fields = {"cadence", "interval_minutes", "local_time", "timezone_name", "weekdays"}
         was_enabled = bool(instance.enabled)
         will_enable = bool(validated_data.get("enabled", instance.enabled))
