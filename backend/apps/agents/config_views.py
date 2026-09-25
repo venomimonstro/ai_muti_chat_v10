@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import ValidationError
@@ -32,8 +34,8 @@ ALLOWED_NODE_TYPES = {
 def _validate_graph(graph):
     if not isinstance(graph, dict):
         raise ValidationError({"graph": "Карта должна быть объектом"})
-    nodes = graph.get("nodes") or []
-    edges = graph.get("edges") or []
+    nodes = deepcopy(graph.get("nodes") or [])
+    edges = deepcopy(graph.get("edges") or [])
     if not isinstance(nodes, list) or not isinstance(edges, list):
         raise ValidationError({"graph": "nodes и edges должны быть массивами"})
     if len(nodes) > 100:
@@ -44,13 +46,23 @@ def _validate_graph(graph):
             raise ValidationError({"graph": f"Блок {index + 1} имеет неверный формат"})
         node_id = str(node.get("id") or "").strip()
         title = str(node.get("title") or "").strip()
-        node_type = str(node.get("type") or "llm").strip()
+        node_type = str(node.get("type") or "llm").strip().lower()
         if not node_id or len(node_id) > 120:
             raise ValidationError({"graph": f"У блока {index + 1} нет корректного id"})
         if not title or len(title) > 240:
             raise ValidationError({"graph": f"У блока {index + 1} нет корректного названия"})
         if node_type not in ALLOWED_NODE_TYPES:
             raise ValidationError({"graph": f"Тип блока {node_type} не поддерживается"})
+        node["id"] = node_id
+        node["title"] = title
+        node["type"] = node_type
+        if node_type == "publish":
+            publish_status = str(node.get("status") or "draft").strip().lower()
+            if publish_status not in {"draft", "publish"}:
+                raise ValidationError({"graph": "Для публикации выберите draft или publish"})
+            node["status"] = publish_status
+        else:
+            node.pop("status", None)
         ids.append(node_id)
     if len(ids) != len(set(ids)):
         raise ValidationError({"graph": "ID блоков карты должны быть уникальными"})
@@ -64,6 +76,8 @@ def _validate_graph(graph):
             raise ValidationError({"graph": "Связь ссылается на отсутствующий блок"})
         if source == target:
             raise ValidationError({"graph": "Блок нельзя связать с самим собой"})
+        edge["from"] = source
+        edge["to"] = target
     return {"version": int(graph.get("version") or 1), "nodes": nodes, "edges": edges}
 
 
