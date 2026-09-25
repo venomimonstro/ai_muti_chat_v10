@@ -55,6 +55,23 @@ def execute_agent_run_task(self, run_id):
     return {"run_id": str(run.id), "state": run.state}
 
 
+def enqueue_agent_run(run_id):
+    """Queue one run and fail it immediately if the broker cannot accept work."""
+    try:
+        execute_agent_run_task.delay(str(run_id))
+        return True
+    except Exception as exc:
+        now = timezone.now()
+        AgentRun.objects.filter(pk=run_id, state=AgentRun.State.QUEUED).update(
+            state=AgentRun.State.FAILED,
+            error_code="queue_unavailable",
+            error_message=str(exc)[:4000],
+            finished_at=now,
+            updated_at=now,
+        )
+        return False
+
+
 @shared_task(max_retries=0)
 def dispatch_due_agent_schedules(limit=50):
     from .schedule_models import AgentSchedule
@@ -131,7 +148,7 @@ def dispatch_due_agent_schedules(limit=50):
                     input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
                     state=AgentRun.State.QUEUED,
                 )
-                transaction.on_commit(lambda run_id=str(run.id): execute_agent_run_task.delay(run_id))
+                transaction.on_commit(lambda run_id=str(run.id): enqueue_agent_run(run_id))
                 launched += 1
 
             schedule.last_run_at = now
