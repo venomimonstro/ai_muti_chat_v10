@@ -242,6 +242,27 @@ def execute_generic_team_run(run_id):
             customer = None
             total += actual
 
+            run.refresh_from_db(fields=["state"])
+            if run.state == AgentRun.State.CANCELED:
+                step.state = AgentStepRun.State.COMPLETED
+                step.output_payload = {
+                    "canceled_after_provider": True,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "provider_request_id": result.provider_request_id,
+                }
+                step.public_log = (
+                    "Пользователь остановил команду после отправки запроса провайдеру. "
+                    "Фактически возникшая стоимость учтена, результат участника не опубликован."
+                )
+                step.cost_rub = actual
+                step.finished_at = timezone.now()
+                step.save(update_fields=["state", "output_payload", "public_log", "cost_rub", "finished_at"])
+                run.cost_actual_rub = total
+                run.step_count = index
+                run.save(update_fields=["cost_actual_rub", "step_count", "updated_at"])
+                return run
+
             step.state = AgentStepRun.State.COMPLETED
             step.output_payload = {
                 "text": result.text,
