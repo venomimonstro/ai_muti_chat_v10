@@ -10,15 +10,18 @@ from .team_runtime import execute_team_run
 def execute_agent_run_task(self, run_id):
     subject = (
         AgentRun.objects.filter(pk=run_id)
-        .values("team_id", "team__kind")
+        .values("team_id", "team__kind", "team__director__role")
         .first()
     )
     if subject is None:
         return {"run_id": str(run_id), "state": "missing"}
     if not subject["team_id"]:
         run = execute_run(run_id)
-    elif subject["team__kind"] == AgentTeam.Kind.DEVELOPMENT:
-        run = execute_team_run(run_id)
     else:
-        run = execute_generic_team_run(run_id)
+        role = str(subject.get("team__director__role") or "").strip().casefold()
+        is_legacy_dev = role == "engineering director"
+        if subject["team__kind"] == AgentTeam.Kind.DEVELOPMENT or is_legacy_dev:
+            run = execute_team_run(run_id)
+        else:
+            run = execute_generic_team_run(run_id)
     return {"run_id": str(run.id), "state": run.state}
