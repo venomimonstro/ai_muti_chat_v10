@@ -1,6 +1,6 @@
 import type {SVGProps} from "react";
 
-export type IconName="panel"|"plus"|"search"|"folder"|"folderPlus"|"pin"|"more"|"wallet"|"settings"|"user"|"bell"|"send"|"stop"|"copy"|"pencil"|"retry"|"trash"|"chevron"|"spark"|"zap"|"scale"|"brain"|"check"|"x"|"arrowDown";
+export type IconName="panel"|"plus"|"search"|"folder"|"folderPlus"|"pin"|"more"|"wallet"|"settings"|"user"|"bell"|"send"|"stop"|"copy"|"pencil"|"retry"|"trash"|"chevron"|"spark"|"zap"|"scale"|"brain"|"calendar"|"check"|"x"|"arrowDown";
 
 const paths:Record<IconName,string>={
  panel:"M4 5h16v14H4zM9 5v14",
@@ -25,6 +25,7 @@ const paths:Record<IconName,string>={
  zap:"m13 2-7 11h6l-1 9 7-12h-6z",
  scale:"M12 3v18M5 7h14M7 7l-4 7h8zM17 7l-4 7h8z",
  brain:"M9 4a3 3 0 0 0-3 3v1a3 3 0 0 0-1 5 3 3 0 0 0 2 5 3 3 0 0 0 5 2V6a2 2 0 0 0-3-2Zm6 0a3 3 0 0 1 3 3v1a3 3 0 0 1 1 5 3 3 0 0 1-2 5 3 3 0 0 1-5 2V6a2 2 0 0 1 3-2Z",
+ calendar:"M5 4v3M19 4v3M4 9h16M5 6h14a1 1 0 0 1 1 1v13H4V7a1 1 0 0 1 1-1Zm3 7h3v3H8z",
  check:"m5 12 4 4L19 6",
  x:"M6 6l12 12M18 6 6 18",
  arrowDown:"M12 5v14m-6-6 6 6 6-6",
