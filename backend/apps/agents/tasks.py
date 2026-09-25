@@ -66,19 +66,25 @@ def dispatch_due_agent_schedules(limit=50):
             schedule.last_run_at = now
 
             if schedule.agent_id:
-                if schedule.agent.status != Agent.Status.ACTIVE:
+                # Use the same subject-row lock as the manual run endpoint. This makes
+                # schedule/manual races serialize across workers and browser tabs.
+                subject = Agent.objects.select_for_update().get(pk=schedule.agent_id)
+                if subject.status != Agent.Status.ACTIVE:
                     schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
                     skipped += 1
                     continue
-                active = AgentRun.objects.filter(agent_id=schedule.agent_id, state__in=ACTIVE_RUN_STATES).exists()
-                objective = (schedule.objective or schedule.agent.objective).strip()
+                active = AgentRun.objects.filter(agent_id=subject.id, state__in=ACTIVE_RUN_STATES).exists()
+                objective = (schedule.objective or subject.objective).strip()
+                project = subject.project
             else:
-                if not schedule.team.active:
+                subject = AgentTeam.objects.select_for_update().get(pk=schedule.team_id)
+                if not subject.active:
                     schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
                     skipped += 1
                     continue
-                active = AgentRun.objects.filter(team_id=schedule.team_id, state__in=ACTIVE_RUN_STATES).exists()
-                objective = (schedule.objective or schedule.team.objective).strip()
+                active = AgentRun.objects.filter(team_id=subject.id, state__in=ACTIVE_RUN_STATES).exists()
+                objective = (schedule.objective or subject.objective).strip()
+                project = subject.project
 
             if schedule.skip_if_running and active:
                 schedule.save(update_fields=["next_run_at", "last_run_at", "updated_at"])
@@ -91,9 +97,9 @@ def dispatch_due_agent_schedules(limit=50):
 
             run = AgentRun.objects.create(
                 owner=schedule.owner,
-                agent=schedule.agent,
-                team=schedule.team,
-                project=schedule.agent.project if schedule.agent_id else schedule.team.project,
+                agent=subject if schedule.agent_id else None,
+                team=subject if schedule.team_id else None,
+                project=project,
                 objective=objective,
                 input_payload={"trigger": "schedule", "schedule_id": str(schedule.id)},
                 state=AgentRun.State.QUEUED,
