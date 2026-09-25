@@ -17,8 +17,9 @@ from .graph_runtime import (
 )
 from .limits import effective_remaining_budget
 from .models import AgentRun, AgentStepRun
+from .wait_runtime import handle_wait_node
 
-DETERMINISTIC_NODES = {"condition", "notify", "finish"}
+DETERMINISTIC_NODES = {"condition", "notify", "finish", "wait"}
 
 
 def _node_id(node, index):
@@ -248,7 +249,7 @@ def execute_graph_run_v2(run_id):
         node = by_id[current]
         sequence += 1
 
-        run.refresh_from_db(fields=["state", "cost_actual_rub", "step_count", "tool_call_count", "started_at"])
+        run.refresh_from_db(fields=["state", "cost_actual_rub", "step_count", "tool_call_count", "started_at", "input_payload"])
         if run.state == AgentRun.State.CANCELED:
             return run
         if run.started_at and (timezone.now() - run.started_at).total_seconds() > agent.max_runtime_seconds:
@@ -265,6 +266,11 @@ def execute_graph_run_v2(run_id):
             continue
         if node_type == "notify":
             _run_notify(run, agent, node, sequence)
+            current = default_next
+            continue
+        if node_type == "wait":
+            if handle_wait_node(run, agent, node, sequence):
+                return run
             current = default_next
             continue
         if node_type == "finish":
