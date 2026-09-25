@@ -6,7 +6,7 @@ from django.db.models import Count
 from django.utils import timezone
 
 from apps.ai_registry.models import RoutingPolicyVersion
-from apps.agents.models import Agent, AgentRun, AgentTeam
+from apps.agents.models import Agent, AgentApproval, AgentRun, AgentTeam
 from apps.agents.schedule_models import AgentSchedule
 
 
@@ -41,7 +41,7 @@ def _ancestor_node_ids(edges, node_id):
 
 
 class Command(BaseCommand):
-    help = "Audit Agent Studio, team routing, run invariants and autonomous schedules"
+    help = "Audit Agent Studio, Dev Studio, team routing, run invariants and autonomous schedules"
 
     def handle(self, *args, **options):
         failures = []
@@ -120,8 +120,21 @@ class Command(BaseCommand):
                 failures.append(f"team={team.id}: active team has no enabled members")
             if team.max_cost_rub_per_run <= 0 or team.max_handoffs < 1:
                 failures.append(f"team={team.id}: team budget/handoff limits must be positive")
-            if team.kind == AgentTeam.Kind.DEVELOPMENT and not team.project_id:
-                failures.append(f"team={team.id}: development team has no project")
+            if team.kind == AgentTeam.Kind.DEVELOPMENT:
+                if not team.project_id:
+                    failures.append(f"team={team.id}: development team has no project")
+                else:
+                    try:
+                        binding = team.project.github_repository
+                    except Exception:
+                        binding = None
+                    if binding is None:
+                        failures.append(f"team={team.id}: development project has no GitHub repository binding")
+                    else:
+                        if not binding.installation.active:
+                            failures.append(f"team={team.id}: GitHub installation is inactive")
+                        if not binding.full_name or not binding.default_branch:
+                            failures.append(f"team={team.id}: GitHub repository binding is incomplete")
             for membership in members:
                 if membership.agent.owner_id != team.owner_id:
                     failures.append(f"team={team.id}: member={membership.agent_id} belongs to another owner")
@@ -183,6 +196,22 @@ class Command(BaseCommand):
             failures.append(
                 f"team={row['team_id']}: {row['total']} simultaneous active runs for owner={row['owner_id']}"
             )
+
+        dev_runs = AgentRun.objects.filter(team__kind=AgentTeam.Kind.DEVELOPMENT).select_related("team", "project")
+        for run in dev_runs.filter(state__in=ACTIVE_RUN_STATES)[:500]:
+            payload = run.input_payload or {}
+            phase = str(payload.get("phase") or "").strip()
+            if run.state == AgentRun.State.WAITING_APPROVAL and phase == "awaiting_github_approval":
+                pending = run.approvals.filter(
+                    status=AgentApproval.Status.PENDING,
+                    action_payload__kind="github_changes",
+                ).exists()
+                if not pending:
+                    failures.append(f"run={run.id}: awaiting GitHub approval but no pending approval exists")
+            if phase == "reviewing_changes" and not str(payload.get("working_branch") or "").strip():
+                failures.append(f"run={run.id}: reviewing_changes has no working_branch")
+            if phase == "completed" and run.state != AgentRun.State.COMPLETED:
+                failures.append(f"run={run.id}: phase=completed but state={run.state}")
 
         stale_cutoff = timezone.now() - timedelta(hours=3)
         stale_states = [
