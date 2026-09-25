@@ -14,6 +14,53 @@ def _token(binding, *, write=False):
     )
 
 
+def _owner(binding):
+    full_name = str(binding.full_name or "").strip()
+    if "/" not in full_name:
+        raise ValidationError("Некорректный GitHub repository binding")
+    return full_name.split("/", 1)[0]
+
+
+def find_open_pull_request(binding, *, head, base=None):
+    head = str(head or "").strip()
+    base = str(base or binding.default_branch).strip()
+    if not head:
+        return None
+    token = _token(binding)
+    payload = _json_request(
+        "GET",
+        f"{GITHUB_API}/repos/{binding.full_name}/pulls",
+        headers=_headers(token),
+        params={
+            "state": "open",
+            "head": f"{_owner(binding)}:{head}",
+            "base": base,
+            "per_page": 20,
+        },
+    )
+    if not isinstance(payload, list) or not payload:
+        return None
+    return payload[0]
+
+
+def _serialize_pull(payload, *, head, base, existing):
+    number = int(payload.get("number") or 0)
+    html_url = str(payload.get("html_url") or "")
+    head_sha = str(((payload.get("head") or {}).get("sha")) or "")
+    if number <= 0 or not head_sha:
+        raise ValidationError("GitHub вернул некорректный Pull Request")
+    return {
+        "number": number,
+        "html_url": html_url,
+        "head": head,
+        "head_sha": head_sha,
+        "base": base,
+        "state": str(payload.get("state") or "open"),
+        "draft": bool(payload.get("draft", False)),
+        "existing": bool(existing),
+    }
+
+
 def create_pull_request(binding, *, head, title, body="", base=None):
     head = str(head or "").strip()
     base = str(base or binding.default_branch).strip()
@@ -21,6 +68,9 @@ def create_pull_request(binding, *, head, title, body="", base=None):
         raise ValidationError("Pull Request требует отдельную рабочую ветку")
     if base != binding.default_branch:
         raise ValidationError("Dev Studio может создавать PR только в default branch проекта")
+    existing = find_open_pull_request(binding, head=head, base=base)
+    if existing:
+        return _serialize_pull(existing, head=head, base=base, existing=True)
     token = _token(binding)
     payload = _json_request(
         "POST",
@@ -31,22 +81,10 @@ def create_pull_request(binding, *, head, title, body="", base=None):
             "head": head,
             "base": base,
             "body": str(body or "")[:60000],
-            "draft": False,
+            "draft": True,
         },
     )
-    number = int(payload.get("number") or 0)
-    html_url = str(payload.get("html_url") or "")
-    head_sha = str(((payload.get("head") or {}).get("sha")) or "")
-    if number <= 0 or not head_sha:
-        raise ValidationError("GitHub создал некорректный Pull Request")
-    return {
-        "number": number,
-        "html_url": html_url,
-        "head": head,
-        "head_sha": head_sha,
-        "base": base,
-        "state": str(payload.get("state") or "open"),
-    }
+    return _serialize_pull(payload, head=head, base=base, existing=False)
 
 
 def get_pull_request(binding, number):
