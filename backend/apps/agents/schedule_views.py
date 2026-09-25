@@ -1,11 +1,26 @@
 from datetime import timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.db import transaction
 from django.utils import timezone
-from rest_framework import serializers, viewsets
+from rest_framework import serializers, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
-from .models import Agent, AgentTeam
+from .models import Agent, AgentRun, AgentTeam
+from .run_views import create_single_agent_run
 from .schedule_models import AgentSchedule
+from .serializers import AgentRunSerializer
+
+
+ACTIVE_RUN_STATES = {
+    AgentRun.State.QUEUED,
+    AgentRun.State.PLANNING,
+    AgentRun.State.RUNNING,
+    AgentRun.State.WAITING_TOOL,
+    AgentRun.State.WAITING_APPROVAL,
+    AgentRun.State.REVIEWING,
+}
 
 
 class AgentScheduleSerializer(serializers.ModelSerializer):
@@ -102,6 +117,59 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
             .select_related("agent", "team", "last_run")
             .order_by("next_run_at", "name")
         )
+
+    @action(detail=True, methods=["post"], url_path="run-now")
+    @transaction.atomic
+    def run_now(self, request, pk=None):
+        scoped = self.get_object()
+        schedule = (
+            AgentSchedule.objects.select_for_update()
+            .select_related("agent", "team")
+            .get(pk=scoped.pk, owner=request.user)
+        )
+
+        if schedule.agent_id:
+            subject = Agent.objects.select_for_update().get(pk=schedule.agent_id, owner=request.user)
+            if subject.status != Agent.Status.ACTIVE:
+                raise serializers.ValidationError({"detail": "Сотрудник приостановлен"})
+            active = AgentRun.objects.filter(owner=request.user, agent=subject, state__in=ACTIVE_RUN_STATES).first()
+            if active is not None:
+                return Response(AgentRunSerializer(active).data, status=status.HTTP_200_OK)
+            objective = (schedule.objective or subject.objective or "").strip()
+            if not objective:
+                raise serializers.ValidationError({"objective": "У расписания и сотрудника нет задачи"})
+            run = create_single_agent_run(
+                owner=request.user,
+                agent=subject,
+                objective=objective,
+                input_payload={"trigger": "schedule_run_now", "schedule_id": str(schedule.id)},
+            )
+        else:
+            subject = AgentTeam.objects.select_for_update().get(pk=schedule.team_id, owner=request.user)
+            if not subject.active:
+                raise serializers.ValidationError({"detail": "Команда приостановлена"})
+            active = AgentRun.objects.filter(owner=request.user, team=subject, state__in=ACTIVE_RUN_STATES).first()
+            if active is not None:
+                return Response(AgentRunSerializer(active).data, status=status.HTTP_200_OK)
+            objective = (schedule.objective or subject.objective or "").strip()
+            if not objective:
+                raise serializers.ValidationError({"objective": "У расписания и команды нет задачи"})
+            run = AgentRun.objects.create(
+                owner=request.user,
+                team=subject,
+                project=subject.project,
+                objective=objective,
+                input_payload={"trigger": "schedule_run_now", "schedule_id": str(schedule.id)},
+                state=AgentRun.State.QUEUED,
+            )
+            from .tasks import execute_agent_run_task
+
+            transaction.on_commit(lambda run_id=str(run.id): execute_agent_run_task.delay(run_id))
+
+        schedule.last_run_at = timezone.now()
+        schedule.last_run = run
+        schedule.save(update_fields=["last_run_at", "last_run", "updated_at"])
+        return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)
 
     def perform_destroy(self, instance):
         instance.delete()
