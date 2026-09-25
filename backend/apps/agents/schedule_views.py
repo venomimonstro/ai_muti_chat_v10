@@ -8,6 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import Agent, AgentRun, AgentTeam
+from .readiness import agent_readiness
 from .run_views import create_single_agent_run
 from .schedule_models import AgentSchedule
 from .serializers import AgentRunSerializer
@@ -151,7 +152,7 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
         )
 
         if schedule.agent_id:
-            subject = Agent.objects.select_for_update().get(pk=schedule.agent_id, owner=request.user)
+            subject = Agent.objects.select_for_update().select_related("project").get(pk=schedule.agent_id, owner=request.user)
             if subject.status != Agent.Status.ACTIVE:
                 raise serializers.ValidationError({"detail": "Сотрудник приостановлен"})
             active = AgentRun.objects.filter(owner=request.user, agent=subject, state__in=ACTIVE_RUN_STATES).first()
@@ -160,6 +161,11 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
             objective = (schedule.objective or subject.objective or "").strip()
             if not objective:
                 raise serializers.ValidationError({"objective": "У расписания и сотрудника нет задачи"})
+            readiness = agent_readiness(subject)
+            if not readiness["ready"]:
+                raise serializers.ValidationError(
+                    {"detail": "Сотрудник не готов к запуску: " + "; ".join(readiness["blockers"])}
+                )
             run = create_single_agent_run(
                 owner=request.user,
                 agent=subject,
