@@ -54,8 +54,6 @@ def handle_wait_node(run, agent, node, sequence):
         payload.pop(WAIT_KEY, None)
         run.input_payload = payload
         run.state = AgentRun.State.PLANNING
-        # Waiting is not active worker execution. Start a fresh active-time
-        # segment so a legitimate multi-hour pause cannot trigger runtime timeout.
         run.started_at = now
         run.step_count = max(run.step_count, sequence)
         run.save(update_fields=["input_payload", "state", "started_at", "step_count", "updated_at"])
@@ -111,7 +109,8 @@ def resume_due_waits(*, limit=200):
             if run is None or not wait_metadata(run) or not wait_is_due(run, now=now):
                 continue
             run.state = AgentRun.State.QUEUED
-            run.save(update_fields=["state", "updated_at"])
+            run.started_at = now
+            run.save(update_fields=["state", "started_at", "updated_at"])
             from .tasks import enqueue_agent_run
 
             transaction.on_commit(lambda current_id=str(run.id): enqueue_agent_run(current_id))
