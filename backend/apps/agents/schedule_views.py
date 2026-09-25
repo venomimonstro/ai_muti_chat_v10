@@ -12,6 +12,7 @@ from .readiness import agent_readiness
 from .run_views import create_single_agent_run
 from .schedule_models import AgentSchedule
 from .serializers import AgentRunSerializer
+from .team_readiness import team_readiness
 
 
 ACTIVE_RUN_STATES = {
@@ -173,15 +174,23 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
                 input_payload={"trigger": "schedule_run_now", "schedule_id": str(schedule.id)},
             )
         else:
-            subject = AgentTeam.objects.select_for_update().get(pk=schedule.team_id, owner=request.user)
-            if not subject.active:
-                raise serializers.ValidationError({"detail": "Команда приостановлена"})
+            subject = (
+                AgentTeam.objects.select_for_update()
+                .select_related("director", "project")
+                .prefetch_related("members__agent")
+                .get(pk=schedule.team_id, owner=request.user)
+            )
             active = AgentRun.objects.filter(owner=request.user, team=subject, state__in=ACTIVE_RUN_STATES).first()
             if active is not None:
                 return Response(AgentRunSerializer(active).data, status=status.HTTP_200_OK)
             objective = (schedule.objective or subject.objective or "").strip()
             if not objective:
                 raise serializers.ValidationError({"objective": "У расписания и команды нет задачи"})
+            readiness = team_readiness(subject)
+            if not readiness["ready"]:
+                raise serializers.ValidationError(
+                    {"detail": "Команда не готова к запуску: " + "; ".join(readiness["blockers"])}
+                )
             run = AgentRun.objects.create(
                 owner=request.user,
                 team=subject,
