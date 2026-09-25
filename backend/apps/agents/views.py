@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -11,7 +12,7 @@ from apps.projects.models import Project
 
 from .models import Agent, AgentApproval, AgentRun, AgentTeam, AgentTeamMember
 from .planner import draft_from_description, graph_for_kind
-from .serializers import AgentRunSerializer, AgentSerializer, AgentTeamSerializer
+from .serializers import AgentRunSerializer, AgentSerializer, AgentTeamSerializer, agent_has_active_run
 from .team_builder import team_draft
 
 
@@ -96,6 +97,32 @@ def _owned_project(user, raw_id):
     return project
 
 
+def _active_run_for_agent(agent):
+    return (
+        AgentRun.objects.filter(
+            Q(agent_id=agent.id) | Q(team__members__agent_id=agent.id, team__members__enabled=True),
+            state__in=ACTIVE_RUN_STATES,
+        )
+        .distinct()
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def _team_has_active_run(team):
+    return AgentRun.objects.filter(team=team, state__in=ACTIVE_RUN_STATES).exists()
+
+
+def _busy_members_for_team(team):
+    members = list(team.members.filter(enabled=True).select_related("agent"))
+    conflicts = []
+    for membership in members:
+        active = _active_run_for_agent(membership.agent)
+        if active is not None and active.team_id != team.id:
+            conflicts.append((membership.agent, active))
+    return conflicts
+
+
 def _create_dev_agent(user, *, project, name, role, objective, level="balanced", tools=None):
     return Agent.objects.create(
         owner=user,
@@ -124,6 +151,11 @@ class AgentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
+
+    def perform_destroy(self, instance):
+        if agent_has_active_run(instance):
+            raise ValidationError({"detail": "Нельзя удалить AI-сотрудника во время активного запуска"})
+        instance.delete()
 
     @action(detail=False, methods=["get"], url_path="templates")
     def templates(self, request):
@@ -176,6 +208,8 @@ class AgentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def activate(self, request, pk=None):
         agent = self.get_object()
+        if agent_has_active_run(agent):
+            raise ValidationError({"detail": "Нельзя менять состояние AI-сотрудника во время активного запуска"})
         if not agent.objective.strip():
             raise ValidationError({"objective": "Сначала задайте цель агента"})
         agent.status = Agent.Status.ACTIVE
@@ -189,13 +223,11 @@ class AgentViewSet(viewsets.ModelViewSet):
         agent = Agent.objects.select_for_update().get(pk=scoped.pk)
         if agent.status != Agent.Status.ACTIVE:
             raise ValidationError({"detail": "Сначала активируйте агента"})
-        existing = (
-            AgentRun.objects.filter(owner=request.user, agent=agent, state__in=ACTIVE_RUN_STATES)
-            .order_by("-created_at")
-            .first()
-        )
+        existing = _active_run_for_agent(agent)
         if existing is not None:
-            return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
+            if existing.agent_id == agent.id:
+                return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
+            raise ValidationError({"detail": "AI-сотрудник уже занят активной задачей команды"})
         objective = str(request.data.get("objective") or agent.objective).strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу запуска"})
@@ -220,6 +252,11 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
+
+    def perform_destroy(self, instance):
+        if _team_has_active_run(instance):
+            raise ValidationError({"detail": "Нельзя удалить команду во время активного запуска"})
+        instance.delete()
 
     @action(detail=False, methods=["post"], url_path="from-description")
     @transaction.atomic
@@ -305,11 +342,16 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="members")
     @transaction.atomic
     def add_member(self, request, pk=None):
-        team = self.get_object()
+        scoped = self.get_object()
+        team = AgentTeam.objects.select_for_update().get(pk=scoped.pk, owner=request.user)
+        if _team_has_active_run(team):
+            raise ValidationError({"detail": "Нельзя менять состав команды во время активного запуска"})
         try:
             agent = Agent.objects.get(id=request.data.get("agent"), owner=request.user)
         except (Agent.DoesNotExist, ValueError, TypeError):
             raise ValidationError({"agent": "Агент не найден"})
+        if agent_has_active_run(agent):
+            raise ValidationError({"agent": "AI-сотрудник сейчас занят другим активным запуском"})
         if team.project_id and agent.project_id not in {None, team.project_id}:
             raise ValidationError({"agent": "Агент привязан к другому проекту"})
         AgentTeamMember.objects.update_or_create(
@@ -338,6 +380,10 @@ class AgentTeamViewSet(viewsets.ModelViewSet):
         )
         if existing is not None:
             return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
+        conflicts = _busy_members_for_team(team)
+        if conflicts:
+            names = ", ".join(agent.name for agent, _run in conflicts[:5])
+            raise ValidationError({"detail": f"Нельзя запустить команду: уже заняты участники — {names}"})
         objective = str(request.data.get("objective") or team.objective).strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу команды"})
