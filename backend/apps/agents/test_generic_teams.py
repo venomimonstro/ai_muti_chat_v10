@@ -7,6 +7,14 @@ from apps.accounts.models import User
 
 from .models import AgentRun, AgentTeam
 from .tasks import execute_agent_run_task
+from .team_builder import infer_team_kind
+
+
+def test_team_kind_classifier_separates_content_marketing_and_sales():
+    assert infer_team_kind("контент-команда для статей, SEO и редакторской проверки") == AgentTeam.Kind.CONTENT
+    assert infer_team_kind("SMM отдел для соцсетей, рекламы и продвижения бренда") == AgentTeam.Kind.MARKETING
+    assert infer_team_kind("отдел продаж для лидов, CRM и клиентов") == AgentTeam.Kind.SALES
+    assert infer_team_kind("команда разработчиков GitHub backend frontend") == AgentTeam.Kind.DEVELOPMENT
 
 
 @pytest.mark.django_db
@@ -17,7 +25,7 @@ def test_team_can_be_created_from_plain_language_without_project():
 
     response = client.post(
         "/api/v1/agent-teams/from-description/",
-        {"description": "Нужен маркетинговый отдел: анализировать конкурентов, делать контент-план, писать посты и проверять факты"},
+        {"description": "Нужен маркетинговый отдел: анализировать конкурентов, делать SMM-план, рекламу и проверять факты"},
         format="json",
     )
 
@@ -28,6 +36,20 @@ def test_team_can_be_created_from_plain_language_without_project():
     assert len(payload["members"]) >= 4
     assert payload["members"][0]["can_delegate"] is True
     assert AgentTeam.objects.filter(owner=user, kind=AgentTeam.Kind.MARKETING).exists()
+
+
+@pytest.mark.django_db
+def test_content_team_is_not_misclassified_as_marketing():
+    user = User.objects.create_user(username="team-content-natural", email="team-content-natural@example.com", password="StrongPass123!")
+    client = APIClient()
+    client.force_authenticate(user)
+    response = client.post(
+        "/api/v1/agent-teams/from-description/",
+        {"description": "Создай контент-команду для подготовки SEO статей, копирайтинга и редакторской проверки"},
+        format="json",
+    )
+    assert response.status_code == 201
+    assert response.json()["kind"] == AgentTeam.Kind.CONTENT
 
 
 @pytest.mark.django_db
@@ -58,6 +80,7 @@ def test_generic_team_run_routes_to_generic_runtime():
     )
     assert created.status_code == 201
     team = AgentTeam.objects.get(pk=created.json()["id"])
+    assert team.kind == AgentTeam.Kind.CONTENT
     run = AgentRun.objects.create(owner=user, team=team, objective="Подготовить статью")
 
     with patch("apps.agents.tasks.execute_generic_team_run", return_value=run) as generic_runtime, patch(
