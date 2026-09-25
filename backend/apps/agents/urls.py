@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
 from .dev_pr_views import DevRunPullRequestView
+from .run_views import SafeAgentRunView
 from .schedule_views import AgentScheduleViewSet
 from .team_builder_views import AgentTeamBootstrapView
 from .team_config_views import AgentTeamDirectorView, AgentTeamMemberDetailView
@@ -15,6 +16,7 @@ router.register("agent-runs", AgentRunViewSet, basename="agent-run")
 router.register("agent-schedules", AgentScheduleViewSet, basename="agent-schedule")
 
 urlpatterns = [
+    path("agents/<uuid:agent_id>/run/", SafeAgentRunView.as_view(), name="agent-safe-run"),
     path("agents/<uuid:agent_id>/config/", AgentConfigView.as_view(), name="agent-config"),
     path("agents/<uuid:agent_id>/versions/", AgentVersionListView.as_view(), name="agent-versions"),
     path(
