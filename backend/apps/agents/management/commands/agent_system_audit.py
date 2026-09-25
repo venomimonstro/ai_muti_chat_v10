@@ -20,6 +20,26 @@ ACTIVE_RUN_STATES = [
 ]
 
 
+def _ancestor_node_ids(edges, node_id):
+    reverse = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("from") or "").strip()
+        target = str(edge.get("to") or "").strip()
+        if source and target:
+            reverse.setdefault(target, set()).add(source)
+    ancestors = set()
+    stack = list(reverse.get(str(node_id), set()))
+    while stack:
+        current = stack.pop()
+        if current in ancestors:
+            continue
+        ancestors.add(current)
+        stack.extend(reverse.get(current, set()))
+    return ancestors
+
+
 class Command(BaseCommand):
     help = "Audit Agent Studio, team routing, run invariants and autonomous schedules"
 
@@ -60,6 +80,24 @@ class Command(BaseCommand):
                     continue
                 if edge.get("from") not in known or edge.get("to") not in known:
                     failures.append(f"agent={agent.id}: graph edge references missing node")
+
+            if agent.status == Agent.Status.ACTIVE:
+                publish_policy = str((agent.tool_policy or {}).get("publish") or "").strip().lower()
+                node_types = {
+                    str(item.get("id") or ""): str(item.get("type") or "").strip().lower()
+                    for item in nodes
+                    if isinstance(item, dict)
+                }
+                publish_nodes = [node_id for node_id, node_type in node_types.items() if node_type == "publish"]
+                if publish_nodes and publish_policy in {"auto", "autonomous", "true"} and agent.autonomy != Agent.Autonomy.AUTONOMOUS:
+                    failures.append(f"agent={agent.id}: automatic publish requires autonomous mode")
+                if publish_nodes and publish_policy == "approval":
+                    approval_nodes = {node_id for node_id, node_type in node_types.items() if node_type == "approval"}
+                    for publish_node in publish_nodes:
+                        if not (_ancestor_node_ids(edges, publish_node) & approval_nodes):
+                            failures.append(
+                                f"agent={agent.id}: publish node={publish_node} has approval policy but no approval ancestor"
+                            )
 
         for team in AgentTeam.objects.select_related("owner", "director", "project").prefetch_related("members__agent"):
             members = list(team.members.all())
