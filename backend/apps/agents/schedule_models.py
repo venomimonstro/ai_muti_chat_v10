@@ -24,7 +24,7 @@ class AgentSchedule(models.Model):
     class Meta:
         app_label = "agents"
         ordering = ["next_run_at", "name"]
-        indexes = [models.Index(fields=["enabled", "next_run_at"])]
+        indexes = [models.Index(fields=["enabled", "next_run_at"], name="agents_agent_enabled_290322_idx")]
         constraints = [
             models.CheckConstraint(
                 condition=(models.Q(agent__isnull=False, team__isnull=True) | models.Q(agent__isnull=True, team__isnull=False)),
