@@ -198,3 +198,48 @@ def test_run_now_is_idempotent_and_does_not_move_calendar_slot():
     assert schedule.last_run_at is not None
     assert schedule.next_run_at == original_next
     delay.assert_called_once_with(str(run.id))
+
+
+@pytest.mark.django_db
+def test_schedule_history_is_owner_scoped_and_filters_by_schedule():
+    owner = User.objects.create_user(username="schedule-history", email="schedule-history@example.com", password="StrongPass123!")
+    other = User.objects.create_user(username="schedule-history-other", email="schedule-history-other@example.com", password="StrongPass123!")
+    agent = Agent.objects.create(owner=owner, name="History agent", objective="Work", status=Agent.Status.ACTIVE)
+    schedule = AgentSchedule.objects.create(
+        owner=owner,
+        agent=agent,
+        name="History",
+        cadence=AgentSchedule.Cadence.INTERVAL,
+        interval_minutes=60,
+        next_run_at=timezone.now()+timedelta(hours=1),
+    )
+    included = AgentRun.objects.create(
+        owner=owner,
+        agent=agent,
+        objective="Included",
+        state=AgentRun.State.COMPLETED,
+        input_payload={"trigger":"schedule","schedule_id":str(schedule.id)},
+    )
+    AgentRun.objects.create(
+        owner=owner,
+        agent=agent,
+        objective="Other manual run",
+        state=AgentRun.State.COMPLETED,
+        input_payload={},
+    )
+    AgentRun.objects.create(
+        owner=other,
+        objective="Foreign",
+        state=AgentRun.State.COMPLETED,
+        input_payload={"trigger":"schedule","schedule_id":str(schedule.id)},
+    )
+
+    client = APIClient()
+    client.force_authenticate(owner)
+    response = client.get(f"/api/v1/agent-schedules/{schedule.id}/history/?limit=10")
+    assert response.status_code == 200
+    assert [row["id"] for row in response.data] == [str(included.id)]
+
+    client.force_authenticate(other)
+    forbidden = client.get(f"/api/v1/agent-schedules/{schedule.id}/history/")
+    assert forbidden.status_code == 404
