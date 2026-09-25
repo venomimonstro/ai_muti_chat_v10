@@ -121,20 +121,27 @@ class Command(BaseCommand):
             if team.max_cost_rub_per_run <= 0 or team.max_handoffs < 1:
                 failures.append(f"team={team.id}: team budget/handoff limits must be positive")
             if team.kind == AgentTeam.Kind.DEVELOPMENT:
+                dev_issues = []
                 if not team.project_id:
-                    failures.append(f"team={team.id}: development team has no project")
+                    dev_issues.append("development team has no project")
                 else:
                     try:
                         binding = team.project.github_repository
                     except Exception:
                         binding = None
                     if binding is None:
-                        failures.append(f"team={team.id}: development project has no GitHub repository binding")
+                        dev_issues.append("development project has no GitHub repository binding")
                     else:
                         if not binding.installation.active:
-                            failures.append(f"team={team.id}: GitHub installation is inactive")
+                            dev_issues.append("GitHub installation is inactive")
                         if not binding.full_name or not binding.default_branch:
-                            failures.append(f"team={team.id}: GitHub repository binding is incomplete")
+                            dev_issues.append("GitHub repository binding is incomplete")
+                for issue in dev_issues:
+                    message = f"team={team.id}: {issue}"
+                    if team.active:
+                        failures.append(message)
+                    else:
+                        warnings.append(message + " (team paused)")
             for membership in members:
                 if membership.agent.owner_id != team.owner_id:
                     failures.append(f"team={team.id}: member={membership.agent_id} belongs to another owner")
