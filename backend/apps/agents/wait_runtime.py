@@ -54,8 +54,11 @@ def handle_wait_node(run, agent, node, sequence):
         payload.pop(WAIT_KEY, None)
         run.input_payload = payload
         run.state = AgentRun.State.PLANNING
+        # Waiting is not active worker execution. Start a fresh active-time
+        # segment so a legitimate multi-hour pause cannot trigger runtime timeout.
+        run.started_at = now
         run.step_count = max(run.step_count, sequence)
-        run.save(update_fields=["input_payload", "state", "step_count", "updated_at"])
+        run.save(update_fields=["input_payload", "state", "started_at", "step_count", "updated_at"])
         return False
 
     try:
