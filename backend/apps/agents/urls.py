@@ -12,6 +12,7 @@ from .run_views import SafeAgentRunView
 from .schedule_views import AgentScheduleViewSet
 from .team_builder_views import AgentTeamBootstrapView
 from .team_config_views import AgentTeamDirectorView, AgentTeamMemberDetailView
+from .team_run_views import SafeTeamRunView, TeamReadinessView
 from .views import AgentRunViewSet, AgentTeamViewSet, AgentViewSet
 from .wordpress_views import AgentRunWordPressView
 
@@ -40,6 +41,8 @@ urlpatterns = [
     ),
     path("agent-teams/bootstrap/", AgentTeamBootstrapView.as_view(), name="agent-team-bootstrap"),
     path("agent-teams/bootstrap-dev/", DevTeamBootstrapView.as_view(), name="agent-team-bootstrap-dev"),
+    path("agent-teams/<uuid:team_id>/readiness/", TeamReadinessView.as_view(), name="agent-team-readiness"),
+    path("agent-teams/<uuid:team_id>/run/", SafeTeamRunView.as_view(), name="agent-team-safe-run"),
     path(
         "agent-teams/<uuid:team_id>/members/<uuid:member_id>/",
         AgentTeamMemberDetailView.as_view(),
