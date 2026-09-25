@@ -54,10 +54,17 @@ class Command(BaseCommand):
             for entry in getattr(settings, "CELERY_BEAT_SCHEDULE", {}).values()
             if isinstance(entry, dict)
         }
-        if "apps.agents.tasks.dispatch_due_agent_schedules" not in beat_tasks:
-            failures.append("autonomy: dispatch_due_agent_schedules is not configured in Celery Beat")
-        if "apps.admin_ops.tasks.recover_stale_operations_task" not in beat_tasks:
-            failures.append("autonomy: stale-operation watchdog is not configured in Celery Beat")
+        required_beat_tasks = {
+            "apps.agents.tasks.dispatch_due_agent_schedules": "schedule dispatcher",
+            "apps.agents.tasks.expire_stale_agent_approvals": "approval expiry watchdog",
+            "apps.connections.tasks.check_external_connections": "external connection health watchdog",
+            "apps.admin_ops.tasks.recover_stale_operations_task": "stale-operation watchdog",
+        }
+        for task_name, label in required_beat_tasks.items():
+            if task_name not in beat_tasks:
+                failures.append(f"autonomy: {label} is not configured in Celery Beat")
+        if int(getattr(settings, "AGENT_APPROVAL_TIMEOUT_HOURS", 0)) < 1:
+            failures.append("autonomy: AGENT_APPROVAL_TIMEOUT_HOURS must be positive")
 
         agents = Agent.objects.select_related("owner", "project")
         for agent in agents:
@@ -130,6 +137,10 @@ class Command(BaseCommand):
                 failures.append(f"schedule={schedule.id}: owner mismatch")
             if schedule.interval_minutes < 5:
                 failures.append(f"schedule={schedule.id}: interval below 5 minutes")
+            if schedule.cadence != AgentSchedule.Cadence.INTERVAL and schedule.local_time is None:
+                failures.append(f"schedule={schedule.id}: calendar cadence has no local_time")
+            if schedule.cadence == AgentSchedule.Cadence.WEEKLY and not list(schedule.weekdays or []):
+                failures.append(f"schedule={schedule.id}: weekly cadence has no weekdays")
             objective = (schedule.objective or getattr(subject, "objective", "") or "").strip()
             if schedule.enabled and not objective:
                 failures.append(f"schedule={schedule.id}: enabled schedule has no objective")
