@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -83,5 +83,5 @@ class AgentSchedule(models.Model):
                 continue
             candidate_local = datetime.combine(candidate_date, run_time, tzinfo=tz)
             if candidate_local > local_after:
-                return candidate_local.astimezone(timezone.utc)
+                return candidate_local.astimezone(dt_timezone.utc)
         raise ValidationError("Не удалось вычислить следующий запуск")
