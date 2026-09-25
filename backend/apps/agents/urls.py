@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
 from .dev_pr_views import DevRunPullRequestView
 from .memory_views import AgentMemoryItemView, AgentMemoryView
+from .operations_views import AgentOperationsSummaryView
 from .run_views import SafeAgentRunView
 from .schedule_views import AgentScheduleViewSet
 from .team_builder_views import AgentTeamBootstrapView
@@ -18,6 +19,7 @@ router.register("agent-runs", AgentRunViewSet, basename="agent-run")
 router.register("agent-schedules", AgentScheduleViewSet, basename="agent-schedule")
 
 urlpatterns = [
+    path("agents/operations/summary/", AgentOperationsSummaryView.as_view(), name="agent-operations-summary"),
     path("agents/<uuid:agent_id>/run/", SafeAgentRunView.as_view(), name="agent-safe-run"),
     path("agents/<uuid:agent_id>/config/", AgentConfigView.as_view(), name="agent-config"),
     path("agents/<uuid:agent_id>/memory/", AgentMemoryView.as_view(), name="agent-memory"),
