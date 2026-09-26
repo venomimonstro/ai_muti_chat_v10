@@ -2,12 +2,20 @@ from django.core.exceptions import ValidationError
 
 from .models import AgentTeam
 from .runtime import _model_for
+from .sandbox_client import sandbox_enabled
 
 
 PUBLIC_LEVELS = {
     "economy": "System Lite",
     "balanced": "System Pro",
     "maximum": "System Max",
+}
+
+DEV_REQUIRED_ROLES = {
+    "Engineering Director",
+    "Architecture",
+    "Development",
+    "QA & Security",
 }
 
 
@@ -82,6 +90,13 @@ def team_readiness(team: AgentTeam):
     checks["models"] = len(models) == len(members)
 
     if team.kind == AgentTeam.Kind.DEVELOPMENT:
+        roles = {str(member.role or "").strip() for member in members}
+        missing_roles = sorted(DEV_REQUIRED_ROLES - roles)
+        checks["dev_roles"] = not missing_roles
+        if missing_roles:
+            blockers.append("Dev Team неполная: отсутствуют роли " + ", ".join(missing_roles))
+            add_action("repair_dev_team", "Восстановите стандартный состав Dev Team")
+
         project = team.project
         checks["project"] = project is not None
         if project is None:
@@ -92,17 +107,33 @@ def team_readiness(team: AgentTeam):
                 binding = project.github_repository
             except Exception:
                 binding = None
-            github_ok = bool(binding and binding.installation_id and binding.installation.active)
-            checks["github_binding"] = github_ok
+
+            github_binding_ok = bool(binding and binding.installation_id and binding.installation.active)
+            checks["github_binding"] = github_binding_ok
             if not binding:
                 blockers.append("К проекту не подключён GitHub repository")
                 add_action("connect_github", "Подключите GitHub к проекту", f"/app/projects/{project.id}/github")
             elif not binding.installation.active:
                 blockers.append("GitHub App installation отключена")
                 add_action("repair_github", "Переподключите GitHub", f"/app/projects/{project.id}/github")
-            elif not binding.write_enabled:
-                warnings.append("GitHub доступен только для чтения: анализ возможен, запись изменений будет заблокирована")
-                add_action("enable_github_write", "Разрешите запись в рабочую ветку GitHub", f"/app/projects/{project.id}/github")
+            else:
+                contents_permission = str((binding.installation.permissions or {}).get("contents") or "").lower()
+                provider_write_ok = contents_permission in {"write", "admin"}
+                app_write_ok = bool(binding.write_enabled)
+                checks["github_provider_write"] = provider_write_ok
+                checks["github_write_enabled"] = app_write_ok
+                if not provider_write_ok:
+                    blockers.append("GitHub App не имеет права contents:write для этого repository")
+                    add_action("repair_github_permissions", "Переподключите GitHub с правом записи", f"/app/projects/{project.id}/github")
+                if not app_write_ok:
+                    blockers.append("Запись Dev Studio в рабочую ветку GitHub отключена")
+                    add_action("enable_github_write", "Разрешите запись в рабочую ветку GitHub", f"/app/projects/{project.id}/github")
+
+        sandbox_ok = sandbox_enabled()
+        checks["sandbox"] = sandbox_ok
+        if not sandbox_ok:
+            blockers.append("Sandbox для безопасной проверки кода не настроен")
+            add_action("configure_sandbox", "Администратору нужно включить изолированный sandbox")
 
     return {
         "ready": not blockers,
