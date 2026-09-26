@@ -37,4 +37,19 @@ def validate_tool_policy(value):
                 {key: f"Допустимые значения: {', '.join(sorted(allowed))}"}
             )
         cleaned[key] = raw
+
+    # Code-writing agents are intentionally more constrained than ordinary agents.
+    # There is no supported host shell or direct merge mode: code executes only in
+    # the sandbox and reaches GitHub only through the approval workflow.
+    if cleaned.get("write_code"):
+        if not cleaned.get("github"):
+            raise serializers.ValidationError({"github": "Для изменения кода требуется доступ к GitHub"})
+        if cleaned.get("shell") != "sandbox":
+            raise serializers.ValidationError({"shell": "Изменение кода разрешено только через sandbox"})
+        if cleaned.get("merge") != "approval":
+            raise serializers.ValidationError({"merge": "Изменения кода требуют подтверждения перед merge"})
+
+    if cleaned.get("shell") == "sandbox" and not cleaned.get("github") and cleaned.get("write_code"):
+        raise serializers.ValidationError({"github": "Sandbox-разработка требует привязанный GitHub workflow"})
+
     return cleaned
