@@ -17,7 +17,7 @@ trap cleanup EXIT
 printf '[1/15] Secret scan\n'
 bash ./scripts/security_scan.sh
 
-printf '[2/15] Shell and smoke-script syntax\n'
+printf '[2/15] Shell and Python syntax\n'
 bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
@@ -28,6 +28,10 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 "$PYTHON_BIN" -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
+# Compile every backend Python module before any migration or production restart.
+# This catches import-blocking syntax errors even when a specific module is not
+# exercised by the lightweight host-side smoke scripts.
+"$PYTHON_BIN" -m compileall -q backend
 
 printf '[3/15] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
