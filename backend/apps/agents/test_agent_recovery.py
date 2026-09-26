@@ -68,6 +68,48 @@ def test_stale_agent_run_releases_all_customer_reserve_formats_and_fails_run(mon
 
 
 @pytest.mark.django_db(transaction=True)
+def test_stale_dev_run_preserves_partial_working_branch_context(monkeypatch):
+    monkeypatch.setenv("AGENT_STALE_TIMEOUT_SECONDS", "1200")
+    user = get_user_model().objects.create_user(username="dev-stale-branch", password="test-password")
+    agent = Agent.objects.create(
+        owner=user,
+        name="Developer",
+        objective="Write code",
+        status=Agent.Status.ACTIVE,
+    )
+    branch = "ai-workspace/run-deadbeef1234"
+    run = AgentRun.objects.create(
+        owner=user,
+        agent=agent,
+        objective="Recover partial GitHub write",
+        state=AgentRun.State.RUNNING,
+        input_payload={"phase": "writing_changes", "working_branch": branch},
+        started_at=timezone.now() - timedelta(hours=1),
+    )
+    step = AgentStepRun.objects.create(
+        run=run,
+        agent=agent,
+        sequence=1,
+        node_id="approved-github-write",
+        title="Sandbox + GitHub write",
+        action_type="sandbox+github_write",
+        state=AgentStepRun.State.RUNNING,
+        started_at=timezone.now() - timedelta(hours=1),
+    )
+    AgentRun.objects.filter(pk=run.pk).update(updated_at=timezone.now() - timedelta(hours=1))
+
+    assert recover_stale_agent_runs() == 1
+
+    run.refresh_from_db()
+    step.refresh_from_db()
+    assert run.state == AgentRun.State.FAILED
+    assert branch in run.error_message
+    assert "новую изолированную ветку" in run.error_message
+    assert branch in step.public_log
+    assert run.input_payload["working_branch"] == branch
+
+
+@pytest.mark.django_db(transaction=True)
 def test_waiting_approval_is_never_recovered_as_stale(monkeypatch):
     monkeypatch.setenv("AGENT_STALE_TIMEOUT_SECONDS", "1200")
     user = get_user_model().objects.create_user(
