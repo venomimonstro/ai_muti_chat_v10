@@ -26,6 +26,17 @@ def _objective_with_event(base_objective, payload):
     ).strip()
 
 
+def _retry_busy(task, delivery, subject_name):
+    if int(getattr(task.request, "retries", 0)) >= int(task.max_retries or 0):
+        delivery.state = AgentWebhookDelivery.State.FAILED
+        delivery.error_message = (
+            f"{subject_name} оставался занят слишком долго. Событие не запускалось повторно и не списывало средства."
+        )
+        delivery.save(update_fields=["state", "error_message", "updated_at"])
+        return False
+    raise task.retry(countdown=30)
+
+
 @shared_task(bind=True, max_retries=20, default_retry_delay=30, soft_time_limit=120, time_limit=150)
 def dispatch_agent_webhook_delivery(self, delivery_id):
     with transaction.atomic():
@@ -57,7 +68,8 @@ def dispatch_agent_webhook_delivery(self, delivery_id):
                 delivery.save(update_fields=["state", "error_message", "updated_at"])
                 return {"delivery_id": str(delivery.id), "state": delivery.state}
             if AgentRun.objects.filter(agent=subject, state__in=ACTIVE_RUN_STATES).exists():
-                raise self.retry(countdown=30)
+                if not _retry_busy(self, delivery, subject.name):
+                    return {"delivery_id": str(delivery.id), "state": delivery.state}
             readiness = agent_readiness(subject)
             if not readiness["ready"]:
                 delivery.state = AgentWebhookDelivery.State.FAILED
@@ -90,7 +102,8 @@ def dispatch_agent_webhook_delivery(self, delivery_id):
                 delivery.save(update_fields=["state", "error_message", "updated_at"])
                 return {"delivery_id": str(delivery.id), "state": delivery.state}
             if AgentRun.objects.filter(team=subject, state__in=ACTIVE_RUN_STATES).exists():
-                raise self.retry(countdown=30)
+                if not _retry_busy(self, delivery, subject.name):
+                    return {"delivery_id": str(delivery.id), "state": delivery.state}
             readiness = team_readiness(subject)
             if not readiness["ready"]:
                 delivery.state = AgentWebhookDelivery.State.FAILED
