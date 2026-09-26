@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .approval_views import SafeAgentApprovalDecisionView
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
 from .dev_bootstrap_views import DevTeamBootstrapView
+from .dev_merge_views import DevRunMergePullRequestView
 from .dev_pr_views import DevRunPullRequestView
 from .memory_views import AgentMemoryItemView, AgentMemoryView
 from .operations_views import AgentOperationsSummaryView
@@ -68,6 +69,11 @@ urlpatterns = [
         "agent-runs/<uuid:run_id>/pull-request/",
         DevRunPullRequestView.as_view(),
         name="agent-dev-run-pull-request",
+    ),
+    path(
+        "agent-runs/<uuid:run_id>/pull-request/merge/",
+        DevRunMergePullRequestView.as_view(),
+        name="agent-dev-run-pull-request-merge",
     ),
     path(
         "agent-runs/<uuid:run_id>/wordpress/",
