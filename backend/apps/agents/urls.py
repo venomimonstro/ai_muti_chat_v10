@@ -17,6 +17,7 @@ from .schedule_views import AgentScheduleViewSet
 from .team_builder_views import AgentTeamBootstrapView
 from .team_config_views import AgentTeamDirectorView, AgentTeamMemberDetailView
 from .team_run_views import SafeTeamRunView, TeamReadinessView
+from .usage_views import AgentUsageView
 from .views import AgentRunViewSet, AgentTeamViewSet, AgentViewSet
 from .webhook_views import AgentWebhookInvokeView, AgentWebhookTriggerViewSet
 from .wordpress_views import AgentRunWordPressView
@@ -33,6 +34,7 @@ urlpatterns = [
     path("agents/ai-planner/preview/", AgentAIPlannerPreviewView.as_view(), name="agent-ai-planner-preview"),
     path("agents/ai-planner/create/", AgentAIPlannerCreateView.as_view(), name="agent-ai-planner-create"),
     path("agents/<uuid:agent_id>/readiness/", AgentReadinessView.as_view(), name="agent-readiness"),
+    path("agents/<uuid:agent_id>/usage/", AgentUsageView.as_view(), name="agent-usage"),
     path("agents/<uuid:agent_id>/run/", SafeAgentRunView.as_view(), name="agent-safe-run"),
     path("agents/<uuid:agent_id>/config/", AgentConfigView.as_view(), name="agent-config"),
     path("agents/<uuid:agent_id>/memory/", AgentMemoryView.as_view(), name="agent-memory"),
