@@ -99,8 +99,8 @@
 | Sprint | Статус | Цель |
 |---|---|---|
 | 67 | DONE / RUNTIME EVIDENCE | Agent/Dev Studio autonomy hardening: schedules, safe cancellation, event/webhook triggers, idempotency, production audits |
-| 68 | IN PROGRESS | Agent tenant isolation & security red-team: IDOR, cross-tenant references, secret exposure, SSRF/tool abuse, sandbox boundaries |
-| 69 | PLANNED | Agent commercial limits & billing: quotas, per-run/per-day caps, concurrency, reservations, transparent cost UX |
+| 68 | DONE / RUNTIME EVIDENCE | Agent tenant isolation & security red-team: IDOR, cross-tenant references, secret exposure, tool abuse, sandbox boundaries |
+| 69 | IN PROGRESS | Agent commercial limits & billing: quotas, per-run/per-day caps, concurrency, reservations, transparent cost UX |
 | 70 | PLANNED | Agent Studio self-service UX: natural-language creation, generated plan review, test mode, templates, understandable errors |
 | 71 | PLANNED | Dev Studio production safety: diff/preview/approve, branch lifecycle, rollback/recovery, destructive-action barriers |
 | 72 | PLANNED | Integrations & credentials: unified connection model, permission scopes, health status, reconnect/rotation flows |
@@ -130,26 +130,48 @@ Runtime evidence still required before commercial launch:
 - disabled trigger / inactive agent / paused team failure paths on deployed stack;
 - successful `scripts/update.sh` output with all Agent/Dev audits.
 
-## Sprint 68 acceptance criteria
+## Sprint 68 — code complete, runtime evidence pending
 
-Completed in code so far:
+Completed in code:
 
 - negative IDOR tests for Agent CRUD/run;
 - negative IDOR tests for run detail/cancel/repeat;
 - negative IDOR tests for team and webhook management;
-- existing serializer ownership validation confirmed for project/director references;
+- serializer ownership validation for project/director references;
 - fail-closed code-writing policy: `github=true`, `shell=sandbox`, `merge=approval`;
 - `agent_security_audit` checks Agent, Version, Team, Member, Run, Step, Approval, Handoff, Artifact, Schedule and Webhook tenant relationships;
 - webhook secrets checked as recognized password hashes;
 - `agent_security_audit` added to production update gate;
-- dedicated `docs/sprints/68-agent-tenant-security.md` created.
+- dedicated security regression suite and sprint documentation.
 
-Still required before Sprint 68 becomes `DONE / RUNTIME EVIDENCE`:
+Runtime evidence still required before commercial launch:
 
-- execute Agent security regression suite on the production-like PostgreSQL stack;
-- execute `python manage.py agent_security_audit` against the real server database;
-- execute `scripts/update.sh` successfully with the new security gate;
+- execute Agent security regression suite on production-like PostgreSQL;
+- execute `python manage.py agent_security_audit` against real server database;
+- successful `scripts/update.sh` with security gate;
 - retain security/runtime evidence for launch audit.
+
+## Sprint 69 acceptance criteria
+
+Completed in code so far:
+
+- existing run/day/month monetary limits retained as the single source of budget truth;
+- existing wallet/provider reservation flow retained;
+- owner-level concurrent-run limit added (`AGENT_MAX_ACTIVE_RUNS_PER_USER`, default 3);
+- manual Agent and Team run paths enforce owner concurrency;
+- commercial snapshot reports run/day/month spend, limits and remaining budget;
+- commercial snapshot reports active runs, concurrency limit and available slots;
+- `GET /api/v1/agents/<agent_id>/usage/` added for transparent cost UX;
+- regression tests added for concurrency and usage snapshot;
+- detailed Sprint 69 document added.
+
+Still required before Sprint 69 becomes `DONE / RUNTIME EVIDENCE`:
+
+- enforce owner concurrency for scheduled Team runs and webhook Team runs;
+- verify automated triggers do not create a paid run above quota;
+- add commercial-limits production audit;
+- connect usage snapshot to Agent Studio UI;
+- run PostgreSQL tests and release gate.
 
 ## Launch blockers independent of sprint number
 
