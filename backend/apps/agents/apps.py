@@ -8,4 +8,5 @@ class AgentsConfig(AppConfig):
 
     def ready(self):
         from . import schedule_models  # noqa: F401
+        from . import webhook_models  # noqa: F401
         from . import signals  # noqa: F401
