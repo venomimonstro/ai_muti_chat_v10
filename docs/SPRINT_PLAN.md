@@ -98,8 +98,8 @@
 
 | Sprint | Статус | Цель |
 |---|---|---|
-| 67 | IN PROGRESS | Agent/Dev Studio autonomy hardening: schedules, safe cancellation, event/webhook triggers, idempotency, production audits |
-| 68 | PLANNED | Agent tenant isolation & security red-team: IDOR, cross-tenant references, secret exposure, SSRF/tool abuse, sandbox boundaries |
+| 67 | DONE / RUNTIME EVIDENCE | Agent/Dev Studio autonomy hardening: schedules, safe cancellation, event/webhook triggers, idempotency, production audits |
+| 68 | IN PROGRESS | Agent tenant isolation & security red-team: IDOR, cross-tenant references, secret exposure, SSRF/tool abuse, sandbox boundaries |
 | 69 | PLANNED | Agent commercial limits & billing: quotas, per-run/per-day caps, concurrency, reservations, transparent cost UX |
 | 70 | PLANNED | Agent Studio self-service UX: natural-language creation, generated plan review, test mode, templates, understandable errors |
 | 71 | PLANNED | Dev Studio production safety: diff/preview/approve, branch lifecycle, rollback/recovery, destructive-action barriers |
@@ -108,7 +108,7 @@
 | 74 | PLANNED | Agent/Dev staging E2E, load & chaos: worker/beat restart, provider outage, duplicate events, stuck runs, restore/rollback |
 | 75 | PLANNED | Release Candidate v1.0: clean install, upgrade, regression/security checks, payment + first-agent journey, final launch evidence |
 
-## Sprint 67 acceptance criteria
+## Sprint 67 — code complete, runtime evidence pending
 
 Completed in code:
 
@@ -119,16 +119,37 @@ Completed in code:
 - Agent Studio webhook UI;
 - duplicate-run protection and busy retry behavior;
 - `agent_system_audit`, `dev_studio_audit`, `agent_billing_audit`;
-- dedicated `agent_webhook_audit` added to production update gate.
+- dedicated `agent_webhook_audit` in production update gate;
+- regression tests for disabled triggers, inactive-agent delivery, worker idempotency, stale delivery audit and cross-tenant webhook corruption.
 
-Still required before Sprint 67 becomes `DONE`:
+Runtime evidence still required before commercial launch:
 
-- automated regression tests for webhook audit edge cases;
-- verify webhook invoke → Celery → AgentRun lifecycle on PostgreSQL/Redis production-like stack;
-- verify worker restart during pending webhook delivery;
-- verify duplicate Event ID never starts a second run or second charge;
-- verify disabled trigger / inactive agent / paused team fail safely;
-- run `scripts/update.sh` on the server and retain successful output of all Agent/Dev audits.
+- webhook invoke → Celery → AgentRun lifecycle on PostgreSQL/Redis production-like stack;
+- worker restart during pending webhook delivery;
+- duplicate Event ID never starts a second run or second charge under real concurrency;
+- disabled trigger / inactive agent / paused team failure paths on deployed stack;
+- successful `scripts/update.sh` output with all Agent/Dev audits.
+
+## Sprint 68 acceptance criteria
+
+Completed in code so far:
+
+- negative IDOR tests for Agent CRUD/run;
+- negative IDOR tests for run detail/cancel/repeat;
+- negative IDOR tests for team and webhook management;
+- existing serializer ownership validation confirmed for project/director references;
+- fail-closed code-writing policy: `github=true`, `shell=sandbox`, `merge=approval`;
+- `agent_security_audit` checks Agent, Version, Team, Member, Run, Step, Approval, Handoff, Artifact, Schedule and Webhook tenant relationships;
+- webhook secrets checked as recognized password hashes;
+- `agent_security_audit` added to production update gate;
+- dedicated `docs/sprints/68-agent-tenant-security.md` created.
+
+Still required before Sprint 68 becomes `DONE / RUNTIME EVIDENCE`:
+
+- execute Agent security regression suite on the production-like PostgreSQL stack;
+- execute `python manage.py agent_security_audit` against the real server database;
+- execute `scripts/update.sh` successfully with the new security gate;
+- retain security/runtime evidence for launch audit.
 
 ## Launch blockers independent of sprint number
 
@@ -150,6 +171,6 @@ At the start of every development session:
 2. Find the single `IN PROGRESS` sprint.
 3. Work only on its remaining acceptance criteria unless a P0 regression blocks the product.
 4. After implementation, update the same sprint here.
-5. Only after all acceptance criteria pass, mark it `DONE` and change the next `PLANNED` sprint to `IN PROGRESS`.
+5. Only after all acceptance criteria pass, mark it `DONE` or `DONE / RUNTIME EVIDENCE` and change the next `PLANNED` sprint to `IN PROGRESS`.
 
 This prevents an AI coding agent or a human developer from inventing a new numbering scheme or reimplementing already completed scope.
