@@ -1,0 +1,27 @@
+"use client";
+
+import {useState} from "react";
+import {useRouter} from "next/navigation";
+import {api} from "../../../lib/api";
+
+type DraftNode={id:string;title:string;type:string};
+type Draft={name:string;role:string;objective:string;instructions:string;autonomy:string;system_level:string;tool_policy:Record<string,unknown>;graph:{version?:number;nodes:DraftNode[];edges:Array<{from:string;to:string}>}};
+type Preview={draft:Draft;cost_rub:string;system_level:string;operation_id:string};
+type Agent={id:string};
+
+const autonomyLabel:Record<string,string>={controlled:"Контролируемый",semi_autonomous:"Полуавтономный",autonomous:"Автономный"};
+const levelLabel:Record<string,string>={economy:"System Lite",balanced:"System Pro",maximum:"System Max"};
+const typeLabel:Record<string,string>={llm:"AI-задача",research:"Исследование",web:"Интернет",files:"Файлы",image:"Изображение",review:"Проверка",analytics:"Аналитика",condition:"Условие",approval:"Ваше подтверждение",wait:"Ожидание",notify:"Уведомление",publish:"Публикация",finish:"Завершение"};
+
+export default function AgentAIPlanner(){
+ const router=useRouter();const[description,setDescription]=useState("");const[preview,setPreview]=useState<Preview|null>(null);const[busy,setBusy]=useState("");const[error,setError]=useState("");
+ const plan=async()=>{if(description.trim().length<20){setError("Опишите сотрудника немного подробнее");return}setBusy("plan");setError("");setPreview(null);try{setPreview(await api<Preview>("/agents/ai-planner/preview/",{method:"POST",body:JSON.stringify({description:description.trim()})}))}catch(e){setError(e instanceof Error?e.message:"Не удалось спроектировать сотрудника")}finally{setBusy("")}};
+ const create=async()=>{if(!preview)return;setBusy("create");setError("");try{const agent=await api<Agent>("/agents/ai-planner/create/",{method:"POST",body:JSON.stringify({description:description.trim(),draft:preview.draft})});router.push(`/app/agents/${agent.id}`)}catch(e){setError(e instanceof Error?e.message:"Не удалось создать сотрудника")}finally{setBusy("")}};
+ return <section style={{border:"1px solid #ddd",borderRadius:22,padding:22,marginBottom:28}}>
+  <div style={{fontSize:12,opacity:.55,textTransform:"uppercase"}}>AI-КОНСТРУКТОР · SYSTEM PRO</div><h2 style={{margin:"8px 0"}}>Опишите сотрудника обычными словами</h2><p style={{opacity:.68,marginTop:0}}>System Pro сам предложит роль, инструменты и карту действий. Это отдельная платная операция: списывается только фактическая стоимость проектирования. Сотрудник создаётся черновиком и ничего не запускает сам.</p>
+  <textarea rows={5} value={description} onChange={e=>{setDescription(e.target.value);setPreview(null)}} placeholder="Например: нужен SMM-специалист для стоматологии. Каждый будний день должен искать актуальные темы, готовить пост, проверять факты, присылать мне на согласование и после подтверждения сохранять материал для публикации." style={{width:"100%",boxSizing:"border-box",padding:14,border:"1px solid #ccc",borderRadius:13,resize:"vertical",font:"inherit"}}/>
+  <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",marginTop:12}}><span style={{fontSize:12,opacity:.6}}>Для программирования система направит в отдельный Dev Studio и не будет тратить деньги на этот planner.</span><button disabled={!!busy||description.trim().length<20} onClick={()=>void plan()} style={{padding:"11px 16px",border:0,borderRadius:11,fontWeight:700}}>{busy==="plan"?"Проектируем…":"Спроектировать сотрудника"}</button></div>
+  {error&&<div style={{marginTop:12,padding:11,border:"1px solid #cb747a",borderRadius:10}}>{error}</div>}
+  {preview&&<div style={{marginTop:18,border:"1px solid #d8d8d8",borderRadius:16,padding:17}}><div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start"}}><div><div style={{fontSize:12,opacity:.55}}>ПРЕДЛОЖЕННЫЙ СОТРУДНИК</div><h3 style={{fontSize:23,margin:"6px 0 3px"}}>{preview.draft.name}</h3><div style={{opacity:.65}}>{preview.draft.role} · {autonomyLabel[preview.draft.autonomy]||preview.draft.autonomy} · {levelLabel[preview.draft.system_level]||preview.draft.system_level}</div></div><div style={{textAlign:"right",fontSize:13}}><div style={{opacity:.55}}>Стоимость проектирования</div><strong style={{fontSize:20}}>{Number(preview.cost_rub||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:4})} ₽</strong></div></div><p style={{lineHeight:1.5,opacity:.75}}>{preview.draft.objective}</p><div style={{display:"grid",gap:7,margin:"12px 0"}}>{preview.draft.graph.nodes.map((node,index)=><div key={node.id} style={{display:"grid",gridTemplateColumns:"28px minmax(0,1fr) auto",gap:9,alignItems:"center",padding:"8px 10px",border:"1px solid #e3e3e3",borderRadius:10}}><span style={{width:25,height:25,border:"1px solid #bbb",borderRadius:999,display:"grid",placeItems:"center",fontSize:12}}>{index+1}</span><strong>{node.title}</strong><span style={{fontSize:11,opacity:.55}}>{typeLabel[node.type]||node.type}</span></div>)}</div><div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center"}}><span style={{fontSize:12,opacity:.6}}>После создания можно изменить каждый шаг, бюджет, расписание и подключения до активации.</span><button disabled={!!busy} onClick={()=>void create()} style={{padding:"11px 16px",border:0,borderRadius:11,fontWeight:700}}>{busy==="create"?"Создаём…":"Создать этот черновик"}</button></div></div>}
+ </section>;
+}
