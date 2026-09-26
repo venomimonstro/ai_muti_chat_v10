@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -5,6 +6,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .limits import ensure_owner_run_capacity
 from .models import AgentRun, AgentTeam
 from .serializers import AgentRunSerializer
 from .team_readiness import team_readiness
@@ -56,6 +58,10 @@ class SafeTeamRunView(APIView):
         objective = str(request.data.get("objective") or team.objective or "").strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу команды"})
+        try:
+            ensure_owner_run_capacity(request.user)
+        except DjangoValidationError as exc:
+            raise ValidationError({"detail": "; ".join(exc.messages)}) from exc
 
         run = AgentRun.objects.create(
             owner=request.user,
