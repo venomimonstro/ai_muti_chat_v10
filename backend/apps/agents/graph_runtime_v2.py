@@ -90,6 +90,19 @@ def _run_condition(run, agent, node, sequence, node_ids, position, outgoing):
     target = str(node.get("on_true" if matched else "on_false") or "").strip()
     if not target:
         target = _default_next(node_id, node_ids, position, outgoing)
+    if target:
+        if target not in position:
+            _fail(run, None, "graph_condition_target_missing", f"Условие ведёт к отсутствующему шагу: {target}")
+            return "__terminal__"
+        if position[target] <= position[node_id]:
+            _fail(
+                run,
+                None,
+                "graph_condition_backward_jump",
+                "Для безопасного автономного workflow условие может переходить только на более поздний шаг.",
+            )
+            return "__terminal__"
+
     title = str(node.get("title") or "Условие")[:240]
     AgentStepRun.objects.create(
         run=run,
