@@ -39,6 +39,7 @@ export function Sidebar(props:Props){
    <Link href="/app/agents" title="AI-сотрудники"><Icon name="brain"/><span>Агенты</span></Link>
    <Link href="/app/teams" title="Команды AI-сотрудников"><Icon name="brain"/><span>Команды</span></Link>
    <Link href="/app/schedules" title="Автономная работа по расписанию"><Icon name="calendar"/><span>Автономность</span></Link>
+   <Link href="/app/events" title="Запуск агентов по внешним событиям"><Icon name="zap"/><span>События</span></Link>
    <Link href="/app/dev" title="AI-команда разработки"><Icon name="zap"/><span>Dev Studio</span></Link>
    <Link href="/app/images" title="Изображения"><Icon name="spark"/><span>Изображения</span></Link>
    <Link href="/app/compare" title="Сравнение моделей"><Icon name="scale"/><span>Сравнить модели</span></Link>
