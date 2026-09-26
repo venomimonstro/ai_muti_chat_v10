@@ -61,7 +61,7 @@ def validate_changes_in_sandbox(changes):
     return result
 
 
-def apply_approved_changes(*, project, run_id, changes):
+def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
     if not changes:
         return {"branch": None, "changes": [], "sandbox": None}
     try:
@@ -71,31 +71,62 @@ def apply_approved_changes(*, project, run_id, changes):
     if not binding.write_enabled:
         raise ValidationError("Для проекта не разрешена запись в GitHub")
 
+    if should_cancel and should_cancel():
+        raise ValidationError("Dev Studio остановлен до sandbox/GitHub write")
     sandbox_result = validate_changes_in_sandbox(changes)
+    if should_cancel and should_cancel():
+        raise ValidationError("Dev Studio остановлен после sandbox и до создания рабочей ветки")
+
     branch_name = f"ai-workspace/run-{str(run_id).replace('-', '')[:12]}"
-    branch = create_repository_branch(binding, branch_name, from_ref=binding.default_branch)
+    create_repository_branch(binding, branch_name, from_ref=binding.default_branch)
     applied = []
     for index, change in enumerate(changes, start=1):
+        if should_cancel and should_cancel():
+            raise ValidationError(
+                f"Dev Studio остановлен пользователем. Уже записано файлов: {len(applied)}. "
+                f"Изменения остались только в изолированной ветке {branch_name}."
+            )
         message = f"AI Workspace run {str(run_id)[:8]}: {change.get('reason') or change['path']}"
-        if change["operation"] == "update":
-            result = write_repository_file(
-                binding,
-                change["path"],
-                content=change["content"],
-                expected_sha=change["expected_sha"],
-                message=message,
-                branch=branch_name,
+        try:
+            if change["operation"] == "update":
+                result = write_repository_file(
+                    binding,
+                    change["path"],
+                    content=change["content"],
+                    expected_sha=change["expected_sha"],
+                    message=message,
+                    branch=branch_name,
+                )
+            elif change["operation"] == "create":
+                result = create_repository_file(
+                    binding,
+                    change["path"],
+                    content=change["content"],
+                    message=message,
+                    branch=branch_name,
+                )
+            else:
+                raise ValidationError("Неподдерживаемая операция изменения")
+        except Exception as exc:
+            GitHubOperationLog.objects.create(
+                actor=project.owner,
+                binding=binding,
+                action=f"agent_{change.get('operation', 'unknown')}_file",
+                path=str(change.get("path") or "")[:1024],
+                branch=branch_name[:255],
+                success=False,
+                metadata={
+                    "run_id": str(run_id),
+                    "sequence": index,
+                    "applied_before_failure": len(applied),
+                    "error": str(exc)[:2000],
+                },
             )
-        elif change["operation"] == "create":
-            result = create_repository_file(
-                binding,
-                change["path"],
-                content=change["content"],
-                message=message,
-                branch=branch_name,
-            )
-        else:
-            raise ValidationError("Неподдерживаемая операция изменения")
+            raise ValidationError(
+                f"GitHub write остановлен на файле {change.get('path')}. "
+                f"Уже записано файлов: {len(applied)}. Рабочая ветка: {branch_name}. Причина: {exc}"
+            ) from exc
+
         GitHubOperationLog.objects.create(
             actor=project.owner,
             binding=binding,
