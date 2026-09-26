@@ -67,7 +67,7 @@ def parse_change_proposal(text):
 def developer_output_contract():
     return (
         "Если нужны изменения кода, в самом конце ответа ОБЯЗАТЕЛЬНО добавь JSON-блок строго такого формата: "
-        '{"changes":[{"path":"relative/path.py","operation":"update","content":"ПОЛНЫЙ новый текст файла","reason":"зачем"}]}. '
+        "{\"changes\":[{\"path\":\"relative/path.py\",\"operation\":\"update\",\"content\":\"ПОЛНЫЙ новый текст файла\",\"reason\":\"зачем\"}]}. "
         "Для нового файла используй operation=create. Не предлагай delete. Если менять файлы не нужно, верни "
-        '{"changes":[]}. JSON должен быть валидным и content должен содержать полный итоговый файл, а не diff."
+        "{\"changes\":[]}. JSON должен быть валидным и content должен содержать полный итоговый файл, а не diff."
     )
