@@ -1,6 +1,7 @@
 "use client";
 
 import {useMemo,useState} from "react";
+import AgentGraphMap from "./AgentGraphMap";
 
 type PublishStatus="draft"|"publish";
 type ConditionSource="previous_text"|"objective";
@@ -63,6 +64,7 @@ export default function AgentGraphEditor({graph,disabled,onSave}:Props){
  const targets=(currentId:string)=>nodes.filter(item=>item.id!==currentId);
  return <div>
   <div style={{padding:"10px 12px",border:"1px solid #e2e2e2",borderRadius:11,marginBottom:12,fontSize:13,opacity:.72}}>Карта исполняется сервером. Условие меняет маршрут, «Подождать» переживает перезапуск worker, уведомление создаётся в AI Workspace. GitHub, код и sandbox настраиваются отдельно в Dev Studio.</div>
+  <div style={{border:"1px solid #ececec",borderRadius:16,padding:14,marginBottom:14}}><div style={{fontSize:12,fontWeight:700,opacity:.55,marginBottom:10}}>ВИЗУАЛЬНАЯ КАРТА</div><AgentGraphMap nodes={nodes}/></div>
   <div style={{display:"grid",gap:10}}>{nodes.map((node,index)=><div key={node.id} style={{border:"1px solid #ddd",borderRadius:13,padding:10}}>
    <div style={{display:"grid",gridTemplateColumns:"36px minmax(0,1fr) 190px auto",gap:8,alignItems:"center"}}>
     <div style={{width:30,height:30,borderRadius:999,border:"1px solid #bbb",display:"grid",placeItems:"center",fontWeight:700}}>{index+1}</div>
