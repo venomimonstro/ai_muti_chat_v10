@@ -68,6 +68,26 @@ def _default_should_cancel(run_id):
     return state == AgentRun.State.CANCELED
 
 
+def _persist_working_branch(run_id, branch_name):
+    """Persist the external GitHub side effect before the first file write.
+
+    A worker can die after branch creation. Recording the branch immediately
+    makes stale-run recovery and the UI able to point to the partial isolated
+    branch instead of pretending that no external side effect happened.
+    """
+    from .models import AgentRun
+
+    run = AgentRun.objects.filter(pk=run_id).only("id", "input_payload").first()
+    if run is None:
+        return False
+    payload = dict(run.input_payload or {})
+    payload["phase"] = "writing_changes"
+    payload["working_branch"] = branch_name
+    run.input_payload = payload
+    run.save(update_fields=["input_payload", "updated_at"])
+    return True
+
+
 def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
     if not changes:
         return {"branch": None, "changes": [], "sandbox": None}
@@ -88,6 +108,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
 
     branch_name = f"ai-workspace/run-{str(run_id).replace('-', '')[:12]}"
     create_repository_branch(binding, branch_name, from_ref=binding.default_branch)
+    _persist_working_branch(run_id, branch_name)
     applied = []
     for index, change in enumerate(changes, start=1):
         if cancel_check():
