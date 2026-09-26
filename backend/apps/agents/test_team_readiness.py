@@ -6,8 +6,11 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.github_integration.models import GitHubInstallation, GitHubRepositoryBinding
+from apps.projects.models import Project
 
 from .models import Agent, AgentRun, AgentTeam, AgentTeamMember
+from .team_readiness import team_readiness
 
 
 def _team(user, *, name="Ready team"):
@@ -34,6 +37,59 @@ def _team(user, *, name="Ready team"):
         can_delegate=True,
         enabled=True,
     )
+    return team
+
+
+def _dev_team(user, *, write_enabled=True, contents_permission="write"):
+    project = Project.objects.create(owner=user, name="Dev project")
+    installation = GitHubInstallation.objects.create(
+        owner=user,
+        installation_id=880001,
+        account_login="owner",
+        account_type="User",
+        permissions={"contents": contents_permission},
+        active=True,
+    )
+    GitHubRepositoryBinding.objects.create(
+        project=project,
+        installation=installation,
+        repository_id=880002,
+        full_name="owner/repo",
+        default_branch="main",
+        private=True,
+        write_enabled=write_enabled,
+    )
+    roles = ["Engineering Director", "Architecture", "Development", "QA & Security"]
+    agents = []
+    for index, role in enumerate(roles, start=1):
+        agent = Agent.objects.create(
+            owner=user,
+            project=project,
+            name=role,
+            role=role,
+            objective=f"Work as {role}",
+            status=Agent.Status.ACTIVE,
+            system_level="balanced",
+        )
+        agents.append(agent)
+    team = AgentTeam.objects.create(
+        owner=user,
+        project=project,
+        name="Dev Team",
+        objective="Implement feature safely",
+        kind=AgentTeam.Kind.DEVELOPMENT,
+        director=agents[0],
+        active=True,
+    )
+    for index, (role, agent) in enumerate(zip(roles, agents), start=1):
+        AgentTeamMember.objects.create(
+            team=team,
+            agent=agent,
+            role=role,
+            priority=index * 10,
+            can_delegate=index == 1,
+            enabled=True,
+        )
     return team
 
 
@@ -87,3 +143,65 @@ def test_team_double_launch_returns_same_active_run_and_queues_once():
     assert first.data["id"] == second.data["id"]
     assert AgentRun.objects.filter(team=team).count() == 1
     delay.assert_called_once_with(first.data["id"])
+
+
+@pytest.mark.django_db
+def test_dev_team_is_not_ready_when_github_write_is_disabled():
+    user = User.objects.create_user(username="dev-ready-write", password="StrongPass123!")
+    team = _dev_team(user, write_enabled=False)
+
+    with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
+        "apps.agents.team_readiness.sandbox_enabled", return_value=True
+    ):
+        result = team_readiness(team)
+
+    assert result["ready"] is False
+    assert result["checks"]["github_write_enabled"] is False
+    assert any("рабочую ветку GitHub отключена" in item for item in result["blockers"])
+
+
+@pytest.mark.django_db
+def test_dev_team_is_not_ready_without_provider_write_permission():
+    user = User.objects.create_user(username="dev-ready-permission", password="StrongPass123!")
+    team = _dev_team(user, contents_permission="read")
+
+    with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
+        "apps.agents.team_readiness.sandbox_enabled", return_value=True
+    ):
+        result = team_readiness(team)
+
+    assert result["ready"] is False
+    assert result["checks"]["github_provider_write"] is False
+    assert any("contents:write" in item for item in result["blockers"])
+
+
+@pytest.mark.django_db
+def test_dev_team_is_not_ready_without_sandbox():
+    user = User.objects.create_user(username="dev-ready-sandbox", password="StrongPass123!")
+    team = _dev_team(user)
+
+    with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
+        "apps.agents.team_readiness.sandbox_enabled", return_value=False
+    ):
+        result = team_readiness(team)
+
+    assert result["ready"] is False
+    assert result["checks"]["sandbox"] is False
+    assert any("Sandbox" in item for item in result["blockers"])
+
+
+@pytest.mark.django_db
+def test_dev_team_is_ready_only_with_complete_write_path():
+    user = User.objects.create_user(username="dev-ready-complete", password="StrongPass123!")
+    team = _dev_team(user)
+
+    with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
+        "apps.agents.team_readiness.sandbox_enabled", return_value=True
+    ):
+        result = team_readiness(team)
+
+    assert result["ready"] is True
+    assert result["checks"]["dev_roles"] is True
+    assert result["checks"]["github_provider_write"] is True
+    assert result["checks"]["github_write_enabled"] is True
+    assert result["checks"]["sandbox"] is True
