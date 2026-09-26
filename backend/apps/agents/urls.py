@@ -18,6 +18,7 @@ from .team_builder_views import AgentTeamBootstrapView
 from .team_config_views import AgentTeamDirectorView, AgentTeamMemberDetailView
 from .team_run_views import SafeTeamRunView, TeamReadinessView
 from .views import AgentRunViewSet, AgentTeamViewSet, AgentViewSet
+from .webhook_views import AgentWebhookInvokeView, AgentWebhookTriggerViewSet
 from .wordpress_views import AgentRunWordPressView
 
 router = DefaultRouter()
@@ -25,6 +26,7 @@ router.register("agents", AgentViewSet, basename="agent")
 router.register("agent-teams", AgentTeamViewSet, basename="agent-team")
 router.register("agent-runs", AgentRunViewSet, basename="agent-run")
 router.register("agent-schedules", AgentScheduleViewSet, basename="agent-schedule")
+router.register("agent-webhooks", AgentWebhookTriggerViewSet, basename="agent-webhook")
 
 urlpatterns = [
     path("agents/operations/summary/", AgentOperationsSummaryView.as_view(), name="agent-operations-summary"),
@@ -58,6 +60,11 @@ urlpatterns = [
         "agent-teams/<uuid:team_id>/director/",
         AgentTeamDirectorView.as_view(),
         name="agent-team-director",
+    ),
+    path(
+        "agent-webhooks/<uuid:trigger_id>/invoke/",
+        AgentWebhookInvokeView.as_view(),
+        name="agent-webhook-invoke",
     ),
     path(
         "agent-runs/<uuid:run_id>/cancel/",
