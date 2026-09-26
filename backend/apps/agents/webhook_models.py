@@ -21,7 +21,7 @@ class AgentWebhookTrigger(models.Model):
     class Meta:
         app_label = "agents"
         ordering = ["-updated_at"]
-        indexes = [models.Index(fields=["owner", "enabled"], name="agents_webhook_owner_enabled_idx")]
+        indexes = [models.Index(fields=["owner", "enabled"], name="agt_wh_owner_enabled_idx")]
         constraints = [
             models.CheckConstraint(
                 condition=(models.Q(agent__isnull=False, team__isnull=True) | models.Q(agent__isnull=True, team__isnull=False)),
@@ -57,4 +57,4 @@ class AgentWebhookDelivery(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["trigger", "event_id"], name="unique_agent_webhook_event")
         ]
-        indexes = [models.Index(fields=["state", "created_at"], name="agents_webhook_state_created_idx")]
+        indexes = [models.Index(fields=["state", "created_at"], name="agt_wh_state_created_idx")]
