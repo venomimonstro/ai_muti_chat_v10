@@ -19,6 +19,8 @@ ACTIVE_RUN_STATES = [
     AgentRun.State.REVIEWING,
 ]
 
+DEV_REQUIRED_ROLES = {"Engineering Director", "Architecture", "Development", "QA & Security"}
+
 
 def _ancestor_node_ids(edges, node_id):
     reverse = {}
@@ -38,6 +40,10 @@ def _ancestor_node_ids(edges, node_id):
         ancestors.add(current)
         stack.extend(reverse.get(current, set()))
     return ancestors
+
+
+def _tool_value(agent, key):
+    return (agent.tool_policy or {}).get(key)
 
 
 class Command(BaseCommand):
@@ -136,6 +142,47 @@ class Command(BaseCommand):
                             dev_issues.append("GitHub installation is inactive")
                         if not binding.full_name or not binding.default_branch:
                             dev_issues.append("GitHub repository binding is incomplete")
+
+                enabled_by_role = {item.role: item for item in enabled_members}
+                missing_roles = sorted(DEV_REQUIRED_ROLES.difference(enabled_by_role))
+                if missing_roles:
+                    dev_issues.append("missing required roles: " + ", ".join(missing_roles))
+
+                director_member = enabled_by_role.get("Engineering Director")
+                if director_member and director_member.agent_id != team.director_id:
+                    dev_issues.append("Engineering Director role does not match team.director")
+
+                architecture = enabled_by_role.get("Architecture")
+                if architecture:
+                    if not bool(_tool_value(architecture.agent, "github")):
+                        dev_issues.append("Architecture role must have GitHub read access")
+                    if bool(_tool_value(architecture.agent, "write_code")):
+                        dev_issues.append("Architecture role must not write code")
+
+                developer = enabled_by_role.get("Development")
+                if developer:
+                    if not bool(_tool_value(developer.agent, "github")):
+                        dev_issues.append("Development role must have GitHub access")
+                    if not bool(_tool_value(developer.agent, "write_code")):
+                        dev_issues.append("Development role must allow code changes")
+                    if str(_tool_value(developer.agent, "shell") or "").strip().lower() != "sandbox":
+                        dev_issues.append("Development role must execute shell only in sandbox")
+                    if str(_tool_value(developer.agent, "merge") or "").strip().lower() != "approval":
+                        dev_issues.append("Development role must require approval before GitHub write/merge")
+
+                qa = enabled_by_role.get("QA & Security")
+                if qa:
+                    if str(_tool_value(qa.agent, "shell") or "").strip().lower() != "sandbox":
+                        dev_issues.append("QA & Security role must execute checks in sandbox")
+                    if bool(_tool_value(qa.agent, "write_code")):
+                        dev_issues.append("QA & Security role must be read-only")
+
+                if team.director:
+                    if not bool(_tool_value(team.director, "github")):
+                        dev_issues.append("Engineering Director must have GitHub access")
+                    if not bool(_tool_value(team.director, "approve")):
+                        dev_issues.append("Engineering Director must support approval workflow")
+
                 for issue in dev_issues:
                     message = f"team={team.id}: {issue}"
                     if team.active:
