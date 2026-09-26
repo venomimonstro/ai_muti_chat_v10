@@ -20,6 +20,7 @@ ACTIVE_RUN_STATES = [
 ]
 
 DEV_REQUIRED_ROLES = {"Engineering Director", "Architecture", "Development", "QA & Security"}
+PROMPT_NODE_TYPES = {"llm", "research", "web", "files", "image", "review", "analytics"}
 
 
 def _ancestor_node_ids(edges, node_id):
@@ -78,28 +79,58 @@ class Command(BaseCommand):
                 failures.append(f"agent={agent.id}: max_cost_rub_per_run must be positive")
             if agent.max_steps < 1 or agent.max_tool_calls < 1 or agent.max_runtime_seconds < 1:
                 failures.append(f"agent={agent.id}: execution limits must be positive")
-            graph = agent.graph or {}
-            nodes = graph.get("nodes") or [] if isinstance(graph, dict) else []
-            edges = graph.get("edges") or [] if isinstance(graph, dict) else []
+            graph = agent.graph if isinstance(agent.graph, dict) else {}
+            nodes = [item for item in (graph.get("nodes") or []) if isinstance(item, dict)]
+            edges = [item for item in (graph.get("edges") or []) if isinstance(item, dict)]
             if agent.status == Agent.Status.ACTIVE and not nodes:
                 warnings.append(f"agent={agent.id}: active agent has an empty graph")
-            node_ids = [str(item.get("id") or "") for item in nodes if isinstance(item, dict)]
+            node_ids = [str(item.get("id") or "").strip() for item in nodes]
+            if any(not node_id for node_id in node_ids):
+                failures.append(f"agent={agent.id}: graph contains node without id")
             if len(node_ids) != len(set(node_ids)):
                 failures.append(f"agent={agent.id}: graph has duplicate node ids")
             known = set(node_ids)
+            positions = {node_id: index for index, node_id in enumerate(node_ids)}
             for edge in edges:
-                if not isinstance(edge, dict):
-                    failures.append(f"agent={agent.id}: graph contains malformed edge")
-                    continue
-                if edge.get("from") not in known or edge.get("to") not in known:
+                source = str(edge.get("from") or "").strip()
+                target = str(edge.get("to") or "").strip()
+                if source not in known or target not in known:
                     failures.append(f"agent={agent.id}: graph edge references missing node")
+                    continue
+                if positions.get(target, -1) <= positions.get(source, -1):
+                    failures.append(
+                        f"agent={agent.id}: graph edge {source}->{target} is backward/cyclic; only forward routes are allowed"
+                    )
+
+            for index, node in enumerate(nodes):
+                node_id = node_ids[index]
+                node_type = str(node.get("type") or "llm").strip().lower()
+                if node_type == "condition":
+                    for branch_name in ("on_true", "on_false"):
+                        target = str(node.get(branch_name) or "").strip()
+                        if not target:
+                            continue
+                        if target not in known:
+                            failures.append(f"agent={agent.id}: condition node={node_id} points to missing target={target}")
+                        elif positions[target] <= index:
+                            failures.append(
+                                f"agent={agent.id}: condition node={node_id} has backward target={target}; only forward routes are allowed"
+                            )
+                if node_type == "wait":
+                    try:
+                        wait_minutes = int(node.get("wait_minutes") or 60)
+                    except (TypeError, ValueError):
+                        wait_minutes = 0
+                    if wait_minutes < 1 or wait_minutes > 10080:
+                        failures.append(f"agent={agent.id}: wait node={node_id} must be between 1 and 10080 minutes")
+                if node_type in PROMPT_NODE_TYPES and not str(node.get("prompt") or "").strip():
+                    warnings.append(f"agent={agent.id}: node={node_id} type={node_type} has no step instruction")
 
             if agent.status == Agent.Status.ACTIVE:
                 publish_policy = str((agent.tool_policy or {}).get("publish") or "").strip().lower()
                 node_types = {
                     str(item.get("id") or ""): str(item.get("type") or "").strip().lower()
                     for item in nodes
-                    if isinstance(item, dict)
                 }
                 publish_nodes = [node_id for node_id, node_type in node_types.items() if node_type == "publish"]
                 if publish_nodes and publish_policy in {"auto", "autonomous", "true"} and agent.autonomy != Agent.Autonomy.AUTONOMOUS:
