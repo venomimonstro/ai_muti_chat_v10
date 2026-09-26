@@ -24,8 +24,19 @@ class DevTeamBootstrapView(APIView):
         project = _owned_project(request.user, request.data.get("project"))
         if project is None:
             raise ValidationError({"project": "Для Dev Studio выберите проект"})
-        if not hasattr(project, "github_repository"):
+        try:
+            binding = project.github_repository
+        except Exception:
+            binding = None
+        if binding is None:
             raise ValidationError({"project": "Сначала подключите GitHub repository к проекту"})
+        if not binding.installation.active:
+            raise ValidationError({"project": "GitHub App installation отключена. Переподключите GitHub"})
+        contents_permission = str((binding.installation.permissions or {}).get("contents") or "").strip().lower()
+        if contents_permission not in {"write", "admin"}:
+            raise ValidationError({"project": "Dev Studio требует GitHub permission contents:write"})
+        if not binding.write_enabled:
+            raise ValidationError({"project": "Разрешите Dev Studio запись в рабочую ветку GitHub"})
 
         # Serialize bootstrap attempts for one project. Network retries/double clicks
         # within a short window must not create another 4 service agents and team.
