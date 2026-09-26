@@ -108,9 +108,19 @@ compose exec -T backend python manage.py check --deploy
 compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
 compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"
 
+printf 'Проверяем обязательные production services...\n'
+RUNNING_SERVICES="$(compose ps --status running --services)"
+for service in postgres redis backend worker beat frontend caddy sandbox; do
+  printf '%s\n' "$RUNNING_SERVICES" | grep -Fxq "$service" || {
+    printf 'Production service не запущен: %s\n' "$service" >&2
+    exit 1
+  }
+done
+
 printf 'Проверяем production billing и Agent Runtime...\n'
 compose exec -T backend python manage.py billing_integrity_check
 compose exec -T backend python manage.py agent_system_audit
+compose exec -T backend python manage.py dev_studio_audit
 compose exec -T backend python manage.py agent_billing_audit
 
 trap - ERR
