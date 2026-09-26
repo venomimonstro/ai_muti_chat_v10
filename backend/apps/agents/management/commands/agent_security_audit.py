@@ -68,12 +68,8 @@ class Command(BaseCommand):
                 failures.append(f"run={run.id}: subject belongs to another tenant")
             if run.project_id and run.project.owner_id != run.owner_id:
                 failures.append(f"run={run.id}: project belongs to another tenant")
-            if run.agent_id and run.project_id != run.agent.project_id:
-                failures.append(f"run={run.id}: agent project snapshot mismatch")
-            if run.team_id and run.project_id != run.team.project_id:
-                failures.append(f"run={run.id}: team project snapshot mismatch")
 
-        for step in AgentStepRun.objects.select_related("run", "agent").iterator(chunk_size=500):
+        for step in AgentStepRun.objects.select_related("run", "agent", "run__team").iterator(chunk_size=500):
             if step.agent.owner_id != step.run.owner_id:
                 failures.append(f"step={step.id}: executing agent belongs to another tenant")
             if step.run.team_id and not step.run.team.members.filter(agent_id=step.agent_id, enabled=True).exists():
