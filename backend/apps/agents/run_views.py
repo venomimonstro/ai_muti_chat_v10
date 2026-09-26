@@ -7,6 +7,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .limits import ensure_owner_run_capacity
 from .models import Agent, AgentApproval, AgentRun
 from .readiness import require_agent_ready
 from .serializers import AgentRunSerializer
@@ -29,6 +30,7 @@ def enqueue_agent_run(run):
 
 
 def create_single_agent_run(*, owner, agent, objective, input_payload=None):
+    ensure_owner_run_capacity(owner)
     state = (
         AgentRun.State.WAITING_APPROVAL
         if agent.autonomy == Agent.Autonomy.CONTROLLED
@@ -80,10 +82,15 @@ class SafeAgentRunView(APIView):
         objective = str(request.data.get("objective") or agent.objective).strip()
         if not objective:
             raise ValidationError({"objective": "Укажите задачу запуска"})
-        run = create_single_agent_run(
-            owner=request.user,
-            agent=agent,
-            objective=objective,
-            input_payload=request.data.get("input") or {},
-        )
+        try:
+            run = create_single_agent_run(
+                owner=request.user,
+                agent=agent,
+                objective=objective,
+                input_payload=request.data.get("input") or {},
+            )
+        except Exception as exc:
+            if exc.__class__.__module__.startswith("django.core.exceptions"):
+                raise ValidationError({"detail": str(exc)}) from exc
+            raise
         return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)
