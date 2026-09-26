@@ -117,10 +117,11 @@ for service in postgres redis backend worker beat frontend caddy sandbox; do
   }
 done
 
-printf 'Проверяем production billing и Agent Runtime...\n'
+printf 'Проверяем production billing, security и Agent Runtime...\n'
 compose exec -T backend python manage.py billing_integrity_check
 compose exec -T backend python manage.py agent_system_audit
 compose exec -T backend python manage.py agent_webhook_audit
+compose exec -T backend python manage.py agent_security_audit
 compose exec -T backend python manage.py dev_studio_audit
 compose exec -T backend python manage.py agent_billing_audit
 
