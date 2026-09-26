@@ -4,11 +4,11 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import serializers, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Agent, AgentTeam
 from .webhook_models import AgentWebhookDelivery, AgentWebhookTrigger
 from .webhook_tasks import dispatch_agent_webhook_delivery
 
@@ -89,6 +89,7 @@ class AgentWebhookTriggerViewSet(viewsets.ModelViewSet):
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(detail=True, methods=["post"], url_path="rotate-secret")
     @transaction.atomic
     def rotate_secret(self, request, pk=None):
         trigger = AgentWebhookTrigger.objects.select_for_update().get(pk=pk, owner=request.user)
