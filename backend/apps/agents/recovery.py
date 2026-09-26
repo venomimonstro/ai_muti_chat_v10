@@ -71,6 +71,12 @@ def _release_provider_reservations(run_id):
     return released
 
 
+def _working_branch(run):
+    input_payload = run.input_payload if isinstance(run.input_payload, dict) else {}
+    output_payload = run.output_payload if isinstance(run.output_payload, dict) else {}
+    return str(input_payload.get("working_branch") or output_payload.get("working_branch") or "").strip()
+
+
 @transaction.atomic
 def recover_agent_run(run_id):
     run = AgentRun.objects.select_for_update().filter(pk=run_id).first()
@@ -86,10 +92,14 @@ def recover_agent_run(run_id):
     released_customer = _release_customer_reservations(run.id)
     released_provider = _release_provider_reservations(run.id)
     now = timezone.now()
+    branch = _working_branch(run)
 
     run.steps.filter(state=AgentStepRun.State.RUNNING).update(
         state=AgentStepRun.State.FAILED,
-        public_log="Выполнение прервано: worker не завершил шаг в допустимое время.",
+        public_log=(
+            "Выполнение прервано: worker не завершил шаг в допустимое время."
+            + (f" Частичные изменения могли остаться в изолированной ветке {branch}." if branch else "")
+        ),
         finished_at=now,
     )
     run.steps.filter(state=AgentStepRun.State.PENDING).update(
@@ -98,12 +108,18 @@ def recover_agent_run(run_id):
         finished_at=now,
     )
 
+    branch_note = ""
+    if branch:
+        branch_note = (
+            f" Рабочая ветка {branch} сохранена для проверки; она не считается успешным релизом. "
+            "Повторный запуск создаст новую изолированную ветку."
+        )
     run.state = AgentRun.State.FAILED
     run.error_code = "stale_agent_run_recovered"
     run.error_message = (
         "Запуск остановлен автоматически после потери активности worker. "
-        f"Освобождено резервов: user={released_customer}, provider={released_provider}. "
-        "Можно безопасно запустить задачу повторно."
+        f"Освобождено резервов: user={released_customer}, provider={released_provider}."
+        f"{branch_note} Можно безопасно запустить задачу повторно."
     )
     run.finished_at = now
     run.save(
