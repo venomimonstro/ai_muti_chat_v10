@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .ai_planner_views import AgentAIPlannerCreateView, AgentAIPlannerPreviewView
 from .approval_views import SafeAgentApprovalDecisionView
+from .cancel_views import SafeAgentRunCancelView
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
 from .dev_bootstrap_views import DevTeamBootstrapView
 from .dev_merge_views import DevRunMergePullRequestView
@@ -57,6 +58,11 @@ urlpatterns = [
         "agent-teams/<uuid:team_id>/director/",
         AgentTeamDirectorView.as_view(),
         name="agent-team-director",
+    ),
+    path(
+        "agent-runs/<uuid:run_id>/cancel/",
+        SafeAgentRunCancelView.as_view(),
+        name="agent-safe-run-cancel",
     ),
     path(
         "agent-runs/<uuid:run_id>/approvals/<uuid:approval_id>/decision/",
