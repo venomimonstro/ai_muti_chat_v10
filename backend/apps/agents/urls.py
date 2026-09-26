@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .ai_planner_views import AgentAIPlannerCreateView, AgentAIPlannerPreviewView
 from .approval_views import SafeAgentApprovalDecisionView
 from .config_views import AgentConfigView, AgentVersionListView, AgentVersionRestoreView
 from .dev_bootstrap_views import DevTeamBootstrapView
@@ -26,6 +27,8 @@ router.register("agent-schedules", AgentScheduleViewSet, basename="agent-schedul
 
 urlpatterns = [
     path("agents/operations/summary/", AgentOperationsSummaryView.as_view(), name="agent-operations-summary"),
+    path("agents/ai-planner/preview/", AgentAIPlannerPreviewView.as_view(), name="agent-ai-planner-preview"),
+    path("agents/ai-planner/create/", AgentAIPlannerCreateView.as_view(), name="agent-ai-planner-create"),
     path("agents/<uuid:agent_id>/readiness/", AgentReadinessView.as_view(), name="agent-readiness"),
     path("agents/<uuid:agent_id>/run/", SafeAgentRunView.as_view(), name="agent-safe-run"),
     path("agents/<uuid:agent_id>/config/", AgentConfigView.as_view(), name="agent-config"),
