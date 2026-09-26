@@ -10,7 +10,7 @@ from rest_framework.response import Response
 
 from apps.projects.models import Project
 
-from .models import Agent, AgentApproval, AgentRun, AgentTeam, AgentTeamMember
+from .models import Agent, AgentRun, AgentTeam, AgentTeamMember
 from .planner import draft_from_description, graph_for_kind
 from .serializers import AgentRunSerializer, AgentSerializer, AgentTeamSerializer, agent_has_active_run
 from .team_builder import team_draft
@@ -428,31 +428,5 @@ class AgentRunViewSet(viewsets.ReadOnlyModelViewSet):
             return Response(self.get_serializer(run).data)
         run.state = AgentRun.State.CANCELED
         run.finished_at = timezone.now()
-        run.save(update_fields=["state", "finished_at", "updated_at"])
-        return Response(self.get_serializer(run).data)
-
-    @action(detail=True, methods=["post"], url_path=r"approvals/(?P<approval_id>[^/.]+)/decision")
-    @transaction.atomic
-    def approval_decision(self, request, pk=None, approval_id=None):
-        run = self.get_object()
-        approval = AgentApproval.objects.select_for_update().filter(id=approval_id, run=run).first()
-        if not approval:
-            raise ValidationError({"approval": "Запрос подтверждения не найден"})
-        if approval.status != AgentApproval.Status.PENDING:
-            return Response(self.get_serializer(run).data)
-        decision = str(request.data.get("decision") or "").strip()
-        if decision not in {"approved", "rejected"}:
-            raise ValidationError({"decision": "Используйте approved или rejected"})
-        approval.status = decision
-        approval.decided_by = request.user
-        approval.decided_at = timezone.now()
-        approval.save(update_fields=["status", "decided_by", "decided_at"])
-        if decision == "rejected":
-            run.state = AgentRun.State.CANCELED
-            run.finished_at = timezone.now()
-        elif run.state == AgentRun.State.WAITING_APPROVAL:
-            run.state = AgentRun.State.QUEUED
-            run.finished_at = None
-            _enqueue_run(run)
         run.save(update_fields=["state", "finished_at", "updated_at"])
         return Response(self.get_serializer(run).data)
