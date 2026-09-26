@@ -131,6 +131,8 @@ def _validate_graph(graph):
     known = set(ids)
     positions = {node_id: index for index, node_id in enumerate(ids)}
 
+    seen_edges = set()
+    outgoing_sources = set()
     for edge in edges:
         if not isinstance(edge, dict):
             raise ValidationError({"graph": "Связь карты имеет неверный формат"})
@@ -140,6 +142,15 @@ def _validate_graph(graph):
             raise ValidationError({"graph": "Связь ссылается на отсутствующий блок"})
         if positions[target] <= positions[source]:
             raise ValidationError({"graph": "Связи карты могут вести только вперёд. Циклические маршруты запрещены"})
+        pair = (source, target)
+        if pair in seen_edges:
+            raise ValidationError({"graph": f"Связь {source} → {target} указана дважды"})
+        if source in outgoing_sources:
+            raise ValidationError(
+                {"graph": f"У шага «{nodes[positions[source]]['title']}» может быть только один обычный переход. Для ветвления используйте блок «Условие»."}
+            )
+        seen_edges.add(pair)
+        outgoing_sources.add(source)
         edge["from"] = source
         edge["to"] = target
 
