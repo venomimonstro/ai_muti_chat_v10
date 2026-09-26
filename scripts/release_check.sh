@@ -14,10 +14,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf '[1/14] Secret scan\n'
+printf '[1/15] Secret scan\n'
 bash ./scripts/security_scan.sh
 
-printf '[2/14] Shell and smoke-script syntax\n'
+printf '[2/15] Shell and smoke-script syntax\n'
 bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
@@ -29,7 +29,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 "$PYTHON_BIN" -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
 
-printf '[3/14] Compose syntax\n'
+printf '[3/15] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
 APP_DOMAIN=release-check.example.test \
 ACME_EMAIL=ops@example.test \
@@ -40,33 +40,36 @@ REDIS_PASSWORD=release-check-redis-password \
 PUBLIC_API_URL=https://release-check.example.test/api/v1 \
 docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 
-printf '[4/14] Build isolated test stack\n'
+printf '[4/15] Build isolated test stack\n'
 docker compose -f "$TEST_COMPOSE" build backend-test
 docker compose -f "$TEST_COMPOSE" up -d postgres
 
-printf '[5/14] Backend lint\n'
+printf '[5/15] Backend lint\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check .
 
-printf '[6/14] Backend tests on PostgreSQL/pgvector\n'
+printf '[6/15] Backend tests on PostgreSQL/pgvector\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q
 
-printf '[7/14] Django checks and migration drift\n'
+printf '[7/15] Django checks and migration drift\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
 
-printf '[8/14] Economic safety invariants\n'
+printf '[8/15] Economic safety invariants\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py economic_safety_check
 
-printf '[9/14] Billing ledger integrity\n'
+printf '[9/15] Billing ledger integrity\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py billing_integrity_check
 
-printf '[10/14] Agent Studio integrity\n'
+printf '[10/15] Agent Studio integrity\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_system_audit
 
-printf '[11/14] Agent Runtime billing integrity\n'
+printf '[11/15] Dev Studio readiness\n'
+docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_audit
+
+printf '[12/15] Agent Runtime billing integrity\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_billing_audit
 
-printf '[12/14] Frontend production build\n'
+printf '[13/15] Frontend production build\n'
 docker build \
   --target builder \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
@@ -75,10 +78,10 @@ docker build \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
   -t ai-workspace-frontend-test frontend
 
-printf '[13/14] Frontend lint\n'
+printf '[14/15] Frontend lint\n'
 docker run --rm ai-workspace-frontend-builder sh -c 'npm run lint'
 
-printf '[14/14] Frontend runtime route smoke\n'
+printf '[15/15] Frontend runtime route smoke\n'
 docker run -d --rm --name "$FRONTEND_SMOKE_CONTAINER" \
   -p "127.0.0.1:${FRONTEND_SMOKE_PORT}:3000" ai-workspace-frontend-test >/dev/null
 READY=false
