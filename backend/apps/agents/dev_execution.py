@@ -61,6 +61,13 @@ def validate_changes_in_sandbox(changes):
     return result
 
 
+def _default_should_cancel(run_id):
+    from .models import AgentRun
+
+    state = AgentRun.objects.filter(pk=run_id).values_list("state", flat=True).first()
+    return state == AgentRun.State.CANCELED
+
+
 def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
     if not changes:
         return {"branch": None, "changes": [], "sandbox": None}
@@ -71,17 +78,19 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
     if not binding.write_enabled:
         raise ValidationError("Для проекта не разрешена запись в GitHub")
 
-    if should_cancel and should_cancel():
+    cancel_check = should_cancel or (lambda: _default_should_cancel(run_id))
+
+    if cancel_check():
         raise ValidationError("Dev Studio остановлен до sandbox/GitHub write")
     sandbox_result = validate_changes_in_sandbox(changes)
-    if should_cancel and should_cancel():
+    if cancel_check():
         raise ValidationError("Dev Studio остановлен после sandbox и до создания рабочей ветки")
 
     branch_name = f"ai-workspace/run-{str(run_id).replace('-', '')[:12]}"
     create_repository_branch(binding, branch_name, from_ref=binding.default_branch)
     applied = []
     for index, change in enumerate(changes, start=1):
-        if should_cancel and should_cancel():
+        if cancel_check():
             raise ValidationError(
                 f"Dev Studio остановлен пользователем. Уже записано файлов: {len(applied)}. "
                 f"Изменения остались только в изолированной ветке {branch_name}."
