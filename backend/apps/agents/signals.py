@@ -84,6 +84,23 @@ def _subject_name(run):
     return "AI-сотрудник"
 
 
+def _publish_is_still_pending(run):
+    """Do not announce success before a traversed publish node really finishes.
+
+    Graph runtime first reaches COMPLETED, then the post-run WordPress finalizer
+    performs the external write. If a publish step exists but no publication is
+    recorded yet, success would be premature. Branches that never traversed a
+    publish node are not delayed.
+    """
+    if not run.agent_id:
+        return False
+    has_publish_step = AgentStepRun.objects.filter(run_id=run.id, action_type="publish").exists()
+    if not has_publish_step:
+        return False
+    publication = (run.output_payload or {}).get("wordpress_publication")
+    return not (isinstance(publication, dict) and publication.get("post_id"))
+
+
 @receiver(post_save, sender=AgentRun)
 def notify_autonomous_run_state(sender, instance, **kwargs):
     # Human approval is important regardless of how the run was started. A
@@ -112,6 +129,8 @@ def notify_autonomous_run_state(sender, instance, **kwargs):
     body = ""
     level = Notification.Level.INFO
     if instance.state == AgentRun.State.COMPLETED:
+        if _publish_is_still_pending(instance):
+            return
         title = "Автономная задача выполнена"
         body = f"{_subject_name(instance)} завершил задачу. Откройте журнал, чтобы посмотреть результат."
         level = Notification.Level.SUCCESS
