@@ -18,6 +18,12 @@ ACTIVE_RUN_STATES = [
     AgentRun.State.WAITING_APPROVAL,
     AgentRun.State.REVIEWING,
 ]
+TERMINAL_RUN_STATES = [
+    AgentRun.State.COMPLETED,
+    AgentRun.State.FAILED,
+    AgentRun.State.CANCELED,
+    AgentRun.State.BUDGET_EXCEEDED,
+]
 
 DEV_REQUIRED_ROLES = {"Engineering Director", "Architecture", "Development", "QA & Security"}
 PROMPT_NODE_TYPES = {"llm", "research", "web", "files", "image", "review", "analytics"}
@@ -226,6 +232,7 @@ class Command(BaseCommand):
                 if team.project_id and membership.agent.project_id not in {None, team.project_id}:
                     failures.append(f"team={team.id}: member={membership.agent_id} belongs to another project")
 
+        now = timezone.now()
         for schedule in AgentSchedule.objects.select_related("owner", "agent", "team"):
             subject = schedule.agent or schedule.team
             if subject is None:
@@ -250,6 +257,12 @@ class Command(BaseCommand):
                 failures.append(f"schedule={schedule.id}: enabled schedule points to inactive agent")
             if schedule.enabled and schedule.team_id and not schedule.team.active:
                 failures.append(f"schedule={schedule.id}: enabled schedule points to paused team")
+            if schedule.enabled and schedule.next_run_at < now - timedelta(hours=1):
+                failures.append(
+                    f"schedule={schedule.id}: next_run_at is more than 1 hour overdue; Beat dispatcher may be stopped"
+                )
+            elif schedule.enabled and schedule.next_run_at < now - timedelta(minutes=10):
+                warnings.append(f"schedule={schedule.id}: next_run_at is more than 10 minutes overdue")
 
         active_agents = Agent.objects.filter(status=Agent.Status.ACTIVE)
         policy = RoutingPolicyVersion.objects.filter(active=True).first()
@@ -282,10 +295,39 @@ class Command(BaseCommand):
                 f"team={row['team_id']}: {row['total']} simultaneous active runs for owner={row['owner_id']}"
             )
 
+        for run in AgentRun.objects.all().only(
+            "id", "state", "cost_reserved_rub", "cost_actual_rub", "finished_at", "input_payload"
+        ).iterator(chunk_size=500):
+            if run.cost_reserved_rub < 0 or run.cost_actual_rub < 0:
+                failures.append(f"run={run.id}: negative cost detected")
+            if run.state in TERMINAL_RUN_STATES and run.finished_at is None:
+                failures.append(f"run={run.id}: terminal state={run.state} has no finished_at")
+            if run.state in ACTIVE_RUN_STATES and run.state != AgentRun.State.WAITING_APPROVAL and run.finished_at is not None:
+                failures.append(f"run={run.id}: active state={run.state} unexpectedly has finished_at")
+
+        pending_approvals = AgentApproval.objects.filter(status=AgentApproval.Status.PENDING).select_related("run")
+        for approval in pending_approvals.iterator(chunk_size=200):
+            if approval.run.state != AgentRun.State.WAITING_APPROVAL:
+                failures.append(
+                    f"approval={approval.id}: pending approval belongs to run={approval.run_id} state={approval.run.state}"
+                )
+
+        for run in AgentRun.objects.filter(state=AgentRun.State.WAITING_APPROVAL).prefetch_related("approvals"):
+            if not any(item.status == AgentApproval.Status.PENDING for item in run.approvals.all()):
+                failures.append(f"run={run.id}: WAITING_APPROVAL has no pending approval")
+
+        terminal_with_pending = AgentRun.objects.filter(
+            state__in=TERMINAL_RUN_STATES,
+            approvals__status=AgentApproval.Status.PENDING,
+        ).distinct()
+        for run in terminal_with_pending[:200]:
+            failures.append(f"run={run.id}: terminal state={run.state} still has pending approval")
+
         dev_runs = AgentRun.objects.filter(team__kind=AgentTeam.Kind.DEVELOPMENT).select_related("team", "project")
-        for run in dev_runs.filter(state__in=ACTIVE_RUN_STATES)[:500]:
+        for run in dev_runs[:1000]:
             payload = run.input_payload or {}
             phase = str(payload.get("phase") or "").strip()
+            working_branch = str(payload.get("working_branch") or "").strip()
             if run.state == AgentRun.State.WAITING_APPROVAL and phase == "awaiting_github_approval":
                 pending = run.approvals.filter(
                     status=AgentApproval.Status.PENDING,
@@ -293,10 +335,18 @@ class Command(BaseCommand):
                 ).exists()
                 if not pending:
                     failures.append(f"run={run.id}: awaiting GitHub approval but no pending approval exists")
-            if phase == "reviewing_changes" and not str(payload.get("working_branch") or "").strip():
-                failures.append(f"run={run.id}: reviewing_changes has no working_branch")
+            if phase in {"writing_changes", "reviewing_changes"} and not working_branch:
+                failures.append(f"run={run.id}: phase={phase} has no working_branch")
             if phase == "completed" and run.state != AgentRun.State.COMPLETED:
                 failures.append(f"run={run.id}: phase=completed but state={run.state}")
+            if run.state == AgentRun.State.COMPLETED and phase != "completed":
+                failures.append(f"run={run.id}: completed Dev run has phase={phase or '-'}")
+            if run.state in TERMINAL_RUN_STATES and run.state != AgentRun.State.COMPLETED and phase == "awaiting_github_approval":
+                failures.append(f"run={run.id}: terminal Dev run still has awaiting_github_approval phase")
+            if run.state in {AgentRun.State.FAILED, AgentRun.State.CANCELED} and working_branch:
+                warnings.append(
+                    f"run={run.id}: terminal state={run.state} left isolated working branch={working_branch}; manual cleanup may be desired"
+                )
 
         stale_cutoff = timezone.now() - timedelta(hours=3)
         stale_states = [
