@@ -83,6 +83,26 @@ def test_team_and_webhook_management_are_owner_scoped(tenants):
 
 
 @pytest.mark.django_db
+def test_agent_api_rejects_unsafe_code_tool_policy(tenants):
+    owner, _attacker = tenants
+    client = APIClient()
+    client.force_authenticate(owner)
+
+    response = client.post(
+        "/api/v1/agents/",
+        {
+            "name": "Unsafe developer",
+            "objective": "Develop",
+            "tool_policy": {"write_code": True, "github": True, "shell": "disabled", "merge": "disabled"},
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert not Agent.objects.filter(owner=owner, name="Unsafe developer").exists()
+
+
+@pytest.mark.django_db
 def test_agent_security_audit_rejects_cross_tenant_run(tenants):
     owner, attacker = tenants
     foreign_agent = Agent.objects.create(owner=owner, name="Foreign", objective="Private", status=Agent.Status.ACTIVE)
@@ -115,7 +135,7 @@ def test_agent_security_audit_accepts_safe_tenant_state(tenants):
         name="Safe developer",
         objective="Develop",
         status=Agent.Status.ACTIVE,
-        tool_policy={"write_code": True, "shell": "sandbox", "merge": "approval"},
+        tool_policy={"github": True, "write_code": True, "shell": "sandbox", "merge": "approval"},
     )
     AgentWebhookTrigger.objects.create(
         owner=owner,
