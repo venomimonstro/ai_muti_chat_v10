@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.models import AIModel, ModelVersion, Provider
 from apps.billing.models import PriceVersion
 from apps.billing.services import credit
 from apps.chat.models import Conversation, Generation
@@ -22,12 +22,24 @@ def test_client_journey_chat_folder_draft_answer_usage_and_delete():
     )
     credit(user, Decimal("25.00"), "test", "journey-credit")
     provider = Provider.objects.create(slug="echo-journey", name="Echo Journey")
-    AIModel.objects.create(
+    model = AIModel.objects.create(
         provider=provider,
         slug="echo-v1",
         display_name="Echo",
         upstream_model="echo-v1",
     )
+    version = ModelVersion.objects.create(
+        model=model,
+        version="echo-v1",
+        exact_api_id="echo-v1",
+        capabilities=["text", "streaming"],
+        context_window=model.context_window,
+        max_output_tokens=model.max_output_tokens,
+        stage=ModelVersion.Stage.ACTIVE,
+        activated_at=timezone.now(),
+    )
+    model.current_version = version
+    model.save(update_fields=["current_version"])
     PriceVersion.objects.create(
         model_slug="echo-v1",
         input_rub_per_million=Decimal("10"),
