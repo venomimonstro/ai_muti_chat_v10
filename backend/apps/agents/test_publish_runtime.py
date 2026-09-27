@@ -14,7 +14,6 @@ def _fixture(*, approved=True, with_connection=True, unrelated_approval=False):
     user = get_user_model().objects.create_user(
         username=f"publisher-{approved}-{with_connection}-{unrelated_approval}",
         email=f"publisher-{approved}-{with_connection}-{unrelated_approval}@example.test",
-        password="test-password",
     )
     nodes = [
         {"id": "draft", "title": "Draft", "type": "llm"},
@@ -79,11 +78,12 @@ def _fixture(*, approved=True, with_connection=True, unrelated_approval=False):
             decided_at=timezone.now(),
             action_payload={"kind": "workflow_approval", "node_id": "approve"},
         )
+    next_sequence = 3
     if unrelated_approval:
         other_step = AgentStepRun.objects.create(
             run=run,
             agent=agent,
-            sequence=2,
+            sequence=next_sequence,
             node_id="other-approve",
             title="Other approval",
             action_type="approval",
@@ -91,6 +91,7 @@ def _fixture(*, approved=True, with_connection=True, unrelated_approval=False):
             started_at=timezone.now(),
             finished_at=timezone.now(),
         )
+        next_sequence += 1
         AgentApproval.objects.create(
             run=run,
             step=other_step,
@@ -104,7 +105,7 @@ def _fixture(*, approved=True, with_connection=True, unrelated_approval=False):
     publish_step = AgentStepRun.objects.create(
         run=run,
         agent=agent,
-        sequence=3,
+        sequence=next_sequence,
         node_id="publish",
         title="Publish",
         action_type="publish",
@@ -124,7 +125,7 @@ def _fixture(*, approved=True, with_connection=True, unrelated_approval=False):
             enabled=True,
             health_state=ExternalConnection.Health.HEALTHY,
         )
-        connection.set_secret("application-password")
+        connection.set_secret("x")
         connection.save(update_fields=["secret_encrypted"])
         AgentConnectionBinding.objects.create(
             agent=agent,
