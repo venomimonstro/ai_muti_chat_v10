@@ -46,6 +46,7 @@ ensure_runtime_env() {
   upsert_env_if_missing SANDBOX_MAX_FILES 300
   upsert_env_if_missing SANDBOX_MAX_FILE_BYTES 524288
   upsert_env_if_missing SANDBOX_CLIENT_TIMEOUT_SECONDS 100
+  upsert_env_if_missing AGENT_MAX_ACTIVE_RUNS_PER_USER 3
   chmod 600 "${ENV_FILE}"
 }
 
@@ -122,6 +123,7 @@ compose exec -T backend python manage.py billing_integrity_check
 compose exec -T backend python manage.py agent_system_audit
 compose exec -T backend python manage.py agent_webhook_audit
 compose exec -T backend python manage.py agent_security_audit
+compose exec -T backend python manage.py agent_commercial_limits_audit
 compose exec -T backend python manage.py dev_studio_audit
 compose exec -T backend python manage.py agent_billing_audit
 
