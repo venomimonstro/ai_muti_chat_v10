@@ -45,10 +45,14 @@ def create_agent_version(agent: Agent, user) -> AgentVersion:
         .aggregate(value=Max("version"))["value"]
         or 0
     )
+    # Serializer validation may temporarily mutate its in-memory model instance.
+    # Version history must always capture the last persisted configuration, not
+    # those uncommitted validation values.
+    persisted = Agent.objects.get(pk=agent.pk)
     return AgentVersion.objects.create(
         agent=agent,
         version=int(current) + 1,
-        snapshot=agent_snapshot(agent),
+        snapshot=agent_snapshot(persisted),
         created_by=user,
     )
 
