@@ -67,11 +67,21 @@ class Provider(models.Model):
         if self.credential_env:
             os.environ.pop(self.credential_env, None)
 
-    def _legacy_api_key(self) -> str:
-        if not self.credential_secret:
+    def _loaded_legacy_api_key(self) -> str:
+        secret = self.__dict__.get("credential_secret", "")
+        if not secret:
             return ""
         try:
-            return _credential_cipher().decrypt(self.credential_secret.encode("ascii")).decode("utf-8")
+            return _credential_cipher().decrypt(secret.encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError, UnicodeError):
+            return ""
+
+    def _legacy_api_key(self) -> str:
+        secret = self.credential_secret
+        if not secret:
+            return ""
+        try:
+            return _credential_cipher().decrypt(secret.encode("ascii")).decode("utf-8")
         except (InvalidToken, ValueError, UnicodeError):
             return ""
 
@@ -123,11 +133,16 @@ class Provider(models.Model):
         return "none"
 
     def _hydrate_runtime_credential(self):
-        if not getattr(self, "credential_env", "") or not getattr(self, "credential_secret", ""):
+        # Never dereference deferred model fields from __init__. Doing so makes
+        # Django call refresh_from_db(), which constructs another Provider and
+        # can recurse indefinitely for .only()/.defer() querysets.
+        credential_env = self.__dict__.get("credential_env", "")
+        credential_secret = self.__dict__.get("credential_secret", "")
+        if not credential_env or not credential_secret:
             return
-        value = self._legacy_api_key()
+        value = self._loaded_legacy_api_key()
         if value:
-            os.environ[self.credential_env] = value
+            os.environ[credential_env] = value
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
