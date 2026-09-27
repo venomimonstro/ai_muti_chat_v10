@@ -8,7 +8,9 @@ from .models import Agent, AgentVersion
 
 @pytest.mark.django_db
 def test_versioned_agent_config_and_restore():
-    user = User.objects.create_user(username="agent-config-user", password="StrongPass123!")
+    user = User.objects.create_user(
+        username="agent-config-user", email="agent-config-user@example.com", password="StrongPass123!"
+    )
     agent = Agent.objects.create(
         owner=user,
         name="Writer",
@@ -53,8 +55,12 @@ def test_versioned_agent_config_and_restore():
 
 @pytest.mark.django_db
 def test_agent_graph_rejects_unknown_node_and_foreign_owner():
-    owner = User.objects.create_user(username="agent-owner", password="StrongPass123!")
-    other = User.objects.create_user(username="agent-other", password="StrongPass123!")
+    owner = User.objects.create_user(
+        username="agent-owner", email="agent-owner-config@example.com", password="StrongPass123!"
+    )
+    other = User.objects.create_user(
+        username="agent-other", email="agent-other-config@example.com", password="StrongPass123!"
+    )
     agent = Agent.objects.create(owner=owner, name="Safe agent", objective="Do work", system_level="balanced")
 
     client = APIClient()
@@ -85,7 +91,9 @@ def test_agent_graph_rejects_unknown_node_and_foreign_owner():
 
 @pytest.mark.django_db
 def test_publish_approval_must_be_on_same_graph_path():
-    user = User.objects.create_user(username="publish-path-user", password="StrongPass123!")
+    user = User.objects.create_user(
+        username="publish-path-user", email="publish-path-user@example.com", password="StrongPass123!"
+    )
     agent = Agent.objects.create(owner=user, name="Publisher", objective="Publish", system_level="balanced")
     client = APIClient()
     client.force_authenticate(user)
@@ -131,7 +139,9 @@ def test_publish_approval_must_be_on_same_graph_path():
 
 @pytest.mark.django_db
 def test_auto_publish_requires_autonomous_agent():
-    user = User.objects.create_user(username="publish-auto-user", password="StrongPass123!")
+    user = User.objects.create_user(
+        username="publish-auto-user", email="publish-auto-user@example.com", password="StrongPass123!"
+    )
     agent = Agent.objects.create(owner=user, name="Publisher", objective="Publish", system_level="balanced")
     client = APIClient()
     client.force_authenticate(user)
