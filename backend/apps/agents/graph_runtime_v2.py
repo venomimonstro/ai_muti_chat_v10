@@ -1,88 +1,214 @@
-from __future__ import annotations
-
-from collections import defaultdict, deque
-
 from django.db import transaction
 from django.utils import timezone
 
-from .graph_runtime_shared import (
-    _execute_node,
+from apps.accounts.models import Notification
+
+from .graph_runtime import (
+    SUPPORTED_LLM_NODES,
+    UNSUPPORTED_EXTERNAL_NODES,
+    _budget_exceeded,
     _fail,
-    _graph_parts,
-    _pause_for_approval,
-    _pause_for_wait,
-    _resolve_completed_node_ids,
-    _save_step,
+    _handle_approval,
+    _planned_tool_calls,
+    _previous_text,
+    _run_image_node,
+    _run_llm_node,
+    _skip_external,
 )
-from .models import AgentRun
+from .limits import effective_remaining_budget
+from .models import AgentRun, AgentStepRun
+from .wait_runtime import handle_wait_node
+
+DETERMINISTIC_NODES = {"condition", "notify", "finish", "wait"}
 
 
-def _reachable_from(start_id: str, outgoing: dict[str, list[str]]) -> set[str]:
-    seen: set[str] = set()
-    queue = deque([start_id])
-    while queue:
-        current = queue.popleft()
-        if current in seen:
-            continue
-        seen.add(current)
-        queue.extend(outgoing.get(current, []))
-    return seen
+def _node_id(node, index):
+    return str(node.get("id") or f"node-{index + 1}")
 
 
-def _active_node_ids(nodes: list[dict], outgoing: dict[str, list[str]]) -> set[str]:
-    all_ids = {str(node.get("id") or "") for node in nodes if node.get("id")}
-    incoming: dict[str, int] = defaultdict(int)
-    for sources in outgoing.values():
-        for target in sources:
-            incoming[target] += 1
-    roots = [node_id for node_id in all_ids if incoming[node_id] == 0]
-    if not roots:
-        return all_ids
-    active: set[str] = set()
-    for root in roots:
-        active |= _reachable_from(root, outgoing)
-    return active
+def _graph_parts(agent):
+    graph = agent.graph if isinstance(agent.graph, dict) else {}
+    nodes = [item for item in (graph.get("nodes") or []) if isinstance(item, dict)]
+    edges = [item for item in (graph.get("edges") or []) if isinstance(item, dict)]
+    node_ids = [_node_id(node, index) for index, node in enumerate(nodes)]
+    by_id = {node_id: nodes[index] for index, node_id in enumerate(node_ids)}
+    position = {node_id: index for index, node_id in enumerate(node_ids)}
+    outgoing = {}
+    for edge in edges:
+        source = str(edge.get("from") or "").strip()
+        target = str(edge.get("to") or "").strip()
+        if source in by_id and target in by_id:
+            outgoing.setdefault(source, []).append(target)
+    return nodes, node_ids, by_id, position, outgoing
 
 
-def _next_ids_for_condition(node: dict, outgoing: dict[str, list[str]], result: dict) -> set[str]:
-    node_id = str(node.get("id") or "")
-    targets = outgoing.get(node_id, [])
-    if not targets:
-        return set()
-    truthy = bool(result.get("condition"))
-    preferred_key = "true_target" if truthy else "false_target"
-    configured = node.get(preferred_key)
-    if configured and str(configured) in targets:
-        return {str(configured)}
-    if len(targets) == 1:
-        return {targets[0]}
-    return {targets[0] if truthy else targets[-1]}
+def _default_next(node_id, node_ids, position, outgoing):
+    explicit = outgoing.get(node_id) or []
+    if explicit:
+        return explicit[0]
+    index = position[node_id]
+    return node_ids[index + 1] if index + 1 < len(node_ids) else None
 
 
-def _finish(run: AgentRun, nodes: list[dict], node_ids: list[str]) -> AgentRun:
-    steps = list(run.steps.order_by("created_at", "id"))
-    output_payload = dict(run.output_payload or {})
-    output_payload["completed_steps"] = [
-        {
-            "id": step.node_id,
-            "title": step.title,
-            "type": step.node_type,
-            "status": step.status,
-            "output": step.output_payload,
-        }
-        for step in steps
-    ]
+def _condition_text(run, node):
+    source = str(node.get("condition_source") or "previous_text").strip().lower()
+    if source == "objective":
+        return str(run.objective or "")
+    return _previous_text(run)
+
+
+def _condition_result(run, node):
+    text = _condition_text(run, node)
+    operator = str(node.get("operator") or "contains").strip().lower()
+    value = str(node.get("value") or "")
+    left = text.casefold()
+    right = value.casefold()
+    if operator == "contains":
+        return right in left
+    if operator == "not_contains":
+        return right not in left
+    if operator == "is_empty":
+        return not bool(text.strip())
+    if operator == "not_empty":
+        return bool(text.strip())
+    raise ValueError(f"Неподдерживаемое условие: {operator}")
+
+
+def _run_condition(run, agent, node, sequence, node_ids, position, outgoing):
+    node_id = str(node.get("id") or f"condition-{sequence}")
+    existing = run.steps.filter(node_id=node_id, state=AgentStepRun.State.COMPLETED).first()
+    if existing:
+        payload = existing.output_payload or {}
+        return str(payload.get("next_node") or "") or None
+
+    try:
+        matched = _condition_result(run, node)
+    except ValueError as exc:
+        _fail(run, None, "graph_condition_invalid", str(exc))
+        return "__terminal__"
+
+    target = str(node.get("on_true" if matched else "on_false") or "").strip()
+    if not target:
+        target = _default_next(node_id, node_ids, position, outgoing)
+    if target:
+        if target not in position:
+            _fail(run, None, "graph_condition_target_missing", f"Условие ведёт к отсутствующему шагу: {target}")
+            return "__terminal__"
+        if position[target] <= position[node_id]:
+            _fail(
+                run,
+                None,
+                "graph_condition_backward_jump",
+                "Для безопасного автономного workflow условие может переходить только на более поздний шаг.",
+            )
+            return "__terminal__"
+
+    title = str(node.get("title") or "Условие")[:240]
+    AgentStepRun.objects.create(
+        run=run,
+        agent=agent,
+        sequence=sequence,
+        node_id=node_id,
+        title=title,
+        action_type="condition",
+        state=AgentStepRun.State.COMPLETED,
+        input_payload={
+            "source": str(node.get("condition_source") or "previous_text"),
+            "operator": str(node.get("operator") or "contains"),
+            "value": str(node.get("value") or ""),
+        },
+        output_payload={"matched": matched, "next_node": target or ""},
+        public_log=f"Условие {'выполнено' if matched else 'не выполнено'}. Выбран следующий маршрут.",
+        started_at=timezone.now(),
+        finished_at=timezone.now(),
+    )
+    run.step_count = max(run.step_count, sequence)
+    run.save(update_fields=["step_count", "updated_at"])
+    return target
+
+
+def _run_notify(run, agent, node, sequence):
+    node_id = str(node.get("id") or f"notify-{sequence}")
+    if run.steps.filter(node_id=node_id, state=AgentStepRun.State.COMPLETED).exists():
+        return
+    title = str(node.get("notification_title") or node.get("title") or "Сообщение от AI-сотрудника")[:160]
+    previous = _previous_text(run)
+    body = str(node.get("message") or previous or run.objective or "Задача требует вашего внимания.").strip()[:4000]
+    Notification.objects.get_or_create(
+        user=run.owner,
+        dedupe_key=f"agent-node:{run.id}:{node_id}",
+        defaults={
+            "title": title,
+            "body": body,
+            "level": Notification.Level.INFO,
+            "action_url": f"/app/runs/{run.id}",
+        },
+    )
+    AgentStepRun.objects.create(
+        run=run,
+        agent=agent,
+        sequence=sequence,
+        node_id=node_id,
+        title=str(node.get("title") or "Уведомить пользователя")[:240],
+        action_type="notify",
+        state=AgentStepRun.State.COMPLETED,
+        output_payload={"notification": True},
+        public_log="Пользователю отправлено уведомление внутри AI Workspace.",
+        started_at=timezone.now(),
+        finished_at=timezone.now(),
+    )
+    run.step_count = max(run.step_count, sequence)
+    run.save(update_fields=["step_count", "updated_at"])
+
+
+def _run_finish(run, agent, node, sequence):
+    node_id = str(node.get("id") or f"finish-{sequence}")
+    AgentStepRun.objects.get_or_create(
+        run=run,
+        node_id=node_id,
+        attempt=1,
+        defaults={
+            "agent": agent,
+            "sequence": sequence,
+            "title": str(node.get("title") or "Завершить")[:240],
+            "action_type": "finish",
+            "state": AgentStepRun.State.COMPLETED,
+            "public_log": "Workflow завершён по маршруту карты действий.",
+            "started_at": timezone.now(),
+            "finished_at": timezone.now(),
+        },
+    )
+    run.step_count = max(run.step_count, sequence)
+    run.save(update_fields=["step_count", "updated_at"])
+
+
+def _finish_run(run, nodes, node_ids, route):
+    run.refresh_from_db()
+    if run.state == AgentRun.State.CANCELED:
+        return run
+    completed = list(run.steps.filter(state=AgentStepRun.State.COMPLETED).order_by("sequence", "created_at"))
+    final_text = ""
+    web_sources = []
+    file_sources = []
     image_generations = []
-    for step in steps:
-        if step.node_type != "image":
-            continue
-        images = step.output_payload.get("images") if isinstance(step.output_payload, dict) else None
-        if images:
-            image_generations.extend(images)
-    if image_generations:
-        output_payload["image_generations"] = image_generations
+    for step in completed:
+        payload = step.output_payload or {}
+        text = str(payload.get("text") or "").strip()
+        if text:
+            final_text = text
+        web_sources.extend(payload.get("web_sources") or [])
+        file_sources.extend(payload.get("file_sources") or [])
+        if payload.get("image_generation"):
+            image_generations.append(payload["image_generation"])
     run.state = AgentRun.State.COMPLETED
-    run.output_payload = output_payload
+    run.output_payload = {
+        "text": final_text,
+        "workflow": "graph_v2",
+        "route": route,
+        "web_sources": list({item["id"]: item for item in web_sources if item.get("id")}.values()),
+        "file_sources": list({item["id"]: item for item in file_sources if item.get("id")}.values()),
+        "image_generations": image_generations,
+    }
     run.plan = [
         {
             "id": node_ids[index],
@@ -98,9 +224,6 @@ def _finish(run: AgentRun, nodes: list[dict], node_ids: list[str]) -> AgentRun:
 
 def execute_graph_run_v2(run_id):
     with transaction.atomic():
-        # PostgreSQL refuses FOR UPDATE when Django also joins nullable FKs
-        # (project/team/etc.) through LEFT OUTER JOIN. Lock only AgentRun itself;
-        # related rows are read-only context for this execution claim.
         run = (
             AgentRun.objects.select_for_update(of=("self",))
             .select_related("owner", "agent", "project")
@@ -125,70 +248,92 @@ def execute_graph_run_v2(run_id):
     if len(by_id) != len(nodes):
         return _fail(run, None, "graph_duplicate_node", "Карта содержит повторяющиеся ID шагов")
 
-    active_ids = _active_node_ids(nodes, outgoing)
-    completed_ids = _resolve_completed_node_ids(run)
-    skipped_ids = {
-        step.node_id
-        for step in run.steps.filter(status="skipped")
-        if step.node_id
-    }
-    reachable = set(active_ids)
-    if completed_ids or skipped_ids:
-        visited = completed_ids | skipped_ids
-        frontier: set[str] = set()
-        for node_id in visited:
-            node = by_id.get(node_id)
-            if node and str(node.get("type") or "") == "condition":
-                step = run.steps.filter(node_id=node_id).order_by("-created_at").first()
-                result = step.output_payload if step else {}
-                frontier |= _next_ids_for_condition(node, outgoing, result or {})
-            else:
-                frontier |= set(outgoing.get(node_id, []))
-        if frontier:
-            reachable = set(visited)
-            queue = deque(frontier)
-            while queue:
-                current = queue.popleft()
-                if current in reachable:
-                    continue
-                reachable.add(current)
-                queue.extend(outgoing.get(current, []))
+    current = node_ids[0]
+    route = []
+    traversed = 0
+    sequence = 0
+    while current:
+        traversed += 1
+        if traversed > agent.max_steps:
+            return _fail(run, None, "graph_cycle_detected", "Workflow превысил лимит переходов. Возможен цикл в карте действий.")
+        if current not in by_id:
+            return _fail(run, None, "graph_target_missing", f"Маршрут ведёт к отсутствующему шагу: {current}")
+        route.append(current)
+        node = by_id[current]
+        sequence += 1
 
-    run.state = AgentRun.State.RUNNING
-    run.save(update_fields=["state", "updated_at"])
+        run.refresh_from_db(fields=["state", "cost_actual_rub", "step_count", "tool_call_count", "started_at", "input_payload"])
+        if run.state == AgentRun.State.CANCELED:
+            return run
+        if run.started_at and (timezone.now() - run.started_at).total_seconds() > agent.max_runtime_seconds:
+            return _fail(run, None, "agent_runtime_timeout", f"Достигнут лимит времени запуска: {agent.max_runtime_seconds} секунд")
 
-    for node_id in node_ids:
-        if node_id not in active_ids or node_id not in reachable:
-            continue
-        if node_id in completed_ids or node_id in skipped_ids:
-            continue
-        node = by_id[node_id]
-        node_type = str(node.get("type") or "llm")
-        if node_type == "approval":
-            return _pause_for_approval(run, agent, node)
-        if node_type == "wait":
-            return _pause_for_wait(run, agent, node)
-        try:
-            result = _execute_node(run, agent, node)
-        except Exception as exc:
-            return _fail(run, node, "node_failed", str(exc))
-        step = _save_step(run, node, result)
-        completed_ids.add(node_id)
+        node_type = str(node.get("type") or "llm").strip().lower()
+        default_next = _default_next(current, node_ids, position, outgoing)
+
         if node_type == "condition":
-            allowed = _next_ids_for_condition(node, outgoing, result)
-            for candidate in outgoing.get(node_id, []):
-                if candidate not in allowed:
-                    skipped_ids.add(candidate)
-                    skip_node = by_id.get(candidate)
-                    if skip_node:
-                        _save_step(
-                            run,
-                            skip_node,
-                            {"reason": "condition_branch_not_selected"},
-                            status="skipped",
-                        )
-            reachable |= allowed
+            next_node = _run_condition(run, agent, node, sequence, node_ids, position, outgoing)
+            if next_node == "__terminal__":
+                return run
+            current = next_node
+            continue
+        if node_type == "notify":
+            _run_notify(run, agent, node, sequence)
+            current = default_next
+            continue
+        if node_type == "wait":
+            if handle_wait_node(run, agent, node, sequence):
+                return run
+            current = default_next
+            continue
         if node_type == "finish":
+            _run_finish(run, agent, node, sequence)
             break
 
-    return _finish(run, nodes, node_ids)
+        already_done = run.steps.filter(
+            node_id=current,
+            state__in=[AgentStepRun.State.COMPLETED, AgentStepRun.State.SKIPPED],
+        ).exists()
+        if already_done:
+            current = default_next
+            continue
+
+        needed_tools = _planned_tool_calls(agent, node_type)
+        if run.tool_call_count + needed_tools > agent.max_tool_calls:
+            return _fail(run, None, "agent_tool_limit_exceeded", f"Достигнут лимит вызовов инструментов: {agent.max_tool_calls}")
+
+        remaining_budget, snapshot = effective_remaining_budget(agent, run=run)
+        if remaining_budget <= 0 and node_type in SUPPORTED_LLM_NODES | {"image"}:
+            message = (
+                "Лимит расходов агента исчерпан. "
+                f"За запуск: {snapshot['run_spend']}/{snapshot['run_limit']} ₽; "
+                f"сегодня: {snapshot['day_spend']}/{snapshot['day_limit']} ₽; "
+                f"за месяц: {snapshot['month_spend']}/{snapshot['month_limit']} ₽."
+            )
+            return _budget_exceeded(run, message, code="agent_period_budget_exceeded")
+
+        if node_type == "approval":
+            if _handle_approval(run, agent, node, sequence):
+                return run
+            current = default_next
+            continue
+        if node_type == "image":
+            terminal = _run_image_node(run, agent, node, sequence, remaining_budget)
+            if terminal is not None:
+                return terminal
+            current = default_next
+            continue
+        if node_type in UNSUPPORTED_EXTERNAL_NODES:
+            _skip_external(run, agent, node, sequence)
+            current = default_next
+            continue
+        if node_type not in SUPPORTED_LLM_NODES:
+            _skip_external(run, agent, node, sequence)
+            current = default_next
+            continue
+        terminal = _run_llm_node(run, agent, node, sequence, remaining_budget)
+        if terminal is not None:
+            return terminal
+        current = default_next
+
+    return _finish_run(run, nodes, node_ids, route)
