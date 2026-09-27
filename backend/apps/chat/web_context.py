@@ -5,7 +5,7 @@ import os
 from apps.ai_registry.token_estimator import estimate_text_tokens
 from apps.ai_registry.web_tools import WebToolError, search_context
 
-from .live_tools import live_context, needs_web_search
+from .live_tools import is_time_query, is_weather_query, live_context, needs_web_search
 
 QUALITY_PREAMBLE = (
     "Ты — коммерческий рабочий AI-ассистент. Отвечай по существу и начинай с прямого ответа на вопрос, "
@@ -26,6 +26,28 @@ WEB_PREAMBLE = (
     "Сначала дай пользователю прямой ответ. При использовании конкретного web-факта ставь рядом маркер [web:N]. "
     "В конце добавь короткий раздел «Источники» и перечисли только реально использованные маркеры, название сайта/страницы "
     "и URL из WEB_DATA. Если источники расходятся, укажи расхождение. Если данных недостаточно — скажи это прямо.\n\n"
+)
+
+MIXED_WEB_MARKERS = (
+    "курс",
+    "доллар",
+    "евро",
+    "рубл",
+    "цена",
+    "стоимость",
+    "билет",
+    "авиа",
+    "рейс",
+    "расписан",
+    "новост",
+    "закон",
+    "тариф",
+    "рынок",
+    "акци",
+    "крипт",
+    "найди",
+    "проверь",
+    "источник",
 )
 
 
@@ -49,6 +71,13 @@ def _trim_tokens(value: str, limit: int) -> tuple[str, bool]:
         else:
             high = mid - 1
     return value[:low].rstrip(), True
+
+
+def _mixed_live_web_query(query: str) -> bool:
+    text = " ".join(str(query or "").casefold().split())
+    if not (is_time_query(text) or is_weather_query(text)):
+        return False
+    return any(marker in text for marker in MIXED_WEB_MARKERS)
 
 
 def _rehash(snapshot: dict):
@@ -114,10 +143,11 @@ def _append_live_context(snapshot: dict, query: str) -> bool:
                 "truncated": truncated,
             }
         )
+    mixed = _mixed_live_web_query(query)
     snapshot["web_search"] = {
         "used": False,
-        "required": False,
-        "satisfied_by_live_tool": True,
+        "required": mixed,
+        "satisfied_by_live_tool": not mixed,
     }
     snapshot["web_sources"] = []
     _rehash(snapshot)
@@ -127,12 +157,12 @@ def _append_live_context(snapshot: dict, query: str) -> bool:
 def enrich_snapshot_with_web(snapshot: dict, query: str, *, required: bool) -> dict:
     _append_quality_contract(snapshot)
 
-    # Exact time and weather are first-class server tools and do not depend on a
-    # search-engine result. The LLM only has to phrase the verified data.
-    if _append_live_context(snapshot, query):
+    live_handled = _append_live_context(snapshot, query)
+    mixed_live_web = _mixed_live_web_query(query)
+    if live_handled and not mixed_live_web:
         return snapshot
 
-    required = bool(required or needs_web_search(query))
+    required = bool(required or needs_web_search(query) or mixed_live_web)
     if not required:
         snapshot["web_search"] = {"used": False, "required": False}
         snapshot["web_sources"] = []
