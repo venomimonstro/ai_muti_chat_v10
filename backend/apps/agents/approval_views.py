@@ -16,11 +16,17 @@ class SafeAgentApprovalDecisionView(APIView):
     @transaction.atomic
     def post(self, request, run_id, approval_id):
         run = get_object_or_404(
-            AgentRun.objects.select_for_update().select_related("agent", "team", "team__director", "project"),
+            AgentRun.objects.select_for_update(of=("self",)).select_related(
+                "agent", "team", "team__director", "project"
+            ),
             id=run_id,
             owner=request.user,
         )
-        approval = AgentApproval.objects.select_for_update().filter(id=approval_id, run=run).first()
+        approval = (
+            AgentApproval.objects.select_for_update(of=("self",))
+            .filter(id=approval_id, run=run)
+            .first()
+        )
         if approval is None:
             raise ValidationError({"approval": "Запрос подтверждения не найден"})
         if approval.status != AgentApproval.Status.PENDING:
@@ -37,13 +43,19 @@ class SafeAgentApprovalDecisionView(APIView):
                 readiness = agent_readiness(run.agent)
                 if not readiness["ready"]:
                     raise ValidationError(
-                        {"detail": "Перед продолжением восстановите готовность сотрудника: " + "; ".join(readiness["blockers"])}
+                        {
+                            "detail": "Перед продолжением восстановите готовность сотрудника: "
+                            + "; ".join(readiness["blockers"])
+                        }
                     )
             elif run.team_id:
                 readiness = team_readiness(run.team)
                 if not readiness["ready"]:
                     raise ValidationError(
-                        {"detail": "Перед продолжением восстановите готовность команды: " + "; ".join(readiness["blockers"])}
+                        {
+                            "detail": "Перед продолжением восстановите готовность команды: "
+                            + "; ".join(readiness["blockers"])
+                        }
                     )
                 payload = approval.action_payload or {}
                 is_dev_write = (
@@ -76,6 +88,8 @@ class SafeAgentApprovalDecisionView(APIView):
             run.save(update_fields=["state", "finished_at", "updated_at"])
             from .tasks import enqueue_agent_run
 
-            transaction.on_commit(lambda current_run_id=str(run.id): enqueue_agent_run(current_run_id))
+            transaction.on_commit(
+                lambda current_run_id=str(run.id): enqueue_agent_run(current_run_id)
+            )
 
         return Response(AgentRunSerializer(run).data)
