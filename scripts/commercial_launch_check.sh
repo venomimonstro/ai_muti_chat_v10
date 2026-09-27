@@ -21,7 +21,8 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
-compose(){ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+compose(){ docker compose --ansi never --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+checksum(){ sha256sum "$1" >"$1.sha256"; }
 
 printf 'Running immutable release gate...\n'
 set +e
@@ -29,7 +30,7 @@ bash "$PROJECT_DIR/scripts/release_check.sh" >"${RELEASE_LOG}.tmp" 2>&1
 RELEASE_STATUS=$?
 set -e
 mv "${RELEASE_LOG}.tmp" "$RELEASE_LOG"
-sha256sum "$RELEASE_LOG" >"${RELEASE_LOG}.sha256"
+checksum "$RELEASE_LOG"
 if [[ $RELEASE_STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED BY RELEASE CHECK"; echo "Evidence: $RELEASE_LOG"; exit "$RELEASE_STATUS"
 fi
@@ -40,7 +41,7 @@ compose exec -T backend python manage.py system_health_check --strict --json >"$
 SYSTEM_STATUS=$?
 set -e
 mv "${SYSTEM_LOG}.tmp" "$SYSTEM_LOG"
-sha256sum "$SYSTEM_LOG" >"${SYSTEM_LOG}.sha256"
+checksum "$SYSTEM_LOG"
 if [[ $SYSTEM_STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED BY SYSTEM HEALTH"
   echo "Evidence: $SYSTEM_LOG"
@@ -53,7 +54,7 @@ compose exec -T backend python manage.py economic_safety_check --json >"${ECONOM
 ECONOMIC_STATUS=$?
 set -e
 mv "${ECONOMIC_LOG}.tmp" "$ECONOMIC_LOG"
-sha256sum "$ECONOMIC_LOG" >"${ECONOMIC_LOG}.sha256"
+checksum "$ECONOMIC_LOG"
 if [[ $ECONOMIC_STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED BY ECONOMIC SAFETY"
   echo "Evidence: $ECONOMIC_LOG"
@@ -66,7 +67,7 @@ compose exec -T backend python manage.py procurement_safety_check --json >"${PRO
 PROCUREMENT_STATUS=$?
 set -e
 mv "${PROCUREMENT_LOG}.tmp" "$PROCUREMENT_LOG"
-sha256sum "$PROCUREMENT_LOG" >"${PROCUREMENT_LOG}.sha256"
+checksum "$PROCUREMENT_LOG"
 if [[ $PROCUREMENT_STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED BY PROCUREMENT/FX SAFETY"
   echo "Evidence: $PROCUREMENT_LOG"
@@ -80,6 +81,7 @@ CABINET_E2E_STATUS=$?
 set -e
 if [[ $CABINET_E2E_STATUS -ne 0 ]]; then
   mv "${E2E_LOG}.tmp" "$E2E_LOG"
+  checksum "$E2E_LOG"
   echo "COMMERCIAL LAUNCH: BLOCKED BY CLIENT E2E"; echo "Evidence: $E2E_LOG"; exit "$CABINET_E2E_STATUS"
 fi
 
@@ -90,7 +92,7 @@ if [[ -z "${E2E_USERNAME:-}" || -z "${E2E_PASSWORD:-}" ]]; then
     echo 'Set E2E_USERNAME and E2E_PASSWORD for a dedicated verified non-admin account with a small positive balance.'
   } >>"${E2E_LOG}.tmp"
   mv "${E2E_LOG}.tmp" "$E2E_LOG"
-  sha256sum "$E2E_LOG" >"${E2E_LOG}.sha256"
+  checksum "$E2E_LOG"
   echo "COMMERCIAL LAUNCH: BLOCKED BY LIVE E2E CREDENTIALS"
   echo "Evidence: $E2E_LOG"
   exit 2
@@ -98,17 +100,18 @@ fi
 
 printf 'Running live paid workspace AI provider/billing E2E...\n'
 set +e
+# Backend already receives .env.production through the compose service env_file.
+# Never put E2E_PASSWORD/E2E_USERNAME in docker command arguments where they can
+# be exposed through the host process list.
 compose run --rm -T \
   -v "${PROJECT_DIR}/scripts:/opt/aiws-scripts:ro" \
   -e "E2E_BASE_URL=https://${APP_DOMAIN}" \
-  -e "E2E_USERNAME=${E2E_USERNAME}" \
-  -e "E2E_PASSWORD=${E2E_PASSWORD}" \
   backend python /opt/aiws-scripts/commercial_http_smoke.py >>"${E2E_LOG}.tmp" 2>&1
 LIVE_AI_STATUS=$?
 set -e
 if [[ $LIVE_AI_STATUS -ne 0 ]]; then
   mv "${E2E_LOG}.tmp" "$E2E_LOG"
-  sha256sum "$E2E_LOG" >"${E2E_LOG}.sha256"
+  checksum "$E2E_LOG"
   echo "COMMERCIAL LAUNCH: BLOCKED BY LIVE WORKSPACE AI E2E"; echo "Evidence: $E2E_LOG"; exit "$LIVE_AI_STATUS"
 fi
 
@@ -117,8 +120,6 @@ set +e
 compose run --rm -T \
   -v "${PROJECT_DIR}/scripts:/opt/aiws-scripts:ro" \
   -e "E2E_BASE_URL=https://${APP_DOMAIN}" \
-  -e "E2E_USERNAME=${E2E_USERNAME}" \
-  -e "E2E_PASSWORD=${E2E_PASSWORD}" \
   backend python /opt/aiws-scripts/b2b_http_smoke.py >>"${E2E_LOG}.tmp" 2>&1
 B2B_STATUS=$?
 set -e
@@ -138,7 +139,7 @@ compose exec -T backend python manage.py commercial_launch_audit --json >"${REPO
 STATUS=$?
 set -e
 mv "${REPORT}.tmp" "$REPORT"
-sha256sum "$REPORT" >"${REPORT}.sha256"
+checksum "$REPORT"
 
 if [[ $STATUS -ne 0 ]]; then
   echo "COMMERCIAL LAUNCH: BLOCKED"
