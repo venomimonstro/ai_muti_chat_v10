@@ -50,15 +50,17 @@ def _dev_team(user, *, write_enabled=True, contents_permission="write"):
         permissions={"contents": contents_permission},
         active=True,
     )
-    GitHubRepositoryBinding.objects.create(
+    binding = GitHubRepositoryBinding.objects.create(
         project=project,
         installation=installation,
         repository_id=880002,
         full_name="owner/repo",
         default_branch="main",
         private=True,
-        write_enabled=write_enabled,
+        write_enabled=write_enabled and contents_permission == "write",
     )
+    if write_enabled and contents_permission != "write":
+        GitHubRepositoryBinding.objects.filter(pk=binding.pk).update(write_enabled=True)
     roles = ["Engineering Director", "Architecture", "Development", "QA & Security"]
     agents = []
     for index, role in enumerate(roles, start=1):
@@ -95,8 +97,8 @@ def _dev_team(user, *, write_enabled=True, contents_permission="write"):
 
 @pytest.mark.django_db
 def test_team_readiness_is_owner_scoped():
-    owner = User.objects.create_user(username="team-ready-owner", password="StrongPass123!")
-    other = User.objects.create_user(username="team-ready-other", password="StrongPass123!")
+    owner = User.objects.create_user(username="team-ready-owner", email="team-ready-owner@example.com", password="StrongPass123!")
+    other = User.objects.create_user(username="team-ready-other", email="team-ready-other@example.com", password="StrongPass123!")
     team = _team(owner)
     client = APIClient()
     client.force_authenticate(other)
@@ -108,7 +110,7 @@ def test_team_readiness_is_owner_scoped():
 
 @pytest.mark.django_db
 def test_team_run_is_blocked_before_queue_when_member_model_is_unavailable():
-    user = User.objects.create_user(username="team-ready-block", password="StrongPass123!")
+    user = User.objects.create_user(username="team-ready-block", email="team-ready-block@example.com", password="StrongPass123!")
     team = _team(user)
     client = APIClient()
     client.force_authenticate(user)
@@ -126,7 +128,7 @@ def test_team_run_is_blocked_before_queue_when_member_model_is_unavailable():
 
 @pytest.mark.django_db(transaction=True)
 def test_team_double_launch_returns_same_active_run_and_queues_once():
-    user = User.objects.create_user(username="team-ready-run", password="StrongPass123!")
+    user = User.objects.create_user(username="team-ready-run", email="team-ready-run@example.com", password="StrongPass123!")
     team = _team(user)
     client = APIClient()
     client.force_authenticate(user)
@@ -147,7 +149,7 @@ def test_team_double_launch_returns_same_active_run_and_queues_once():
 
 @pytest.mark.django_db
 def test_dev_team_is_not_ready_when_github_write_is_disabled():
-    user = User.objects.create_user(username="dev-ready-write", password="StrongPass123!")
+    user = User.objects.create_user(username="dev-ready-write", email="dev-ready-write@example.com", password="StrongPass123!")
     team = _dev_team(user, write_enabled=False)
 
     with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
@@ -162,7 +164,7 @@ def test_dev_team_is_not_ready_when_github_write_is_disabled():
 
 @pytest.mark.django_db
 def test_dev_team_is_not_ready_without_provider_write_permission():
-    user = User.objects.create_user(username="dev-ready-permission", password="StrongPass123!")
+    user = User.objects.create_user(username="dev-ready-permission", email="dev-ready-permission@example.com", password="StrongPass123!")
     team = _dev_team(user, contents_permission="read")
 
     with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
@@ -177,7 +179,7 @@ def test_dev_team_is_not_ready_without_provider_write_permission():
 
 @pytest.mark.django_db
 def test_dev_team_is_not_ready_without_sandbox():
-    user = User.objects.create_user(username="dev-ready-sandbox", password="StrongPass123!")
+    user = User.objects.create_user(username="dev-ready-sandbox", email="dev-ready-sandbox@example.com", password="StrongPass123!")
     team = _dev_team(user)
 
     with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
@@ -192,7 +194,7 @@ def test_dev_team_is_not_ready_without_sandbox():
 
 @pytest.mark.django_db
 def test_dev_team_is_ready_only_with_complete_write_path():
-    user = User.objects.create_user(username="dev-ready-complete", password="StrongPass123!")
+    user = User.objects.create_user(username="dev-ready-complete", email="dev-ready-complete@example.com", password="StrongPass123!")
     team = _dev_team(user)
 
     with patch("apps.agents.team_readiness._model_for", return_value=SimpleNamespace(slug="system-pro")), patch(
