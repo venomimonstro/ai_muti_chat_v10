@@ -11,7 +11,11 @@ from .models import Agent, AgentRun, AgentTeam
 
 
 def _fixture(username="dev-merge"):
-    user = User.objects.create_user(username=username, password="StrongPass123!")
+    user = User.objects.create_user(
+        username=username,
+        email=f"{username}@example.test",
+        password="StrongPass123!",
+    )
     project = Project.objects.create(owner=user, name="Repository")
     installation = GitHubInstallation.objects.create(
         owner=user,
@@ -87,7 +91,11 @@ def test_merge_requires_explicit_confirmation():
 @pytest.mark.django_db
 def test_merge_is_owner_scoped():
     user, run, _pull = _fixture("dev-merge-owner")
-    other = User.objects.create_user(username="dev-merge-other", password="StrongPass123!")
+    other = User.objects.create_user(
+        username="dev-merge-other",
+        email="dev-merge-other@example.test",
+        password="StrongPass123!",
+    )
     client = APIClient()
     client.force_authenticate(other)
 
