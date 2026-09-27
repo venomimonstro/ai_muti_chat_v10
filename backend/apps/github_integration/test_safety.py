@@ -37,7 +37,7 @@ def test_github_routes_fail_closed_when_integration_disabled(monkeypatch):
     response = client.get("/api/v1/github/connect/")
 
     assert response.status_code == 503
-    assert "отключена" in str(response.data)
+    assert "отключена" in str(response.json())
 
 
 @pytest.mark.django_db
@@ -68,7 +68,7 @@ def test_sensitive_file_read_is_blocked_before_remote_github_call(monkeypatch):
     )
 
     assert response.status_code == 403
-    assert "политикой безопасности" in str(response.data)
+    assert "политикой безопасности" in str(response.json())
 
 
 @pytest.mark.django_db
