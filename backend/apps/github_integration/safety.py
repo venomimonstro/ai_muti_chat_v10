@@ -2,7 +2,7 @@ import json
 import os
 from functools import wraps
 
-from django.http import JsonResponse
+from rest_framework.response import Response
 
 
 _SENSITIVE_BASENAMES = {
@@ -103,12 +103,12 @@ def github_guard(view, *, protect_path=False):
     @wraps(view)
     def wrapped(request, *args, **kwargs):
         if not integration_enabled():
-            return JsonResponse(
+            return Response(
                 {"detail": "GitHub интеграция отключена администратором"},
                 status=503,
             )
         if _organization_scope_blocked(request, kwargs):
-            return JsonResponse(
+            return Response(
                 {
                     "detail": (
                         "GitHub-репозитории организаций временно недоступны: "
@@ -120,7 +120,7 @@ def github_guard(view, *, protect_path=False):
         if protect_path and not sensitive_path_allowed():
             path = _request_path(request)
             if is_sensitive_path(path):
-                return JsonResponse(
+                return Response(
                     {
                         "detail": (
                             "Доступ к секретам и GitHub Actions заблокирован политикой безопасности"
