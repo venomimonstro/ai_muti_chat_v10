@@ -17,7 +17,7 @@ def test_global_single_request_ceiling_blocks_large_reservation(monkeypatch):
     )
     credit(user, Decimal("1000"), "test", "single-cap")
 
-    with pytest.raises(ValidationError, match="одной операции"):
+    with pytest.raises(ValidationError, match="одного AI-запроса"):
         reserve(user, Decimal("101"), "single-cap:blocked")
 
     user.wallet.refresh_from_db()
@@ -36,7 +36,7 @@ def test_global_daily_ceiling_counts_active_reservations(monkeypatch):
     credit(user, Decimal("1000"), "test", "daily-cap")
     reserve(user, Decimal("100"), "daily-cap:first")
 
-    with pytest.raises(ValidationError, match="дневной лимит"):
+    with pytest.raises(ValidationError, match="дневной защитный лимит"):
         reserve(user, Decimal("51"), "daily-cap:second")
 
     user.wallet.refresh_from_db()
@@ -57,5 +57,5 @@ def test_user_limit_can_lower_but_not_raise_system_limit(monkeypatch):
     preference.daily_spend_limit_rub = Decimal("500")
     preference.save(update_fields=["daily_spend_limit_rub"])
 
-    with pytest.raises(ValidationError, match="дневной лимит"):
+    with pytest.raises(ValidationError, match="дневной защитный лимит"):
         reserve(user, Decimal("201"), "user-cap:system-block")
