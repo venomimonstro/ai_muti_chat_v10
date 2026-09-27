@@ -9,14 +9,7 @@ import {Icon} from "./Icons";
 import styles from "./WorkspaceUX.module.css";
 
 type ModeValue="auto:economy"|"auto:balanced"|"auto:maximum";
-
-type ModeOption={
- value:ModeValue;
- title:string;
- description:string;
- badge:string;
- icon:"zap"|"scale"|"brain";
-};
+type ModeOption={value:ModeValue;title:string;description:string;badge:string;icon:"zap"|"scale"|"brain"};
 
 const MODES:ModeOption[]=[
  {value:"auto:economy",title:"Простой",description:"Быстрые ответы для повседневных задач",badge:"Быстрее",icon:"zap"},
@@ -62,7 +55,6 @@ function ModelPicker({models}:{models:AIModel[]}){
   document.addEventListener("change",onChange,true);
   return()=>{window.clearInterval(interval);document.removeEventListener("change",onChange,true)};
  },[current]);
-
  useEffect(()=>{
   if(!open)return;
   const onPointer=(event:PointerEvent)=>{if(rootRef.current&&!rootRef.current.contains(event.target as Node))setOpen(false)};
@@ -73,21 +65,15 @@ function ModelPicker({models}:{models:AIModel[]}){
  },[open]);
 
  const selectValue=(value:string)=>{
-  const select=nativeSelector();
-  if(!select)return;
+  const select=nativeSelector();if(!select)return;
   const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value")?.set;
   if(setter)setter.call(select,value);else select.value=value;
   select.dispatchEvent(new Event("change",{bubbles:true}));
-  setCurrent(value);
-  setOpen(false);
+  setCurrent(value);setOpen(false);
  };
-
  const grouped=useMemo(()=>{
   const result=new Map<string,AIModel[]>();
-  for(const model of models){
-   const key=isSystemModel(model)?"Системные модели":providerName(model.provider);
-   const list=result.get(key)??[];list.push(model);result.set(key,list);
-  }
+  for(const model of models){const key=isSystemModel(model)?"Системные модели":providerName(model.provider);const list=result.get(key)??[];list.push(model);result.set(key,list)}
   return [...result.entries()].sort(([a],[b])=>a==="Системные модели"?-1:b==="Системные модели"?1:a.localeCompare(b,"ru"));
  },[models]);
  const selectedMode=MODES.find(item=>item.value===current);
@@ -103,23 +89,9 @@ function ModelPicker({models}:{models:AIModel[]}){
   </button>
   {open&&<div className={styles.popover} role="dialog" aria-label="Выбор режима нейросети">
    <div className={styles.popoverHead}><div><strong>Как отвечать?</strong><span>Выберите уровень — система сама подберёт модель</span></div></div>
-   <div className={styles.modeGrid}>{MODES.map(mode=>{
-    const active=current===mode.value;
-    return <button key={mode.value} type="button" className={`${styles.modeCard} ${active?styles.active:""}`} onClick={()=>selectValue(mode.value)} aria-pressed={active}>
-     <span className={styles.modeTop}><span className={styles.modeIcon}><Icon name={mode.icon} size={17}/></span>{active&&<span className={styles.check}><Icon name="check" size={13}/></span>}</span>
-     <strong>{mode.title}</strong><small>{mode.description}</small><em>{mode.badge}</em>
-    </button>})}</div>
+   <div className={styles.modeGrid}>{MODES.map(mode=>{const active=current===mode.value;return <button key={mode.value} type="button" className={`${styles.modeCard} ${active?styles.active:""}`} onClick={()=>selectValue(mode.value)} aria-pressed={active}><span className={styles.modeTop}><span className={styles.modeIcon}><Icon name={mode.icon} size={17}/></span>{active&&<span className={styles.check}><Icon name="check" size={13}/></span>}</span><strong>{mode.title}</strong><small>{mode.description}</small><em>{mode.badge}</em></button>})}</div>
    <div className={styles.divider}><span>или выберите конкретную модель</span></div>
-   <div className={styles.modelScroll}>{grouped.map(([provider,items])=><section className={styles.modelGroup} key={provider}>
-    <header><span>{provider}</span><small>{items.filter(item=>item.available).length}/{items.length} доступно</small></header>
-    <div className={styles.modelList}>{items.map(model=>{
-     const value=`model:${model.slug}`;const active=current===value;
-     return <button type="button" key={model.slug} disabled={!model.available} className={`${styles.modelRow} ${active?styles.activeModel:""}`} onClick={()=>selectValue(value)} aria-pressed={active}>
-      <span className={styles.modelAvatar}>{isSystemModel(model)?"S":modelLabel(model).slice(0,1).toUpperCase()}</span>
-      <span className={styles.modelCopy}><strong>{modelLabel(model)}</strong><small>{!model.available?"Временно недоступна":isSystemModel(model)?"Системная модель":providerName(model.provider)}</small></span>
-      {active&&<Icon name="check" size={15}/>} 
-     </button>})}</div>
-   </section>)}</div>
+   <div className={styles.modelScroll}>{grouped.map(([provider,items])=><section className={styles.modelGroup} key={provider}><header><span>{provider}</span><small>{items.filter(item=>item.available).length}/{items.length} доступно</small></header><div className={styles.modelList}>{items.map(model=>{const value=`model:${model.slug}`;const active=current===value;return <button type="button" key={model.slug} disabled={!model.available} className={`${styles.modelRow} ${active?styles.activeModel:""}`} onClick={()=>selectValue(value)} aria-pressed={active}><span className={styles.modelAvatar}>{isSystemModel(model)?"S":modelLabel(model).slice(0,1).toUpperCase()}</span><span className={styles.modelCopy}><strong>{modelLabel(model)}</strong><small>{!model.available?"Временно недоступна":isSystemModel(model)?"Системная модель":providerName(model.provider)}</small></span>{active&&<Icon name="check" size={15}/>}</button>})}</div></section>)}</div>
   </div>}
  </div>;
 }
@@ -129,15 +101,10 @@ export default function WorkspaceUX(){
  const[models,setModels]=useState<AIModel[]>([]);
  useEffect(()=>{
   let observer:MutationObserver|null=null;
-  const locate=()=>{
-   const host=document.querySelector<HTMLElement>(".chatHeader .headerControls");
-   const select=nativeSelector();
-   if(host&&select){setTarget(host);document.documentElement.classList.add("enhancedModelPicker");observer?.disconnect();return true}
-   return false;
-  };
+  const locate=()=>{const host=document.querySelector<HTMLElement>(".chatHeader .headerControls");const select=nativeSelector();if(host&&select){setTarget(host);observer?.disconnect();return true}return false};
   if(!locate()){observer=new MutationObserver(locate);observer.observe(document.body,{childList:true,subtree:true})}
   void api<AIModel[]>("/models/").then(setModels).catch(()=>undefined);
-  return()=>{observer?.disconnect();document.documentElement.classList.remove("enhancedModelPicker")};
+  return()=>observer?.disconnect();
  },[]);
- return <><WorkspaceV2/>{target&&createPortal(<ModelPicker models={models}/>,target)}</>;
+ return <div className={`${styles.shell} ${target?styles.enhanced:""}`}><WorkspaceV2/>{target&&createPortal(<ModelPicker models={models}/>,target)}</div>;
 }
