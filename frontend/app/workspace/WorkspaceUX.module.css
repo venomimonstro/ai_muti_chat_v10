@@ -1,0 +1,43 @@
+:global(html.enhancedModelPicker .workspaceApp .headerControls > .selectControl:not(.projectSelect)){display:none}
+
+.picker{position:relative;order:-2;z-index:45}
+.trigger{height:40px;min-width:156px;max-width:225px;padding:5px 10px 5px 7px;border:1px solid #e2dfe8;border-radius:12px;background:#fff;display:flex;align-items:center;gap:8px;color:#201f26;box-shadow:0 1px 2px rgba(20,16,35,.03);transition:border-color .16s ease,box-shadow .16s ease,background .16s ease}
+.trigger:hover{background:#fbfafc;border-color:#d4cfdf}.triggerOpen{border-color:#b9ace9;box-shadow:0 0 0 3px rgba(109,81,231,.1)}
+.triggerIcon{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;flex:none;background:linear-gradient(145deg,#f2efff,#ebe7fb);color:#6750d8}
+.triggerCopy{min-width:0;display:grid;text-align:left;line-height:1.05;flex:1}.triggerCopy small{font-size:9px;font-weight:700;color:#9791a2;text-transform:uppercase;letter-spacing:.055em}.triggerCopy strong{margin-top:3px;font-size:13px;font-weight:720;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trigger>svg{flex:none;color:#8c8796;transition:transform .16s ease}.chevronOpen{transform:rotate(180deg)}
+
+.popover{position:absolute;top:47px;right:0;width:min(520px,calc(100vw - 24px));padding:15px;border:1px solid #e5e1eb;border-radius:18px;background:rgba(255,255,255,.985);box-shadow:0 24px 70px rgba(25,18,48,.18),0 4px 14px rgba(25,18,48,.06);backdrop-filter:blur(20px);animation:pickerIn .14s ease-out;transform-origin:top right}
+.popoverHead{padding:2px 3px 13px}.popoverHead>div{display:grid;gap:3px}.popoverHead strong{font-size:15px;letter-spacing:-.015em}.popoverHead span{font-size:11px;color:#858090}
+.modeGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.modeCard{position:relative;min-height:144px;border:1px solid #e6e2eb;border-radius:14px;background:#faf9fc;padding:11px;text-align:left;display:flex;flex-direction:column;align-items:flex-start;transition:transform .14s ease,border-color .14s ease,background .14s ease,box-shadow .14s ease}.modeCard:hover{transform:translateY(-1px);background:#fff;border-color:#cdc5e8;box-shadow:0 7px 18px rgba(43,32,76,.06)}.modeCard.active{border-color:#9f8de3;background:linear-gradient(155deg,#f8f5ff,#f0ebff);box-shadow:inset 0 0 0 1px rgba(109,81,231,.12)}
+.modeTop{width:100%;display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.modeIcon{width:31px;height:31px;border-radius:10px;display:grid;place-items:center;color:#6750d8;background:#eeeafd}.check{width:21px;height:21px;border-radius:50%;display:grid;place-items:center;background:#6d51e7;color:white}.modeCard>strong{font-size:13px}.modeCard>small{display:block;margin-top:5px;color:#777181;font-size:10px;line-height:1.35;flex:1}.modeCard>em{margin-top:10px;padding:4px 7px;border-radius:20px;background:#efedf4;color:#716c79;font-size:9px;font-weight:700;font-style:normal}.modeCard.active>em{background:#e5defd;color:#5940c8}
+.divider{height:41px;display:flex;align-items:center;gap:10px;color:#9792a0;font-size:10px}.divider:before,.divider:after{content:"";height:1px;background:#eeebf1;flex:1}.divider span{white-space:nowrap}
+.modelScroll{max-height:310px;overflow:auto;padding-right:2px;scrollbar-width:thin}.modelGroup+ .modelGroup{margin-top:15px}.modelGroup>header{height:25px;padding:0 3px;display:flex;align-items:center;justify-content:space-between;color:#716c7a}.modelGroup>header span{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.055em}.modelGroup>header small{font-size:9px;color:#aaa5b0}.modelList{display:grid;gap:4px}.modelRow{width:100%;min-height:51px;border:1px solid transparent;border-radius:12px;background:transparent;padding:7px 9px;display:grid;grid-template-columns:32px minmax(0,1fr) 20px;align-items:center;gap:9px;text-align:left;transition:background .12s ease,border-color .12s ease}.modelRow:hover:not(:disabled){background:#f7f5fa;border-color:#ebe7f0}.modelRow:disabled{opacity:.42}.activeModel{background:#f4f0ff!important;border-color:#d9d0f6!important}.modelAvatar{width:31px;height:31px;border-radius:9px;display:grid;place-items:center;background:#efecf4;color:#625d69;font-size:11px;font-weight:800}.activeModel .modelAvatar{background:#6d51e7;color:#fff}.modelCopy{min-width:0;display:grid;gap:3px}.modelCopy strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.modelCopy small{font-size:9px;color:#97919f}.modelRow>svg{color:#654dd5}
+
+:global(.sourceCluster){max-width:760px;margin-top:13px}
+:global(.sourceSummary){min-height:36px!important;padding:5px 9px 5px 6px!important;border:1px solid #e5e1e9!important;border-radius:11px!important;background:#faf9fb!important;color:#5e5966!important;display:inline-flex!important;align-items:center!important;gap:8px!important;font-size:11px!important;font-weight:680!important;transition:background .14s ease,border-color .14s ease,box-shadow .14s ease!important}
+:global(.sourceSummary:hover){background:#fff!important;border-color:#d4cede!important;box-shadow:0 4px 15px rgba(26,20,42,.05)!important}
+:global(.sourceSummary>svg){color:#8f8997;transition:transform .14s ease}
+:global(.sourceSummary[aria-expanded="true"]>svg){transform:rotate(180deg)}
+:global(.sourceFavicons){height:24px;display:flex!important;align-items:center;padding-left:2px}
+:global(.sourceFavicons img){width:22px!important;height:22px!important;object-fit:contain;background:#fff;border:2px solid #fff!important;border-radius:7px!important;box-shadow:0 0 0 1px #e8e4ec;margin-left:-5px!important;padding:2px}.sourceFavicons img:first-child{margin-left:0!important}
+:global(.sourceList){margin-top:8px;display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px!important;animation:sourcesIn .14s ease-out}
+:global(.sourceCard){position:relative;min-width:0;min-height:67px;padding:10px 32px 10px 10px!important;border:1px solid #e9e5ed!important;border-radius:13px!important;background:#fbfafc!important;color:#29262f!important;text-decoration:none!important;display:grid!important;grid-template-columns:32px minmax(0,1fr)!important;gap:9px!important;align-items:center!important;transition:transform .13s ease,border-color .13s ease,background .13s ease,box-shadow .13s ease!important}
+:global(.sourceCard:after){content:"↗";position:absolute;right:11px;top:11px;color:#aaa4b0;font-size:13px}
+:global(.sourceCard:hover){transform:translateY(-1px);border-color:#d6cfe1!important;background:#fff!important;box-shadow:0 8px 22px rgba(27,20,48,.06)!important}
+:global(.sourceCard>img){width:30px!important;height:30px!important;object-fit:contain;border-radius:9px!important;background:#fff;border:1px solid #ece8ef;padding:4px}
+:global(.sourceCard>span){min-width:0!important;display:grid!important;gap:4px!important}
+:global(.sourceCard b){display:-webkit-box!important;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11px!important;line-height:1.3!important;font-weight:680!important}
+:global(.sourceCard small){display:block!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#8d8794!important;font-size:9px!important}
+
+@keyframes pickerIn{from{opacity:0;transform:translateY(-5px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes sourcesIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+
+@media(max-width:760px){
+ .picker{order:-3}.trigger{min-width:0;max-width:165px}.triggerCopy small{display:none}.triggerCopy strong{margin-top:0}
+ .popover{position:fixed;left:8px;right:8px;top:auto;bottom:8px;width:auto;max-height:min(82vh,720px);overflow:auto;border-radius:20px;transform-origin:bottom center}
+ .modeGrid{grid-template-columns:1fr}.modeCard{min-height:86px;display:grid;grid-template-columns:35px minmax(0,1fr) auto;grid-template-rows:auto auto;column-gap:10px;align-items:center}.modeTop{display:contents}.modeIcon{grid-row:1/3}.check{position:absolute;right:10px;top:10px}.modeCard>strong{grid-column:2}.modeCard>small{grid-column:2;margin-top:2px}.modeCard>em{grid-column:3;grid-row:1/3;margin:0 0 0 5px}.modelScroll{max-height:none}
+ :global(.sourceList){grid-template-columns:1fr}
+}
+
+@media(max-width:470px){.trigger{width:42px;padding:5px;justify-content:center}.triggerIcon{width:30px;height:30px}.triggerCopy,.trigger>svg{display:none}.divider span{font-size:9px}.sourceFavicons img:nth-child(n+4){display:none}}
