@@ -5,7 +5,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.models import AIModel, ModelVersion, Provider
 from apps.billing.models import PriceVersion
 from apps.billing.services import credit
 
@@ -25,7 +25,7 @@ def client_journey():
         name="Journey Echo",
         adapter_type=Provider.AdapterType.ECHO,
     )
-    AIModel.objects.create(
+    model = AIModel.objects.create(
         provider=provider,
         slug="journey-echo-v1",
         display_name="Journey Echo",
@@ -34,6 +34,18 @@ def client_journey():
         context_window=8192,
         max_output_tokens=2048,
     )
+    version = ModelVersion.objects.create(
+        model=model,
+        version="journey-echo-v1",
+        exact_api_id="journey-echo-v1",
+        capabilities=["text", "streaming"],
+        context_window=8192,
+        max_output_tokens=2048,
+        stage=ModelVersion.Stage.ACTIVE,
+        activated_at=timezone.now(),
+    )
+    model.current_version = version
+    model.save(update_fields=["current_version"])
     PriceVersion.objects.create(
         model_slug="journey-echo-v1",
         input_rub_per_million=Decimal("10"),
