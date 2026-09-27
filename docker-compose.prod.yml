@@ -27,6 +27,21 @@ services:
     healthcheck: {test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"], interval: 10s, timeout: 5s, retries: 10}
     networks: [private]
     logging: *default-logging
+  searxng:
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:latest}
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?required}
+      SEARXNG_BIND_ADDRESS: 0.0.0.0
+      SEARXNG_PORT: "8080"
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng_cache:/var/cache/searxng
+    networks: [private, egress]
+    init: true
+    logging: *default-logging
   backend:
     build: ./backend
     restart: unless-stopped
@@ -34,6 +49,8 @@ services:
     command: ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers $${UVICORN_WORKERS:-2} --proxy-headers"]
     environment:
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      WEB_SEARCH_BASE_URL: ${WEB_SEARCH_BASE_URL:-http://searxng:8080}
+      WEB_SEARCH_TRUSTED_HOSTS: ${WEB_SEARCH_TRUSTED_HOSTS:-searxng}
     volumes: [media_data:/app/media, static_data:/app/staticfiles, logs_data:/app/logs]
     healthcheck:
       test:
@@ -48,7 +65,7 @@ services:
       timeout: 8s
       retries: 12
       start_period: 20s
-    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}, searxng: {condition: service_started}}
     networks: [private, edge]
     init: true
     stop_grace_period: 30s
@@ -91,8 +108,10 @@ services:
       CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
       SANDBOX_URL: http://sandbox:8090
       SANDBOX_SHARED_SECRET: ${SANDBOX_SHARED_SECRET:-}
+      WEB_SEARCH_BASE_URL: ${WEB_SEARCH_BASE_URL:-http://searxng:8080}
+      WEB_SEARCH_TRUSTED_HOSTS: ${WEB_SEARCH_TRUSTED_HOSTS:-searxng}
     volumes: [media_data:/app/media, logs_data:/app/logs]
-    depends_on: {backend: {condition: service_healthy}, sandbox: {condition: service_healthy}}
+    depends_on: {backend: {condition: service_healthy}, sandbox: {condition: service_healthy}, searxng: {condition: service_started}}
     networks: [private, sandbox_net, egress]
     init: true
     stop_grace_period: 45s
@@ -173,5 +192,6 @@ volumes:
   media_data:
   static_data:
   logs_data:
+  searxng_cache:
   caddy_data:
   caddy_config:
