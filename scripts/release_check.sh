@@ -38,6 +38,9 @@ POSTGRES_DB=release_check \
 POSTGRES_USER=release_check \
 POSTGRES_PASSWORD=release-check-password \
 REDIS_PASSWORD=release-check-redis-password \
+SEARXNG_SECRET=release-check-searxng-secret \
+WEB_SEARCH_BASE_URL=http://searxng:8080 \
+WEB_SEARCH_TRUSTED_HOSTS=searxng \
 PUBLIC_API_URL=https://release-check.example.test/api/v1 \
 docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 
