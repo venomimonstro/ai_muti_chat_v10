@@ -141,7 +141,7 @@ def enforce_spend_limits(wallet, next_reservation):
         (
             _effective_limit(preference.daily_spend_limit_rub, guard["daily_system_limit_rub"]),
             _period_start(),
-            "Достигнут дневной лимит расходов (защитный лимит)",
+            "Достигнут дневной защитный лимит расходов",
         ),
         (
             _effective_limit(
