@@ -9,6 +9,7 @@ from apps.accounts.models import User
 from apps.projects.models import Project, ProjectMembership
 
 from .models import FileAsset, FileChunk
+from .semantic_embeddings import MODEL_VERSION
 
 
 def make_project(user, name="Files"):
@@ -49,7 +50,7 @@ def test_text_upload_extracts_chunks_and_is_idempotent(tmp_path, settings):
     assert chunk.acl_project_id == project.id
     assert chunk.content_sha256
     assert len(chunk.embedding) == 384
-    assert chunk.embedding_model == "local-hash-v1"
+    assert chunk.embedding_model == MODEL_VERSION
     assert chunk.injection_risk == FileChunk.InjectionRisk.SAFE
     second = upload(
         client,
@@ -236,7 +237,7 @@ def test_xlsx_extraction_and_honest_pdf_partial_status(tmp_path, settings):
     )
     assert pdf.status_code == 201
     assert pdf.data["status"] == FileAsset.Status.PARTIAL
-    assert pdf.data["error_code"] == "pdf_extractor_unavailable"
+    assert pdf.data["error_code"] == "pdf_read_error"
 
 
 @pytest.mark.django_db
