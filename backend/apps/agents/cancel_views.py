@@ -22,7 +22,7 @@ class SafeAgentRunCancelView(APIView):
     @transaction.atomic
     def post(self, request, run_id):
         run = get_object_or_404(
-            AgentRun.objects.select_for_update()
+            AgentRun.objects.select_for_update(of=("self",))
             .select_related("agent", "team", "project")
             .prefetch_related("steps__agent", "approvals"),
             id=run_id,
@@ -32,7 +32,7 @@ class SafeAgentRunCancelView(APIView):
             return Response(AgentRunSerializer(run).data)
 
         now = timezone.now()
-        pending = AgentApproval.objects.select_for_update().filter(
+        pending = AgentApproval.objects.select_for_update(of=("self",)).filter(
             run=run,
             status=AgentApproval.Status.PENDING,
         )
