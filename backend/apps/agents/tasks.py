@@ -4,6 +4,7 @@ from celery import shared_task
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .generic_team_runtime import execute_generic_team_run
@@ -31,7 +32,14 @@ ACTIVE_RUN_STATES = {
 def execute_agent_run_task(self, run_id):
     subject = (
         AgentRun.objects.filter(pk=run_id)
-        .values("agent_id", "agent__graph", "agent__tool_policy", "team_id", "team__kind", "team__director__role")
+        .values(
+            "agent_id",
+            "agent__graph",
+            "agent__tool_policy",
+            "team_id",
+            "team__kind",
+            "team__director__role",
+        )
         .first()
     )
     if subject is None:
@@ -116,6 +124,37 @@ def _schedule_capacity_available(schedule):
         return False
 
 
+def _agent_has_active_run(owner, agent):
+    return (
+        AgentRun.objects.filter(owner=owner, state__in=ACTIVE_RUN_STATES)
+        .filter(Q(agent=agent) | Q(team__members__agent=agent, team__members__enabled=True))
+        .distinct()
+        .exists()
+    )
+
+
+def _team_has_active_member(owner, team):
+    member_ids = list(team.members.filter(enabled=True).values_list("agent_id", flat=True))
+    if not member_ids:
+        return False
+    list(
+        Agent.objects.select_for_update(of=("self",))
+        .filter(pk__in=member_ids, owner=owner)
+        .order_by("pk")
+        .values_list("pk", flat=True)
+    )
+    return (
+        AgentRun.objects.filter(owner=owner, state__in=ACTIVE_RUN_STATES)
+        .filter(
+            Q(agent_id__in=member_ids)
+            | Q(team__members__agent_id__in=member_ids, team__members__enabled=True)
+        )
+        .exclude(team=team)
+        .distinct()
+        .exists()
+    )
+
+
 @shared_task(max_retries=0)
 def dispatch_due_agent_schedules(limit=50):
     from .schedule_models import AgentSchedule
@@ -135,7 +174,7 @@ def dispatch_due_agent_schedules(limit=50):
     for schedule_id in due_ids:
         with transaction.atomic():
             schedule = (
-                AgentSchedule.objects.select_for_update()
+                AgentSchedule.objects.select_for_update(of=("self",))
                 .select_related("agent", "team", "owner")
                 .filter(pk=schedule_id, enabled=True, next_run_at__lte=now)
                 .first()
@@ -146,17 +185,21 @@ def dispatch_due_agent_schedules(limit=50):
             schedule.next_run_at = schedule.compute_next_run(after=now)
 
             if schedule.agent_id:
-                subject = Agent.objects.select_for_update().select_related("project").get(pk=schedule.agent_id)
+                subject = (
+                    Agent.objects.select_for_update(of=("self",))
+                    .select_related("project")
+                    .get(pk=schedule.agent_id)
+                )
                 if subject.status != Agent.Status.ACTIVE:
                     schedule.save(update_fields=["next_run_at", "updated_at"])
                     skipped += 1
                     continue
-                active = AgentRun.objects.filter(agent_id=subject.id, state__in=ACTIVE_RUN_STATES).exists()
+                active = _agent_has_active_run(schedule.owner, subject)
                 objective = (schedule.objective or subject.objective).strip()
                 project = subject.project
             else:
                 subject = (
-                    AgentTeam.objects.select_for_update()
+                    AgentTeam.objects.select_for_update(of=("self",))
                     .select_related("director", "project")
                     .prefetch_related("members__agent")
                     .get(pk=schedule.team_id)
@@ -165,7 +208,9 @@ def dispatch_due_agent_schedules(limit=50):
                     schedule.save(update_fields=["next_run_at", "updated_at"])
                     skipped += 1
                     continue
-                active = AgentRun.objects.filter(team_id=subject.id, state__in=ACTIVE_RUN_STATES).exists()
+                active = AgentRun.objects.filter(
+                    team_id=subject.id, state__in=ACTIVE_RUN_STATES
+                ).exists() or _team_has_active_member(schedule.owner, subject)
                 objective = (schedule.objective or subject.objective).strip()
                 project = subject.project
 
@@ -228,7 +273,9 @@ def dispatch_due_agent_schedules(limit=50):
 
             schedule.last_run_at = now
             schedule.last_run = run
-            schedule.save(update_fields=["next_run_at", "last_run_at", "last_run", "updated_at"])
+            schedule.save(
+                update_fields=["next_run_at", "last_run_at", "last_run", "updated_at"]
+            )
 
     return {
         "checked": len(due_ids),
@@ -258,7 +305,7 @@ def expire_stale_agent_approvals(limit=500):
     for approval_id in approval_ids:
         with transaction.atomic():
             approval = (
-                AgentApproval.objects.select_for_update()
+                AgentApproval.objects.select_for_update(of=("self",))
                 .select_related("run")
                 .filter(
                     pk=approval_id,
@@ -275,7 +322,7 @@ def expire_stale_agent_approvals(limit=500):
             approval.save(update_fields=["status", "decided_at"])
             expired += 1
 
-            run = AgentRun.objects.select_for_update().get(pk=approval.run_id)
+            run = AgentRun.objects.select_for_update(of=("self",)).get(pk=approval.run_id)
             if run.state != AgentRun.State.WAITING_APPROVAL:
                 continue
             has_other_pending = run.approvals.filter(status=AgentApproval.Status.PENDING).exists()
