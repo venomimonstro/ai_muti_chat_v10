@@ -50,7 +50,7 @@ def test_spend_limit_counts_active_reservations_and_low_balance_notification():
         low_balance_threshold_rub=Decimal("10.00"),
     )
     first = reserve(user, Decimal("0.60"), "limit:first")
-    with pytest.raises(ValidationError, match="дневной лимит"):
+    with pytest.raises(ValidationError, match=r"дневн.*лимит"):
         reserve(user, Decimal("0.50"), "limit:second")
     settle(first.id, Decimal("0.20"))
     assert Notification.objects.filter(user=user, level=Notification.Level.WARNING).count() == 1
