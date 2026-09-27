@@ -27,7 +27,7 @@ class DevRunMergePullRequestView(APIView):
             raise ValidationError({"merge_method": "Используйте merge, squash или rebase"})
 
         run = get_object_or_404(
-            AgentRun.objects.select_for_update().select_related(
+            AgentRun.objects.select_for_update(of=("self",)).select_related(
                 "team", "project__github_repository__installation"
             ),
             id=run_id,
@@ -70,8 +70,6 @@ class DevRunMergePullRequestView(APIView):
         if expected_head != expected_branch:
             raise ValidationError({"detail": "Pull Request не соответствует рабочей ветке этого Dev-run"})
 
-        # Re-read GitHub before merge. This also recovers the crash window where
-        # GitHub completed a previous merge but our DB update did not commit.
         current = get_pull_request(binding, number)
         current_head = str(((current.get("head") or {}).get("ref")) or "")
         current_head_sha = str(((current.get("head") or {}).get("sha")) or "")
@@ -84,7 +82,12 @@ class DevRunMergePullRequestView(APIView):
 
         if github_merged:
             merge_sha = str(current.get("merge_commit_sha") or expected_head_sha)
-            result = {"merged": True, "sha": merge_sha, "message": "Merge уже был выполнен в GitHub", "number": number}
+            result = {
+                "merged": True,
+                "sha": merge_sha,
+                "message": "Merge уже был выполнен в GitHub",
+                "number": number,
+            }
             recovered = True
         else:
             result = merge_pull_request(
