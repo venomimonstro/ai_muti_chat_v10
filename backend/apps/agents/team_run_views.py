@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -38,7 +39,7 @@ class SafeTeamRunView(APIView):
     def post(self, request, team_id):
         scoped = get_object_or_404(AgentTeam, id=team_id, owner=request.user)
         team = (
-            AgentTeam.objects.select_for_update()
+            AgentTeam.objects.select_for_update(of=("self",))
             .select_related("director", "project")
             .prefetch_related("members__agent")
             .get(pk=scoped.pk)
@@ -51,9 +52,31 @@ class SafeTeamRunView(APIView):
         if existing is not None:
             return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
 
+        member_ids = list(
+            team.members.filter(enabled=True).values_list("agent_id", flat=True)
+        )
+        if member_ids:
+            conflict = (
+                AgentRun.objects.filter(owner=request.user, state__in=ACTIVE_RUN_STATES)
+                .filter(
+                    Q(agent_id__in=member_ids)
+                    | Q(team__members__agent_id__in=member_ids, team__members__enabled=True)
+                )
+                .exclude(team=team)
+                .distinct()
+                .order_by("-created_at")
+                .first()
+            )
+            if conflict is not None:
+                raise ValidationError(
+                    {"detail": "Один из AI-сотрудников команды уже занят другим активным запуском"}
+                )
+
         readiness = team_readiness(team)
         if not readiness["ready"]:
-            raise ValidationError({"detail": "Команда не готова к запуску: " + "; ".join(readiness["blockers"])})
+            raise ValidationError(
+                {"detail": "Команда не готова к запуску: " + "; ".join(readiness["blockers"])}
+            )
 
         objective = str(request.data.get("objective") or team.objective or "").strip()
         if not objective:
