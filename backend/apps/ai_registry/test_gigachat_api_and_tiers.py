@@ -1,4 +1,5 @@
 from decimal import Decimal
+import time
 
 import pytest
 from django.utils import timezone
@@ -96,6 +97,19 @@ def test_gigachat_adapter_prefers_persisted_scope():
     )
 
     assert adapter.scope == "GIGACHAT_API_B2B"
+
+
+@pytest.mark.django_db
+def test_gigachat_stream_headers_request_event_stream():
+    provider, _ = Provider.objects.get_or_create(slug="gigachat", defaults={"name": "GigaChat API"})
+    provider.auth_config = {"scope": "GIGACHAT_API_PERS"}
+    provider.save(update_fields=["auth_config"])
+    adapter = GigaChatAPIAdapter(authorization_key="authorization-key")
+    adapter._token = "cached-token"
+    adapter._token_expires_at = time.time() + 600
+
+    assert adapter._headers(stream=True)["Accept"] == "text/event-stream"
+    assert adapter._headers(stream=False)["Accept"] == "application/json"
 
 
 @pytest.mark.django_db
