@@ -63,13 +63,6 @@ def _active_reserved(wallet):
 
 
 def spend_guard_snapshot(wallet):
-    """Return the current consumer safety envelope without mutating the wallet.
-
-    By default percentage guards allow the customer to use up to 100% of funds
-    already available to that wallet. Absolute safety ceilings and any explicit
-    user-configured daily/monthly limits still apply. This avoids a hidden 10%
-    cap making a legitimately funded wallet look unusable.
-    """
     active_reserved = _active_reserved(wallet)
     total_funds_now = wallet.available_rub + active_reserved
 
@@ -83,9 +76,6 @@ def spend_guard_snapshot(wallet):
     burst_minutes = max(1, int(os.getenv("CONSUMER_BURST_WINDOW_MINUTES", "10")))
     burst_since = timezone.now() - timedelta(minutes=burst_minutes)
     burst_spent = _sum_debits(wallet, burst_since)
-    # Add recent spend back to reconstruct the approximate balance that existed
-    # before this burst. This keeps the percentage cap stable across sequential
-    # requests instead of shrinking unpredictably after every debit.
     burst_basis = wallet.available_rub + active_reserved + burst_spent
     burst_absolute = _positive_env_limit("CONSUMER_MAX_BURST_SPEND_RUB", "500")
     burst_percent = _positive_percent("CONSUMER_MAX_BURST_SPEND_PERCENT", "100")
@@ -151,7 +141,7 @@ def enforce_spend_limits(wallet, next_reservation):
         (
             _effective_limit(preference.daily_spend_limit_rub, guard["daily_system_limit_rub"]),
             _period_start(),
-            "Достигнут дневной защитный лимит расходов",
+            "Достигнут дневной лимит расходов (защитный лимит)",
         ),
         (
             _effective_limit(
