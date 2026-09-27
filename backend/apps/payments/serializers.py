@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from apps.billing.models import Wallet
+
 from .models import Payment, Refund, RefundRequest
 
 
@@ -35,8 +37,6 @@ class PaymentSerializer(serializers.ModelSerializer):
         }
         refunds = list(obj.refunds.all())
         requests = list(obj.refund_requests.all())
-        # Customer actions are serialized per payment: while any refund operation
-        # is open, starting another one is intentionally unavailable.
         if any(item.status in open_refund_states for item in refunds) or any(
             item.status in request_states for item in requests
         ):
@@ -46,8 +46,11 @@ class PaymentSerializer(serializers.ModelSerializer):
             Decimal("0.00"),
         )
         payment_remaining = max(Decimal("0.00"), obj.amount_rub - refunded)
-        wallet = getattr(obj.user, "wallet", None)
-        unused_paid = max(Decimal("0.00"), wallet.paid_rub if wallet is not None else Decimal("0.00"))
+        paid_rub = (
+            Wallet.objects.filter(user_id=obj.user_id).values_list("paid_rub", flat=True).first()
+            or Decimal("0.00")
+        )
+        unused_paid = max(Decimal("0.00"), paid_rub)
         return f"{min(payment_remaining, unused_paid):.2f}"
 
 
