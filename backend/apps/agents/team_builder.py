@@ -5,21 +5,35 @@ from .planner import graph_for_kind
 
 def infer_team_kind(description: str) -> str:
     text = str(description or "").casefold()
-    if any(word in text for word in ("разработ", "код", "github", "программ", "backend", "frontend")):
+    explicit_dev = any(
+        marker in text
+        for marker in (
+            "код",
+            "github",
+            "программ",
+            "backend",
+            "frontend",
+            "api",
+            "база данных",
+            "database",
+            "devops",
+            "репозитор",
+        )
+    )
+    if explicit_dev or (
+        "разработ" in text
+        and any(marker in text for marker in ("сайт", "прилож", "сервис", "бот", "по", "software"))
+    ):
         return "development"
     if any(word in text for word in ("продаж", "лид", "клиент", "crm", "коммерческ")):
         return "sales"
-    if any(word in text for word in ("стать", "редактор", "копирайт", "блог", "медиа", "контент", "seo")):
-        return "content"
     if any(word in text for word in ("маркет", "smm", "соцсет", "реклам", "таргет", "бренд")):
         return "marketing"
+    if any(word in text for word in ("стать", "редактор", "копирайт", "блог", "медиа", "контент", "seo")):
+        return "content"
     return "generic"
 
 
-# Generic team runtime performs one paid LLM call per enabled member. A team
-# created for a simple task must therefore not silently become a five-model
-# workflow. "core" roles are enough for ordinary execution; optional roles are
-# added only when the user's description actually calls for broader analysis.
 TEAM_PRESETS = {
     "marketing": [
         {"name": "Marketing Director", "role": "Marketing Director", "kind": "generic", "level": "maximum", "tools": {"web": True, "files": True, "delegate": True}, "core": True},
@@ -70,8 +84,6 @@ COMPLEXITY_MARKERS = (
 def needs_extended_team(description: str) -> bool:
     text = str(description or "").casefold()
     score = sum(1 for marker in COMPLEXITY_MARKERS if marker in text)
-    # Explicit multi-stage wording is another signal, but long boilerplate from
-    # the UI by itself must not inflate team size.
     multi_action = sum(text.count(token) for token in (",", ";", " и ")) >= 4
     return score >= 2 or (score >= 1 and multi_action)
 
