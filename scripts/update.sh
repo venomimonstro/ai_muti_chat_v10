@@ -14,8 +14,22 @@ DEPLOY_STARTED=false
 command -v flock >/dev/null 2>&1 || { printf 'Команда flock не найдена\n' >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { printf 'openssl не найден\n' >&2; exit 1; }
 
-exec 9>"${PROJECT_DIR}/.update.lock"
-flock -n 9 || { printf 'Другое обновление уже выполняется\n' >&2; exit 1; }
+LOCK_FILE="${PROJECT_DIR}/.update.lock"
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+  printf 'Другое обновление уже выполняется.\n' >&2
+  if command -v fuser >/dev/null 2>&1; then
+    LOCK_PIDS="$(fuser "${LOCK_FILE}" 2>/dev/null || true)"
+    if [[ -n "${LOCK_PIDS// }" ]]; then
+      printf 'Lock держит PID:%s\n' "${LOCK_PIDS}" >&2
+      ps -o pid,ppid,etime,stat,cmd -p ${LOCK_PIDS} >&2 2>/dev/null || true
+    fi
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof "${LOCK_FILE}" >&2 2>/dev/null || true
+  fi
+  printf 'Не удаляйте .update.lock вручную, пока процесс-владелец существует.\n' >&2
+  exit 1
+fi
 umask 077
 mkdir -p "${BACKUP_DIR}"
 
