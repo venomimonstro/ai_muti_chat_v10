@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import time
 
 from django.conf import settings
@@ -34,7 +35,7 @@ from .partial_billing import settle_delivered_partial
 from .vision import attach_vision_to_messages, resolve_vision_assets, vision_metadata
 from .web_context import enrich_snapshot_with_web
 
-MAX_OUTPUT_TOKENS = 1024
+MAX_OUTPUT_TOKENS = max(512, min(8192, int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "4096"))))
 FLUSH_CHARS = 400
 VISION_RESERVE_TOKENS_PER_IMAGE = 2048
 logger = logging.getLogger(__name__)
@@ -387,10 +388,35 @@ def run(generation, *, adapter=None):
             )
     except RoutingDecision.DoesNotExist:
         pass
-    if generation.context_snapshot.get("web_search", {}).get("used"):
+    web_search = generation.context_snapshot.get("web_search", {})
+    if web_search.get("used"):
+        sources = generation.context_snapshot.get("web_sources", [])
+        yield sse(
+            "research_progress",
+            {
+                "phase": "sources_ready",
+                "message": f"Нашёл актуальные источники: {len(sources)}. Сопоставляю данные…",
+                "source_count": len(sources),
+            },
+        )
         yield sse(
             "web_search",
-            {"sources": generation.context_snapshot.get("web_sources", [])},
+            {"status": "completed", "sources": sources},
+        )
+        yield sse(
+            "research_progress",
+            {
+                "phase": "synthesizing",
+                "message": "Собираю итоговый ответ с учётом источников и текущей даты…",
+            },
+        )
+    elif web_search.get("required") and web_search.get("error"):
+        yield sse(
+            "research_progress",
+            {
+                "phase": "search_unavailable",
+                "message": "Актуальный поиск временно недоступен; отвечаю без неподтверждённых свежих фактов.",
+            },
         )
     if generation.context_snapshot.get("memory_action"):
         yield sse("memory", generation.context_snapshot["memory_action"])
@@ -428,10 +454,15 @@ def run(generation, *, adapter=None):
                 attempt_completed = None
                 try:
                     provider_adapter = adapter or adapter_for(model)
+                    max_output_tokens = min(
+                        MAX_OUTPUT_TOKENS,
+                        int(generation.context_snapshot.get("budget", {}).get("output_reserved") or MAX_OUTPUT_TOKENS),
+                        model.max_output_tokens,
+                    )
                     for event in provider_adapter.stream(
                         model=model.upstream_model,
                         messages=history,
-                        max_output_tokens=MAX_OUTPUT_TOKENS,
+                        max_output_tokens=max_output_tokens,
                     ):
                         if event.kind == "delta":
                             emitted = True
