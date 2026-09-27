@@ -26,20 +26,27 @@ command -v openssl >/dev/null 2>&1 || { printf 'openssl не найден\n' >&2
 # wrapper process keeps the lock for the whole update, while child processes can
 # never keep it alive after the updater itself exits or is interrupted.
 if [[ "${AI_WORKSPACE_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
-  if ! flock --nonblock --close "${LOCK_FILE}" \
+  LOCK_CONFLICT_EXIT=75
+  if flock --nonblock --close --conflict-exit-code "${LOCK_CONFLICT_EXIT}" "${LOCK_FILE}" \
       env AI_WORKSPACE_UPDATE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}" "$@"; then
+    exit 0
+  else
     status=$?
-    if command -v fuser >/dev/null 2>&1; then
-      LOCK_PIDS="$(fuser "${LOCK_FILE}" 2>/dev/null || true)"
-      if [[ -n "${LOCK_PIDS// }" ]]; then
-        printf '\n[BLOCKED] Другое обновление уже выполняется.\n' >&2
-        printf '[INFO] Lock держит PID:%s\n' "${LOCK_PIDS}" >&2
-        ps -o pid,ppid,etime,stat,cmd -p ${LOCK_PIDS} >&2 2>/dev/null || true
+    if [[ "$status" -eq "$LOCK_CONFLICT_EXIT" ]]; then
+      printf '\n[BLOCKED] Другое обновление уже выполняется.\n' >&2
+      if command -v fuser >/dev/null 2>&1; then
+        LOCK_PIDS="$(fuser "${LOCK_FILE}" 2>/dev/null || true)"
+        if [[ -n "${LOCK_PIDS// }" ]]; then
+          printf '[INFO] Lock держит PID:%s\n' "${LOCK_PIDS}" >&2
+          ps -o pid,ppid,etime,stat,cmd -p ${LOCK_PIDS} >&2 2>/dev/null || true
+        fi
+      elif command -v lsof >/dev/null 2>&1; then
+        lsof "${LOCK_FILE}" >&2 2>/dev/null || true
       fi
+      printf '[INFO] Не удаляйте .update.lock вручную, пока процесс-владелец существует.\n' >&2
     fi
-    exit "${status:-1}"
+    exit "$status"
   fi
-  exit 0
 fi
 
 mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
