@@ -1,16 +1,16 @@
 # AI Workspace — единый план спринтов
 
-Этот файл — единый источник истины по истории, текущему спринту и плану до коммерческого запуска. Старые детальные документы в `docs/sprints/` и `docs/operations/` сохраняются как доказательство реализации, но статус и следующий номер спринта определяются здесь.
+Этот файл — единый источник истины по истории, текущему состоянию и пути до коммерческого запуска. Детальные документы в `docs/sprints/` и `docs/operations/` сохраняются как evidence, но статус и следующий шаг определяются здесь.
 
 ## Правила
 
 - Номер спринта никогда не начинается заново.
-- `DONE` — код реализован.
-- `DONE / RUNTIME EVIDENCE` — код готов, но перед production нужны реальные проверки/доказательства.
-- `IN PROGRESS` — текущий спринт. Одновременно должен быть только один.
+- `DONE` — код и обязательные acceptance criteria завершены.
+- `DONE / RUNTIME EVIDENCE` — код завершён, но production/staging evidence ещё нужно получить.
+- `READY TO RUN` — реализация gate/drill завершена; следующий шаг физически выполняется на production-like сервере.
+- `IN PROGRESS` — текущая разработка. Одновременно не более одного.
 - `PLANNED` — ещё не начинали.
-- Новый функционал сначала добавляется сюда, затем реализуется.
-- Нельзя помечать спринт `DONE`, если его обязательные acceptance criteria не выполнены.
+- Нельзя объявлять production launch по наличию кода: финальный PASS должен быть получен реальным запуском gate.
 
 ## История 00–26
 
@@ -37,8 +37,6 @@
 | 24 | DONE | Admin maturity |
 | 25 | DONE | Release hardening |
 | 26 | DONE | One-command installer & stability |
-
-Детали: `docs/sprints/`.
 
 ## Commercial hardening 27–46
 
@@ -94,105 +92,90 @@
 
 Исторический источник: `docs/operations/commercial-launch-sprint-status.md`.
 
-## Текущий этап Agent Studio / Dev Studio
+## Agent Studio / Dev Studio 67–75
 
 | Sprint | Статус | Цель |
 |---|---|---|
-| 67 | DONE / RUNTIME EVIDENCE | Agent/Dev Studio autonomy hardening: schedules, safe cancellation, event/webhook triggers, idempotency, production audits |
-| 68 | DONE / RUNTIME EVIDENCE | Agent tenant isolation & security red-team: IDOR, cross-tenant references, secret exposure, tool abuse, sandbox boundaries |
-| 69 | IN PROGRESS | Agent commercial limits & billing: quotas, per-run/per-day caps, concurrency, reservations, transparent cost UX |
-| 70 | PLANNED | Agent Studio self-service UX: natural-language creation, generated plan review, test mode, templates, understandable errors |
-| 71 | PLANNED | Dev Studio production safety: diff/preview/approve, branch lifecycle, rollback/recovery, destructive-action barriers |
-| 72 | PLANNED | Integrations & credentials: unified connection model, permission scopes, health status, reconnect/rotation flows |
-| 73 | PLANNED | Support minimization: onboarding wizard, contextual help, diagnostics, knowledge base, operator runbooks |
-| 74 | PLANNED | Agent/Dev staging E2E, load & chaos: worker/beat restart, provider outage, duplicate events, stuck runs, restore/rollback |
-| 75 | PLANNED | Release Candidate v1.0: clean install, upgrade, regression/security checks, payment + first-agent journey, final launch evidence |
+| 67 | DONE / RUNTIME EVIDENCE | Schedules, cancellation, webhook/event triggers, idempotency, audits |
+| 68 | DONE / RUNTIME EVIDENCE | Tenant isolation, IDOR, secrets, safe tool policies, security audit |
+| 69 | DONE / RUNTIME EVIDENCE | Commercial limits, run/day/month budget, concurrency, reservations, usage UX |
+| 70 | DONE / RUNTIME EVIDENCE | Natural-language planner, preview, templates, readiness, zero-cost Test Mode |
+| 71 | DONE / RUNTIME EVIDENCE | Dev diff/preview/approve, isolated branch, sandbox, QA, PR/merge safety, abandon recovery |
+| 72 | DONE / RUNTIME EVIDENCE | Unified external connection model, encrypted credentials, health/reconnect checks |
+| 73 | DONE / RUNTIME EVIDENCE | Self-service readiness/diagnostics/Test Mode and support-minimization flows |
+| 74 | READY TO RUN | Worker/beat restart drill, stale-run recovery audit, production-like chaos evidence |
+| 75 | READY TO RUN | Release Candidate v1.0 gate and immutable launch evidence |
 
-## Sprint 67 — code complete, runtime evidence pending
+Детали: `docs/sprints/67-*` … `docs/sprints/75-*`.
 
-Completed in code:
+## Что реализовано к Sprint 75
 
-- agent schedules and calendar cadence;
-- safe run cancellation;
-- secure/idempotent event webhook triggers;
-- webhook secret rotation;
-- Agent Studio webhook UI;
-- duplicate-run protection and busy retry behavior;
-- `agent_system_audit`, `dev_studio_audit`, `agent_billing_audit`;
-- dedicated `agent_webhook_audit` in production update gate;
-- regression tests for disabled triggers, inactive-agent delivery, worker idempotency, stale delivery audit and cross-tenant webhook corruption.
+### Agent Runtime
 
-Runtime evidence still required before commercial launch:
+- Manual, schedule и webhook запуски используют одинаковые owner concurrency restrictions.
+- Run/day/month денежные лимиты проверяются до платного provider call.
+- Customer/provider spend резервируется и затем settle/release.
+- Webhook idempotency и duplicate-run protection.
+- Safe cancellation, approval expiry и recovery audits.
+- Usage API/UI показывает фактический расход, остаток и занятые слоты.
 
-- webhook invoke → Celery → AgentRun lifecycle on PostgreSQL/Redis production-like stack;
-- worker restart during pending webhook delivery;
-- duplicate Event ID never starts a second run or second charge under real concurrency;
-- disabled trigger / inactive agent / paused team failure paths on deployed stack;
-- successful `scripts/update.sh` output with all Agent/Dev audits.
+### Agent Studio UX
 
-## Sprint 68 — code complete, runtime evidence pending
+- Описание сотрудника обычным языком → AI preview → просмотр workflow → draft.
+- Templates, visual graph, readiness и понятные blocker actions.
+- Test Mode не вызывает LLM, не списывает деньги и не выполняет внешние действия.
+- Diagnostics объединяет readiness, budget, concurrency, connection health и recent failure.
 
-Completed in code:
+### Dev Studio safety
 
-- negative IDOR tests for Agent CRUD/run;
-- negative IDOR tests for run detail/cancel/repeat;
-- negative IDOR tests for team and webhook management;
-- serializer ownership validation for project/director references;
-- fail-closed code-writing policy: `github=true`, `shell=sandbox`, `merge=approval`;
-- `agent_security_audit` checks Agent, Version, Team, Member, Run, Step, Approval, Handoff, Artifact, Schedule and Webhook tenant relationships;
-- webhook secrets checked as recognized password hashes;
-- `agent_security_audit` added to production update gate;
-- dedicated security regression suite and sprint documentation.
+- create/update only; delete не выполняется Dev runtime.
+- Safe paths, file limits, expected SHA и повторная проверка исходного состояния.
+- Exact proposed changes сохраняются в approval.
+- Unified diff доступен до подтверждения.
+- Sandbox до write; write только в `ai-workspace/run-*` branch.
+- QA & Security + Final Review после изменения ветки.
+- PR и merge привязаны к точному run/head/base/SHA; merge требует явного подтверждения.
+- Abandon не выдаётся за remote deletion: default branch остаётся неизменной, isolated branch сохраняется для аудита/ручного удаления.
 
-Runtime evidence still required before commercial launch:
+### Connections
 
-- execute Agent security regression suite on production-like PostgreSQL;
-- execute `python manage.py agent_security_audit` against real server database;
-- successful `scripts/update.sh` with security gate;
-- retain security/runtime evidence for launch audit.
+- ExternalConnection — единая owner-scoped сущность подключения.
+- Credentials encrypted-at-rest и не возвращаются API/агенту.
+- Health check и состояния unknown/healthy/degraded/disabled.
+- Connection/binding нельзя менять во время активного run.
+- `connection_health_audit` контролирует tenant relationships и operational health.
 
-## Sprint 69 acceptance criteria
+### Release gates
 
-Completed in code so far:
+`scripts/release_check.sh` блокирует релиз на syntax/undefined-name defects, failing PostgreSQL tests, migration drift, economic/billing failures, Agent security/commercial/recovery failures, Dev Studio audit и frontend build/lint/runtime smoke.
 
-- existing run/day/month monetary limits retained as the single source of budget truth;
-- existing wallet/provider reservation flow retained;
-- owner-level concurrent-run limit added (`AGENT_MAX_ACTIVE_RUNS_PER_USER`, default 3);
-- manual Agent and Team run paths enforce owner concurrency;
-- commercial snapshot reports run/day/month spend, limits and remaining budget;
-- commercial snapshot reports active runs, concurrency limit and available slots;
-- `GET /api/v1/agents/<agent_id>/usage/` added for transparent cost UX;
-- regression tests added for concurrency and usage snapshot;
-- detailed Sprint 69 document added.
+`scripts/agent_runtime_drill.sh` выполняет restart drill worker/beat и повторные production audits.
 
-Still required before Sprint 69 becomes `DONE / RUNTIME EVIDENCE`:
+`scripts/agent_release_candidate_check.sh` объединяет runtime drill, существующий commercial launch gate, live paid E2E и финальные Agent/Dev audits с evidence/checksums.
 
-- enforce owner concurrency for scheduled Team runs and webhook Team runs;
-- verify automated triggers do not create a paid run above quota;
-- add commercial-limits production audit;
-- connect usage snapshot to Agent Studio UI;
-- run PostgreSQL tests and release gate.
+## Оставшаяся работа — только runtime evidence / launch blockers
 
-## Launch blockers independent of sprint number
+Разработка запланированных Sprint 69–75 завершена. До коммерческого запуска нельзя пропускать следующие реальные проверки:
 
-Commercial launch is blocked until all of the following have runtime evidence where required:
+1. `sudo bash scripts/update.sh` проходит полностью после обновления main.
+2. PostgreSQL regression/security/commercial tests проходят на текущем коде.
+3. `agent_runtime_drill.sh` возвращает `AGENT RUNTIME DRILL: PASS` после реальных restart worker/beat.
+4. Production configuration/secrets complete.
+5. Real payment/refund/receipt flow verified.
+6. Backup restore/application rollback drill verified.
+7. Legal/provider human sign-offs complete.
+8. Live dedicated E2E account configured (`E2E_USERNAME` / `E2E_PASSWORD`) with small positive balance.
+9. `commercial_launch_check.sh` проходит live paid workspace AI + B2B API/billing E2E.
+10. `agent_release_candidate_check.sh` завершается `AGENT RELEASE CANDIDATE v1.0: PASS`.
 
-1. `bash scripts/release_check.sh` returns success.
-2. Production configuration and secrets are complete.
-3. Real payment/refund/receipt flow is verified.
-4. Backup restore and application rollback drills are verified.
-5. Agent/Dev Studio production-like E2E and failure scenarios pass.
-6. Legal/provider sign-offs are complete.
-7. `bash scripts/commercial_launch_check.sh` returns `PASS`.
+## Следующий шаг
 
-## How to continue development
+На сервере:
 
-At the start of every development session:
+```bash
+cd /opt/ai-workspace
+sudo bash scripts/update.sh
+sudo bash scripts/agent_release_candidate_check.sh
+```
 
-1. Read this file.
-2. Find the single `IN PROGRESS` sprint.
-3. Work only on its remaining acceptance criteria unless a P0 regression blocks the product.
-4. After implementation, update the same sprint here.
-5. Only after all acceptance criteria pass, mark it `DONE` or `DONE / RUNTIME EVIDENCE` and change the next `PLANNED` sprint to `IN PROGRESS`.
-
-This prevents an AI coding agent or a human developer from inventing a new numbering scheme or reimplementing already completed scope.
+Если первый gate падает, исправляется конкретный blocker и команда повторяется. Новые крупные функции до RC PASS не добавляются: разрешены только P0/P1 исправления, выявленные gate/drill/E2E.
