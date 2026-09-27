@@ -12,6 +12,7 @@ from .models import (
     BillingReconciliationItem,
     CostAnomaly,
     FxRateSnapshot,
+    LedgerEntry,
     MarginPolicyVersion,
     MarkupRuleVersion,
     PriceVersion,
@@ -162,17 +163,21 @@ def test_cost_outcome_creates_deduplicated_margin_and_deviation_alerts():
 
 @pytest.mark.django_db(transaction=True)
 def test_reconciliation_detects_cached_wallet_ledger_mismatch_without_rewriting_money():
-    user = User.objects.create_user(username="reconcile", password="password123")
+    user = User.objects.create_user(
+        username="reconcile", email="reconcile@example.test", password="password123"
+    )
     credit(user, Decimal("10"), "test", "reconcile")
-    user.wallet.available_rub = Decimal("9")
-    user.wallet.save(update_fields=["available_rub"])
+    # Simulate ledger corruption through a low-level DB write. The hardened Wallet
+    # check constraint must remain intact and reject inconsistent balance buckets.
+    entry = LedgerEntry.objects.get(wallet=user.wallet, kind=LedgerEntry.Kind.CREDIT)
+    LedgerEntry.objects.filter(pk=entry.pk).update(available_delta_rub=Decimal("9"))
     run = reconcile_billing()
     user.wallet.refresh_from_db()
     item = BillingReconciliationItem.objects.get(run=run, entity_type="wallet")
     assert run.status == run.Status.SUCCEEDED
     assert run.discrepancy_count == 1
     assert item.status == BillingReconciliationItem.Status.MANUAL_REVIEW
-    assert user.wallet.available_rub == Decimal("9")
+    assert user.wallet.available_rub == Decimal("10.0000")
     assert CostAnomaly.objects.filter(kind=CostAnomaly.Kind.LEDGER_MISMATCH).count() == 1
 
 
