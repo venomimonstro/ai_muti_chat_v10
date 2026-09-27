@@ -84,9 +84,15 @@ def test_weekday_schedule_skips_weekend():
 
 
 @pytest.mark.django_db
-def test_due_schedule_creates_one_run_and_advances_next_run():
+def test_due_schedule_creates_one_run_and_advances_next_run(django_capture_on_commit_callbacks):
     user = User.objects.create_user(username="schedule-due", email="schedule-due@example.com", password="StrongPass123!")
-    agent = Agent.objects.create(owner=user, name="Daily SMM", objective="Prepare daily post", status=Agent.Status.ACTIVE)
+    agent = Agent.objects.create(
+        owner=user,
+        name="Daily SMM",
+        objective="Prepare daily post",
+        status=Agent.Status.ACTIVE,
+        autonomy=Agent.Autonomy.AUTONOMOUS,
+    )
     schedule = AgentSchedule.objects.create(
         owner=user,
         agent=agent,
@@ -97,8 +103,11 @@ def test_due_schedule_creates_one_run_and_advances_next_run():
         next_run_at=timezone.now()-timedelta(minutes=1),
     )
 
-    with patch("apps.agents.tasks.execute_agent_run_task.delay") as delay:
-        result = dispatch_due_agent_schedules.run()
+    with patch("apps.agents.tasks.agent_readiness", return_value={"ready": True, "blockers": []}), patch(
+        "apps.agents.tasks.execute_agent_run_task.delay"
+    ) as delay:
+        with django_capture_on_commit_callbacks(execute=True):
+            result = dispatch_due_agent_schedules.run()
 
     assert result["launched"] == 1
     run = AgentRun.objects.get(agent=agent)
@@ -217,9 +226,15 @@ def test_resuming_paused_schedule_recomputes_future_slot():
 
 
 @pytest.mark.django_db
-def test_run_now_is_idempotent_and_does_not_move_calendar_slot():
+def test_run_now_is_idempotent_and_does_not_move_calendar_slot(django_capture_on_commit_callbacks):
     user = User.objects.create_user(username="schedule-now", email="schedule-now@example.com", password="StrongPass123!")
-    agent = Agent.objects.create(owner=user, name="Run now agent", objective="Work now", status=Agent.Status.ACTIVE)
+    agent = Agent.objects.create(
+        owner=user,
+        name="Run now agent",
+        objective="Work now",
+        status=Agent.Status.ACTIVE,
+        autonomy=Agent.Autonomy.AUTONOMOUS,
+    )
     original_next = timezone.now() + timedelta(hours=8)
     schedule = AgentSchedule.objects.create(
         owner=user,
@@ -232,9 +247,12 @@ def test_run_now_is_idempotent_and_does_not_move_calendar_slot():
     client = APIClient()
     client.force_authenticate(user)
 
-    with patch("apps.agents.tasks.execute_agent_run_task.delay") as delay:
-        first = client.post(f"/api/v1/agent-schedules/{schedule.id}/run-now/", {}, format="json")
-        second = client.post(f"/api/v1/agent-schedules/{schedule.id}/run-now/", {}, format="json")
+    with patch("apps.agents.schedule_views.agent_readiness", return_value={"ready": True, "blockers": []}), patch(
+        "apps.agents.tasks.execute_agent_run_task.delay"
+    ) as delay:
+        with django_capture_on_commit_callbacks(execute=True):
+            first = client.post(f"/api/v1/agent-schedules/{schedule.id}/run-now/", {}, format="json")
+            second = client.post(f"/api/v1/agent-schedules/{schedule.id}/run-now/", {}, format="json")
 
     assert first.status_code == 201
     assert second.status_code == 200
@@ -254,6 +272,7 @@ def test_schedule_history_is_owner_scoped_and_filters_by_schedule():
     owner = User.objects.create_user(username="schedule-history", email="schedule-history@example.com", password="StrongPass123!")
     other = User.objects.create_user(username="schedule-history-other", email="schedule-history-other@example.com", password="StrongPass123!")
     agent = Agent.objects.create(owner=owner, name="History agent", objective="Work", status=Agent.Status.ACTIVE)
+    foreign_agent = Agent.objects.create(owner=other, name="Foreign history agent", objective="Private", status=Agent.Status.ACTIVE)
     schedule = AgentSchedule.objects.create(
         owner=owner,
         agent=agent,
@@ -278,6 +297,7 @@ def test_schedule_history_is_owner_scoped_and_filters_by_schedule():
     )
     AgentRun.objects.create(
         owner=other,
+        agent=foreign_agent,
         objective="Foreign",
         state=AgentRun.State.COMPLETED,
         input_payload={"trigger":"schedule","schedule_id":str(schedule.id)},
