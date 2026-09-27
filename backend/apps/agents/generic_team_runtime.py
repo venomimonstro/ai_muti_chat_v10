@@ -115,7 +115,7 @@ def _prepare_web_context(run, members):
 def execute_generic_team_run(run_id):
     with transaction.atomic():
         run = (
-            AgentRun.objects.select_for_update()
+            AgentRun.objects.select_for_update(of=("self",))
             .select_related("owner", "team__director", "project")
             .prefetch_related("team__members__agent", "steps")
             .get(pk=run_id)
