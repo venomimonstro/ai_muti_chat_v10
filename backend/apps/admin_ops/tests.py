@@ -253,8 +253,12 @@ def test_backup_restore_drill_requires_verified_backup():
         {"action": "restore_drill"},
         format="json",
     )
-    assert restored.status_code == 200
-    assert BackupRecord.objects.get(pk=backup_id).status == BackupRecord.Status.RESTORED
+    # Manual API calls may never manufacture restore evidence, even for a
+    # verified backup. Only scripts/restore_drill.sh may record a successful
+    # isolated restore after performing the actual restore and checks.
+    assert restored.status_code == 409
+    assert "restore_drill.sh" in str(restored.data)
+    assert BackupRecord.objects.get(pk=backup_id).status == BackupRecord.Status.VERIFIED
 
 
 @pytest.mark.django_db
