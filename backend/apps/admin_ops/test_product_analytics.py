@@ -3,7 +3,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 
-from .analytics_models import ProductEvent
+from .models import ProductEvent
 
 
 @pytest.mark.django_db
@@ -29,9 +29,12 @@ def test_product_event_ingestion_is_allowlisted_and_idempotent():
 @pytest.mark.django_db
 def test_product_analytics_requires_platform_admin():
     user = User.objects.create_user(
-        username="analytics-user", email="analytics-user@example.com", password="StrongPass123!"
+        username="analytics-user",
+        email="analytics-user@example.com",
+        password="StrongPass123!",
     )
-    client = APIClient(); client.force_authenticate(user)
+    client = APIClient()
+    client.force_authenticate(user)
     assert client.get("/api/v1/admin/analytics/").status_code == 403
 
 
@@ -45,9 +48,12 @@ def test_product_analytics_returns_funnel_for_platform_admin(settings):
         role=User.Role.PLATFORM_ADMIN,
         is_staff=True,
     )
-    for index, name in enumerate(("landing_view", "register_complete", "email_verified", "first_chat", "payment_success")):
+    for index, name in enumerate(
+        ("landing_view", "register_complete", "email_verified", "first_chat", "payment_success")
+    ):
         ProductEvent.objects.create(event_name=name, client_event_id=f"funnel-{index}")
-    client = APIClient(); client.force_authenticate(admin)
+    client = APIClient()
+    client.force_authenticate(admin)
     response = client.get("/api/v1/admin/analytics/?days=30")
     assert response.status_code == 200
     assert response.data["funnel"]["landing"] == 1
