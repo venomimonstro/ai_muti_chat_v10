@@ -42,10 +42,19 @@ class Command(BaseCommand):
         health_cutoff = now - timedelta(seconds=health_max_age)
         price_review_days = max(1, int(os.getenv("AI_PRICE_REVIEW_MAX_AGE_DAYS", "30")))
         price_cutoff = now - timedelta(days=price_review_days)
+        # Provider.__init__ hydrates an encrypted legacy credential into the
+        # runtime environment. Keep those fields loaded here so Django does not
+        # recursively refresh deferred fields while constructing Provider rows.
         provider_objects = {
             item.slug: item
             for item in Provider.objects.only(
-                "slug", "health_state", "last_checked_at", "enabled", "emergency_disabled"
+                "slug",
+                "health_state",
+                "last_checked_at",
+                "enabled",
+                "emergency_disabled",
+                "credential_env",
+                "credential_secret",
             )
         }
 
