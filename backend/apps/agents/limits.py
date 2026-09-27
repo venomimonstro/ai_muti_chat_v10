@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -47,9 +48,17 @@ def owner_active_run_count(owner, *, exclude_run_id=None):
     return queryset.count()
 
 
+def _lock_owner_for_capacity(owner):
+    """Serialize capacity decisions for the same tenant inside write transactions."""
+    if not connection.in_atomic_block:
+        return owner
+    return owner.__class__.objects.select_for_update().only("pk").get(pk=owner.pk)
+
+
 def ensure_owner_run_capacity(owner, *, exclude_run_id=None):
+    locked_owner = _lock_owner_for_capacity(owner)
     limit = owner_concurrency_limit()
-    active = owner_active_run_count(owner, exclude_run_id=exclude_run_id)
+    active = owner_active_run_count(locked_owner, exclude_run_id=exclude_run_id)
     if active >= limit:
         raise ValidationError(
             f"Достигнут лимит одновременных запусков AI-сотрудников: {active}/{limit}. "
