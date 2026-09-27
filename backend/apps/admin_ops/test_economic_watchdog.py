@@ -36,7 +36,7 @@ def test_economic_watchdog_passes_without_creating_admin_warning():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_economic_watchdog_reports_stale_reservation_as_warning_without_false_page():
+def test_economic_watchdog_pages_on_stale_active_reservation():
     admin = User.objects.create_user(
         username="economic-admin-stale",
         email="economic-admin-stale@example.test",
@@ -54,10 +54,10 @@ def test_economic_watchdog_reports_stale_reservation_as_warning_without_false_pa
         created_at=timezone.now() - timedelta(hours=2)
     )
 
-    result = economic_safety_watch_task()
+    with pytest.raises(RuntimeError, match="stale_active_reservations=1"):
+        economic_safety_watch_task()
 
-    assert "WARN: stale_active_reservations=1" in result
-    assert not Notification.objects.filter(
+    assert Notification.objects.filter(
         user=admin,
         dedupe_key__startswith="economic-safety:",
     ).exists()
