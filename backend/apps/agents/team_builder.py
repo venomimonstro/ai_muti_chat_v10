@@ -22,7 +22,7 @@ def infer_team_kind(description: str) -> str:
     )
     if explicit_dev or (
         "разработ" in text
-        and any(marker in text for marker in ("сайт", "прилож", "сервис", "бот", "по", "software"))
+        and any(marker in text for marker in ("сайт", "прилож", "сервис", "бот", "software"))
     ):
         return "development"
     if any(word in text for word in ("продаж", "лид", "клиент", "crm", "коммерческ")):
