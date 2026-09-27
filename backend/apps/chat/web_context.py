@@ -77,7 +77,7 @@ def _append_quality_contract(snapshot: dict):
         messages.append({"role": "system", "content": content})
         snapshot.setdefault("components", []).append(
             {
-                "kind": "quality_contract",
+                "kind": "system_policy",
                 "source_id": "quality-contract-v1",
                 "label": "Answer quality contract",
                 "content": content,
