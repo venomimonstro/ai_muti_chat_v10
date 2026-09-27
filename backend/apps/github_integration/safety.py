@@ -2,7 +2,7 @@ import json
 import os
 from functools import wraps
 
-from rest_framework.response import Response
+from django.http import JsonResponse
 
 
 _SENSITIVE_BASENAMES = {
@@ -99,34 +99,29 @@ def _organization_scope_blocked(request, kwargs):
     return False
 
 
+def _json_error(detail, status):
+    # github_guard wraps APIView.as_view() from the outside, so it runs before
+    # DRF content negotiation sets accepted_renderer on a DRF Response. A plain
+    # Django JsonResponse is therefore required for fail-closed guard exits.
+    return JsonResponse({"detail": detail}, status=status)
+
+
 def github_guard(view, *, protect_path=False):
     @wraps(view)
     def wrapped(request, *args, **kwargs):
         if not integration_enabled():
-            return Response(
-                {"detail": "GitHub интеграция отключена администратором"},
-                status=503,
-            )
+            return _json_error("GitHub интеграция отключена администратором", 503)
         if _organization_scope_blocked(request, kwargs):
-            return Response(
-                {
-                    "detail": (
-                        "GitHub-репозитории организаций временно недоступны: "
-                        "требуется user-scoped повторная проверка прав"
-                    )
-                },
-                status=403,
+            return _json_error(
+                "GitHub-репозитории организаций временно недоступны: требуется user-scoped повторная проверка прав",
+                403,
             )
         if protect_path and not sensitive_path_allowed():
             path = _request_path(request)
             if is_sensitive_path(path):
-                return Response(
-                    {
-                        "detail": (
-                            "Доступ к секретам и GitHub Actions заблокирован политикой безопасности"
-                        )
-                    },
-                    status=403,
+                return _json_error(
+                    "Доступ к секретам и GitHub Actions заблокирован политикой безопасности",
+                    403,
                 )
         return view(request, *args, **kwargs)
 
