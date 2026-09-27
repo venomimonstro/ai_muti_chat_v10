@@ -181,6 +181,11 @@ function askCostConfirmation(maximum: string) {
   );
 }
 
+function likelyNeedsResearch(value: string) {
+  const text = value.toLocaleLowerCase("ru-RU");
+  return /(сегодня|сейчас|текущ|актуальн|курс|доллар|евро|рубл|цена|стоим|сколько стоит|билет|авиа|рейс|расписан|новост|погода|время|интернет|источник|найди|проверь|202[4-9]|203\d)/i.test(text);
+}
+
 async function previewChatCost(conversationId: string, payload: StreamPayload) {
   return api<ChatCostPreview>(`/conversations/${conversationId}/messages/preview/`, {
     method: "POST",
@@ -202,6 +207,12 @@ export async function streamMessage(
     createdAt: Date.now(),
     confirmedCost: false,
   };
+
+  if (likelyNeedsResearch(payload.content)) {
+    onEvent({event: "routing", data: {explanation: "Проверяю актуальные данные и внешние источники…"}});
+  } else {
+    onEvent({event: "routing", data: {explanation: "Подготавливаю контекст и выбираю подходящий режим ответа…"}});
+  }
 
   if (!restored) {
     const preview = await previewChatCost(conversationId, payload);
@@ -301,6 +312,12 @@ export async function streamMessage(
         clearPending(conversationId);
       } else if (event === "error" && parsed.code !== "generation_in_progress") {
         clearPending(conversationId);
+      }
+      if (event === "research_progress" && typeof parsed.message === "string") {
+        onEvent({event: "routing", data: {explanation: parsed.message}});
+      } else if (event === "web_search" && parsed.status === "completed") {
+        const sources = Array.isArray(parsed.sources) ? parsed.sources.length : 0;
+        onEvent({event: "routing", data: {explanation: sources > 0 ? `Проверил источники: ${sources}. Формирую ответ…` : "Проверил внешние данные. Формирую ответ…"}});
       }
       onEvent({event, data: parsed});
     }
