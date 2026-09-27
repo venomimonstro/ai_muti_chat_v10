@@ -41,16 +41,25 @@ def _ensure_team_idle(team):
 class AgentTeamMemberDetailView(APIView):
     @transaction.atomic
     def patch(self, request, team_id, member_id):
-        team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
+        team = get_object_or_404(
+            AgentTeam.objects.select_for_update(of=("self",)),
+            id=team_id,
+            owner=request.user,
+        )
         _ensure_team_idle(team)
         member = get_object_or_404(
-            AgentTeamMember.objects.select_for_update().select_related("agent"),
+            AgentTeamMember.objects.select_for_update(of=("self",)).select_related("agent"),
             id=member_id,
             team=team,
         )
-        agent = Agent.objects.select_for_update().get(pk=member.agent_id, owner=request.user)
+        agent = Agent.objects.select_for_update(of=("self",)).get(
+            pk=member.agent_id,
+            owner=request.user,
+        )
 
-        structural_dev_member = team.kind == AgentTeam.Kind.DEVELOPMENT and member.role in DEV_STRUCTURAL_ROLES
+        structural_dev_member = (
+            team.kind == AgentTeam.Kind.DEVELOPMENT and member.role in DEV_STRUCTURAL_ROLES
+        )
         role = request.data.get("role")
         priority = request.data.get("priority")
         enabled = request.data.get("enabled")
@@ -65,15 +74,17 @@ class AgentTeamMemberDetailView(APIView):
         if priority is not None:
             try:
                 priority = int(priority)
-            except (TypeError, ValueError):
-                raise ValidationError({"priority": "Приоритет должен быть числом"})
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({"priority": "Приоритет должен быть числом"}) from exc
             if priority < 1 or priority > 10000:
                 raise ValidationError({"priority": "Приоритет должен быть от 1 до 10000"})
             if member.agent_id == team.director_id:
                 others = AgentTeamMember.objects.filter(team=team, enabled=True).exclude(pk=member.pk)
                 lowest_other = min((row.priority for row in others), default=priority + 1)
                 if priority >= lowest_other:
-                    raise ValidationError({"priority": "Руководитель должен оставаться первым этапом команды"})
+                    raise ValidationError(
+                        {"priority": "Руководитель должен оставаться первым этапом команды"}
+                    )
             member.priority = priority
         if enabled is not None:
             if structural_dev_member and not bool(enabled):
@@ -97,8 +108,8 @@ class AgentTeamMemberDetailView(APIView):
                 continue
             try:
                 value = Decimal(str(request.data.get(field)))
-            except (InvalidOperation, TypeError, ValueError):
-                raise ValidationError({field: "Укажите корректную сумму"})
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValidationError({field: "Укажите корректную сумму"}) from exc
             setattr(agent, field, value)
             agent_changed = True
 
@@ -127,9 +138,17 @@ class AgentTeamMemberDetailView(APIView):
 
     @transaction.atomic
     def delete(self, request, team_id, member_id):
-        team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
+        team = get_object_or_404(
+            AgentTeam.objects.select_for_update(of=("self",)),
+            id=team_id,
+            owner=request.user,
+        )
         _ensure_team_idle(team)
-        member = get_object_or_404(AgentTeamMember.objects.select_for_update(), id=member_id, team=team)
+        member = get_object_or_404(
+            AgentTeamMember.objects.select_for_update(of=("self",)),
+            id=member_id,
+            team=team,
+        )
         if team.kind == AgentTeam.Kind.DEVELOPMENT and member.role in DEV_STRUCTURAL_ROLES:
             raise ValidationError({"detail": "Обязательного участника Dev Team нельзя удалить"})
         if member.agent_id == team.director_id:
@@ -142,20 +161,30 @@ class AgentTeamMemberDetailView(APIView):
 class AgentTeamDirectorView(APIView):
     @transaction.atomic
     def post(self, request, team_id):
-        team = get_object_or_404(AgentTeam.objects.select_for_update(), id=team_id, owner=request.user)
+        team = get_object_or_404(
+            AgentTeam.objects.select_for_update(of=("self",)),
+            id=team_id,
+            owner=request.user,
+        )
         _ensure_team_idle(team)
         if team.kind == AgentTeam.Kind.DEVELOPMENT:
-            raise ValidationError({"agent": "Руководитель Dev Team является структурной ролью и не меняется вручную"})
+            raise ValidationError(
+                {"agent": "Руководитель Dev Team является структурной ролью и не меняется вручную"}
+            )
         agent = get_object_or_404(Agent, id=request.data.get("agent"), owner=request.user)
-        member = AgentTeamMember.objects.select_for_update().filter(team=team, agent=agent, enabled=True).first()
+        member = (
+            AgentTeamMember.objects.select_for_update(of=("self",))
+            .filter(team=team, agent=agent, enabled=True)
+            .first()
+        )
         if member is None:
             raise ValidationError({"agent": "Руководитель должен быть активным участником этой команды"})
 
         ordered = list(
-            AgentTeamMember.objects.select_for_update()
+            AgentTeamMember.objects.select_for_update(of=("self",))
             .filter(team=team, enabled=True)
             .exclude(pk=member.pk)
-            .order_by("priority", "role", "created_at")
+            .order_by("priority", "role", "id")
         )
         member.priority = 10
         member.can_delegate = True
