@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Max
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -568,7 +569,7 @@ def _handle_finish(run, agent, node, sequence):
 def execute_graph_run(run_id):
     with transaction.atomic():
         run = (
-            AgentRun.objects.select_for_update()
+            AgentRun.objects.select_for_update(of=("self",))
             .select_related("owner", "agent", "project")
             .prefetch_related("steps", "approvals")
             .get(pk=run_id)
@@ -613,7 +614,7 @@ def execute_graph_run(run_id):
         node_id = ids[index]
         node_type = str(node.get("type") or "llm").strip().lower()
         default_next = ids[index + 1] if index + 1 < len(ids) else ""
-        sequence = run.steps.count() + 1
+        sequence = int(run.steps.aggregate(max_sequence=Max("sequence"))["max_sequence"] or 0) + 1
 
         if node_type != "wait" and run.steps.filter(node_id=node_id, state=AgentStepRun.State.COMPLETED).exists():
             index += 1
