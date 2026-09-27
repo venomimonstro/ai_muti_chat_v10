@@ -44,6 +44,10 @@ def _dev_fixture(username="dev-pr"):
     return user, project, team
 
 
+def _run_branch(run):
+    return f"ai-workspace/run-{str(run.id).replace('-', '')[:12]}"
+
+
 @pytest.mark.django_db
 def test_pull_request_requires_completed_dev_run_with_working_branch():
     user, project, team = _dev_fixture()
@@ -56,8 +60,9 @@ def test_pull_request_requires_completed_dev_run_with_working_branch():
         project=project,
         objective="Work",
         state=AgentRun.State.RUNNING,
-        output_payload={"working_branch": "ai-workspace/run-123"},
     )
+    running.output_payload = {"working_branch": _run_branch(running)}
+    running.save(update_fields=["output_payload"])
     response = client.post(f"/api/v1/agent-runs/{running.id}/pull-request/", {}, format="json")
     assert response.status_code == 400
 
@@ -87,8 +92,12 @@ def test_pull_request_is_owner_scoped_and_idempotent_after_persisted_result():
         project=project,
         objective="Add billing tests",
         state=AgentRun.State.COMPLETED,
-        output_payload={"working_branch": "ai-workspace/run-abcd", "text": "Review passed"},
+        output_payload={"text": "Review passed"},
     )
+    working_branch = _run_branch(run)
+    run.output_payload = {"working_branch": working_branch, "text": "Review passed"}
+    run.save(update_fields=["output_payload"])
+
     client = APIClient()
     client.force_authenticate(other)
     denied = client.post(f"/api/v1/agent-runs/{run.id}/pull-request/", {}, format="json")
@@ -98,7 +107,7 @@ def test_pull_request_is_owner_scoped_and_idempotent_after_persisted_result():
     pull = {
         "number": 42,
         "html_url": "https://github.com/dev-pr-owner/repo/pull/42",
-        "head": "ai-workspace/run-abcd",
+        "head": working_branch,
         "head_sha": "abc123",
         "base": "main",
         "state": "open",
