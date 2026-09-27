@@ -12,7 +12,9 @@ from .models import Agent, AgentApproval, AgentRun
 
 @pytest.mark.django_db
 def test_visual_publish_workflow_is_blocked_before_run_without_wordpress():
-    user = User.objects.create_user(username="ready-publish", password="StrongPass123!")
+    user = User.objects.create_user(
+        username="ready-publish", email="ready-publish@example.test", password="StrongPass123!"
+    )
     agent = Agent.objects.create(
         owner=user,
         name="Publisher",
@@ -49,8 +51,12 @@ def test_visual_publish_workflow_is_blocked_before_run_without_wordpress():
 
 @pytest.mark.django_db
 def test_readiness_is_owner_scoped():
-    owner = User.objects.create_user(username="ready-owner", password="StrongPass123!")
-    other = User.objects.create_user(username="ready-other", password="StrongPass123!")
+    owner = User.objects.create_user(
+        username="ready-owner", email="ready-owner@example.test", password="StrongPass123!"
+    )
+    other = User.objects.create_user(
+        username="ready-other", email="ready-other@example.test", password="StrongPass123!"
+    )
     agent = Agent.objects.create(owner=owner, name="Private agent", objective="Work")
     client = APIClient()
     client.force_authenticate(other)
@@ -62,7 +68,9 @@ def test_readiness_is_owner_scoped():
 
 @pytest.mark.django_db
 def test_approval_resume_rechecks_readiness_and_keeps_approval_pending_on_failure():
-    user = User.objects.create_user(username="ready-approval", password="StrongPass123!")
+    user = User.objects.create_user(
+        username="ready-approval", email="ready-approval@example.test", password="StrongPass123!"
+    )
     agent = Agent.objects.create(
         owner=user,
         name="Controlled",
