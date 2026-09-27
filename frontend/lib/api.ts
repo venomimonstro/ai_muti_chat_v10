@@ -22,6 +22,18 @@ function errorText(value: unknown): string {
   return "Не удалось выполнить запрос";
 }
 
+function publicStreamError(code: unknown, fallback: unknown): string {
+  const value = String(code ?? "");
+  if (value.includes("quota_exhausted")) return "У AI-провайдера закончился доступный лимит. Запрос сохранён, деньги не списаны. Администратору нужно проверить баланс или квоту провайдера.";
+  if (value.includes("authentication_error") || value.includes("permission_denied") || value === "credential_missing") return "AI-подключение требует проверки администратором. Запрос сохранён, деньги не списаны.";
+  if (value.includes("model_not_found")) return "Настроенная AI-модель сейчас недоступна у провайдера. Запрос сохранён, деньги не списаны.";
+  if (value.includes("request_too_large") || value.includes("validation_error")) return "Провайдер отклонил текущий контекст запроса. Попробуйте новый чат или уменьшите объём вложений. Деньги не списаны.";
+  if (value.includes("rate_limited")) return "AI-провайдер временно ограничил частоту запросов. Повторите через несколько секунд — деньги не списаны.";
+  if (value.includes("server_error") || value === "timeout" || value.includes("network")) return "AI-провайдер временно не отвечает. Система сохранила запрос; деньги не списаны. Можно повторить через несколько секунд.";
+  if (value === "provider_unavailable") return "Сейчас нет доступного AI-маршрута для этого запроса. Запрос сохранён, деньги не списаны.";
+  return typeof fallback === "string" && fallback.trim() ? fallback : "Не удалось получить ответ. Запрос сохранён, деньги не списаны.";
+}
+
 function testUserId(path: string): string {
   if (typeof window === "undefined" || path.startsWith("/admin/")) return "";
   try {
@@ -312,6 +324,7 @@ export async function streamMessage(
         clearPending(conversationId);
       } else if (event === "error" && parsed.code !== "generation_in_progress") {
         clearPending(conversationId);
+        parsed.message = publicStreamError(parsed.code, parsed.message);
       }
       if (event === "research_progress" && typeof parsed.message === "string") {
         onEvent({event: "routing", data: {explanation: parsed.message}});
