@@ -126,7 +126,7 @@ def _mark_failure(run, step, message):
 @transaction.atomic
 def finalize_graph_publish_nodes(run_id):
     run = (
-        AgentRun.objects.select_for_update()
+        AgentRun.objects.select_for_update(of=("self",))
         .select_related("agent")
         .prefetch_related("steps", "approvals")
         .get(pk=run_id)
@@ -165,9 +165,6 @@ def finalize_graph_publish_nodes(run_id):
                 ),
                 {},
             )
-            # Safe default: legacy/new publish nodes without an explicit status
-            # must create a WordPress draft. Going live is always an explicit
-            # visual-builder choice, additionally protected by agent policy.
             target_status = str(node.get("status") or "draft").strip().lower()
             if target_status not in {"draft", "publish"}:
                 raise ValidationError("Узел publish поддерживает только draft или publish")
