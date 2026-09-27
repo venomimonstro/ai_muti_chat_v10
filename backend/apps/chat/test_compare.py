@@ -137,8 +137,6 @@ def test_compare_preview_uses_token_estimate_instead_of_character_count(settings
         model.context_window = 8192
         model.save(update_fields=["context_window"])
 
-    # 10k Cyrillic characters would be rejected by the historical len(prompt)==tokens logic,
-    # even though the calibrated token estimate fits comfortably in an 8k context window.
     preview = compare_preview(
         prompt="я" * 10_000,
         model_slugs=[item.slug for item in models],
@@ -149,7 +147,7 @@ def test_compare_preview_uses_token_estimate_instead_of_character_count(settings
 
 
 @pytest.mark.django_db(transaction=True)
-def test_synthesis_and_compare_variant_create_navigable_branch(settings):
+def test_synthesis_and_compare_variant_create_navigable_branch(settings, monkeypatch):
     settings.COMPARE_CONFIRM_THRESHOLD_RUB = "999"
     user = User.objects.create_user(
         username="compare-branch", email="compare-branch@example.com", password="password123"
@@ -173,6 +171,9 @@ def test_synthesis_and_compare_variant_create_navigable_branch(settings):
         idempotency_key="compare:test:branch",
     )
 
+    # This test verifies synthesis/branch navigation, not procurement funding.
+    # The echo test provider has no purchased external API balance by design.
+    monkeypatch.setattr("apps.chat.compare.reserve_provider_spend", lambda **_kwargs: None)
     synthesize_compare(user=user, compare_run=run, model_slug=models[0].slug, confirmed=True)
     run.refresh_from_db()
     assert run.synthesis_output.startswith("Тестовый ответ")
