@@ -9,7 +9,7 @@ from apps.billing.models import PriceVersion
 from apps.chat.models import Conversation
 
 from .adapters import adapter_for
-from .gigachat_adapter import GigaChatAPIAdapter
+from .gigachat_adapter import GigaChatAPIAdapter, normalize_base_url, normalize_model_id
 from .models import AIModel, Provider, ProviderApiKey, RoutingPolicyVersion
 from .router import DEFAULT_WEIGHTS, select_route
 
@@ -49,6 +49,26 @@ def _activate_policy(version, thresholds):
         mode_weights=DEFAULT_WEIGHTS,
         thresholds=thresholds,
     )
+
+
+def test_gigachat_legacy_endpoint_is_normalized():
+    assert normalize_base_url("https://gigachat.devices.sberbank.ru/api/v1") == "https://api.giga.chat/v1"
+    assert normalize_base_url("https://api.giga.chat") == "https://api.giga.chat/v1"
+    assert normalize_base_url("https://api.giga.chat/v1") == "https://api.giga.chat/v1"
+
+
+@pytest.mark.parametrize(
+    ("legacy", "current"),
+    [
+        ("GigaChat", "GigaChat-2"),
+        ("GigaChat-Lite", "GigaChat-2"),
+        ("GigaChat-Pro", "GigaChat-2-Pro"),
+        ("GigaChat-Max", "GigaChat-2-Max"),
+        ("GigaChat-2-Max", "GigaChat-2-Max"),
+    ],
+)
+def test_gigachat_legacy_model_aliases_are_normalized(legacy, current):
+    assert normalize_model_id(legacy) == current
 
 
 @pytest.mark.django_db
