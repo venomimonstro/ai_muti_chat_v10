@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -65,16 +66,27 @@ class SafeAgentRunView(APIView):
     @transaction.atomic
     def post(self, request, agent_id):
         scoped = get_object_or_404(Agent, id=agent_id, owner=request.user)
-        agent = Agent.objects.select_for_update().get(pk=scoped.pk)
+        agent = Agent.objects.select_for_update(of=("self",)).get(pk=scoped.pk)
         if agent.status != Agent.Status.ACTIVE:
             raise ValidationError({"detail": "Сначала активируйте агента"})
+
         existing = (
-            AgentRun.objects.filter(owner=request.user, agent=agent, state__in=ACTIVE_RUN_STATES)
+            AgentRun.objects.filter(owner=request.user, state__in=ACTIVE_RUN_STATES)
+            .filter(
+                Q(agent=agent)
+                | Q(team__members__agent=agent, team__members__enabled=True)
+            )
+            .distinct()
             .order_by("-created_at")
             .first()
         )
         if existing is not None:
-            return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
+            if existing.agent_id == agent.id:
+                return Response(AgentRunSerializer(existing).data, status=status.HTTP_200_OK)
+            raise ValidationError(
+                {"detail": "AI-сотрудник сейчас занят активным запуском команды"}
+            )
+
         try:
             require_agent_ready(agent)
         except Exception as exc:
