@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from django.conf import settings
+from django.utils import timezone
 
 from apps.ai_registry.web_tools import WebToolError, _assert_public_http_url
 
@@ -58,6 +59,94 @@ CITY_ALIASES = {
     "красноярске": "Красноярск",
 }
 
+EXPLICIT_WEB_MARKERS = (
+    "найди в интернете",
+    "найди в сети",
+    "поищи в интернете",
+    "поиск в интернете",
+    "проверь в интернете",
+    "посмотри в интернете",
+    "поищи в сети",
+    "источник",
+    "источники",
+    "со ссылками",
+    "ссылки на сайты",
+    "яндекс",
+    "поисковая выдача",
+)
+
+CURRENTNESS_MARKERS = (
+    "свежие данные",
+    "актуальные данные",
+    "актуальная информация",
+    "актуально",
+    "последние новости",
+    "сегодняшние новости",
+    "что сейчас происходит",
+    "на данный момент",
+    "сейчас цена",
+    "текущая цена",
+    "свежая информация",
+    "в этом году",
+    "на сегодня",
+    "сейчас",
+    "сегодня",
+    "последние",
+    "текущие",
+)
+
+# These subjects change materially over time. A decision-oriented question in
+# these areas should be grounded in current sources rather than model memory.
+DYNAMIC_DECISION_MARKERS = (
+    "бизнес",
+    "открыть",
+    "запустить",
+    "ниша",
+    "рынок",
+    "спрос",
+    "конкурент",
+    "инвести",
+    "вложить",
+    "бюджет",
+    "риск",
+    "окупаем",
+    "аренд",
+    "недвижим",
+    "зарплат",
+    "ваканси",
+    "налог",
+    "закон",
+    "правил",
+    "тариф",
+    "курс валют",
+    "ставк",
+    "цена",
+    "стоимость",
+    "купить",
+    "выбрать",
+    "лучше",
+    "рейтинг",
+    "сравни",
+)
+
+DECISION_INTENT_MARKERS = (
+    "какой лучше",
+    "что лучше",
+    "что выбрать",
+    "что запустить",
+    "что открыть",
+    "куда влож",
+    "посоветуй",
+    "рекомендуй",
+    "минимальн",
+    "наименьш",
+    "с бюджет",
+    "окупаем",
+    "перспектив",
+)
+
+YEAR_RE = re.compile(r"\b20\d{2}\b")
+
 
 def is_time_query(query: str) -> bool:
     text = query.casefold()
@@ -81,29 +170,29 @@ def is_weather_query(query: str) -> bool:
 
 
 def needs_web_search(query: str) -> bool:
-    text = query.casefold()
-    return any(
-        token in text
-        for token in (
-            "найди в интернете",
-            "найди в сети",
-            "поищи в интернете",
-            "поиск в интернете",
-            "проверь в интернете",
-            "яндекс",
-            "поисковая выдача",
-            "свежие данные",
-            "актуальные данные",
-            "актуальная информация",
-            "последние новости",
-            "сегодняшние новости",
-            "что сейчас происходит",
-            "на данный момент",
-            "сейчас цена",
-            "текущая цена",
-            "свежая информация",
-        )
+    text = " ".join(str(query or "").casefold().split())
+    if not text or is_time_query(text) or is_weather_query(text):
+        return False
+    if any(token in text for token in EXPLICIT_WEB_MARKERS):
+        return True
+    if any(token in text for token in CURRENTNESS_MARKERS):
+        return True
+
+    years = {int(value) for value in YEAR_RE.findall(text)}
+    current_year = timezone.localdate().year
+    # A recent/current/future year strongly signals that model pretraining alone
+    # is not an acceptable source of truth.
+    if any(year >= current_year - 1 for year in years):
+        return True
+
+    dynamic = any(token in text for token in DYNAMIC_DECISION_MARKERS)
+    decision = any(token in text for token in DECISION_INTENT_MARKERS)
+    location_specific = any(alias in text for alias in CITY_ALIASES) or bool(
+        re.search(r"\b(?:в|для)\s+[а-яёa-z-]{3,}\b", text)
     )
+    if dynamic and (decision or location_specific):
+        return True
+    return False
 
 
 def _extract_location(query: str) -> str:
