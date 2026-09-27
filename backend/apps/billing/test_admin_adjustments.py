@@ -9,10 +9,18 @@ from .models import AdminBalanceAdjustment, LedgerEntry
 from .services import admin_adjust_balance, credit
 
 
+def make_user(username, **kwargs):
+    return User.objects.create_user(
+        username=username,
+        email=f"{username}@example.test",
+        **kwargs,
+    )
+
+
 @pytest.mark.django_db(transaction=True)
 def test_admin_credit_is_promo_and_auditable():
-    admin = User.objects.create_user(username="admin-adjust", is_staff=True)
-    user = User.objects.create_user(username="adjust-target")
+    admin = make_user("admin-adjust", is_staff=True)
+    user = make_user("adjust-target")
     adjustment = admin_adjust_balance(
         target_user=user,
         admin=admin,
@@ -33,8 +41,8 @@ def test_admin_credit_is_promo_and_auditable():
 
 @pytest.mark.django_db(transaction=True)
 def test_admin_debit_consumes_promo_before_paid():
-    admin = User.objects.create_user(username="admin-adjust-debit", is_staff=True)
-    user = User.objects.create_user(username="adjust-debit-target")
+    admin = make_user("admin-adjust-debit", is_staff=True)
+    user = make_user("adjust-debit-target")
     credit(user, Decimal("100"), "test", "paid", bucket="paid")
     credit(user, Decimal("25"), "test", "promo", bucket="promo")
     admin_adjust_balance(
@@ -53,8 +61,8 @@ def test_admin_debit_consumes_promo_before_paid():
 
 @pytest.mark.django_db(transaction=True)
 def test_admin_adjustment_requires_comment_key_and_cannot_overdraw():
-    admin = User.objects.create_user(username="admin-adjust-guard", is_staff=True)
-    user = User.objects.create_user(username="adjust-guard-target")
+    admin = make_user("admin-adjust-guard", is_staff=True)
+    user = make_user("adjust-guard-target")
     with pytest.raises(ValidationError):
         admin_adjust_balance(
             target_user=user,
@@ -86,8 +94,8 @@ def test_admin_adjustment_requires_comment_key_and_cannot_overdraw():
 
 @pytest.mark.django_db(transaction=True)
 def test_admin_adjustment_retry_is_idempotent():
-    admin = User.objects.create_user(username="admin-adjust-idempotent", is_staff=True)
-    user = User.objects.create_user(username="adjust-idempotent-target")
+    admin = make_user("admin-adjust-idempotent", is_staff=True)
+    user = make_user("adjust-idempotent-target")
     first = admin_adjust_balance(
         target_user=user,
         admin=admin,
