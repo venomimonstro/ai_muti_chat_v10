@@ -8,23 +8,49 @@ TEST_COMPOSE_FILE="${PROJECT_DIR}/docker-compose.test.yml"
 BACKUP_DIR="${PROJECT_DIR}/backups"
 LOG_DIR="${PROJECT_DIR}/logs"
 LOCK_FILE="${PROJECT_DIR}/.update.lock"
+DEPLOY_STATE_FILE="${LOG_DIR}/.last-deployed-sha"
 PREVIOUS_SHA=""
+CURRENT_SHA=""
+DEPLOYED_SHA=""
+FALLBACK_BASE_SHA=""
+CHANGED_FILES=""
 CODE_UPDATED=false
 DEPLOY_STARTED=false
 CURRENT_PHASE="initialization"
 STARTED_AT="$(date +%s)"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 UPDATE_LOG="${LOG_DIR}/update-${STAMP}.log"
+REQUESTED_MODE="auto"
+UPDATE_MODE="full"
+BACKUP_FILE=""
+MEDIA_BACKUP=""
+
+usage() {
+  cat <<'EOF'
+Usage: sudo bash scripts/update.sh [--auto|--fast|--full]
+
+  --auto  Default. Detect changed files and use FAST for frontend/docs/test-only changes,
+          FULL for backend/runtime/security/billing/migrations/infrastructure changes.
+  --fast  Force fast deploy, but only when changed files are safe for fast deployment.
+  --full  Always run the complete 20-gate release check and production audits.
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --auto) REQUESTED_MODE="auto" ;;
+    --fast) REQUESTED_MODE="fast" ;;
+    --full) REQUESTED_MODE="full" ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
 
 [[ "${EUID}" -eq 0 ]] || { printf 'Запустите: sudo bash scripts/update.sh\n' >&2; exit 1; }
 [[ -f "${ENV_FILE}" ]] || { printf '.env.production не найден. Сначала запустите install.sh\n' >&2; exit 1; }
 command -v flock >/dev/null 2>&1 || { printf 'Команда flock не найдена\n' >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { printf 'openssl не найден\n' >&2; exit 1; }
 
-# Run the updater under a dedicated flock wrapper. `--close` prevents the lock
-# descriptor from leaking into release_check/docker/pytest descendants. The
-# wrapper process keeps the lock for the whole update, while child processes can
-# never keep it alive after the updater itself exits or is interrupted.
 if [[ "${AI_WORKSPACE_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
   LOCK_CONFLICT_EXIT=75
   if flock --nonblock --close --conflict-exit-code "${LOCK_CONFLICT_EXIT}" "${LOCK_FILE}" \
@@ -52,7 +78,6 @@ fi
 mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
 touch "${UPDATE_LOG}"
 exec > >(tee -a "${UPDATE_LOG}") 2>&1
-
 umask 077
 
 phase() {
@@ -147,18 +172,62 @@ ensure_runtime_env() {
   chmod 600 "${ENV_FILE}"
 }
 
+is_fast_safe_path() {
+  local path="$1"
+  case "$path" in
+    frontend/*|docs/*|README*|LICENSE|scripts/update.sh) return 0 ;;
+    backend/*/test_*.py|backend/*/tests.py|backend/*/*/test_*.py|backend/*/*/tests.py) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+classify_update_mode() {
+  local unsafe=false path
+
+  if [[ "$REQUESTED_MODE" == "full" ]]; then
+    UPDATE_MODE="full"
+    return
+  fi
+
+  if [[ -z "$CHANGED_FILES" ]]; then
+    UPDATE_MODE="fast"
+    return
+  fi
+
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    if ! is_fast_safe_path "$path"; then
+      unsafe=true
+      break
+    fi
+  done <<<"$CHANGED_FILES"
+
+  if [[ "$REQUESTED_MODE" == "fast" && "$unsafe" == true ]]; then
+    printf '[FAIL] --fast запрещён: обнаружены runtime/backend/infrastructure изменения.\n' >&2
+    printf '[INFO] Изменённые файлы:\n%s\n' "$CHANGED_FILES" >&2
+    printf '[INFO] Используйте --full или обычный --auto.\n' >&2
+    exit 1
+  fi
+
+  if [[ "$unsafe" == true ]]; then
+    UPDATE_MODE="full"
+  else
+    UPDATE_MODE="fast"
+  fi
+}
+
 rollback_app() {
   local exit_code=$?
   trap - ERR
   printf '\n[FAIL] Обновление остановлено на этапе: %s\n' "$CURRENT_PHASE" >&2
   cleanup_test_stack
-  if [[ "$DEPLOY_STARTED" == true && "$CODE_UPDATED" == true && -n "$PREVIOUS_SHA" ]]; then
-    printf '[ROLLBACK] Deployment уже начался. Возвращаем код на %s\n' "$PREVIOUS_SHA" >&2
+  if [[ "$DEPLOY_STARTED" == true && "$CODE_UPDATED" == true && -n "$PREVIOUS_SHA" && "$UPDATE_MODE" == "full" ]]; then
+    printf '[ROLLBACK] Full deployment уже начался. Возвращаем код на %s\n' "$PREVIOUS_SHA" >&2
     git -c safe.directory="${PROJECT_DIR}" reset --hard "$PREVIOUS_SHA" || true
     compose build || true
     compose up -d --remove-orphans || true
   else
-    printf '[INFO] Production deployment ещё не начинался; рабочий код не откатываем.\n' >&2
+    printf '[INFO] Production rollback не требуется или fast frontend deploy ещё не заменил backend.\n' >&2
   fi
   printf '[INFO] Полный лог: %s\n' "$UPDATE_LOG" >&2
   exit "$exit_code"
@@ -180,33 +249,52 @@ if [[ -d .git ]]; then
     exit 1
   }
   PREVIOUS_SHA="$(git -c safe.directory="${PROJECT_DIR}" rev-parse HEAD)"
+  if [[ -f "$DEPLOY_STATE_FILE" ]]; then
+    DEPLOYED_SHA="$(tr -d '[:space:]' <"$DEPLOY_STATE_FILE")"
+    if ! git -c safe.directory="${PROJECT_DIR}" cat-file -e "${DEPLOYED_SHA}^{commit}" 2>/dev/null; then
+      DEPLOYED_SHA=""
+    fi
+  fi
+  FALLBACK_BASE_SHA="$(git -c safe.directory="${PROJECT_DIR}" rev-parse 'HEAD@{1}' 2>/dev/null || true)"
   printf '[INFO] Текущий commit: %s\n' "$PREVIOUS_SHA"
+  [[ -z "$DEPLOYED_SHA" ]] || printf '[INFO] Последний успешно deployed commit: %s\n' "$DEPLOYED_SHA"
 fi
 
-BACKUP_FILE="${BACKUP_DIR}/pre-update-${STAMP}.dump"
-MEDIA_BACKUP="${BACKUP_DIR}/pre-update-media-${STAMP}.tar.gz"
+phase 2 'Подготовка обновления'
+printf '[INFO] Режим запрошен: %s\n' "${REQUESTED_MODE^^}"
+printf '[INFO] Резервные копии будут созданы только если AUTO выберет FULL или указан --full.\n'
 
-phase 2 'Резервное копирование'
-printf '[BACKUP] PostgreSQL -> %s\n' "$BACKUP_FILE"
-compose exec -T postgres sh -c 'exec pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' >"${BACKUP_FILE}"
-test -s "${BACKUP_FILE}" || { printf '[FAIL] Резервная копия БД пуста\n' >&2; exit 1; }
-compose exec -T postgres pg_restore --list <"${BACKUP_FILE}" >/dev/null
-sha256sum "${BACKUP_FILE}" >"${BACKUP_FILE}.sha256"
-printf '[PASS] Резерв БД проверен.\n'
-printf '[BACKUP] Media -> %s\n' "$MEDIA_BACKUP"
-bash "${PROJECT_DIR}/scripts/backup_media.sh" "$MEDIA_BACKUP"
-printf '[PASS] Резерв media создан.\n'
-
-phase 3 'Получение нового кода'
+phase 3 'Получение нового кода и оценка риска'
 if [[ -d .git ]]; then
   git -c safe.directory="${PROJECT_DIR}" fetch origin main
   git -c safe.directory="${PROJECT_DIR}" merge --ff-only origin/main
   CURRENT_SHA="$(git -c safe.directory="${PROJECT_DIR}" rev-parse HEAD)"
-  if [[ "$CURRENT_SHA" != "$PREVIOUS_SHA" ]]; then
-    CODE_UPDATED=true
-    printf '[PASS] Код обновлён: %s -> %s\n' "$PREVIOUS_SHA" "$CURRENT_SHA"
+  [[ "$CURRENT_SHA" == "$PREVIOUS_SHA" ]] || CODE_UPDATED=true
+
+  BASE_SHA="$DEPLOYED_SHA"
+  if [[ -z "$BASE_SHA" ]]; then
+    if [[ "$CURRENT_SHA" != "$PREVIOUS_SHA" ]]; then
+      BASE_SHA="$PREVIOUS_SHA"
+    elif [[ -n "$FALLBACK_BASE_SHA" ]] && git -c safe.directory="${PROJECT_DIR}" merge-base --is-ancestor "$FALLBACK_BASE_SHA" "$CURRENT_SHA" 2>/dev/null; then
+      BASE_SHA="$FALLBACK_BASE_SHA"
+    else
+      BASE_SHA="$PREVIOUS_SHA"
+    fi
+  fi
+
+  if [[ -n "$BASE_SHA" && "$BASE_SHA" != "$CURRENT_SHA" ]]; then
+    CHANGED_FILES="$(git -c safe.directory="${PROJECT_DIR}" diff --name-only "$BASE_SHA" "$CURRENT_SHA")"
   else
-    printf '[PASS] Уже используется последний commit: %s\n' "$CURRENT_SHA"
+    CHANGED_FILES=""
+  fi
+
+  classify_update_mode
+  printf '[PASS] Код: %s -> %s\n' "${BASE_SHA:-unknown}" "$CURRENT_SHA"
+  printf '[MODE] %s\n' "${UPDATE_MODE^^}"
+  if [[ -n "$CHANGED_FILES" ]]; then
+    printf '[INFO] Изменённые файлы:\n%s\n' "$CHANGED_FILES"
+  else
+    printf '[INFO] Изменений относительно известного deployed commit не найдено.\n'
   fi
 fi
 
@@ -214,71 +302,116 @@ phase 4 'Проверка production-конфигурации'
 ensure_runtime_env
 printf '[PASS] Runtime env и secrets готовы.\n'
 
-phase 5 'Release gate: тесты, безопасность, frontend'
-printf '[INFO] Тесты показывают имена: PASSED / FAILED. Точки и одиночные F отключены.\n'
-printf '[INFO] При ошибке смотрите конкретный test_name и traceback.\n'
-bash "${PROJECT_DIR}/scripts/release_check.sh"
-printf '[PASS] RELEASE CHECK завершён успешно.\n'
+if [[ "$UPDATE_MODE" == "full" ]]; then
+  phase 5 'FULL gate: backup + тесты + безопасность + frontend'
+  BACKUP_FILE="${BACKUP_DIR}/pre-update-${STAMP}.dump"
+  MEDIA_BACKUP="${BACKUP_DIR}/pre-update-media-${STAMP}.tar.gz"
+  printf '[BACKUP] PostgreSQL -> %s\n' "$BACKUP_FILE"
+  compose exec -T postgres sh -c 'exec pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' >"${BACKUP_FILE}"
+  test -s "${BACKUP_FILE}" || { printf '[FAIL] Резервная копия БД пуста\n' >&2; exit 1; }
+  compose exec -T postgres pg_restore --list <"${BACKUP_FILE}" >/dev/null
+  sha256sum "${BACKUP_FILE}" >"${BACKUP_FILE}.sha256"
+  printf '[PASS] Резерв БД проверен.\n'
+  printf '[BACKUP] Media -> %s\n' "$MEDIA_BACKUP"
+  bash "${PROJECT_DIR}/scripts/backup_media.sh" "$MEDIA_BACKUP"
+  printf '[PASS] Резерв media создан.\n'
+  bash "${PROJECT_DIR}/scripts/release_check.sh"
+  printf '[PASS] RELEASE CHECK завершён успешно.\n'
+else
+  phase 5 'FAST gate: только frontend build'
+  printf '[INFO] Backend pytest/release gate пропущен: runtime/backend файлы не менялись.\n'
+  compose build frontend
+  printf '[PASS] Next.js production build завершён.\n'
+fi
 
-phase 6 'Сборка, миграции и запуск production'
-compose build --pull
-compose pull searxng
-compose up -d postgres redis searxng
-compose run --rm backend python manage.py migration_safety_check
-DEPLOY_STARTED=true
-compose run --rm backend python manage.py migrate --noinput
-compose run --rm backend python manage.py collectstatic --noinput
-compose up -d --remove-orphans
-printf '[PASS] Production stack обновлён и запущен.\n'
+if [[ "$UPDATE_MODE" == "full" ]]; then
+  phase 6 'FULL deploy: сборка, миграции и production'
+  compose build --pull
+  compose pull searxng
+  compose up -d postgres redis searxng
+  compose run --rm backend python manage.py migration_safety_check
+  DEPLOY_STARTED=true
+  compose run --rm backend python manage.py migrate --noinput
+  compose run --rm backend python manage.py collectstatic --noinput
+  compose up -d --remove-orphans
+  printf '[PASS] Production stack обновлён и запущен.\n'
+else
+  phase 6 'FAST deploy: frontend + reverse proxy'
+  DEPLOY_STARTED=true
+  compose up -d --no-deps frontend
+  compose up -d --no-deps caddy
+  printf '[PASS] Frontend и caddy обновлены. Backend/DB/worker не перезапускались.\n'
+fi
 
 phase 7 'Health-check production'
-compose exec -T backend python manage.py check --deploy
-compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
-compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"
+if [[ "$UPDATE_MODE" == "full" ]]; then
+  compose exec -T backend python manage.py check --deploy
+  compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
+  compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=5)"
 
-printf '[CHECK] Бесплатный web-search...\n'
-SEARCH_OK=false
-for _attempt in $(seq 1 12); do
-  if compose exec -T backend python -c "import json,urllib.parse,urllib.request; u='http://searxng:8080/search?'+urllib.parse.urlencode({'q':'AI','format':'json','safesearch':1}); d=json.load(urllib.request.urlopen(u,timeout=8)); assert isinstance(d.get('results'),list)" >/dev/null 2>&1; then
-    SEARCH_OK=true
-    break
-  fi
-  sleep 5
-done
-[[ "${SEARCH_OK}" == true ]] || { printf '[FAIL] SearXNG web-search не прошёл health-check\n' >&2; exit 1; }
-printf '[PASS] Web-search отвечает.\n'
+  printf '[CHECK] Бесплатный web-search...\n'
+  SEARCH_OK=false
+  for _attempt in $(seq 1 12); do
+    if compose exec -T backend python -c "import json,urllib.parse,urllib.request; u='http://searxng:8080/search?'+urllib.parse.urlencode({'q':'AI','format':'json','safesearch':1}); d=json.load(urllib.request.urlopen(u,timeout=8)); assert isinstance(d.get('results'),list)" >/dev/null 2>&1; then
+      SEARCH_OK=true
+      break
+    fi
+    sleep 5
+  done
+  [[ "${SEARCH_OK}" == true ]] || { printf '[FAIL] SearXNG web-search не прошёл health-check\n' >&2; exit 1; }
+  printf '[PASS] Web-search отвечает.\n'
 
-printf '[CHECK] Обязательные production services...\n'
-RUNNING_SERVICES="$(compose ps --status running --services)"
-for service in postgres redis searxng backend worker beat frontend caddy sandbox; do
-  if printf '%s\n' "$RUNNING_SERVICES" | grep -Fxq "$service"; then
+  RUNNING_SERVICES="$(compose ps --status running --services)"
+  for service in postgres redis searxng backend worker beat frontend caddy sandbox; do
+    printf '%s\n' "$RUNNING_SERVICES" | grep -Fxq "$service" || { printf '[SERVICE] %-12s FAIL\n' "$service" >&2; exit 1; }
     printf '[SERVICE] %-12s PASS\n' "$service"
-  else
-    printf '[SERVICE] %-12s FAIL\n' "$service" >&2
-    exit 1
-  fi
-done
+  done
+else
+  FRONTEND_OK=false
+  for _attempt in $(seq 1 12); do
+    if compose exec -T frontend node -e "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+      FRONTEND_OK=true
+      break
+    fi
+    sleep 2
+  done
+  [[ "$FRONTEND_OK" == true ]] || { printf '[FAIL] Frontend HTTP smoke не прошёл\n' >&2; exit 1; }
+  RUNNING_SERVICES="$(compose ps --status running --services)"
+  for service in frontend caddy backend; do
+    printf '%s\n' "$RUNNING_SERVICES" | grep -Fxq "$service" || { printf '[SERVICE] %-12s FAIL\n' "$service" >&2; exit 1; }
+    printf '[SERVICE] %-12s PASS\n' "$service"
+  done
+  printf '[PASS] FAST frontend smoke пройден.\n'
+fi
 
-phase 8 'Production-аудиты и завершение'
-compose exec -T backend python manage.py billing_integrity_check
-compose exec -T backend python manage.py agent_system_audit
-compose exec -T backend python manage.py agent_webhook_audit
-compose exec -T backend python manage.py agent_security_audit
-compose exec -T backend python manage.py agent_commercial_limits_audit
-compose exec -T backend python manage.py agent_recovery_audit
-compose exec -T backend python manage.py connection_health_audit
-compose exec -T backend python manage.py dev_studio_audit
-compose exec -T backend python manage.py agent_billing_audit
+phase 8 'Финальные проверки и завершение'
+if [[ "$UPDATE_MODE" == "full" ]]; then
+  compose exec -T backend python manage.py billing_integrity_check
+  compose exec -T backend python manage.py agent_system_audit
+  compose exec -T backend python manage.py agent_webhook_audit
+  compose exec -T backend python manage.py agent_security_audit
+  compose exec -T backend python manage.py agent_commercial_limits_audit
+  compose exec -T backend python manage.py agent_recovery_audit
+  compose exec -T backend python manage.py connection_health_audit
+  compose exec -T backend python manage.py dev_studio_audit
+  compose exec -T backend python manage.py agent_billing_audit
+else
+  printf '[SKIP] Backend/billing/agent audits не нужны для frontend-only deploy.\n'
+fi
+
+CURRENT_SHA="$(git -c safe.directory="${PROJECT_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
+printf '%s\n' "$CURRENT_SHA" >"$DEPLOY_STATE_FILE"
+chmod 600 "$DEPLOY_STATE_FILE"
 
 trap - ERR INT TERM HUP TSTP
 FINISHED_AT="$(date +%s)"
 DURATION="$((FINISHED_AT - STARTED_AT))"
-CURRENT_SHA="$(git -c safe.directory="${PROJECT_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 printf '\n################################################################\n'
 printf 'UPDATE: PASS\n'
-printf 'Commit: %s -> %s\n' "${PREVIOUS_SHA:-unknown}" "$CURRENT_SHA"
+printf 'Mode: %s\n' "${UPDATE_MODE^^}"
+printf 'Commit: %s\n' "$CURRENT_SHA"
 printf 'Duration: %ss\n' "$DURATION"
-printf 'DB backup: %s\n' "$BACKUP_FILE"
-printf 'Media backup: %s\n' "$MEDIA_BACKUP"
+[[ -z "$BACKUP_FILE" ]] || printf 'DB backup: %s\n' "$BACKUP_FILE"
+[[ -z "$MEDIA_BACKUP" ]] || printf 'Media backup: %s\n' "$MEDIA_BACKUP"
 printf 'Full log: %s\n' "$UPDATE_LOG"
 printf '################################################################\n'
