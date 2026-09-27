@@ -99,7 +99,7 @@ def test_different_key_cannot_create_second_open_request_for_same_payment():
         idempotency_key="refund-request-first",
     )
 
-    with pytest.raises(ValidationError, match="уже есть заявка"):
+    with pytest.raises(ValidationError, match="возврат или заявка"):
         create_refund_request_idempotent(
             user=user,
             payment=payment,
