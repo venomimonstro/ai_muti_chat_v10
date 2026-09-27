@@ -1,6 +1,17 @@
+import re
 from copy import deepcopy
 
 from .planner import graph_for_kind
+
+WORD_RE = re.compile(r"[a-zа-яё0-9-]+", re.IGNORECASE)
+
+
+def _has_dev_object(text: str) -> bool:
+    words = WORD_RE.findall(text)
+    if any(word.startswith(("сайт", "прилож", "сервис", "software")) for word in words):
+        return True
+    # Match bot as a token/stem, not as the substring inside "разработать".
+    return any(word == "бот" or word.startswith("бот-") or word.startswith("бота") for word in words)
 
 
 def infer_team_kind(description: str) -> str:
@@ -20,10 +31,7 @@ def infer_team_kind(description: str) -> str:
             "репозитор",
         )
     )
-    if explicit_dev or (
-        "разработ" in text
-        and any(marker in text for marker in ("сайт", "прилож", "сервис", "бот", "software"))
-    ):
+    if explicit_dev or ("разработ" in text and _has_dev_object(text)):
         return "development"
     if any(word in text for word in ("продаж", "лид", "клиент", "crm", "коммерческ")):
         return "sales"
