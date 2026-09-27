@@ -81,7 +81,7 @@ def test_agent_cannot_bind_to_another_users_project():
 
 
 @pytest.mark.django_db
-def test_agent_run_requires_activation_and_is_queued_once():
+def test_agent_run_requires_activation_and_is_queued_once(django_capture_on_commit_callbacks):
     user = User.objects.create_user(username="agent-runner", email="agent-runner@example.com", password="StrongPass123!")
     agent = Agent.objects.create(
         owner=user,
@@ -99,7 +99,8 @@ def test_agent_run_requires_activation_and_is_queued_once():
     assert activated.status_code == 200
 
     with patch("apps.agents.tasks.execute_agent_run_task.delay") as delay:
-        started = client.post(f"/api/v1/agents/{agent.id}/run/", {"objective": "Провести аудит"}, format="json")
+        with django_capture_on_commit_callbacks(execute=True):
+            started = client.post(f"/api/v1/agents/{agent.id}/run/", {"objective": "Провести аудит"}, format="json")
 
     assert started.status_code == 201
     assert started.json()["state"] == "queued"
