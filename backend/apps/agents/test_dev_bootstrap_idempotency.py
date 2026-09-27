@@ -19,15 +19,21 @@ def _project_with_github(user, *, permission="write", write_enabled=True, active
         permissions={"contents": permission},
         active=active,
     )
-    GitHubRepositoryBinding.objects.create(
+    # The model correctly prevents creating a new write-enabled binding when the
+    # provider permission is read-only. For readiness/bootstrap regressions we
+    # intentionally need to simulate an already-persisted legacy/mismatched row,
+    # so create a valid row first and then mutate it with QuerySet.update().
+    binding = GitHubRepositoryBinding.objects.create(
         project=project,
         installation=installation,
         repository_id=777 + suffix,
         full_name=f"dev-user/project-{suffix}",
         default_branch="main",
         private=True,
-        write_enabled=write_enabled,
+        write_enabled=write_enabled and permission == "write",
     )
+    if write_enabled and permission != "write":
+        GitHubRepositoryBinding.objects.filter(pk=binding.pk).update(write_enabled=True)
     return project
 
 
@@ -52,7 +58,7 @@ def test_dev_bootstrap_retry_reuses_fresh_team_without_duplicate_agents():
 
 @pytest.mark.django_db
 def test_dev_bootstrap_rejects_read_only_github_permission_before_creating_agents():
-    user = User.objects.create_user(username="dev-bootstrap-read", password="StrongPass123!")
+    user = User.objects.create_user(username="dev-bootstrap-read", email="dev-bootstrap-read@example.com", password="StrongPass123!")
     project = _project_with_github(user, permission="read", suffix=10)
     client = APIClient()
     client.force_authenticate(user)
@@ -71,7 +77,7 @@ def test_dev_bootstrap_rejects_read_only_github_permission_before_creating_agent
 
 @pytest.mark.django_db
 def test_dev_bootstrap_rejects_binding_with_app_write_disabled():
-    user = User.objects.create_user(username="dev-bootstrap-disabled", password="StrongPass123!")
+    user = User.objects.create_user(username="dev-bootstrap-disabled", email="dev-bootstrap-disabled@example.com", password="StrongPass123!")
     project = _project_with_github(user, write_enabled=False, suffix=20)
     client = APIClient()
     client.force_authenticate(user)
@@ -89,7 +95,7 @@ def test_dev_bootstrap_rejects_binding_with_app_write_disabled():
 
 @pytest.mark.django_db
 def test_dev_bootstrap_rejects_inactive_github_installation():
-    user = User.objects.create_user(username="dev-bootstrap-inactive", password="StrongPass123!")
+    user = User.objects.create_user(username="dev-bootstrap-inactive", email="dev-bootstrap-inactive@example.com", password="StrongPass123!")
     project = _project_with_github(user, active=False, suffix=30)
     client = APIClient()
     client.force_authenticate(user)
