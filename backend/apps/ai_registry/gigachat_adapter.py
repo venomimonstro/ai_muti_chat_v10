@@ -40,6 +40,10 @@ def _http_provider_error(response: httpx.Response, *, oauth: bool = False) -> Pr
         code = f"{prefix}_authentication_error"
         retryable = False
         message = "GigaChat authentication failed"
+    elif status == 402:
+        code = f"{prefix}_quota_exhausted"
+        retryable = False
+        message = "GigaChat token quota or provider balance is exhausted"
     elif status == 403:
         code = f"{prefix}_permission_denied"
         retryable = False
@@ -48,6 +52,14 @@ def _http_provider_error(response: httpx.Response, *, oauth: bool = False) -> Pr
         code = f"{prefix}_model_not_found"
         retryable = False
         message = "GigaChat model or endpoint was not found"
+    elif status == 413:
+        code = f"{prefix}_request_too_large"
+        retryable = False
+        message = "GigaChat request is too large"
+    elif status == 422:
+        code = f"{prefix}_validation_error"
+        retryable = False
+        message = "GigaChat rejected request content"
     elif status == 429:
         code = f"{prefix}_rate_limited"
         retryable = True
