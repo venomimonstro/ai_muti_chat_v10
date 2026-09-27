@@ -26,6 +26,7 @@ services:
       CACHE_URL: ""
       REDIS_URL: redis://localhost:6379/0
       FILE_PROCESSING_ASYNC: "false"
+      WEB_FETCH_PAGES: "false"
     depends_on:
       postgres:
         condition: service_healthy
