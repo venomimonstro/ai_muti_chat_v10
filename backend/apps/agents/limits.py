@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, time
 from decimal import Decimal
 
@@ -31,7 +32,12 @@ def _sum_cost(queryset):
 
 
 def owner_concurrency_limit():
-    return max(1, int(getattr(settings, "AGENT_MAX_ACTIVE_RUNS_PER_USER", 3)))
+    configured = str(os.getenv("AGENT_MAX_ACTIVE_RUNS_PER_USER") or "").strip()
+    raw = configured or getattr(settings, "AGENT_MAX_ACTIVE_RUNS_PER_USER", 3)
+    try:
+        return max(1, min(int(raw), 100))
+    except (TypeError, ValueError):
+        return 3
 
 
 def owner_active_run_count(owner, *, exclude_run_id=None):
