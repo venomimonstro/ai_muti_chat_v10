@@ -16,13 +16,15 @@ def test_consumer_reservation_velocity_blocks_start_cancel_loop(monkeypatch):
     )
     credit(user, Decimal("100"), "test", "velocity")
 
-    first = reserve(user, Decimal("1"), "generation:velocity:1")
+    # Velocity protection is independent of source-specific recovery semantics.
+    # Do not use the reserved `generation:<uuid>` namespace with a fake non-UUID.
+    first = reserve(user, Decimal("1"), "velocity:first")
     release(first.id)
-    second = reserve(user, Decimal("1"), "image:velocity:2")
+    second = reserve(user, Decimal("1"), "velocity:second")
     release(second.id)
 
     with pytest.raises(ValidationError, match="Слишком много AI-операций"):
-        reserve(user, Decimal("1"), "compare:velocity:3")
+        reserve(user, Decimal("1"), "velocity:third")
 
     user.wallet.refresh_from_db()
     assert user.wallet.available_rub == Decimal("100.0000")
