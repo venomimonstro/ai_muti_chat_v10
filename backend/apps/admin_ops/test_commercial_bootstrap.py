@@ -6,7 +6,11 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from apps.admin_ops.commercial_bootstrap import bootstrap_commercial_catalog, commercial_setup_status
+from apps.admin_ops.commercial_bootstrap import (
+    PROVIDER_TEMPLATES,
+    bootstrap_commercial_catalog,
+    commercial_setup_status,
+)
 from apps.ai_registry.models import AIModel, Provider, RoutingPolicyVersion
 from apps.billing.models import FxRateSnapshot, MarginPolicyVersion, MarkupRuleVersion, PriceVersion
 
@@ -27,17 +31,22 @@ def test_bootstrap_is_idempotent_and_safe_by_default(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
 
+    existing_provider_slugs = set(Provider.objects.values_list("slug", flat=True))
+    existing_model_slugs = set(AIModel.objects.values_list("slug", flat=True))
+    expected_provider_slugs = {item.slug for item in PROVIDER_TEMPLATES}
+    expected_model_slugs = {item.model_slug for item in PROVIDER_TEMPLATES}
+
     first = bootstrap_commercial_catalog()
     second = bootstrap_commercial_catalog()
 
-    assert first["providers"] == 5
-    assert first["models"] == 5
+    assert first["providers"] == len(expected_provider_slugs - existing_provider_slugs)
+    assert first["models"] == len(expected_model_slugs - existing_model_slugs)
     assert second["providers"] == 0
     assert second["models"] == 0
-    assert Provider.objects.count() == 5
-    assert AIModel.objects.count() == 5
-    assert not Provider.objects.filter(enabled=True).exists()
-    assert not AIModel.objects.filter(enabled=True).exists()
+    assert expected_provider_slugs.issubset(set(Provider.objects.values_list("slug", flat=True)))
+    assert expected_model_slugs.issubset(set(AIModel.objects.values_list("slug", flat=True)))
+    assert not Provider.objects.filter(slug__in=expected_provider_slugs, enabled=True).exists()
+    assert not AIModel.objects.filter(slug__in=expected_model_slugs, enabled=True).exists()
     assert RoutingPolicyVersion.objects.filter(active=True).exists()
     assert MarkupRuleVersion.objects.filter(active=True).exists()
     assert MarginPolicyVersion.objects.filter(active=True).exists()
