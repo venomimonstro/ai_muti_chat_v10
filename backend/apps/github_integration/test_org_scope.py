@@ -27,7 +27,7 @@ def test_organization_installation_repository_listing_is_fail_closed(monkeypatch
     response = client.get(f"/api/v1/github/installations/{installation.id}/repositories/")
 
     assert response.status_code == 403
-    assert "user-scoped" in str(response.data)
+    assert "user-scoped" in str(response.json())
 
 
 @pytest.mark.django_db
