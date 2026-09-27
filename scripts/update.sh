@@ -124,6 +124,8 @@ compose exec -T backend python manage.py agent_system_audit
 compose exec -T backend python manage.py agent_webhook_audit
 compose exec -T backend python manage.py agent_security_audit
 compose exec -T backend python manage.py agent_commercial_limits_audit
+compose exec -T backend python manage.py agent_recovery_audit
+compose exec -T backend python manage.py connection_health_audit
 compose exec -T backend python manage.py dev_studio_audit
 compose exec -T backend python manage.py agent_billing_audit
 
