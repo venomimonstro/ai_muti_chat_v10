@@ -1,9 +1,11 @@
 import json
 
 from celery import shared_task
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from .limits import ensure_owner_run_capacity
 from .models import Agent, AgentRun, AgentTeam
 from .readiness import agent_readiness
 from .run_views import create_single_agent_run
@@ -37,12 +39,19 @@ def _retry_busy(task, delivery, subject_name):
     raise task.retry(countdown=30)
 
 
+def _fail_capacity(delivery, exc):
+    delivery.state = AgentWebhookDelivery.State.FAILED
+    delivery.error_message = f"Коммерческий лимит запуска: {'; '.join(exc.messages)}"[:4000]
+    delivery.save(update_fields=["state", "error_message", "updated_at"])
+    return {"delivery_id": str(delivery.id), "state": delivery.state}
+
+
 @shared_task(bind=True, max_retries=20, default_retry_delay=30, soft_time_limit=120, time_limit=150)
 def dispatch_agent_webhook_delivery(self, delivery_id):
     with transaction.atomic():
         delivery = (
             AgentWebhookDelivery.objects.select_for_update()
-            .select_related("trigger__agent", "trigger__team")
+            .select_related("trigger__agent", "trigger__team", "trigger__owner")
             .filter(pk=delivery_id)
             .first()
         )
@@ -77,18 +86,21 @@ def dispatch_agent_webhook_delivery(self, delivery_id):
                 delivery.save(update_fields=["state", "error_message", "updated_at"])
                 return {"delivery_id": str(delivery.id), "state": delivery.state}
             base_objective = (trigger.objective or subject.objective or "Обработать входящее событие").strip()
-            run = create_single_agent_run(
-                owner=trigger.owner,
-                agent=subject,
-                objective=_objective_with_event(base_objective, delivery.payload),
-                input_payload={
-                    "trigger": "webhook",
-                    "webhook_trigger_id": str(trigger.id),
-                    "webhook_delivery_id": str(delivery.id),
-                    "event_id": delivery.event_id,
-                    "webhook": delivery.payload,
-                },
-            )
+            try:
+                run = create_single_agent_run(
+                    owner=trigger.owner,
+                    agent=subject,
+                    objective=_objective_with_event(base_objective, delivery.payload),
+                    input_payload={
+                        "trigger": "webhook",
+                        "webhook_trigger_id": str(trigger.id),
+                        "webhook_delivery_id": str(delivery.id),
+                        "event_id": delivery.event_id,
+                        "webhook": delivery.payload,
+                    },
+                )
+            except ValidationError as exc:
+                return _fail_capacity(delivery, exc)
         else:
             subject = (
                 AgentTeam.objects.select_for_update()
@@ -110,6 +122,10 @@ def dispatch_agent_webhook_delivery(self, delivery_id):
                 delivery.error_message = "; ".join(readiness.get("blockers") or ["Команда не готова к запуску"])
                 delivery.save(update_fields=["state", "error_message", "updated_at"])
                 return {"delivery_id": str(delivery.id), "state": delivery.state}
+            try:
+                ensure_owner_run_capacity(trigger.owner)
+            except ValidationError as exc:
+                return _fail_capacity(delivery, exc)
             base_objective = (trigger.objective or subject.objective or "Обработать входящее событие").strip()
             run = AgentRun.objects.create(
                 owner=trigger.owner,
