@@ -14,10 +14,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf '[1/17] Secret scan\n'
+printf '[1/18] Secret scan\n'
 bash ./scripts/security_scan.sh
 
-printf '[2/17] Shell and Python syntax\n'
+printf '[2/18] Shell and Python syntax\n'
 bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
@@ -30,7 +30,7 @@ fi
 "$PYTHON_BIN" -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
 "$PYTHON_BIN" -m compileall -q backend
 
-printf '[3/17] Compose syntax\n'
+printf '[3/18] Compose syntax\n'
 docker compose -f "$TEST_COMPOSE" config >/dev/null
 APP_DOMAIN=release-check.example.test \
 ACME_EMAIL=ops@example.test \
@@ -41,51 +41,51 @@ REDIS_PASSWORD=release-check-redis-password \
 PUBLIC_API_URL=https://release-check.example.test/api/v1 \
 docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 
-printf '[4/17] Build isolated test stack\n'
+printf '[4/18] Build isolated test stack\n'
 docker compose -f "$TEST_COMPOSE" build backend-test
 docker compose -f "$TEST_COMPOSE" up -d postgres
 
-printf '[5/17] Backend blocking lint\n'
-# Block only defects that can make Python invalid or reference undefined names.
-# Full-repository style/import debt is reported below but must not make an
-# otherwise safe production rollback loop impossible to escape.
-docker compose -f "$TEST_COMPOSE" run --rm backend-test \
-  ruff check . --select E9,F63,F7,F82
+printf '[5/18] Backend blocking lint\n'
+docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check . --select E9,F63,F7,F82
 
-printf '[6/17] Backend lint debt report (non-blocking)\n'
+printf '[6/18] Backend lint debt report (non-blocking)\n'
 if ! docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check .; then
   printf '[WARN] Full Ruff debt remains. Blocking correctness rules already passed; clean style debt incrementally.\n' >&2
 fi
 
-printf '[7/17] Backend tests on PostgreSQL/pgvector\n'
+printf '[7/18] Backend tests on PostgreSQL/pgvector\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q
 
-printf '[8/17] Sprint 68 tenant/security regressions\n'
+printf '[8/18] Sprint 68 tenant/security regressions\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test \
   pytest -q apps/agents/test_tenant_security.py apps/agents/test_webhook_hardening.py apps/agents/test_webhooks.py
 
-printf '[9/17] Django checks and migration drift\n'
+printf '[9/18] Sprint 69 commercial limits regressions\n'
+docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q apps/agents/test_commercial_limits.py
+
+printf '[10/18] Django checks and migration drift\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
 
-printf '[10/17] Economic safety invariants\n'
+printf '[11/18] Economic safety invariants\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py economic_safety_check
 
-printf '[11/17] Billing ledger integrity\n'
+printf '[12/18] Billing ledger integrity\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py billing_integrity_check
 
-printf '[12/17] Agent Studio integrity and tenant isolation\n'
+printf '[13/18] Agent Studio integrity, security and commercial limits\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_system_audit
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_webhook_audit
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_security_audit
+docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_commercial_limits_audit
 
-printf '[13/17] Dev Studio readiness\n'
+printf '[14/18] Dev Studio readiness\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_audit
 
-printf '[14/17] Agent Runtime billing integrity\n'
+printf '[15/18] Agent Runtime billing integrity\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_billing_audit
 
-printf '[15/17] Frontend production build\n'
+printf '[16/18] Frontend production build\n'
 docker build \
   --target builder \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
@@ -94,10 +94,10 @@ docker build \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
   -t ai-workspace-frontend-test frontend
 
-printf '[16/17] Frontend lint\n'
+printf '[17/18] Frontend lint\n'
 docker run --rm ai-workspace-frontend-builder sh -c 'npm run lint'
 
-printf '[17/17] Frontend runtime route smoke\n'
+printf '[18/18] Frontend runtime route smoke\n'
 docker run -d --rm --name "$FRONTEND_SMOKE_CONTAINER" \
   -p "127.0.0.1:${FRONTEND_SMOKE_PORT}:3000" ai-workspace-frontend-test >/dev/null
 READY=false
