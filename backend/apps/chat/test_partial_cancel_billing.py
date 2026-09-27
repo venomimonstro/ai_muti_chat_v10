@@ -63,7 +63,7 @@ def cancellation_context():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_cancel_after_delivered_delta_charges_only_partial_and_releases_reserve(cancellation_context):
+def test_cancel_after_delivered_delta_without_terminal_usage_releases_full_reserve(cancellation_context):
     user, conversation = cancellation_context
     before = user.wallet.available_rub
     generation, created = prepare(
@@ -74,8 +74,6 @@ def test_cancel_after_delivered_delta_charges_only_partial_and_releases_reserve(
         idempotency_key="cancel:after-delta",
     )
     assert created is True
-    reservation = BalanceReservation.objects.get(pk=generation.reservation_id)
-    reserved_max = reservation.amount_rub
 
     stream = managed_run(generation, adapter=PartialStreamAdapter())
     assert "event: generation" in next(stream)
@@ -86,19 +84,17 @@ def test_cancel_after_delivered_delta_charges_only_partial_and_releases_reserve(
     generation.refresh_from_db()
     generation.assistant_message.refresh_from_db()
     user.wallet.refresh_from_db()
-    reservation.refresh_from_db()
+    reservation = BalanceReservation.objects.get(pk=generation.reservation_id)
     request_cost = RequestCost.objects.get(generation_id=generation.id)
 
     assert generation.state == Generation.State.CANCELLED
     assert generation.assistant_message.status == Message.Status.PARTIAL
     assert generation.assistant_message.content
-    assert generation.actual_cost_rub is not None
-    assert Decimal("0") < generation.actual_cost_rub <= reserved_max
-    assert request_cost.charged_rub == generation.actual_cost_rub
-    assert reservation.state == BalanceReservation.State.SETTLED
-    assert reservation.actual_rub == generation.actual_cost_rub
+    assert generation.actual_cost_rub == Decimal("0.0000")
+    assert request_cost.charged_rub is None
+    assert reservation.state == BalanceReservation.State.RELEASED
     assert user.wallet.reserved_rub == Decimal("0.0000")
-    assert before - user.wallet.available_rub == generation.actual_cost_rub
+    assert user.wallet.available_rub == before
 
 
 @pytest.mark.django_db(transaction=True)
