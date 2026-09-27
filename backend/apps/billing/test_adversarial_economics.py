@@ -17,7 +17,12 @@ from .services import credit, reserve, settle
 
 
 @pytest.mark.django_db(transaction=True)
-def test_user_cannot_spend_more_than_prefunded_wallet_even_with_multiple_reservations():
+def test_user_cannot_spend_more_than_prefunded_wallet_even_with_multiple_reservations(monkeypatch):
+    # This test isolates the hard prefunding invariant. Consumer velocity/request
+    # caps are covered separately and must not mask the wallet-solvency assertion.
+    monkeypatch.setenv("CONSUMER_MAX_SINGLE_REQUEST_RUB", "5000")
+    monkeypatch.setenv("CONSUMER_MAX_BURST_SPEND_RUB", "5000")
+    monkeypatch.setenv("CONSUMER_MAX_DAILY_SPEND_RUB", "5000")
     user = User.objects.create_user(username="solvency", email="solvency@example.test", password="password123")
     credit(user, Decimal("1000"), "test", "prefund")
 
