@@ -223,8 +223,6 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
     try:
         generation_uuid = uuid.UUID(generation_id)
     except (ValueError, TypeError, AttributeError):
-        # Reservation keys are also used by tests, migrations and non-chat callers.
-        # Only a real Generation UUID is eligible for provider-delivery recovery.
         return False
 
     from apps.billing.models import RequestCost
@@ -255,7 +253,13 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
             request_cost.input_tokens,
             request_cost.output_tokens,
         )
-    actual = min(max(calculated_charge, MONEY_ZERO), reservation.amount_rub)
+
+    # Never turn an upstream usage anomaly into customer debt. If authoritative
+    # usage exceeds the amount pre-authorized before the provider call, release
+    # the customer's full reserve; procurement/anomaly accounting handles the loss.
+    if calculated_charge > reservation.amount_rub:
+        return False
+    actual = max(calculated_charge, MONEY_ZERO)
 
     settle(reservation.id, actual)
 
