@@ -52,19 +52,40 @@ def agent_readiness(agent: Agent):
 
     graph = agent.graph if isinstance(agent.graph, dict) else {}
     nodes = [node for node in (graph.get("nodes") or []) if isinstance(node, dict)]
+    edges = [edge for edge in (graph.get("edges") or []) if isinstance(edge, dict)]
     node_types = [str(node.get("type") or "llm").strip().lower() for node in nodes]
     visual_workflow = bool(nodes)
     checks["graph"] = visual_workflow
 
     node_ids = [str(node.get("id") or "").strip() for node in nodes]
     known_ids = {node_id for node_id in node_ids if node_id}
+    positions = {node_id: index for index, node_id in enumerate(node_ids) if node_id}
     if len(known_ids) != len(node_ids):
         blockers.append("У каждого шага карты должен быть уникальный ID")
         add_action("fix_graph_ids", "Пересохраните карту действий")
 
+    seen_edges = set()
+    for edge in edges:
+        source = str(edge.get("from") or "").strip()
+        target = str(edge.get("to") or "").strip()
+        if source not in known_ids or target not in known_ids:
+            blockers.append("Карта содержит переход к отсутствующему шагу")
+            add_action("fix_graph", "Исправьте переходы карты действий")
+            continue
+        pair = (source, target)
+        if pair in seen_edges:
+            blockers.append(f"Переход {source} → {target} указан дважды")
+        seen_edges.add(pair)
+        if positions[target] <= positions[source]:
+            blockers.append(
+                f"Переход {source} → {target} должен вести только на более поздний шаг; циклы запрещены"
+            )
+            add_action("fix_graph", "Исправьте циклические переходы карты действий")
+
     for node in nodes:
         node_type = str(node.get("type") or "").strip().lower()
         node_title = str(node.get("title") or "Шаг")
+        node_id = str(node.get("id") or "").strip()
         if node_type == "condition":
             operator = str(node.get("operator") or "contains").strip().lower()
             if operator not in CONDITION_OPERATORS:
@@ -73,10 +94,17 @@ def agent_readiness(agent: Agent):
                 blockers.append(f"«{node_title}»: укажите текст для проверки")
             for field, label in (("on_true", "Да"), ("on_false", "Нет")):
                 target = str(node.get(field) or "").strip()
-                if target and target not in known_ids:
+                if not target:
+                    continue
+                if target not in known_ids:
                     blockers.append(f"«{node_title}»: ветка «{label}» ведёт к отсутствующему шагу")
-            if str(node.get("on_true") or "").strip() == str(node.get("id") or "").strip() or str(node.get("on_false") or "").strip() == str(node.get("id") or "").strip():
-                blockers.append(f"«{node_title}»: условие не может вести само в себя")
+                    continue
+                if target == node_id:
+                    blockers.append(f"«{node_title}»: ветка не может вести сама в себя")
+                elif positions.get(target, -1) <= positions.get(node_id, -1):
+                    blockers.append(
+                        f"«{node_title}»: ветка «{label}» должна вести только на более поздний шаг"
+                    )
         elif node_type == "wait":
             try:
                 minutes = int(node.get("wait_minutes") or 60)
@@ -96,10 +124,16 @@ def agent_readiness(agent: Agent):
         unsupported = sorted({node_type for node_type in node_types if node_type not in RUNTIME_NODE_TYPES})
         checks["runtime_nodes"] = not unsupported
         if unsupported:
-            blockers.append("Карта содержит шаги Dev Studio или неподдерживаемые действия: " + ", ".join(unsupported))
+            blockers.append(
+                "Карта содержит шаги Dev Studio или неподдерживаемые действия: "
+                + ", ".join(unsupported)
+            )
             add_action("fix_graph", "Удалите неподдерживаемые шаги из карты действий")
 
-        needs_model = any(node_type in {"llm", "review", "analytics", "research", "web", "files"} for node_type in node_types)
+        needs_model = any(
+            node_type in {"llm", "review", "analytics", "research", "web", "files"}
+            for node_type in node_types
+        )
         if needs_model:
             try:
                 _model_for(agent)
@@ -107,7 +141,10 @@ def agent_readiness(agent: Agent):
             except ValidationError as exc:
                 checks["model"] = False
                 blockers.append(str(exc))
-                add_action("model_unavailable", f"Уровень {public_model} сейчас недоступен. Проверьте маршрутизацию у администратора")
+                add_action(
+                    "model_unavailable",
+                    f"Уровень {public_model} сейчас недоступен. Проверьте маршрутизацию у администратора",
+                )
         else:
             checks["model"] = True
 
@@ -142,7 +179,9 @@ def agent_readiness(agent: Agent):
         checks["publish_policy"] = policy_ok
         if not policy_ok:
             blockers.append("Карта содержит публикацию, но публикация не разрешена")
-            add_action("enable_publish", "Разрешите публикацию с подтверждением в настройках сотрудника")
+            add_action(
+                "enable_publish", "Разрешите публикацию с подтверждением в настройках сотрудника"
+            )
 
         bindings = list(
             AgentConnectionBinding.objects.filter(
@@ -155,14 +194,21 @@ def agent_readiness(agent: Agent):
             .select_related("connection")
             .order_by("created_at")[:2]
         )
-        wordpress_ok = len(bindings) == 1 and bindings[0].connection.health_state == ExternalConnection.Health.HEALTHY
+        wordpress_ok = (
+            len(bindings) == 1
+            and bindings[0].connection.health_state == ExternalConnection.Health.HEALTHY
+        )
         checks["wordpress"] = wordpress_ok
         if not bindings:
             blockers.append("Подключите WordPress для шага публикации")
             add_action("connect_wordpress", "Подключите сайт WordPress", "/app/connections")
         elif len(bindings) > 1:
             blockers.append("Для публикации оставьте одно активное подключение WordPress")
-            add_action("choose_wordpress", "Оставьте одно подключение WordPress для публикации", "/app/connections")
+            add_action(
+                "choose_wordpress",
+                "Оставьте одно подключение WordPress для публикации",
+                "/app/connections",
+            )
         elif bindings[0].connection.health_state != ExternalConnection.Health.HEALTHY:
             blockers.append("WordPress не прошёл проверку подключения")
             add_action("repair_wordpress", "Проверьте подключение WordPress", "/app/connections")
