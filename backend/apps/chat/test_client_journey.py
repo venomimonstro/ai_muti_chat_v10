@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 
 import pytest
 from django.utils import timezone
@@ -56,6 +57,17 @@ def client_journey():
     client = APIClient()
     client.force_authenticate(user)
     return client, user
+
+
+def _sse_delta_text(body: str) -> str:
+    chunks = []
+    event = None
+    for line in body.splitlines():
+        if line.startswith("event: "):
+            event = line.removeprefix("event: ")
+        elif event == "delta" and line.startswith("data: "):
+            chunks.append(json.loads(line.removeprefix("data: "))["text"])
+    return "".join(chunks)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -116,7 +128,7 @@ def test_client_can_write_receive_organize_and_review_usage(client_journey):
     assert "event: generation" in body
     assert "event: delta" in body
     assert "event: completed" in body
-    assert "Тестовый ответ:" in body
+    assert _sse_delta_text(body).startswith("Тестовый ответ:")
 
     generation = Generation.objects.get(owner=user)
     generation.refresh_from_db()
