@@ -9,6 +9,7 @@ from .dev_bootstrap_views import DevTeamBootstrapView
 from .dev_merge_views import DevRunMergePullRequestView
 from .dev_pr_views import DevRunPullRequestView
 from .dev_safety_views import DevRunAbandonBranchView, DevRunChangesPreviewView
+from .diagnostics_views import AgentDiagnosticsView
 from .memory_views import AgentMemoryItemView, AgentMemoryView
 from .operations_views import AgentOperationsSummaryView
 from .readiness_views import AgentReadinessView
@@ -36,6 +37,7 @@ urlpatterns = [
     path("agents/ai-planner/preview/", AgentAIPlannerPreviewView.as_view(), name="agent-ai-planner-preview"),
     path("agents/ai-planner/create/", AgentAIPlannerCreateView.as_view(), name="agent-ai-planner-create"),
     path("agents/<uuid:agent_id>/readiness/", AgentReadinessView.as_view(), name="agent-readiness"),
+    path("agents/<uuid:agent_id>/diagnostics/", AgentDiagnosticsView.as_view(), name="agent-diagnostics"),
     path("agents/<uuid:agent_id>/usage/", AgentUsageView.as_view(), name="agent-usage"),
     path("agents/<uuid:agent_id>/test/", AgentTestModeView.as_view(), name="agent-test-mode"),
     path("agents/<uuid:agent_id>/run/", SafeAgentRunView.as_view(), name="agent-safe-run"),
