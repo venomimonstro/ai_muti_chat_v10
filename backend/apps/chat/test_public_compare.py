@@ -11,11 +11,19 @@ from .models import CompareRun, CompareVariant, Conversation
 from .public_compare import public_model_identity, serialize_compare_public
 
 
+def _gigachat_provider():
+    provider, _ = Provider.objects.get_or_create(
+        slug="gigachat",
+        defaults={"name": "Internal provider"},
+    )
+    return provider
+
+
 def _internal_model():
-    provider = Provider.objects.create(slug="gigachat", name="Internal provider")
+    provider = _gigachat_provider()
     return AIModel.objects.create(
         provider=provider,
-        slug="gigachat-2-max",
+        slug="test-gigachat-2-max",
         display_name="GigaChat 2 Max",
         upstream_model="GigaChat-2-Max",
         capabilities=["text", "streaming"],
@@ -66,7 +74,7 @@ def test_historical_compare_run_serializes_internal_model_as_system_level():
 
 @pytest.mark.django_db
 def test_provider_slug_masks_even_renamed_internal_compare_model():
-    provider = Provider.objects.create(slug="gigachat", name="Internal renamed provider")
+    provider = _gigachat_provider()
     model = AIModel.objects.create(
         provider=provider,
         slug="private-reasoning-v3",
