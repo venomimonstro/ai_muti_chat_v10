@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 from collections.abc import Iterator
+from urllib.parse import urlparse
 
 import httpx
 from django.conf import settings
@@ -13,6 +14,41 @@ OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 DEFAULT_API_BASE_URL = "https://api.giga.chat/v1"
 DEFAULT_SCOPE = "GIGACHAT_API_PERS"
 VALID_SCOPES = {"GIGACHAT_API_PERS", "GIGACHAT_API_B2B", "GIGACHAT_API_CORP"}
+LEGACY_API_HOSTS = {"gigachat.devices.sberbank.ru"}
+MODEL_ALIASES = {
+    "gigachat": "GigaChat-2",
+    "gigachat-lite": "GigaChat-2",
+    "gigachat-2-lite": "GigaChat-2",
+    "gigachat-pro": "GigaChat-2-Pro",
+    "gigachat-max": "GigaChat-2-Max",
+}
+
+
+def normalize_base_url(value: str) -> str:
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        return DEFAULT_API_BASE_URL
+    try:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").casefold()
+    except ValueError:
+        return DEFAULT_API_BASE_URL
+    if host in LEGACY_API_HOSTS:
+        return DEFAULT_API_BASE_URL
+    if host == "api.giga.chat":
+        path = parsed.path.rstrip("/")
+        if not path:
+            return DEFAULT_API_BASE_URL
+        if path == "/v1":
+            return DEFAULT_API_BASE_URL
+    return raw
+
+
+def normalize_model_id(value: str) -> str:
+    model = str(value or "").strip()
+    if not model:
+        return "GigaChat-2"
+    return MODEL_ALIASES.get(model.casefold(), model)
 
 
 def configured_scope(fallback: str = DEFAULT_SCOPE) -> str:
@@ -86,7 +122,7 @@ class GigaChatAPIAdapter:
         if not authorization_key:
             raise ProviderError("Provider credential is not configured", code="credential_missing", retryable=False)
         self.authorization_key = authorization_key.removeprefix("Basic ").strip()
-        self.base_url = (base_url or DEFAULT_API_BASE_URL).rstrip("/")
+        self.base_url = normalize_base_url(base_url)
         self.scope = configured_scope(scope)
         self._token = ""
         self._token_expires_at = 0.0
@@ -143,8 +179,9 @@ class GigaChatAPIAdapter:
         ]
 
     def _request_stream(self, *, model: str, messages: list[dict], max_output_tokens: int, force_token: bool = False) -> Iterator[ProviderStreamEvent]:
+        upstream_model = normalize_model_id(model)
         payload = {
-            "model": model,
+            "model": upstream_model,
             "messages": self._messages(messages),
             "max_tokens": max_output_tokens,
             "stream": True,
@@ -161,7 +198,7 @@ class GigaChatAPIAdapter:
         ) as response:
             if response.status_code == 401 and not force_token:
                 response.close()
-                yield from self._request_stream(model=model, messages=messages, max_output_tokens=max_output_tokens, force_token=True)
+                yield from self._request_stream(model=upstream_model, messages=messages, max_output_tokens=max_output_tokens, force_token=True)
                 return
             try:
                 response.raise_for_status()
