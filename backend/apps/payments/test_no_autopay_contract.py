@@ -16,6 +16,8 @@ class CapturingPaymentClient:
         return {
             "id": "payment-one-time",
             "status": "pending",
+            "amount": payload["amount"],
+            "metadata": payload["metadata"],
             "confirmation": {"confirmation_url": "https://pay.example.test/confirm"},
         }
 
