@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgresql://aiworkspace_test:release-test-password@postgres:5432/aiworkspace_test
       CACHE_URL: ""
       REDIS_URL: redis://localhost:6379/0
+      FILE_PROCESSING_ASYNC: "false"
     depends_on:
       postgres:
         condition: service_healthy
