@@ -12,7 +12,13 @@ from .models import Agent, AgentRun, AgentTeam, AgentTeamMember
 @pytest.mark.django_db
 def test_second_agent_run_request_returns_existing_active_run(django_capture_on_commit_callbacks):
     user = User.objects.create_user(username="agent-dedupe", email="agent-dedupe@example.com", password="StrongPass123!")
-    agent = Agent.objects.create(owner=user, name="Agent", objective="Do work", status=Agent.Status.ACTIVE)
+    agent = Agent.objects.create(
+        owner=user,
+        name="Agent",
+        objective="Do work",
+        status=Agent.Status.ACTIVE,
+        autonomy=Agent.Autonomy.AUTONOMOUS,
+    )
     client = APIClient()
     client.force_authenticate(user)
 
