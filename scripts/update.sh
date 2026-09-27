@@ -30,8 +30,20 @@ upsert_env_if_missing() {
   fi
 }
 
+ensure_env_default() {
+  local key="$1" value="$2" current
+  current="$(sed -n "s/^${key}=//p" "${ENV_FILE}" | head -n 1)"
+  if [[ -z "${current}" ]]; then
+    if grep -q "^${key}=" "${ENV_FILE}"; then
+      sed -i "s|^${key}=.*|${key}=${value}|" "${ENV_FILE}"
+    else
+      printf '%s=%s\n' "${key}" "${value}" >>"${ENV_FILE}"
+    fi
+  fi
+}
+
 ensure_runtime_env() {
-  local sandbox_secret
+  local sandbox_secret searxng_secret
   sandbox_secret="$(sed -n 's/^SANDBOX_SHARED_SECRET=//p' "${ENV_FILE}" | head -n 1)"
   if [[ -z "${sandbox_secret}" ]]; then
     sandbox_secret="$(openssl rand -hex 32)"
@@ -41,12 +53,27 @@ ensure_runtime_env() {
       printf 'SANDBOX_SHARED_SECRET=%s\n' "${sandbox_secret}" >>"${ENV_FILE}"
     fi
   fi
+
+  searxng_secret="$(sed -n 's/^SEARXNG_SECRET=//p' "${ENV_FILE}" | head -n 1)"
+  if [[ -z "${searxng_secret}" ]]; then
+    searxng_secret="$(openssl rand -hex 32)"
+    if grep -q '^SEARXNG_SECRET=' "${ENV_FILE}"; then
+      sed -i "s|^SEARXNG_SECRET=.*|SEARXNG_SECRET=${searxng_secret}|" "${ENV_FILE}"
+    else
+      printf 'SEARXNG_SECRET=%s\n' "${searxng_secret}" >>"${ENV_FILE}"
+    fi
+  fi
+
   upsert_env_if_missing SANDBOX_TIMEOUT_SECONDS 90
   upsert_env_if_missing SANDBOX_MAX_BODY_BYTES 2097152
   upsert_env_if_missing SANDBOX_MAX_FILES 300
   upsert_env_if_missing SANDBOX_MAX_FILE_BYTES 524288
   upsert_env_if_missing SANDBOX_CLIENT_TIMEOUT_SECONDS 100
   upsert_env_if_missing AGENT_MAX_ACTIVE_RUNS_PER_USER 3
+  ensure_env_default WEB_SEARCH_BASE_URL http://searxng:8080
+  ensure_env_default WEB_SEARCH_TRUSTED_HOSTS searxng
+  upsert_env_if_missing WEB_SEARCH_MAX_RESULTS 8
+  upsert_env_if_missing WEB_CONTEXT_MAX_TOKENS 2200
   chmod 600 "${ENV_FILE}"
 }
 
@@ -99,7 +126,8 @@ printf 'Запускаем обязательный release gate...\n'
 bash "${PROJECT_DIR}/scripts/release_check.sh"
 
 compose build --pull
-compose up -d postgres redis
+compose pull searxng
+compose up -d postgres redis searxng
 compose run --rm backend python manage.py migration_safety_check
 DEPLOY_STARTED=true
 compose run --rm backend python manage.py migrate --noinput
@@ -109,9 +137,20 @@ compose exec -T backend python manage.py check --deploy
 compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
 compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"
 
+printf 'Проверяем бесплатный web-search...\n'
+SEARCH_OK=false
+for _attempt in $(seq 1 12); do
+  if compose exec -T backend python -c "import json,urllib.parse,urllib.request; u='http://searxng:8080/search?'+urllib.parse.urlencode({'q':'AI','format':'json','safesearch':1}); d=json.load(urllib.request.urlopen(u,timeout=8)); assert isinstance(d.get('results'),list)" >/dev/null 2>&1; then
+    SEARCH_OK=true
+    break
+  fi
+  sleep 5
+done
+[[ "${SEARCH_OK}" == true ]] || { printf 'SearXNG web-search не прошёл health-check\n' >&2; exit 1; }
+
 printf 'Проверяем обязательные production services...\n'
 RUNNING_SERVICES="$(compose ps --status running --services)"
-for service in postgres redis backend worker beat frontend caddy sandbox; do
+for service in postgres redis searxng backend worker beat frontend caddy sandbox; do
   printf '%s\n' "$RUNNING_SERVICES" | grep -Fxq "$service" || {
     printf 'Production service не запущен: %s\n' "$service" >&2
     exit 1
