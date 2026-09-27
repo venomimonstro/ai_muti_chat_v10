@@ -1,12 +1,15 @@
 from datetime import timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from .limits import ensure_owner_run_capacity
 from .models import Agent, AgentRun, AgentTeam
 from .readiness import agent_readiness
 from .run_views import create_single_agent_run
@@ -25,6 +28,41 @@ ACTIVE_RUN_STATES = {
 }
 
 
+def _active_run_for_agent(owner, agent):
+    return (
+        AgentRun.objects.filter(owner=owner, state__in=ACTIVE_RUN_STATES)
+        .filter(Q(agent=agent) | Q(team__members__agent=agent, team__members__enabled=True))
+        .distinct()
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def _team_conflict(owner, team):
+    member_ids = list(team.members.filter(enabled=True).values_list("agent_id", flat=True))
+    if not member_ids:
+        return None
+    # Lock member rows in a deterministic order. Standalone starts lock the same
+    # Agent row, so cross-subject concurrency is serialized instead of merely observed.
+    list(
+        Agent.objects.select_for_update(of=("self",))
+        .filter(pk__in=member_ids, owner=owner)
+        .order_by("pk")
+        .values_list("pk", flat=True)
+    )
+    return (
+        AgentRun.objects.filter(owner=owner, state__in=ACTIVE_RUN_STATES)
+        .filter(
+            Q(agent_id__in=member_ids)
+            | Q(team__members__agent_id__in=member_ids, team__members__enabled=True)
+        )
+        .exclude(team=team)
+        .distinct()
+        .order_by("-created_at")
+        .first()
+    )
+
+
 class AgentScheduleSerializer(serializers.ModelSerializer):
     subject_name = serializers.SerializerMethodField()
     subject_type = serializers.SerializerMethodField()
@@ -37,7 +75,9 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
             "next_run_at", "last_run_at", "last_run", "skip_if_running",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "subject_name", "subject_type", "last_run_at", "last_run", "created_at", "updated_at"]
+        read_only_fields = [
+            "id", "subject_name", "subject_type", "last_run_at", "last_run", "created_at", "updated_at"
+        ]
 
     def get_subject_name(self, obj):
         subject = obj.agent or obj.team
@@ -60,18 +100,24 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
         cadence = attrs.get("cadence", getattr(self.instance, "cadence", AgentSchedule.Cadence.INTERVAL))
         interval = int(attrs.get("interval_minutes", getattr(self.instance, "interval_minutes", 1440)))
         local_time = attrs.get("local_time", getattr(self.instance, "local_time", None))
-        timezone_name = str(attrs.get("timezone_name", getattr(self.instance, "timezone_name", "Europe/Moscow")))
+        timezone_name = str(
+            attrs.get("timezone_name", getattr(self.instance, "timezone_name", "Europe/Moscow"))
+        )
         weekdays = list(attrs.get("weekdays", getattr(self.instance, "weekdays", [])) or [])
-        skip_if_running = bool(attrs.get("skip_if_running", getattr(self.instance, "skip_if_running", True)))
+        skip_if_running = bool(
+            attrs.get("skip_if_running", getattr(self.instance, "skip_if_running", True))
+        )
 
         if not skip_if_running:
-            raise serializers.ValidationError({"skip_if_running": "Параллельные запуски одного сотрудника или команды запрещены"})
+            raise serializers.ValidationError(
+                {"skip_if_running": "Параллельные запуски одного сотрудника или команды запрещены"}
+            )
         if interval < 5:
             raise serializers.ValidationError({"interval_minutes": "Минимальный интервал — 5 минут"})
         try:
             ZoneInfo(timezone_name)
-        except ZoneInfoNotFoundError:
-            raise serializers.ValidationError({"timezone_name": "Неизвестный часовой пояс"})
+        except ZoneInfoNotFoundError as exc:
+            raise serializers.ValidationError({"timezone_name": "Неизвестный часовой пояс"}) from exc
         if cadence != AgentSchedule.Cadence.INTERVAL and local_time is None:
             raise serializers.ValidationError({"local_time": "Укажите время запуска"})
         if any(not isinstance(day, int) or day < 0 or day > 6 for day in weekdays):
@@ -88,7 +134,9 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data.pop("next_run_at", None)
         validated_data["skip_if_running"] = True
-        placeholder = timezone.now() + timedelta(minutes=max(5, int(validated_data.get("interval_minutes", 1440))))
+        placeholder = timezone.now() + timedelta(
+            minutes=max(5, int(validated_data.get("interval_minutes", 1440)))
+        )
         instance = AgentSchedule.objects.create(
             owner=self.context["request"].user,
             next_run_at=placeholder,
@@ -102,7 +150,9 @@ class AgentScheduleSerializer(serializers.ModelSerializer):
         scheduling_fields = {"cadence", "interval_minutes", "local_time", "timezone_name", "weekdays"}
         was_enabled = bool(instance.enabled)
         will_enable = bool(validated_data.get("enabled", instance.enabled))
-        recompute = bool(scheduling_fields.intersection(validated_data.keys())) or (not was_enabled and will_enable)
+        recompute = bool(scheduling_fields.intersection(validated_data.keys())) or (
+            not was_enabled and will_enable
+        )
         for key, value in validated_data.items():
             setattr(instance, key, value)
         instance.full_clean()
@@ -129,8 +179,8 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
         limit_raw = str(request.query_params.get("limit") or "10").strip()
         try:
             limit = max(1, min(int(limit_raw), 50))
-        except ValueError:
-            raise serializers.ValidationError({"limit": "Используйте число от 1 до 50"})
+        except ValueError as exc:
+            raise serializers.ValidationError({"limit": "Используйте число от 1 до 50"}) from exc
         runs = (
             AgentRun.objects.filter(
                 owner=request.user,
@@ -147,18 +197,26 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
     def run_now(self, request, pk=None):
         scoped = self.get_object()
         schedule = (
-            AgentSchedule.objects.select_for_update()
+            AgentSchedule.objects.select_for_update(of=("self",))
             .select_related("agent", "team")
             .get(pk=scoped.pk, owner=request.user)
         )
 
         if schedule.agent_id:
-            subject = Agent.objects.select_for_update().select_related("project").get(pk=schedule.agent_id, owner=request.user)
+            subject = (
+                Agent.objects.select_for_update(of=("self",))
+                .select_related("project")
+                .get(pk=schedule.agent_id, owner=request.user)
+            )
             if subject.status != Agent.Status.ACTIVE:
                 raise serializers.ValidationError({"detail": "Сотрудник приостановлен"})
-            active = AgentRun.objects.filter(owner=request.user, agent=subject, state__in=ACTIVE_RUN_STATES).first()
+            active = _active_run_for_agent(request.user, subject)
             if active is not None:
-                return Response(AgentRunSerializer(active).data, status=status.HTTP_200_OK)
+                if active.agent_id == subject.id:
+                    return Response(AgentRunSerializer(active).data, status=status.HTTP_200_OK)
+                raise serializers.ValidationError(
+                    {"detail": "AI-сотрудник уже занят активным запуском команды"}
+                )
             objective = (schedule.objective or subject.objective or "").strip()
             if not objective:
                 raise serializers.ValidationError({"objective": "У расписания и сотрудника нет задачи"})
@@ -175,14 +233,20 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
             )
         else:
             subject = (
-                AgentTeam.objects.select_for_update()
+                AgentTeam.objects.select_for_update(of=("self",))
                 .select_related("director", "project")
                 .prefetch_related("members__agent")
                 .get(pk=schedule.team_id, owner=request.user)
             )
-            active = AgentRun.objects.filter(owner=request.user, team=subject, state__in=ACTIVE_RUN_STATES).first()
+            active = AgentRun.objects.filter(
+                owner=request.user, team=subject, state__in=ACTIVE_RUN_STATES
+            ).first()
             if active is not None:
                 return Response(AgentRunSerializer(active).data, status=status.HTTP_200_OK)
+            if _team_conflict(request.user, subject) is not None:
+                raise serializers.ValidationError(
+                    {"detail": "Один из AI-сотрудников команды уже занят другим активным запуском"}
+                )
             objective = (schedule.objective or subject.objective or "").strip()
             if not objective:
                 raise serializers.ValidationError({"objective": "У расписания и команды нет задачи"})
@@ -191,6 +255,10 @@ class AgentScheduleViewSet(viewsets.ModelViewSet):
                 raise serializers.ValidationError(
                     {"detail": "Команда не готова к запуску: " + "; ".join(readiness["blockers"])}
                 )
+            try:
+                ensure_owner_run_capacity(request.user)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"detail": "; ".join(exc.messages)}) from exc
             run = AgentRun.objects.create(
                 owner=request.user,
                 team=subject,
