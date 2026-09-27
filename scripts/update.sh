@@ -7,6 +7,7 @@ COMPOSE_FILE="${PROJECT_DIR}/docker-compose.prod.yml"
 TEST_COMPOSE_FILE="${PROJECT_DIR}/docker-compose.test.yml"
 BACKUP_DIR="${PROJECT_DIR}/backups"
 LOG_DIR="${PROJECT_DIR}/logs"
+LOCK_FILE="${PROJECT_DIR}/.update.lock"
 PREVIOUS_SHA=""
 CODE_UPDATED=false
 DEPLOY_STARTED=false
@@ -20,27 +21,30 @@ UPDATE_LOG="${LOG_DIR}/update-${STAMP}.log"
 command -v flock >/dev/null 2>&1 || { printf 'Команда flock не найдена\n' >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { printf 'openssl не найден\n' >&2; exit 1; }
 
+# Run the updater under a dedicated flock wrapper. `--close` prevents the lock
+# descriptor from leaking into release_check/docker/pytest descendants. The
+# wrapper process keeps the lock for the whole update, while child processes can
+# never keep it alive after the updater itself exits or is interrupted.
+if [[ "${AI_WORKSPACE_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
+  if ! flock --nonblock --close "${LOCK_FILE}" \
+      env AI_WORKSPACE_UPDATE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}" "$@"; then
+    status=$?
+    if command -v fuser >/dev/null 2>&1; then
+      LOCK_PIDS="$(fuser "${LOCK_FILE}" 2>/dev/null || true)"
+      if [[ -n "${LOCK_PIDS// }" ]]; then
+        printf '\n[BLOCKED] Другое обновление уже выполняется.\n' >&2
+        printf '[INFO] Lock держит PID:%s\n' "${LOCK_PIDS}" >&2
+        ps -o pid,ppid,etime,stat,cmd -p ${LOCK_PIDS} >&2 2>/dev/null || true
+      fi
+    fi
+    exit "${status:-1}"
+  fi
+  exit 0
+fi
+
 mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
 touch "${UPDATE_LOG}"
 exec > >(tee -a "${UPDATE_LOG}") 2>&1
-
-LOCK_FILE="${PROJECT_DIR}/.update.lock"
-exec 9>"${LOCK_FILE}"
-if ! flock -n 9; then
-  printf '\n[BLOCKED] Другое обновление уже выполняется.\n' >&2
-  if command -v fuser >/dev/null 2>&1; then
-    LOCK_PIDS="$(fuser "${LOCK_FILE}" 2>/dev/null || true)"
-    if [[ -n "${LOCK_PIDS// }" ]]; then
-      printf '[INFO] Lock держит PID:%s\n' "${LOCK_PIDS}" >&2
-      ps -o pid,ppid,etime,stat,cmd -p ${LOCK_PIDS} >&2 2>/dev/null || true
-    fi
-  elif command -v lsof >/dev/null 2>&1; then
-    lsof "${LOCK_FILE}" >&2 2>/dev/null || true
-  fi
-  printf '[INFO] Не удаляйте .update.lock вручную, пока процесс-владелец существует.\n' >&2
-  printf '[INFO] Log: %s\n' "${UPDATE_LOG}" >&2
-  exit 1
-fi
 
 umask 077
 
