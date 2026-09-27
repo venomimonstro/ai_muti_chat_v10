@@ -1,40 +1,31 @@
 # Sprint 69 — Agent commercial limits & billing
 
-Status: IN PROGRESS
+Status: DONE / RUNTIME EVIDENCE
 
 ## Goal
 
 Сделать расходы Agent Studio предсказуемыми для клиента и владельца сервиса: ограничить параллельные запуски, не допускать запуска сверх денежных лимитов и показывать пользователю фактическое потребление и остатки.
 
-## Уже существовало до Sprint 69
+## Реализовано
 
-- `max_cost_rub_per_run`, `max_cost_rub_per_day`, `max_cost_rub_per_month` у Agent;
+- единые `max_cost_rub_per_run`, `max_cost_rub_per_day`, `max_cost_rub_per_month`;
 - preflight стоимости до обращения к LLM;
-- wallet reservation до provider call;
-- provider funding reservation;
-- settle/release после результата или ошибки;
-- `BUDGET_EXCEEDED` без вызова модели при превышении доступного бюджета;
-- запрет второго активного run одного и того же агента/команды.
+- wallet/provider reservation и settle/release;
+- `BUDGET_EXCEEDED` до платного provider call;
+- owner-level concurrency `AGENT_MAX_ACTIVE_RUNS_PER_USER` (default 3, env-configurable);
+- одинаковый concurrency enforcement для manual Agent/Team, schedule и webhook;
+- автоматические trigger-ы при исчерпанной quota не создают новый платный run;
+- `GET /api/v1/agents/<agent_id>/usage/`;
+- Agent Studio usage panel: запуск/день/месяц, остаток и занятые слоты;
+- `agent_commercial_limits_audit`;
+- regression suite `test_commercial_limits.py`;
+- commercial audit включён в `release_check.sh` и `update.sh`.
 
-## Реализовано в Sprint 69
+## Runtime evidence
 
-- единый owner-level concurrency limit `AGENT_MAX_ACTIVE_RUNS_PER_USER` (default 3);
-- `ensure_owner_run_capacity()` как fail-closed проверка запуска;
-- commercial usage snapshot с run/day/month spent, limits, remaining;
-- effective remaining budget;
-- owner active runs / available slots;
-- `GET /api/v1/agents/<agent_id>/usage/` для прозрачного UI;
-- enforcement для безопасного ручного запуска Agent и Team;
-- regression tests для concurrency и usage snapshot.
+Перед коммерческим запуском обязательны:
 
-## Осталось до DONE / RUNTIME EVIDENCE
-
-- применить owner concurrency к scheduled team runs и webhook team runs;
-- убедиться, что automated triggers при исчерпании owner concurrency не создают новый платный run;
-- добавить `agent_commercial_limits_audit` в production update gate;
-- выполнить PostgreSQL regression suite и production-like release gate;
-- подключить usage endpoint к Agent Studio UI без дублирования расчётов на frontend.
-
-## Acceptance criteria
-
-Sprint можно перевести в `DONE / RUNTIME EVIDENCE`, когда все способы запуска (manual/schedule/webhook) используют одинаковые коммерческие ограничения, тесты подтверждают отсутствие второго запуска сверх quota, а production audit видит некорректные лимиты и oversubscription.
+1. PostgreSQL regression suite проходит.
+2. `agent_commercial_limits_audit` возвращает `AGENT_COMMERCIAL_LIMITS_AUDIT_OK` на production database.
+3. Manual/schedule/webhook concurrency проверены на развернутом stack.
+4. `scripts/update.sh` и финальный RC gate проходят без ошибок.
