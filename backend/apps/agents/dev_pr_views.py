@@ -14,7 +14,7 @@ class DevRunPullRequestView(APIView):
     @transaction.atomic
     def post(self, request, run_id):
         run = get_object_or_404(
-            AgentRun.objects.select_for_update().select_related(
+            AgentRun.objects.select_for_update(of=("self",)).select_related(
                 "team", "project__github_repository__installation"
             ),
             id=run_id,
