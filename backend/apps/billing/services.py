@@ -12,6 +12,8 @@ from apps.accounts.services import enforce_spend_limits, notify_low_balance
 from .models import AdminBalanceAdjustment, BalanceReservation, LedgerEntry, Wallet
 
 MONEY_ZERO = Decimal("0.0000")
+MAX_MARGIN_PERCENT = Decimal("9999.999")
+MIN_MARGIN_PERCENT = Decimal("-9999.999")
 
 
 def _entry(
@@ -107,10 +109,6 @@ def reserve(user, amount: Decimal, key: str):
     if existing:
         return existing
     wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
-    # The first lookup is a fast path only. Two identical HTTP requests can both
-    # miss it before one acquires the wallet lock. Re-check after serialization so
-    # the second request returns the same reservation instead of hitting a unique
-    # constraint after touching the wallet.
     existing = BalanceReservation.objects.filter(idempotency_key=key).first()
     if existing:
         if existing.wallet_id != wallet.id:
@@ -215,17 +213,18 @@ def settle(reservation_id, actual: Decimal):
 
 
 def _consume_generation_reservation_after_provider_delivery(reservation, wallet):
-    """Recover an interrupted customer settlement from confirmed provider usage.
-
-    This path is deliberately conservative: it never charges the whole reserve.
-    It recomputes the exact retail charge from the immutable pricing snapshot and
-    confirmed token usage, then caps it at the amount authorized before the call.
-    """
+    """Recover interrupted customer settlement from confirmed provider usage."""
     key = str(reservation.idempotency_key or "")
     if not key.startswith("generation:"):
         return False
     generation_id = key.split(":", 1)[1]
     if not generation_id:
+        return False
+    try:
+        generation_uuid = uuid.UUID(generation_id)
+    except (ValueError, TypeError, AttributeError):
+        # Reservation keys are also used by tests, migrations and non-chat callers.
+        # Only a real Generation UUID is eligible for provider-delivery recovery.
         return False
 
     from apps.billing.models import RequestCost
@@ -235,7 +234,7 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
     request_cost = (
         RequestCost.objects.select_for_update()
         .select_related("price_version")
-        .filter(generation_id=generation_id, provider_cost_rub__isnull=False)
+        .filter(generation_id=generation_uuid, provider_cost_rub__isnull=False)
         .first()
     )
     if request_cost is None or not (request_cost.input_tokens or request_cost.output_tokens):
@@ -258,14 +257,12 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
         )
     actual = min(max(calculated_charge, MONEY_ZERO), reservation.amount_rub)
 
-    # settle() releases the unused part of the reserve and consumes only `actual`.
     settle(reservation.id, actual)
 
     provider_cost = request_cost.provider_cost_rub or MONEY_ZERO
     gross_profit = actual - provider_cost
-    gross_margin = (gross_profit / actual * Decimal("100")) if actual else MONEY_ZERO
-    # Avoid firing procurement post_save a second time: provider usage was already
-    # recorded when provider_cost_rub became non-null.
+    raw_margin = (gross_profit / actual * Decimal("100")) if actual else MONEY_ZERO
+    gross_margin = min(MAX_MARGIN_PERCENT, max(MIN_MARGIN_PERCENT, raw_margin))
     RequestCost.objects.filter(pk=request_cost.pk).update(
         charged_rub=actual,
         gross_profit_rub=gross_profit,
@@ -331,104 +328,54 @@ def reconstruct_buckets(wallet):
 
 
 @transaction.atomic
-def debit_paid(user, amount: Decimal, source_type: str, source_id: str):
-    if amount <= 0:
-        raise ValidationError("Debit must be positive")
-    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
-    key = f"refund:{source_type}:{source_id}"
-    existing = LedgerEntry.objects.filter(idempotency_key=key).first()
+def admin_adjust(*, user, amount: Decimal, key: str, comment: str):
+    if not key or not comment.strip():
+        raise ValidationError("Admin adjustment requires key and comment")
+    existing = AdminBalanceAdjustment.objects.filter(idempotency_key=key).first()
     if existing:
         return existing
-    if wallet.paid_rub < amount or wallet.available_rub < amount:
-        raise ValidationError("Недостаточно неиспользованного платного баланса для возврата")
-    wallet.paid_rub -= amount
-    wallet.available_rub -= amount
-    wallet.save(update_fields=["paid_rub", "available_rub", "updated_at"])
-    return _entry(
-        wallet,
-        LedgerEntry.Kind.REFUND,
-        amount,
-        -amount,
-        MONEY_ZERO,
-        -amount,
-        MONEY_ZERO,
-        source_type,
-        source_id,
-        key,
-    )
-
-
-@transaction.atomic
-def admin_adjust_balance(
-    *, target_user, admin, direction, amount, comment, idempotency_key=""
-):
-    amount = Decimal(str(amount)).quantize(Decimal("0.0001"))
-    comment = str(comment or "").strip()
-    idempotency_key = str(idempotency_key or "").strip()
-    if amount <= 0:
-        raise ValidationError("Сумма корректировки должна быть больше нуля")
-    if len(comment) < 3:
-        raise ValidationError("Для ручной корректировки обязателен комментарий")
-    if direction not in {AdminBalanceAdjustment.Direction.CREDIT, AdminBalanceAdjustment.Direction.DEBIT}:
-        raise ValidationError("Неизвестное направление корректировки")
-    if not 1 <= len(idempotency_key) <= 120:
-        raise ValidationError("Для корректировки обязателен Idempotency-Key")
-
-    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=target_user)
-    ledger_key = f"admin-adjustment:{admin.id}:{target_user.id}:{idempotency_key}"
-    existing_entry = LedgerEntry.objects.filter(idempotency_key=ledger_key).first()
-    if existing_entry is not None:
-        existing = AdminBalanceAdjustment.objects.filter(ledger_entry=existing_entry).first()
-        if existing is None:
-            raise ValidationError("Нарушена связь корректировки с ledger")
-        if (
-            existing.direction != direction
-            or existing.amount_rub != amount
-            or existing.comment != comment
-        ):
-            raise ValidationError("Idempotency-Key уже использован для другой корректировки")
+    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
+    existing = AdminBalanceAdjustment.objects.filter(idempotency_key=key).first()
+    if existing:
+        if existing.wallet_id != wallet.id:
+            raise ValidationError("Idempotency-Key уже используется другим кошельком")
         return existing
-
-    adjustment_id = uuid.uuid4()
-    if direction == AdminBalanceAdjustment.Direction.CREDIT:
-        # Administrative goodwill/compensation is promo by default and therefore
-        # cannot be cashed out through the paid-balance refund flow.
+    if amount == 0:
+        raise ValidationError("Adjustment amount cannot be zero")
+    paid_delta = MONEY_ZERO
+    promo_delta = MONEY_ZERO
+    if amount > 0:
         wallet.available_rub += amount
         wallet.promo_rub += amount
-        available_delta = amount
-        paid_delta = MONEY_ZERO
         promo_delta = amount
     else:
-        if wallet.available_rub < amount:
-            raise ValidationError("Недостаточно доступного баланса для ручного списания")
-        promo_delta_abs = min(wallet.promo_rub, amount)
-        paid_delta_abs = amount - promo_delta_abs
-        wallet.available_rub -= amount
-        wallet.promo_rub -= promo_delta_abs
-        wallet.paid_rub -= paid_delta_abs
-        available_delta = -amount
-        paid_delta = -paid_delta_abs
-        promo_delta = -promo_delta_abs
-
+        debit = -amount
+        if wallet.available_rub < debit:
+            raise ValidationError("Adjustment cannot overdraw wallet")
+        promo_debit = min(wallet.promo_rub, debit)
+        paid_debit = debit - promo_debit
+        wallet.available_rub -= debit
+        wallet.promo_rub -= promo_debit
+        wallet.paid_rub -= paid_debit
+        promo_delta = -promo_debit
+        paid_delta = -paid_debit
     wallet.save(update_fields=["available_rub", "paid_rub", "promo_rub", "updated_at"])
-    entry = _entry(
+    adjustment = AdminBalanceAdjustment.objects.create(
+        wallet=wallet,
+        amount_rub=amount,
+        comment=comment.strip(),
+        idempotency_key=key,
+    )
+    _entry(
         wallet,
         LedgerEntry.Kind.ADJUSTMENT,
+        abs(amount),
         amount,
-        available_delta,
         MONEY_ZERO,
         paid_delta,
         promo_delta,
         "admin_adjustment",
-        adjustment_id,
-        ledger_key,
+        adjustment.id,
+        f"admin-adjust:{key}",
     )
-    return AdminBalanceAdjustment.objects.create(
-        id=adjustment_id,
-        wallet=wallet,
-        admin=admin,
-        direction=direction,
-        amount_rub=amount,
-        comment=comment,
-        ledger_entry=entry,
-    )
+    return adjustment
