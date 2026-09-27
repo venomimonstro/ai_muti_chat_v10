@@ -28,6 +28,45 @@ def configured_scope(fallback: str = DEFAULT_SCOPE) -> str:
     return value if value in VALID_SCOPES else DEFAULT_SCOPE
 
 
+def _request_timeout() -> httpx.Timeout:
+    total = max(5.0, float(settings.AI_PROVIDER_TIMEOUT_SECONDS))
+    return httpx.Timeout(total, connect=min(10.0, total), read=total, write=min(20.0, total), pool=min(10.0, total))
+
+
+def _http_provider_error(response: httpx.Response, *, oauth: bool = False) -> ProviderError:
+    status = response.status_code
+    prefix = "gigachat_oauth" if oauth else "gigachat"
+    if status == 401:
+        code = f"{prefix}_authentication_error"
+        retryable = False
+        message = "GigaChat authentication failed"
+    elif status == 403:
+        code = f"{prefix}_permission_denied"
+        retryable = False
+        message = "GigaChat permission denied"
+    elif status == 404:
+        code = f"{prefix}_model_not_found"
+        retryable = False
+        message = "GigaChat model or endpoint was not found"
+    elif status == 429:
+        code = f"{prefix}_rate_limited"
+        retryable = True
+        message = "GigaChat rate limit reached"
+    elif status >= 500:
+        code = f"{prefix}_server_error"
+        retryable = True
+        message = "GigaChat service error"
+    elif status == 400:
+        code = f"{prefix}_bad_request"
+        retryable = False
+        message = "GigaChat rejected request parameters"
+    else:
+        code = f"{prefix}_http_{status}"
+        retryable = status >= 500
+        message = "GigaChat request rejected"
+    return ProviderError(message, code=code, retryable=retryable)
+
+
 class GigaChatAPIAdapter:
     """API-only GigaChat adapter. No local inference or llama.cpp fallback."""
 
@@ -61,12 +100,7 @@ class GigaChatAPIAdapter:
             response.raise_for_status()
             payload = response.json()
         except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            raise ProviderError(
-                "GigaChat OAuth rejected authorization key or scope",
-                code=f"gigachat_oauth_http_{status}",
-                retryable=status >= 500 or status == 429,
-            ) from exc
+            raise _http_provider_error(exc.response, oauth=True) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError("GigaChat OAuth failed", code="gigachat_oauth_network", retryable=True) from exc
         token = str(payload.get("access_token") or "").strip()
@@ -81,11 +115,11 @@ class GigaChatAPIAdapter:
         self._token = token
         return token
 
-    def _headers(self, *, force_token: bool = False) -> dict:
+    def _headers(self, *, force_token: bool = False, stream: bool = False) -> dict:
         return {
             "Authorization": f"Bearer {self._access_token(force=force_token)}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
         }
 
     @staticmethod
@@ -108,9 +142,9 @@ class GigaChatAPIAdapter:
         with httpx.stream(
             "POST",
             f"{self.base_url}/chat/completions",
-            headers=self._headers(force_token=force_token),
+            headers=self._headers(force_token=force_token, stream=True),
             json=payload,
-            timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+            timeout=_request_timeout(),
             follow_redirects=True,
         ) as response:
             if response.status_code == 401 and not force_token:
@@ -120,12 +154,7 @@ class GigaChatAPIAdapter:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                raise ProviderError(
-                    "GigaChat request rejected",
-                    code=f"gigachat_http_{status}",
-                    retryable=status == 429 or status >= 500,
-                ) from exc
+                raise _http_provider_error(exc.response) from exc
             for line in response.iter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -175,9 +204,11 @@ class GigaChatAPIAdapter:
             return AdapterHealth(True, int((time.monotonic() - started) * 1000))
         except ProviderError as exc:
             return AdapterHealth(False, int((time.monotonic() - started) * 1000), exc.code)
-        except httpx.HTTPError as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            return AdapterHealth(False, int((time.monotonic() - started) * 1000), f"gigachat_http_{status or 'network'}")
+        except httpx.HTTPStatusError as exc:
+            error = _http_provider_error(exc.response)
+            return AdapterHealth(False, int((time.monotonic() - started) * 1000), error.code)
+        except httpx.HTTPError:
+            return AdapterHealth(False, int((time.monotonic() - started) * 1000), "gigachat_network")
 
     def capabilities(self):
         return {"text", "streaming"}
