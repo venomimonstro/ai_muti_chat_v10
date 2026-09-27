@@ -332,54 +332,110 @@ def reconstruct_buckets(wallet):
 
 
 @transaction.atomic
-def admin_adjust(*, user, amount: Decimal, key: str, comment: str):
-    if not key or not comment.strip():
-        raise ValidationError("Admin adjustment requires key and comment")
-    existing = AdminBalanceAdjustment.objects.filter(idempotency_key=key).first()
-    if existing:
-        return existing
+def debit_paid(user, amount: Decimal, source_type: str, source_id: str):
+    """Debit refundable paid funds exactly once without touching promo balance."""
+    amount = Decimal(str(amount)).quantize(Decimal("0.0001"))
+    if amount <= 0:
+        raise ValidationError("Debit must be positive")
     wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
-    existing = AdminBalanceAdjustment.objects.filter(idempotency_key=key).first()
+    key = f"refund:{source_type}:{source_id}"
+    existing = LedgerEntry.objects.filter(idempotency_key=key).first()
     if existing:
-        if existing.wallet_id != wallet.id:
-            raise ValidationError("Idempotency-Key уже используется другим кошельком")
         return existing
-    if amount == 0:
-        raise ValidationError("Adjustment amount cannot be zero")
-    paid_delta = MONEY_ZERO
-    promo_delta = MONEY_ZERO
-    if amount > 0:
+    if wallet.paid_rub < amount or wallet.available_rub < amount:
+        raise ValidationError("Недостаточно неиспользованного платного баланса для возврата")
+    wallet.paid_rub -= amount
+    wallet.available_rub -= amount
+    wallet.save(update_fields=["paid_rub", "available_rub", "updated_at"])
+    return _entry(
+        wallet,
+        LedgerEntry.Kind.REFUND,
+        amount,
+        -amount,
+        MONEY_ZERO,
+        -amount,
+        MONEY_ZERO,
+        source_type,
+        source_id,
+        key,
+    )
+
+
+@transaction.atomic
+def admin_adjust_balance(
+    *, target_user, admin, direction, amount, comment, idempotency_key=""
+):
+    """Create an immutable audited manual balance correction exactly once."""
+    amount = Decimal(str(amount)).quantize(Decimal("0.0001"))
+    comment = str(comment or "").strip()
+    idempotency_key = str(idempotency_key or "").strip()
+    if amount <= 0:
+        raise ValidationError("Сумма корректировки должна быть больше нуля")
+    if len(comment) < 3:
+        raise ValidationError("Для ручной корректировки обязателен комментарий")
+    if direction not in {
+        AdminBalanceAdjustment.Direction.CREDIT,
+        AdminBalanceAdjustment.Direction.DEBIT,
+    }:
+        raise ValidationError("Неизвестное направление корректировки")
+    if not 1 <= len(idempotency_key) <= 120:
+        raise ValidationError("Для корректировки обязателен Idempotency-Key")
+
+    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=target_user)
+    ledger_key = f"admin-adjustment:{admin.id}:{target_user.id}:{idempotency_key}"
+    existing_entry = LedgerEntry.objects.filter(idempotency_key=ledger_key).first()
+    if existing_entry is not None:
+        existing = AdminBalanceAdjustment.objects.filter(ledger_entry=existing_entry).first()
+        if existing is None:
+            raise ValidationError("Нарушена связь корректировки с ledger")
+        if (
+            existing.direction != direction
+            or existing.amount_rub != amount
+            or existing.comment != comment
+        ):
+            raise ValidationError("Idempotency-Key уже использован для другой корректировки")
+        return existing
+
+    adjustment_id = uuid.uuid4()
+    if direction == AdminBalanceAdjustment.Direction.CREDIT:
+        # Administrative compensation is promo by default and cannot be cashed
+        # out through the paid-balance refund flow.
         wallet.available_rub += amount
         wallet.promo_rub += amount
+        available_delta = amount
+        paid_delta = MONEY_ZERO
         promo_delta = amount
     else:
-        debit = -amount
-        if wallet.available_rub < debit:
-            raise ValidationError("Adjustment cannot overdraw wallet")
-        promo_debit = min(wallet.promo_rub, debit)
-        paid_debit = debit - promo_debit
-        wallet.available_rub -= debit
-        wallet.promo_rub -= promo_debit
-        wallet.paid_rub -= paid_debit
-        promo_delta = -promo_debit
-        paid_delta = -paid_debit
+        if wallet.available_rub < amount:
+            raise ValidationError("Недостаточно доступного баланса для ручного списания")
+        promo_delta_abs = min(wallet.promo_rub, amount)
+        paid_delta_abs = amount - promo_delta_abs
+        wallet.available_rub -= amount
+        wallet.promo_rub -= promo_delta_abs
+        wallet.paid_rub -= paid_delta_abs
+        available_delta = -amount
+        paid_delta = -paid_delta_abs
+        promo_delta = -promo_delta_abs
+
     wallet.save(update_fields=["available_rub", "paid_rub", "promo_rub", "updated_at"])
-    adjustment = AdminBalanceAdjustment.objects.create(
-        wallet=wallet,
-        amount_rub=amount,
-        comment=comment.strip(),
-        idempotency_key=key,
-    )
-    _entry(
+    entry = _entry(
         wallet,
         LedgerEntry.Kind.ADJUSTMENT,
-        abs(amount),
         amount,
+        available_delta,
         MONEY_ZERO,
         paid_delta,
         promo_delta,
         "admin_adjustment",
-        adjustment.id,
-        f"admin-adjust:{key}",
+        adjustment_id,
+        ledger_key,
     )
-    return adjustment
+    return AdminBalanceAdjustment.objects.create(
+        id=adjustment_id,
+        wallet=wallet,
+        admin=admin,
+        direction=direction,
+        amount_rub=amount,
+        comment=comment,
+        ledger_entry=entry,
+    )
