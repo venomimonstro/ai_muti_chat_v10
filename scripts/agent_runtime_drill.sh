@@ -59,10 +59,13 @@ assert_celery_worker_responds() {
 }
 
 assert_beat_process() {
-  compose exec -T beat sh -c "ps -eo args | grep -E '[c]elery .* beat|[c]elery -A config beat' >/dev/null" || {
+  local container_id
+  container_id="$(compose ps -q beat)"
+  [[ -n "$container_id" ]] || { echo 'Celery beat container is missing' >&2; return 1; }
+  if ! docker top "$container_id" -eo args 2>/dev/null | grep -Eq '[c]elery .* beat|[c]elery -A config beat'; then
     echo 'Celery beat process is not running' >&2
     return 1
-  }
+  fi
   echo '[PASS] Celery beat process is running.'
 }
 
