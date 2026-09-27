@@ -52,11 +52,15 @@ compose() {
   docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
 }
 
-# Validate that the pulled source actually contains the search service.
-compose config --services | grep -Fxq searxng || {
+# Do not pipe compose directly into grep under `set -o pipefail`: grep -q may close
+# the pipe after the match and make docker compose exit with SIGPIPE, producing a
+# false "service missing" failure.
+COMPOSE_SERVICES="$(compose config --services)"
+if ! grep -Fxq 'searxng' <<<"${COMPOSE_SERVICES}"; then
   echo "Текущий docker-compose.prod.yml не содержит searxng" >&2
+  printf 'Compose services:\n%s\n' "${COMPOSE_SERVICES}" >&2
   exit 1
-}
+fi
 
 compose pull searxng
 compose build backend worker
