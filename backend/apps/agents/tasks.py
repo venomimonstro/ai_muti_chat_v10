@@ -2,11 +2,13 @@ from datetime import timedelta
 
 from celery import shared_task
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
 from .generic_team_runtime import execute_generic_team_run
 from .graph_runtime_v2 import execute_graph_run_v2
+from .limits import ensure_owner_run_capacity
 from .models import Agent, AgentApproval, AgentRun, AgentTeam
 from .readiness import agent_readiness
 from .run_views import create_single_agent_run
@@ -105,6 +107,15 @@ def _failed_team_not_ready_run(*, schedule, team, objective, readiness, now):
     )
 
 
+def _schedule_capacity_available(schedule):
+    try:
+        ensure_owner_run_capacity(schedule.owner)
+        return True
+    except ValidationError:
+        schedule.save(update_fields=["next_run_at", "updated_at"])
+        return False
+
+
 @shared_task(max_retries=0)
 def dispatch_due_agent_schedules(limit=50):
     from .schedule_models import AgentSchedule
@@ -120,11 +131,12 @@ def dispatch_due_agent_schedules(limit=50):
     skipped = 0
     waiting_approval = 0
     not_ready = 0
+    capacity_skipped = 0
     for schedule_id in due_ids:
         with transaction.atomic():
             schedule = (
                 AgentSchedule.objects.select_for_update()
-                .select_related("agent", "team")
+                .select_related("agent", "team", "owner")
                 .filter(pk=schedule_id, enabled=True, next_run_at__lte=now)
                 .first()
             )
@@ -164,6 +176,9 @@ def dispatch_due_agent_schedules(limit=50):
             if not objective:
                 schedule.save(update_fields=["next_run_at", "updated_at"])
                 skipped += 1
+                continue
+            if not _schedule_capacity_available(schedule):
+                capacity_skipped += 1
                 continue
 
             if schedule.agent_id:
@@ -221,6 +236,7 @@ def dispatch_due_agent_schedules(limit=50):
         "waiting_approval": waiting_approval,
         "not_ready": not_ready,
         "skipped": skipped,
+        "capacity_skipped": capacity_skipped,
         "resumed_waits": resumed_waits,
     }
 
