@@ -49,9 +49,14 @@ printf '[5/20] Backend blocking lint\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check . --select E9,F63,F7,F82
 
 printf '[6/20] Backend lint debt report (non-blocking)\n'
-if ! docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check .; then
+LINT_DEBT_LOG="$(mktemp)"
+if ! docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check . >"$LINT_DEBT_LOG" 2>&1; then
   printf '[WARN] Full Ruff debt remains. Blocking correctness rules already passed; clean style debt incrementally.\n' >&2
+  tail -n 3 "$LINT_DEBT_LOG" >&2 || true
+else
+  printf 'Full Ruff lint: PASS\n'
 fi
+rm -f "$LINT_DEBT_LOG"
 
 printf '[7/20] Backend tests on PostgreSQL/pgvector\n'
 docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q
