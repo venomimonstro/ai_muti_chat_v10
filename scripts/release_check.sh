@@ -6,18 +6,71 @@ TEST_COMPOSE="${PROJECT_DIR}/docker-compose.test.yml"
 PROD_COMPOSE="${PROJECT_DIR}/docker-compose.prod.yml"
 FRONTEND_SMOKE_CONTAINER="ai-workspace-frontend-smoke-$$"
 FRONTEND_SMOKE_PORT="${FRONTEND_SMOKE_PORT:-39001}"
+LOG_DIR="${PROJECT_DIR}/logs"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_FILE="${LOG_DIR}/release-check-${RUN_ID}.log"
+CURRENT_STEP="initialization"
+STARTED_AT="$(date +%s)"
+
+mkdir -p "$LOG_DIR"
+touch "$LOG_FILE"
 cd "$PROJECT_DIR"
+
+# Mirror the complete release output to a durable log while keeping it visible.
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 cleanup() {
   docker rm -f "$FRONTEND_SMOKE_CONTAINER" >/dev/null 2>&1 || true
-  docker compose -f "$TEST_COMPOSE" down -v --remove-orphans >/dev/null 2>&1 || true
+  docker compose --ansi never -f "$TEST_COMPOSE" down -v --remove-orphans >/dev/null 2>&1 || true
 }
+
+abort_release() {
+  local signal="${1:-INTERRUPTED}"
+  printf '\n[ABORT] Release check interrupted by %s during: %s\n' "$signal" "$CURRENT_STEP" >&2
+  cleanup
+  printf '[INFO] Full log: %s\n' "$LOG_FILE" >&2
+  exit 130
+}
+
+on_error() {
+  local code=$?
+  printf '\n[FAIL] %s (exit code %s)\n' "$CURRENT_STEP" "$code" >&2
+  printf '[INFO] Full log: %s\n' "$LOG_FILE" >&2
+  return "$code"
+}
+
 trap cleanup EXIT
+trap on_error ERR
+trap 'abort_release SIGINT' INT
+trap 'abort_release SIGTERM' TERM
+trap 'abort_release SIGHUP' HUP
+trap 'abort_release SIGTSTP' TSTP
 
-printf '[1/20] Secret scan\n'
+step() {
+  local number="$1" title="$2"
+  CURRENT_STEP="${number}/20 ${title}"
+  printf '\n============================================================\n'
+  printf '[%s/20] START  %s\n' "$number" "$title"
+  printf '============================================================\n'
+}
+
+pass() {
+  printf '[%s/20] PASS   %s\n' "$1" "$2"
+}
+
+run_pytest() {
+  local label="$1"
+  shift
+  printf '[TEST] %s\n' "$label"
+  docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
+    pytest -vv --tb=short -ra --disable-warnings "$@"
+}
+
+step 1 'Secret scan'
 bash ./scripts/security_scan.sh
+pass 1 'Secret scan'
 
-printf '[2/20] Shell and Python syntax\n'
+step 2 'Shell and Python syntax'
 bash -n install.sh
 for script in scripts/*.sh; do
   bash -n "$script"
@@ -29,9 +82,10 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 "$PYTHON_BIN" -m py_compile scripts/commercial_http_smoke.py scripts/b2b_http_smoke.py
 "$PYTHON_BIN" -m compileall -q backend
+pass 2 'Shell and Python syntax'
 
-printf '[3/20] Compose syntax\n'
-docker compose -f "$TEST_COMPOSE" config >/dev/null
+step 3 'Compose syntax'
+docker compose --ansi never -f "$TEST_COMPOSE" config >/dev/null
 APP_DOMAIN=release-check.example.test \
 ACME_EMAIL=ops@example.test \
 POSTGRES_DB=release_check \
@@ -42,78 +96,99 @@ SEARXNG_SECRET=release-check-searxng-secret \
 WEB_SEARCH_BASE_URL=http://searxng:8080 \
 WEB_SEARCH_TRUSTED_HOSTS=searxng \
 PUBLIC_API_URL=https://release-check.example.test/api/v1 \
-docker compose --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
+docker compose --ansi never --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
+pass 3 'Compose syntax'
 
-printf '[4/20] Build isolated test stack\n'
-docker compose -f "$TEST_COMPOSE" build backend-test
-docker compose -f "$TEST_COMPOSE" up -d postgres
+step 4 'Build isolated test stack'
+COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test
+docker compose --ansi never -f "$TEST_COMPOSE" up -d postgres
+pass 4 'Build isolated test stack'
 
-printf '[5/20] Backend blocking lint\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check . --select E9,F63,F7,F82
+step 5 'Backend blocking lint'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test ruff check . --select E9,F63,F7,F82
+pass 5 'Backend blocking lint'
 
-printf '[6/20] Backend lint debt report (non-blocking)\n'
+step 6 'Backend lint debt report (non-blocking)'
 LINT_DEBT_LOG="$(mktemp)"
-if ! docker compose -f "$TEST_COMPOSE" run --rm backend-test ruff check . >"$LINT_DEBT_LOG" 2>&1; then
-  printf '[WARN] Full Ruff debt remains. Blocking correctness rules already passed; clean style debt incrementally.\n' >&2
-  tail -n 3 "$LINT_DEBT_LOG" >&2 || true
+if ! docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test ruff check . >"$LINT_DEBT_LOG" 2>&1; then
+  printf '[WARN] Style debt remains; correctness lint already passed.\n'
+  tail -n 3 "$LINT_DEBT_LOG" || true
 else
   printf 'Full Ruff lint: PASS\n'
 fi
 rm -f "$LINT_DEBT_LOG"
+pass 6 'Backend lint debt report'
 
-printf '[7/20] Backend tests on PostgreSQL/pgvector\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q
+step 7 'Backend tests on PostgreSQL/pgvector'
+run_pytest 'Full backend test suite' .
+pass 7 'Backend tests on PostgreSQL/pgvector'
 
-printf '[8/20] Sprint 68 tenant/security regressions\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test \
-  pytest -q apps/agents/test_tenant_security.py apps/agents/test_webhook_hardening.py apps/agents/test_webhooks.py
+step 8 'Sprint 68 tenant/security regressions'
+run_pytest 'Tenant/security/webhook regressions' \
+  apps/agents/test_tenant_security.py \
+  apps/agents/test_webhook_hardening.py \
+  apps/agents/test_webhooks.py
+pass 8 'Sprint 68 tenant/security regressions'
 
-printf '[9/20] Sprint 69 commercial limits regressions\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test pytest -q apps/agents/test_commercial_limits.py
+step 9 'Sprint 69 commercial limits regressions'
+run_pytest 'Commercial limits regressions' apps/agents/test_commercial_limits.py
+pass 9 'Sprint 69 commercial limits regressions'
 
-printf '[10/20] Sprint 70-73 Agent/Dev self-service safety regressions\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test \
-  pytest -q apps/agents/test_agent_test_mode.py apps/agents/test_dev_safety.py apps/agents/test_diagnostics.py
+step 10 'Sprint 70-73 Agent/Dev self-service safety regressions'
+run_pytest 'Agent/Dev self-service regressions' \
+  apps/agents/test_agent_test_mode.py \
+  apps/agents/test_dev_safety.py \
+  apps/agents/test_diagnostics.py
+pass 10 'Sprint 70-73 Agent/Dev self-service safety regressions'
 
-printf '[11/20] Django checks and migration drift\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
+step 11 'Django checks and migration drift'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py makemigrations --check --dry-run
+pass 11 'Django checks and migration drift'
 
-printf '[12/20] Economic safety invariants\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py economic_safety_check
+step 12 'Economic safety invariants'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py economic_safety_check
+pass 12 'Economic safety invariants'
 
-printf '[13/20] Billing ledger integrity\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py billing_integrity_check
+step 13 'Billing ledger integrity'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py billing_integrity_check
+pass 13 'Billing ledger integrity'
 
-printf '[14/20] Agent Studio integrity, security and commercial limits\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_system_audit
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_webhook_audit
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_security_audit
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_commercial_limits_audit
+step 14 'Agent Studio integrity, security and commercial limits'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_system_audit
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_webhook_audit
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_security_audit
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_commercial_limits_audit
+pass 14 'Agent Studio integrity, security and commercial limits'
 
-printf '[15/20] Agent recovery and external connection integrity\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_recovery_audit
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py connection_health_audit
+step 15 'Agent recovery and external connection integrity'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_recovery_audit
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py connection_health_audit
+pass 15 'Agent recovery and external connection integrity'
 
-printf '[16/20] Dev Studio readiness\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_audit
+step 16 'Dev Studio readiness'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_audit
+pass 16 'Dev Studio readiness'
 
-printf '[17/20] Agent Runtime billing integrity\n'
-docker compose -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_billing_audit
+step 17 'Agent Runtime billing integrity'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_billing_audit
+pass 17 'Agent Runtime billing integrity'
 
-printf '[18/20] Frontend production build\n'
-docker build \
+step 18 'Frontend production build'
+DOCKER_BUILDKIT=1 docker build --progress=plain \
   --target builder \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
   -t ai-workspace-frontend-builder frontend
-docker build \
+DOCKER_BUILDKIT=1 docker build --progress=plain \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
   -t ai-workspace-frontend-test frontend
+pass 18 'Frontend production build'
 
-printf '[19/20] Frontend lint\n'
+step 19 'Frontend lint'
 docker run --rm ai-workspace-frontend-builder sh -c 'npm run lint'
+pass 19 'Frontend lint'
 
-printf '[20/20] Frontend runtime route smoke\n'
+step 20 'Frontend runtime route smoke'
 docker run -d --rm --name "$FRONTEND_SMOKE_CONTAINER" \
   -p "127.0.0.1:${FRONTEND_SMOKE_PORT}:3000" ai-workspace-frontend-test >/dev/null
 READY=false
@@ -126,10 +201,20 @@ for _attempt in $(seq 1 30); do
 done
 [[ "$READY" == true ]] || { echo 'Frontend runtime did not become ready' >&2; exit 1; }
 for route in / /pricing /faq /login /register /api /use-cases/marketing /app /app/account /app/wallet /app/usage /app/settings /app/projects /app/projects/00000000-0000-0000-0000-000000000000/github /app/help /app/notifications /app/images /app/compare /app/agents /app/teams /app/schedules /app/events /app/dev /app/runs /app/runs/00000000-0000-0000-0000-000000000000 /admin-console /admin-console/system /admin-console/providers /admin-console/finance /admin-console/security /admin-console/operations /admin-console/drills /admin-console/compliance /sitemap.xml /robots.txt; do
-  curl -fsS --max-time 5 "http://127.0.0.1:${FRONTEND_SMOKE_PORT}${route}" >/dev/null || {
-    echo "Frontend route failed: ${route}" >&2
+  printf '[SMOKE] %-70s ' "$route"
+  if curl -fsS --max-time 5 "http://127.0.0.1:${FRONTEND_SMOKE_PORT}${route}" >/dev/null; then
+    printf 'PASS\n'
+  else
+    printf 'FAIL\n' >&2
     exit 1
-  }
+  fi
 done
+pass 20 'Frontend runtime route smoke'
 
+FINISHED_AT="$(date +%s)"
+DURATION="$((FINISHED_AT - STARTED_AT))"
+printf '\n============================================================\n'
 printf 'RELEASE CHECK: PASS\n'
+printf 'Duration: %ss\n' "$DURATION"
+printf 'Full log: %s\n' "$LOG_FILE"
+printf '============================================================\n'
