@@ -189,7 +189,10 @@ def test_five_provider_families_share_adapter_contract(
 ):
     monkeypatch.setenv(credential, "server-secret")
     provider = Provider.objects.create(
-        slug=f"provider-{adapter_type}", name=adapter_type, adapter_type=adapter_type
+        slug=f"provider-{adapter_type}",
+        name=adapter_type,
+        adapter_type=adapter_type,
+        credential_env=credential,
     )
     model = AIModel.objects.create(
         provider=provider,
