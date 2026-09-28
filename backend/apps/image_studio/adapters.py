@@ -29,6 +29,7 @@ class ImageProviderResult:
 
 class ImageProviderAdapter(Protocol):
     def generate(self, *, model: str, prompt: str, size: str, quality: str, count: int): ...
+    def edit(self, *, model: str, prompt: str, size: str, quality: str, count: int, image: bytes, media_type: str): ...
 
 
 class EchoImageAdapter:
@@ -44,6 +45,9 @@ class EchoImageAdapter:
             provider_request_id=f"echo:{model}",
         )
 
+    def edit(self, *, model, prompt, size, quality, count, image, media_type):
+        return self.generate(model=model, prompt=prompt, size=size, quality=quality, count=count)
+
 
 class OpenAIImageAdapter:
     def __init__(self, *, api_key, base_url):
@@ -51,6 +55,25 @@ class OpenAIImageAdapter:
             raise ImageProviderError("Provider credential is not configured", code="credential_missing")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+
+    def _decode(self, payload):
+        images = []
+        try:
+            for item in payload.get("data", []):
+                encoded = item["b64_json"]
+                if not isinstance(encoded, str) or len(encoded) > (
+                    (settings.IMAGE_MAX_RESULT_BYTES + 2) // 3 * 4 + 4
+                ):
+                    raise ValueError("Image payload exceeds configured limit")
+                content = base64.b64decode(encoded, validate=True)
+                images.append(ImageResult(content, _detect_mime(content), item.get("revised_prompt", "")))
+        except ImageProviderError:
+            raise
+        except (KeyError, ValueError, binascii.Error) as exc:
+            raise ImageProviderError("Invalid provider response", code="invalid_response") from exc
+        if not images:
+            raise ImageProviderError("Provider returned no image", code="invalid_response")
+        return ImageProviderResult(images, str(payload.get("id", "")))
 
     def generate(self, *, model, prompt, size, quality, count):
         request_payload = {
@@ -75,24 +98,45 @@ class OpenAIImageAdapter:
             payload = response.json()
         except httpx.TimeoutException as exc:
             raise ImageProviderError("Provider timeout", code="timeout") from exc
+        except httpx.HTTPStatusError as exc:
+            raise ImageProviderError(
+                "Provider request failed", code=f"http_{exc.response.status_code}"
+            ) from exc
         except (httpx.HTTPError, ValueError) as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            raise ImageProviderError("Provider request failed", code=f"http_{status or 'network'}") from exc
-        images = []
+            raise ImageProviderError("Provider request failed", code="http_network") from exc
+        return self._decode(payload)
+
+    def edit(self, *, model, prompt, size, quality, count, image, media_type):
+        if media_type not in {"image/png", "image/jpeg", "image/webp"}:
+            raise ImageProviderError("Unsupported source image type", code="invalid_source_image")
+        extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[media_type]
+        data = {
+            "model": model,
+            "prompt": prompt,
+            "size": size,
+            "quality": quality,
+            "n": str(count),
+        }
+        # Image edits are multipart. Do not set Content-Type manually: httpx must add the boundary.
         try:
-            for item in payload.get("data", []):
-                encoded = item["b64_json"]
-                if not isinstance(encoded, str) or len(encoded) > (
-                    (settings.IMAGE_MAX_RESULT_BYTES + 2) // 3 * 4 + 4
-                ):
-                    raise ValueError("Image payload exceeds configured limit")
-                content = base64.b64decode(encoded, validate=True)
-                images.append(ImageResult(content, _detect_mime(content), item.get("revised_prompt", "")))
-        except ImageProviderError:
-            raise
-        except (KeyError, ValueError, binascii.Error) as exc:
-            raise ImageProviderError("Invalid provider response", code="invalid_response") from exc
-        return ImageProviderResult(images, str(payload.get("id", "")))
+            response = httpx.post(
+                f"{self.base_url}/images/edits",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                data=data,
+                files={"image": (f"source.{extension}", image, media_type)},
+                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.TimeoutException as exc:
+            raise ImageProviderError("Provider timeout", code="timeout") from exc
+        except httpx.HTTPStatusError as exc:
+            raise ImageProviderError(
+                "Provider edit request failed", code=f"http_{exc.response.status_code}"
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ImageProviderError("Provider edit request failed", code="http_network") from exc
+        return self._decode(payload)
 
 
 def _detect_mime(content):
