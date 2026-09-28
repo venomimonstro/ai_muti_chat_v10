@@ -11,7 +11,14 @@ from apps.billing.services import credit
 from apps.files.models import FileAsset
 from apps.projects.models import Project
 
-from .adapters import EchoImageAdapter, ImageProviderError, ImageProviderResult, ImageResult, OpenAIImageAdapter
+from .adapters import (
+    EchoImageAdapter,
+    ImageProviderError,
+    ImageProviderResult,
+    ImageResult,
+    OpenAIImageAdapter,
+    adapter_for,
+)
 from .models import ImageGeneration, ImageModel
 from .services import edit, execute_generation, prepare_generation
 
@@ -200,3 +207,31 @@ def test_openai_edit_adapter_uses_multipart_image(monkeypatch):
     assert calls[0][1]["data"]["model"] == "gpt-image-1"
     assert calls[0][1]["data"]["n"] == "1"
     assert calls[0][1]["files"]["image"][2] == "image/png"
+
+
+@pytest.mark.django_db
+def test_openai_image_adapter_reuses_encrypted_provider_credential(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    provider = Provider.objects.create(
+        slug="openai-images-shared-credential",
+        name="OpenAI shared credential",
+        api_base_url="https://api.openai.com/v1",
+        credential_env="OPENAI_API_KEY",
+    )
+    provider.set_api_key("encrypted-db-openai-key")
+    provider.save(update_fields=["credential_secret"])
+    model = ImageModel.objects.create(
+        provider=provider,
+        slug="openai-image-shared-credential-v1",
+        display_name="OpenAI Image",
+        upstream_model="gpt-image-1",
+        adapter_type=ImageModel.AdapterType.OPENAI_IMAGES,
+        provider_price_per_image=Decimal("0.200000"),
+        supported_sizes=["1024x1024"],
+        supported_qualities=["standard"],
+    )
+
+    adapter = adapter_for(model)
+
+    assert isinstance(adapter, OpenAIImageAdapter)
+    assert adapter.api_key == "encrypted-db-openai-key"
