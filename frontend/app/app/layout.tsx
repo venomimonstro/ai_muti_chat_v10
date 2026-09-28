@@ -1,7 +1,6 @@
 import type {Metadata} from "next";
 import ClientAppChrome from "../components/ClientAppChrome";
 import CryptoCompat from "../components/CryptoCompat";
-import WorkspaceUxEnhancer from "../components/WorkspaceUxEnhancer";
 import "./workspace.css";
 import "./workspace-fixes.css";
 import "./workspace-performance.css";
@@ -16,5 +15,5 @@ export const metadata: Metadata = {
 };
 
 export default function AppLayout({children}: Readonly<{children: React.ReactNode}>) {
-  return <><CryptoCompat/><WorkspaceUxEnhancer/><ClientAppChrome>{children}</ClientAppChrome></>;
+  return <><CryptoCompat/><ClientAppChrome>{children}</ClientAppChrome></>;
 }
