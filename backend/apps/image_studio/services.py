@@ -11,11 +11,14 @@ from apps.ai_registry.models import Provider
 from apps.billing.models import CostAnomaly
 from apps.billing.pricing import calculate_flat_from_snapshot, quote_flat, require_margin
 from apps.billing.services import release, reserve, settle
+from apps.files.models import FileAsset
 
 from .adapters import ImageProviderError, _detect_mime, adapter_for
 from .models import GeneratedImage, ImageGeneration, ImageModel
 from .quality import record_image_quality_failure
 from .validation import validate_generated_image
+
+EDIT_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "png", "jpeg", "jpg", "webp"}
 
 
 def provider_unit_price(model, size, quality):
@@ -74,12 +77,16 @@ def _trip_image_provider(*, model, generation, reason, expected=None, actual=Non
     model.provider.health_state = Provider.HealthState.DISABLED
 
 
-def _validate_existing(existing, *, model_slug, prompt, size, quality, count, conversation):
+def _validate_existing(existing, *, model_slug, prompt, size, quality, count, conversation, operation="generate", source_file=None):
     normalized_prompt = str(prompt).strip()
     try:
         normalized_count = int(count)
     except (TypeError, ValueError) as exc:
         raise ValidationError("Количество должно быть целым числом") from exc
+    snapshot = existing.price_snapshot or {}
+    existing_operation = snapshot.get("operation", "generate")
+    existing_source = snapshot.get("source_file_id")
+    requested_source = str(source_file.id) if source_file else None
     if (
         existing.model.slug != model_slug
         or existing.prompt != normalized_prompt
@@ -87,6 +94,8 @@ def _validate_existing(existing, *, model_slug, prompt, size, quality, count, co
         or existing.quality != quality
         or existing.requested_count != normalized_count
         or existing.conversation_id != (conversation.id if conversation else None)
+        or existing_operation != operation
+        or existing_source != requested_source
     ):
         raise ValidationError("Idempotency-Key уже использован для другого запроса")
     return existing
@@ -117,6 +126,18 @@ def _validated(model_slug, prompt, size, quality, count):
     return model, prompt, count
 
 
+def validate_edit_source(*, user, source_file):
+    if source_file is None or source_file.owner_id != user.id or source_file.deleted_at is not None:
+        raise ValidationError("Исходное изображение не найдено или недоступно")
+    if source_file.status != FileAsset.Status.READY:
+        raise ValidationError("Исходное изображение ещё обрабатывается")
+    if source_file.detected_type not in EDIT_IMAGE_TYPES:
+        raise ValidationError("Для редактирования поддерживаются PNG, JPEG и WebP")
+    if source_file.size_bytes > 8 * 1024 * 1024:
+        raise ValidationError("Исходное изображение слишком большое")
+    return source_file
+
+
 def preview(*, model_slug, prompt, size, quality, count):
     model, prompt, count = _validated(model_slug, prompt, size, quality, count)
     unit_price = provider_unit_price(model, size, quality)
@@ -135,10 +156,16 @@ def preview(*, model_slug, prompt, size, quality, count):
 
 def prepare_generation(
     *, user, model_slug, prompt, size, quality, count, idempotency_key,
-    confirmed=False, conversation=None, deferred=False,
+    confirmed=False, conversation=None, deferred=False, operation="generate", source_file=None,
 ):
     if conversation is not None and conversation.owner_id != user.id:
         raise ValidationError("Чат не найден или недоступен")
+    if operation not in {"generate", "edit"}:
+        raise ValidationError("Неподдерживаемая операция с изображением")
+    if operation == "edit":
+        source_file = validate_edit_source(user=user, source_file=source_file)
+    else:
+        source_file = None
     if not idempotency_key or len(idempotency_key) > 160:
         raise ValidationError("Корректный Idempotency-Key обязателен")
     existing = ImageGeneration.objects.filter(
@@ -147,7 +174,7 @@ def prepare_generation(
     if existing:
         return _validate_existing(
             existing, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
-            count=count, conversation=conversation,
+            count=count, conversation=conversation, operation=operation, source_file=source_file,
         ), False
     model, value, prompt, count = preview(
         model_slug=model_slug, prompt=prompt, size=size, quality=quality, count=count,
@@ -165,6 +192,9 @@ def prepare_generation(
         "size": size,
         "quality": quality,
         "conversation_id": str(conversation.id) if conversation else None,
+        "operation": operation,
+        "source_file_id": str(source_file.id) if source_file else None,
+        "source_file_sha256": source_file.sha256 if source_file else None,
     }
     try:
         with transaction.atomic():
@@ -185,7 +215,7 @@ def prepare_generation(
         )
         return _validate_existing(
             raced, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
-            count=count, conversation=conversation,
+            count=count, conversation=conversation, operation=operation, source_file=source_file,
         ), False
 
 
@@ -210,9 +240,26 @@ def fail_queued_generation(generation, code="queue_unavailable"):
     return generation
 
 
+def _source_for_edit(generation):
+    snapshot = generation.price_snapshot or {}
+    source_id = snapshot.get("source_file_id")
+    if not source_id:
+        raise ImageProviderError("Edit source is missing", code="invalid_source_image")
+    source = FileAsset.objects.filter(
+        pk=source_id,
+        owner=generation.owner,
+        deleted_at__isnull=True,
+        status=FileAsset.Status.READY,
+    ).first()
+    if source is None or source.sha256 != snapshot.get("source_file_sha256"):
+        raise ImageProviderError("Edit source changed or is unavailable", code="invalid_source_image")
+    validate_edit_source(user=generation.owner, source_file=source)
+    return source
+
+
 def execute_generation(generation, *, adapter=None, claim_queued=True):
     generation = ImageGeneration.objects.select_related(
-        "model", "model__provider", "reservation"
+        "model", "model__provider", "reservation", "owner"
     ).get(pk=generation.pk)
     if generation.state in {ImageGeneration.State.COMPLETED, ImageGeneration.State.FAILED}:
         return generation
@@ -224,14 +271,34 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
 
     model = generation.model
     snapshot = generation.price_snapshot or {}
+    image_adapter = adapter or adapter_for(model)
     try:
-        result = (adapter or adapter_for(model)).generate(
-            model=model.upstream_model,
-            prompt=generation.prompt,
-            size=generation.size,
-            quality=generation.quality,
-            count=generation.requested_count,
-        )
+        if snapshot.get("operation", "generate") == "edit":
+            source = _source_for_edit(generation)
+            with source.blob.open("rb") as stream:
+                source_bytes = stream.read(8 * 1024 * 1024 + 1)
+            if len(source_bytes) > 8 * 1024 * 1024:
+                raise ImageProviderError("Edit source is too large", code="invalid_source_image")
+            media_type = source.detected_type
+            if "/" not in media_type:
+                media_type = {"png":"image/png","jpeg":"image/jpeg","jpg":"image/jpeg","webp":"image/webp"}.get(media_type, media_type)
+            result = image_adapter.edit(
+                model=model.upstream_model,
+                prompt=generation.prompt,
+                size=generation.size,
+                quality=generation.quality,
+                count=generation.requested_count,
+                image=source_bytes,
+                media_type=media_type,
+            )
+        else:
+            result = image_adapter.generate(
+                model=model.upstream_model,
+                prompt=generation.prompt,
+                size=generation.size,
+                quality=generation.quality,
+                count=generation.requested_count,
+            )
         if len(result.images) != generation.requested_count:
             if len(result.images) > generation.requested_count:
                 _trip_image_provider(
@@ -306,6 +373,20 @@ def generate(
         user=user, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
         count=count, idempotency_key=idempotency_key, confirmed=confirmed,
         conversation=conversation, deferred=False,
+    )
+    if not created:
+        return generation
+    return execute_generation(generation, adapter=adapter, claim_queued=False)
+
+
+def edit(
+    *, user, source_file, model_slug, prompt, size, quality, count, idempotency_key,
+    confirmed=False, adapter=None, conversation=None,
+):
+    generation, created = prepare_generation(
+        user=user, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
+        count=count, idempotency_key=idempotency_key, confirmed=confirmed,
+        conversation=conversation, deferred=False, operation="edit", source_file=source_file,
     )
     if not created:
         return generation
