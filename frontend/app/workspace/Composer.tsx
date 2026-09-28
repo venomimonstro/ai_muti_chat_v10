@@ -31,13 +31,13 @@ function readExistingModels():AIModel[]{
 }
 
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools,modelValue,models,onModelChange}:ComposerProps){
- const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState("auto:balanced");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const submitGate=useRef(false);const gateTimer=useRef<number|null>(null);
+ const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState("auto:balanced");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const syncSignature=useRef("");const submitGate=useRef(false);const gateTimer=useRef<number|null>(null);
  const trimmed=value.trim();const tooLong=value.length>MAX_MESSAGE_CHARS;const nearLimit=value.length>90000;
  useEffect(()=>{const el=ref.current;if(!el)return;el.style.height="0px";el.style.height=`${Math.min(Math.max(el.scrollHeight,48),240)}px`;},[value]);
  useEffect(()=>{if(!sending){setSlow(false);return;}submitGate.current=false;if(gateTimer.current!==null){window.clearTimeout(gateTimer.current);gateTimer.current=null}const timer=window.setTimeout(()=>setSlow(true),30000);return()=>window.clearTimeout(timer)},[sending]);
  useEffect(()=>{if(!trimmed){submitGate.current=false;if(gateTimer.current!==null){window.clearTimeout(gateTimer.current);gateTimer.current=null}}},[trimmed]);
  useEffect(()=>()=>{if(gateTimer.current!==null)window.clearTimeout(gateTimer.current)},[]);
- useEffect(()=>{if(modelValue){setControlValue(modelValue);setControlModels(models??[]);return;}const select=existingModelControl();if(select)setControlValue(select.value||"auto:balanced");setControlModels(readExistingModels())},[modelValue,models]);
+ useEffect(()=>{const nextModels=modelValue?(models??[]):readExistingModels();const nextValue=modelValue??existingModelControl()?.value??"auto:balanced";const signature=nextModels.map(item=>`${item.slug}:${item.available}:${item.display_name}`).join("|");if(syncSignature.current!==signature){syncSignature.current=signature;setControlModels(nextModels)}if(controlValue!==nextValue)setControlValue(nextValue)});
  const submit=()=>{if(!trimmed||tooLong||offline||sending||submitGate.current)return;submitGate.current=true;setSlow(false);onSend();gateTimer.current=window.setTimeout(()=>{submitGate.current=false;gateTimer.current=null},10000)};
  const stop=()=>{setSlow(false);onStop()};
  const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();submit();}};
