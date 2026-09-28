@@ -6,15 +6,17 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.http import FileResponse
 from rest_framework import status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import APIException, ValidationError as APIValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.chat.models import Conversation
+from apps.files.models import FileAsset
 
 from .models import GeneratedImage, ImageGeneration, ImageModel
 from .serializers import ImageGenerationSerializer, ImageModelSerializer
-from .services import fail_queued_generation, generate, prepare_generation, preview
+from .services import edit, fail_queued_generation, generate, prepare_generation, preview, validate_edit_source
 from .tasks import execute_image_generation_task
 
 
@@ -46,6 +48,21 @@ def _conversation(request):
     if conversation is None:
         raise APIValidationError({"conversation": ["Чат не найден или недоступен"]})
     return conversation
+
+
+def _source_file(request):
+    source_id = request.data.get("source_file")
+    if not source_id:
+        raise APIValidationError({"source_file": ["Исходное изображение обязательно"]})
+    try:
+        UUID(str(source_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise APIValidationError({"source_file": ["Некорректный идентификатор изображения"]}) from exc
+    source = FileAsset.objects.filter(pk=source_id, owner=request.user, deleted_at__isnull=True).first()
+    try:
+        return validate_edit_source(user=request.user, source_file=source)
+    except ValidationError as exc:
+        raise APIValidationError({"source_file": exc.messages}) from exc
 
 
 def _async_images_enabled():
@@ -112,6 +129,15 @@ class ImageGenerationViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())[:100]
         return Response(self.get_serializer(queryset, many=True).data)
 
+    def _queue(self, generation, created):
+        if created:
+            try:
+                execute_image_generation_task.delay(str(generation.id))
+            except Exception as exc:
+                fail_queued_generation(generation)
+                raise ImageProcessingUnavailable() from exc
+        return generation
+
     def create(self, request, *args, **kwargs):
         key = request.headers.get("Idempotency-Key", "")
         conversation = _conversation(request)
@@ -126,12 +152,7 @@ class ImageGenerationViewSet(viewsets.ReadOnlyModelViewSet):
                     deferred=True,
                     **_payload(request),
                 )
-                if created:
-                    try:
-                        execute_image_generation_task.delay(str(generation.id))
-                    except Exception as exc:
-                        fail_queued_generation(generation)
-                        raise ImageProcessingUnavailable() from exc
+                generation = self._queue(generation, created)
             else:
                 generation = generate(
                     user=request.user,
@@ -149,6 +170,46 @@ class ImageGenerationViewSet(viewsets.ReadOnlyModelViewSet):
             response_status = status.HTTP_201_CREATED
         else:
             response_status = status.HTTP_200_OK
+        return Response(serializer.data, status=response_status)
+
+    @action(detail=False, methods=["post"], url_path="edit")
+    def edit_image(self, request):
+        key = request.headers.get("Idempotency-Key", "")
+        conversation = _conversation(request)
+        source = _source_file(request)
+        confirmed = request.data.get("confirm_cost") is True
+        try:
+            if _async_images_enabled():
+                generation, created = prepare_generation(
+                    user=request.user,
+                    conversation=conversation,
+                    source_file=source,
+                    operation="edit",
+                    idempotency_key=key,
+                    confirmed=confirmed,
+                    deferred=True,
+                    **_payload(request),
+                )
+                generation = self._queue(generation, created)
+            else:
+                generation = edit(
+                    user=request.user,
+                    source_file=source,
+                    conversation=conversation,
+                    idempotency_key=key,
+                    confirmed=confirmed,
+                    **_payload(request),
+                )
+        except ValidationError as exc:
+            raise APIValidationError({"detail": exc.messages}) from exc
+        serializer = self.get_serializer(generation)
+        response_status = (
+            status.HTTP_202_ACCEPTED
+            if generation.state in {ImageGeneration.State.QUEUED, ImageGeneration.State.RUNNING}
+            else status.HTTP_201_CREATED
+            if generation.state == ImageGeneration.State.COMPLETED
+            else status.HTTP_200_OK
+        )
         return Response(serializer.data, status=response_status)
 
 
