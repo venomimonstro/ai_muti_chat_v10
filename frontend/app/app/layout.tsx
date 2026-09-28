@@ -8,6 +8,7 @@ import "./workspace-premium.css";
 import "./workspace-ai-controls.css";
 import "./workspace-model-picker.css";
 import "./product-studio.css";
+import "./product-studio-detail.css";
 import "./workspace-billing-dialog.css";
 import "./client-chrome.css";
 
