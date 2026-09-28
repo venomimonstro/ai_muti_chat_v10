@@ -13,7 +13,7 @@ from apps.projects.models import Project
 
 from .adapters import EchoImageAdapter, ImageProviderError, ImageProviderResult, ImageResult, OpenAIImageAdapter
 from .models import ImageGeneration, ImageModel
-from .services import edit
+from .services import edit, execute_generation, prepare_generation
 
 
 @pytest.fixture
@@ -137,6 +137,36 @@ def test_edit_endpoint_rejects_other_users_source(edit_context):
     )
     assert response.status_code == 400
     assert ImageGeneration.objects.filter(owner=outsider).count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_edit_fails_closed_if_source_metadata_changes_after_reservation(edit_context):
+    user, _outsider, model, _project, asset, _client = edit_context
+    generation, created = prepare_generation(
+        user=user,
+        source_file=asset,
+        operation="edit",
+        model_slug=model.slug,
+        prompt="Сделай фон белым",
+        size="1024x1024",
+        quality="standard",
+        count=1,
+        idempotency_key="image:edit:source-tamper",
+        deferred=True,
+    )
+    assert created is True
+    asset.sha256 = "0" * 64
+    asset.save(update_fields=["sha256"])
+
+    execute_generation(generation, adapter=SuccessfulEditAdapter())
+
+    generation.refresh_from_db()
+    user.wallet.refresh_from_db()
+    assert generation.state == ImageGeneration.State.FAILED
+    assert generation.error_code == "invalid_source_image"
+    assert generation.images.count() == 0
+    assert user.wallet.available_rub == Decimal("10.0000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
 
 
 def test_openai_edit_adapter_uses_multipart_image(monkeypatch):
