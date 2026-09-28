@@ -2,6 +2,7 @@ import base64
 import binascii
 import html
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -12,6 +13,8 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class WebToolError(Exception):
@@ -163,6 +166,29 @@ def yandex_search_status() -> dict:
     }
 
 
+def searx_search_status() -> dict:
+    base_url = os.getenv("WEB_SEARCH_BASE_URL", "").strip().rstrip("/")
+    return {"configured": bool(base_url), "endpoint": base_url}
+
+
+def _search_provider_order() -> list[str]:
+    raw = os.getenv("WEB_SEARCH_PROVIDER_ORDER", "searx,yandex")
+    order = []
+    for item in raw.split(","):
+        value = item.strip().casefold()
+        if value in {"searx", "yandex"} and value not in order:
+            order.append(value)
+    return order or ["searx", "yandex"]
+
+
+def web_search_status() -> dict:
+    return {
+        "provider_order": _search_provider_order(),
+        "searx": searx_search_status(),
+        "yandex": yandex_search_status(),
+    }
+
+
 def _search_yandex(query: str, *, limit: int) -> list[SearchResult]:
     config = _yandex_search_config()
     api_key = config["api_key"]
@@ -186,7 +212,7 @@ def _search_yandex(query: str, *, limit: int) -> list[SearchResult]:
         "l10n": "LOCALIZATION_RU",
         "folderId": folder_id,
         "responseFormat": "FORMAT_XML",
-        "userAgent": "AIWorkspace-WebTool/2.3",
+        "userAgent": "AIWorkspace-WebTool/2.4",
     }
     try:
         response = httpx.post(
@@ -217,7 +243,7 @@ def _search_yandex(query: str, *, limit: int) -> list[SearchResult]:
 def _search_searx(query: str, *, limit: int) -> list[SearchResult]:
     base_url = os.getenv("WEB_SEARCH_BASE_URL", "").strip().rstrip("/")
     if not base_url:
-        raise WebToolError("Web search is not configured")
+        raise WebToolError("SearXNG is not configured")
     _assert_search_provider_url(base_url)
     timeout = float(os.getenv("WEB_TOOL_TIMEOUT_SECONDS", "12"))
     max_results = max(1, min(limit, int(os.getenv("WEB_SEARCH_MAX_RESULTS", "8"))))
@@ -225,14 +251,18 @@ def _search_searx(query: str, *, limit: int) -> list[SearchResult]:
         response = httpx.get(
             f"{base_url}/search",
             params={"q": query, "format": "json", "language": "auto", "safesearch": 1},
-            headers={"User-Agent": "AIWorkspace-WebTool/2.3"},
+            headers={"User-Agent": "AIWorkspace-WebTool/2.4", "Accept": "application/json"},
             timeout=timeout,
             follow_redirects=False,
         )
         response.raise_for_status()
         payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        hint = " (check search.formats includes json)" if status == 403 else ""
+        raise WebToolError(f"SearXNG HTTP {status}{hint}") from exc
     except (httpx.HTTPError, ValueError) as exc:
-        raise WebToolError("Search provider failed") from exc
+        raise WebToolError("SearXNG provider failed") from exc
     results = []
     for item in payload.get("results", []):
         url = str(item.get("url") or "").strip()
@@ -247,15 +277,43 @@ def _search_searx(query: str, *, limit: int) -> list[SearchResult]:
         if len(results) >= max_results:
             break
     if not results:
-        raise WebToolError("Search provider returned no usable results")
+        raise WebToolError("SearXNG returned no usable results")
     return results
 
 
 def search_web(query: str, *, limit: int = 5) -> list[SearchResult]:
-    config = _yandex_search_config()
-    if config["api_key"] and config["folder_id"]:
-        return _search_yandex(query, limit=limit)
-    return _search_searx(query, limit=limit)
+    """Search with automatic provider failover.
+
+    SearXNG is free/self-hosted and is the default first choice. Yandex remains an
+    optional paid/managed fallback. Operators can reverse the order with
+    WEB_SEARCH_PROVIDER_ORDER=yandex,searx without changing application code.
+    """
+    errors = []
+    attempted = False
+    yandex = _yandex_search_config()
+    searx = searx_search_status()
+    for provider in _search_provider_order():
+        if provider == "searx":
+            if not searx["configured"]:
+                continue
+            attempted = True
+            try:
+                return _search_searx(query, limit=limit)
+            except WebToolError as exc:
+                errors.append(f"searx: {exc}")
+                logger.warning("Web search SearXNG failed; trying fallback: %s", exc)
+        elif provider == "yandex":
+            if not (yandex["api_key"] and yandex["folder_id"]):
+                continue
+            attempted = True
+            try:
+                return _search_yandex(query, limit=limit)
+            except WebToolError as exc:
+                errors.append(f"yandex: {exc}")
+                logger.warning("Web search Yandex failed; trying fallback: %s", exc)
+    if not attempted:
+        raise WebToolError("Web search is not configured")
+    raise WebToolError("All web search providers failed: " + "; ".join(errors))
 
 
 class _ReadableHTML(HTMLParser):
@@ -295,7 +353,7 @@ def _fetch_page_excerpt(url: str) -> str:
             with httpx.stream(
                 "GET",
                 current,
-                headers={"User-Agent": "AIWorkspace-Research/2.3", "Accept": "text/html,text/plain;q=0.9"},
+                headers={"User-Agent": "AIWorkspace-Research/2.4", "Accept": "text/html,text/plain;q=0.9"},
                 timeout=timeout,
                 follow_redirects=False,
             ) as response:
