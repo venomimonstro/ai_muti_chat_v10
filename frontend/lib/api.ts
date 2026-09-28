@@ -1,5 +1,6 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 const TEST_USER_KEY = "aiws:test-user";
+const API_TIMEOUT_MS = 12000;
 
 export class ApiError extends Error {
   constructor(
@@ -69,9 +70,43 @@ export function clearTestUserMode() {
   try { sessionStorage.removeItem(TEST_USER_KEY); } catch {}
 }
 
+function timeoutSignal(parent?: AbortSignal | null, timeoutMs = API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException("API request timed out", "TimeoutError"));
+  }, timeoutMs);
+  const abortFromParent = () => controller.abort(parent?.reason);
+  if (parent) {
+    if (parent.aborted) abortFromParent();
+    else parent.addEventListener("abort", abortFromParent, {once: true});
+  }
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      window.clearTimeout(timer);
+      parent?.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS) {
+  const guard = timeoutSignal(init.signal, timeoutMs);
+  try {
+    return await fetch(input, {...init, signal: guard.signal});
+  } catch (reason) {
+    if (guard.timedOut()) throw new ApiError("Сервер слишком долго не отвечает. Попробуйте ещё раз.", 504, {code: "frontend_api_timeout"});
+    throw reason;
+  } finally {
+    guard.cleanup();
+  }
+}
+
 export async function ensureCsrf() {
   if (csrfToken) return csrfToken;
-  const response = await fetch(`${API_BASE}/auth/csrf/`, {credentials: "include"});
+  const response = await fetchWithTimeout(`${API_BASE}/auth/csrf/`, {credentials: "include"});
   if (!response.ok) throw new ApiError("Не удалось установить защищённое соединение", response.status);
   const data = (await response.json()) as {csrf_token: string};
   csrfToken = data.csrf_token;
@@ -88,7 +123,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
     headers.set("X-CSRFToken", await ensureCsrf());
   }
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, {
     ...init,
     method,
     headers,
