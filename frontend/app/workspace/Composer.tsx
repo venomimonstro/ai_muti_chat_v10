@@ -25,9 +25,21 @@ function existingModelControl(){
  return document.querySelector<HTMLSelectElement>(".headerControls .selectControl:first-child select");
 }
 
+function guessProvider(slug:string,label:string){
+ const text=`${slug} ${label}`.toLowerCase();
+ if(text.includes("giga")||text.includes("системная"))return "gigachat";
+ if(text.includes("claude")||text.includes("anthropic"))return "Anthropic";
+ if(text.includes("deepseek"))return "DeepSeek";
+ if(text.includes("gemini")||text.includes("google"))return "Google";
+ if(text.includes("grok")||text.includes("xai"))return "xAI";
+ if(text.includes("openrouter"))return "OpenRouter";
+ if(text.includes("gpt")||text.includes("openai")||text.includes("o1")||text.includes("o3")||text.includes("o4"))return "OpenAI";
+ return "Другие модели";
+}
+
 function readExistingModels():AIModel[]{
  const select=existingModelControl();if(!select)return [];
- return Array.from(select.options).filter(option=>option.value.startsWith("model:")).map(option=>({slug:option.value.slice(6),display_name:(option.textContent??option.value).replace(/ · недоступна$/,""),provider:(option.textContent??"").toLowerCase().includes("системная")?"gigachat":"Модели",model_version:null,exact_api_id:"",capabilities:[],context_window:0,max_output_tokens:0,available:!option.disabled,health_state:option.disabled?"unavailable":"healthy",price:null}));
+ return Array.from(select.options).filter(option=>option.value.startsWith("model:")).map(option=>{const slug=option.value.slice(6);const label=(option.textContent??option.value).replace(/ · недоступна$/," ").trim();return {slug,display_name:label,provider:guessProvider(slug,label),model_version:null,exact_api_id:"",capabilities:[],context_window:0,max_output_tokens:0,available:!option.disabled,health_state:option.disabled?"unavailable":"healthy",price:null}});
 }
 
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools,modelValue,models,onModelChange}:ComposerProps){
@@ -37,7 +49,7 @@ export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenToo
  useEffect(()=>{if(!sending){setSlow(false);return;}submitGate.current=false;if(gateTimer.current!==null){window.clearTimeout(gateTimer.current);gateTimer.current=null}const timer=window.setTimeout(()=>setSlow(true),30000);return()=>window.clearTimeout(timer)},[sending]);
  useEffect(()=>{if(!trimmed){submitGate.current=false;if(gateTimer.current!==null){window.clearTimeout(gateTimer.current);gateTimer.current=null}}},[trimmed]);
  useEffect(()=>()=>{if(gateTimer.current!==null)window.clearTimeout(gateTimer.current)},[]);
- useEffect(()=>{const nextModels=modelValue?(models??[]):readExistingModels();const nextValue=modelValue??existingModelControl()?.value??"auto:balanced";const signature=nextModels.map(item=>`${item.slug}:${item.available}:${item.display_name}`).join("|");if(syncSignature.current!==signature){syncSignature.current=signature;setControlModels(nextModels)}if(controlValue!==nextValue)setControlValue(nextValue)});
+ useEffect(()=>{const nextModels=modelValue?(models??[]):readExistingModels();const nextValue=modelValue??existingModelControl()?.value??"auto:balanced";const signature=nextModels.map(item=>`${item.slug}:${item.provider}:${item.available}:${item.display_name}`).join("|");if(syncSignature.current!==signature){syncSignature.current=signature;setControlModels(nextModels)}if(controlValue!==nextValue)setControlValue(nextValue)});
  const submit=()=>{if(!trimmed||tooLong||offline||sending||submitGate.current)return;submitGate.current=true;setSlow(false);onSend();gateTimer.current=window.setTimeout(()=>{submitGate.current=false;gateTimer.current=null},10000)};
  const stop=()=>{setSlow(false);onStop()};
  const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();submit();}};
