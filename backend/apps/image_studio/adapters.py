@@ -153,8 +153,11 @@ def adapter_for(model):
     if model.adapter_type == model.AdapterType.ECHO:
         return EchoImageAdapter()
     if model.adapter_type == model.AdapterType.OPENAI_IMAGES:
+        credential = model.provider.get_api_key()
+        if not credential:
+            credential = os.getenv(model.provider.credential_env or "OPENAI_API_KEY", "").strip()
         return OpenAIImageAdapter(
-            api_key=os.getenv(model.provider.credential_env or "OPENAI_API_KEY", ""),
+            api_key=credential,
             base_url=model.provider.api_base_url
             or os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1"),
         )
