@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from apps.image_studio.adapters import ImageProviderError, OpenAIImageAdapter, adapter_for
 from apps.image_studio.models import ImageModel
 from apps.image_studio.services import image_price_matrix_complete
 
@@ -29,18 +30,33 @@ class Command(BaseCommand):
         usable = []
         for model in models:
             provider = model.provider
-            credential_ok = provider.credential_configured()
             pricing_ok = image_price_matrix_complete(model)
-            openai_adapter = model.adapter_type == ImageModel.AdapterType.OPENAI_IMAGES
+            credential_ok = False
+            runtime_adapter = "unavailable"
+            try:
+                resolved = adapter_for(model)
+                credential_ok = True
+                runtime_adapter = type(resolved).__name__
+            except ImageProviderError as exc:
+                runtime_adapter = f"error:{exc.code}"
+
+            openai_adapter = (
+                model.adapter_type == ImageModel.AdapterType.OPENAI_IMAGES
+                and credential_ok
+                and runtime_adapter == OpenAIImageAdapter.__name__
+            )
+            source = provider.credential_source()
+            if credential_ok and source == "none":
+                source = "runtime_env"
             self.stdout.write(
-                f"Model {model.slug}: adapter={model.adapter_type} · upstream={model.upstream_model} · "
+                f"Model {model.slug}: adapter={model.adapter_type}/{runtime_adapter} · upstream={model.upstream_model} · "
                 f"provider={provider.slug} · provider_health={provider.health_state} · "
-                f"credential={'yes' if credential_ok else 'no'}({provider.credential_source()}) · "
+                f"credential={'yes' if credential_ok else 'no'}({source}) · "
                 f"pricing={'complete' if pricing_ok else 'incomplete'} · "
                 f"sizes={','.join(model.supported_sizes or []) or '-'} · "
                 f"qualities={','.join(model.supported_qualities or []) or '-'}"
             )
-            if openai_adapter and credential_ok and pricing_ok and model.upstream_model.strip():
+            if openai_adapter and pricing_ok and model.upstream_model.strip():
                 usable.append(model)
 
         if not usable:
