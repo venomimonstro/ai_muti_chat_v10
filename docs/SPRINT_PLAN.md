@@ -117,7 +117,7 @@
 | 76 | DONE / RUNTIME EVIDENCE | Free-first web search: SearXNG + Yandex failover, diagnostics, sources |
 | 77 | DONE / RUNTIME EVIDENCE | Native multimodal chat: PNG/JPEG/WebP vision, compare/analyze UX |
 | 78 | DONE / RUNTIME EVIDENCE | OpenAI Images in chat: create + edit, shared billing/storage/history, no local generation |
-| 79 | IN PROGRESS | Full client cabinet UX/reliability audit and premium consistency |
+| 79 | DONE / RUNTIME EVIDENCE | Full client cabinet UX/reliability audit and premium consistency |
 
 Детали: `docs/sprints/76-79-search-multimodal-images-client-ux.md`.
 
@@ -135,6 +135,7 @@
 - PNG/JPEG/WebP проходят существующий owner/project scoped FileAsset + vision pipeline.
 - В composer добавлены явные действия для анализа и сравнения изображений.
 - OpenAI Responses получает нативные `input_image`; отдельный vision-backend не создаётся.
+- Frontend contract синхронизирован с backend `detected_type=png/jpeg/webp`, поэтому image attachments имеют корректное визуальное состояние.
 
 ### Sprint 78 — реализованный код
 
@@ -146,15 +147,17 @@
 - Локальный image-generation runtime не добавляется.
 - Для закрытия runtime evidence нужны targeted tests/build и реальный OpenAI generate/edit smoke.
 
-### Sprint 79 — текущая реализация
+### Sprint 79 — реализованный код
 
 - Общий ClientAppChrome получил единый premium active/focus/touch contract и mobile bottom navigation с safe-area.
-- Settings приведён к единой типографике, карточкам, формам и responsive states.
-- Connections переведён с inline presentation на отдельный responsive CSS module без изменения ACL/secret logic.
-- Notifications получил единые unread/read/error/action states.
-- Event Autonomy и Schedules переведены на premium responsive UI с явными security/destructive/pending states.
+- Settings, Connections, Notifications, Event Autonomy и Schedules приведены к единому responsive UI с явными loading/error/destructive/security states.
+- Compare и Images очищены от разрозненного inline-presentation и переведены на общий card/result/mobile contract.
+- Teams и Team Detail получили единый builder/configuration UX, мобильные action layouts и читаемую историю запусков.
+- Agent Run Detail получил отдельный responsive contract для экономики, approvals, Dev changes, журналов, источников и ошибок.
 - Image create/edit dialog унифицирован с клиентским дизайн-языком и production async states.
-- Оставшиеся маршруты кабинета проходят статический UX audit; frontend build/runtime smoke обязателен до `DONE / RUNTIME EVIDENCE`.
+- Projects, Agent Studio, Dev Studio, Usage, Wallet, Account и Help проверены; существующие component/CSS contracts сохранены без лишнего дублирования.
+- Старый `/app/legacy` больше не открывает второй расходящийся интерфейс и перенаправляется в текущий `/app`.
+- Добавлен `scripts/product_expansion_check.sh`: один targeted gate собирает свежие backend/frontend images, проверяет Django/migration drift, search failover, image edit regressions и live SearXNG/fallback diagnostic.
 
 ## Что реализовано к Sprint 75
 
@@ -205,19 +208,20 @@
 
 Наличие кода Sprint 76–79 не отменяет следующие реальные проверки:
 
-1. `sudo bash scripts/update.sh --full` проходит полностью после завершения текущего продуктового пакета.
-2. PostgreSQL regression/security/commercial tests проходят на текущем коде.
-3. `agent_runtime_drill.sh` возвращает `AGENT RUNTIME DRILL: PASS` после реальных restart worker/beat.
-4. Production configuration/secrets complete.
-5. Real payment/refund/receipt flow verified.
-6. Backup restore/application rollback drill verified.
-7. Legal/provider human sign-offs complete.
-8. Live dedicated E2E account configured (`E2E_USERNAME` / `E2E_PASSWORD`) with small positive balance.
-9. `commercial_launch_check.sh` проходит live paid workspace AI + B2B API/billing E2E.
-10. `agent_release_candidate_check.sh` завершается `AGENT RELEASE CANDIDATE v1.0: PASS`.
-11. `web_search_diagnose` даёт production evidence хотя бы одного рабочего live-search provider и fallback policy.
-12. OpenAI image generate/edit smoke подтверждает real provider response, billing settlement и private media delivery.
+1. `sudo bash scripts/product_expansion_check.sh` проходит на текущем `main` и возвращает `PRODUCT EXPANSION CHECK: PASS`.
+2. `sudo bash scripts/update.sh --full` проходит полностью после targeted gate.
+3. PostgreSQL regression/security/commercial tests проходят на текущем коде.
+4. `agent_runtime_drill.sh` возвращает `AGENT RUNTIME DRILL: PASS` после реальных restart worker/beat.
+5. Production configuration/secrets complete.
+6. Real payment/refund/receipt flow verified.
+7. Backup restore/application rollback drill verified.
+8. Legal/provider human sign-offs complete.
+9. Live dedicated E2E account configured (`E2E_USERNAME` / `E2E_PASSWORD`) with small positive balance.
+10. `commercial_launch_check.sh` проходит live paid workspace AI + B2B API/billing E2E.
+11. `agent_release_candidate_check.sh` завершается `AGENT RELEASE CANDIDATE v1.0: PASS`.
+12. `web_search_diagnose` даёт production evidence хотя бы одного рабочего live-search provider и fallback policy.
+13. OpenAI image generate/edit smoke подтверждает real provider response, billing settlement и private media delivery.
 
 ## Следующий шаг
 
-Текущая разработка: завершить Sprint 79 статическим UX-аудитом оставшихся клиентских маршрутов. После этого выполнить один targeted frontend build + image/search tests, затем один полный release gate и runtime evidence 74–79.
+Код Sprint 76–79 завершён. Следующий этап — один targeted gate для нового пакета, затем один полный production release gate и runtime evidence 74–79. Не запускать полный suite после каждого отдельного CSS/UX изменения.
