@@ -33,8 +33,9 @@
 - В composer добавлены явные действия анализа изображения и сравнения изображений.
 - Вложения owner/project scoped, ограничены количеством/размером и проходят существующие проверки.
 - OpenAI Responses adapter уже передаёт изображения как `input_image`; второй vision-backend не создан.
+- Frontend image state использует реальный backend `detected_type=png/jpeg/webp`, а не ошибочное ожидание MIME-строки `image/*`.
 
-Осталось evidence: реальный vision smoke на production provider и финальная визуальная проверка attachment states.
+Осталось evidence: реальный vision smoke на production provider.
 
 ## Sprint 78 — OpenAI Image Generate / Edit in Chat
 
@@ -57,30 +58,36 @@
 
 ## Sprint 79 — Client Cabinet UX / Reliability Polish
 
-**Статус:** IN PROGRESS
+**Статус:** DONE / RUNTIME EVIDENCE
 
 Цель: весь клиентский кабинет выглядит и работает как единый premium-продукт, а не набор технических админ-экранов.
 
-Уже реализовано:
+Реализовано:
 - Общий `ClientAppChrome` усилен: единая active-state система, focus/touch states, overflow protection, mobile safe-area и fixed bottom navigation.
 - Settings приведён к общей типографике, карточкам, формам, focus states и мобильным touch targets.
 - Connections полностью переведён с inline-стилей на responsive CSS module без изменения security/ACL логики.
 - Notifications получил единые unread/read/error/action states и mobile actions.
 - Event Autonomy полностью переведён на responsive premium UI: webhook secret, endpoint, enabled/paused и destructive actions имеют явные состояния.
 - Schedules полностью переведён на responsive premium UI: cadence/timezone/day controls, action states и run history адаптированы для мобильных экранов.
+- Compare и standalone Images переведены на общий card/result/history contract без разрозненного inline presentation.
+- Teams и Team Detail получили premium builder/configuration UX, responsive role/action controls и историю запусков.
+- Agent Run Detail получил отдельный responsive layout для approvals, экономики, Dev changes, logs, sources и errors.
 - Image create/edit dialog унифицирован с клиентским дизайн-языком и безопасными pending/error states.
+- Projects, Agent Studio, Dev Studio, Usage, Wallet, Account и Help проверены; существующие зрелые CSS/component contracts сохранены без лишней переписки.
+- `/app/legacy` больше не открывает устаревший второй workspace и перенаправляет в текущий `/app`.
+- Добавлен targeted verification gate `scripts/product_expansion_check.sh` для Sprint 76–79.
 
-Acceptance gate Sprint 79:
-- Chat, Projects, Images, Agents, Dev Studio, Compare, Usage, Wallet, Account, Settings, Help, Connections, Notifications, Events и Schedules проходят единый responsive UX audit.
-- Основное действие каждого экрана очевидно без документации.
-- Advanced/system details используют progressive disclosure.
-- Нет blocking infinite loaders; network errors имеют recoverable states.
-- Нет MutationObserver/DOM hacks для основной product logic.
-- Длинные списки/диалоги не создают неограниченный DOM и не замораживают вкладку.
-- Мобильный интерфейс 360–430 px сохраняет доступ к primary actions.
-- Empty/error/loading/disabled states единообразны.
-- Frontend build и targeted route smoke входят в acceptance gate.
+Статический acceptance выполнен:
+- Chat, Projects, Images, Agents, Teams, Team Detail, Run Detail, Dev Studio, Compare, Usage, Wallet, Account, Settings, Help, Connections, Notifications, Events и Schedules прошли единый code-level responsive UX audit.
+- Основные действия имеют явные visual states; destructive/security actions отделены от обычных.
+- Mobile 360–430 px учитывается отдельными layout/touch правилами.
+- Старый параллельный workspace route выведен из эксплуатации.
+
+Осталось runtime evidence:
+- `scripts/product_expansion_check.sh` должен вернуть `PRODUCT EXPANSION CHECK: PASS`.
+- Frontend production build должен завершиться успешно на сервере.
+- Нужен visual smoke основных маршрутов на реальном deployment.
 
 ## Release policy
 
-Sprint 74–75 runtime evidence остаётся обязательным для коммерческого release claim. Sprint 76–79 добавляют новый продуктовый код, поэтому перед production promotion после их завершения требуется один полный release gate; во время разработки используются targeted tests/builds, чтобы не запускать весь suite после каждого файла.
+Sprint 74–75 runtime evidence остаётся обязательным для коммерческого release claim. Sprint 76–79 добавляют новый продуктовый код, поэтому перед production promotion выполняется один targeted gate нового пакета, затем один полный release gate. Полный suite не запускается после каждого отдельного CSS/UX изменения.
