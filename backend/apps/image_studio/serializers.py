@@ -36,11 +36,19 @@ class ImageGenerationSerializer(serializers.ModelSerializer):
     model_name = serializers.CharField(source="model.display_name")
     provider = serializers.CharField(source="model.provider.slug")
     images = GeneratedImageSerializer(many=True, read_only=True)
+    operation = serializers.SerializerMethodField()
+    source_file_id = serializers.SerializerMethodField()
 
     class Meta:
         model = ImageGeneration
         fields = (
-            "id", "conversation", "model", "model_name", "provider", "prompt", "size", "quality",
-            "requested_count", "actual_count", "state", "estimated_cost_rub",
+            "id", "conversation", "model", "model_name", "provider", "operation", "source_file_id",
+            "prompt", "size", "quality", "requested_count", "actual_count", "state", "estimated_cost_rub",
             "actual_cost_rub", "error_code", "images", "created_at", "completed_at",
         )
+
+    def get_operation(self, obj):
+        return (obj.price_snapshot or {}).get("operation", "generate")
+
+    def get_source_file_id(self, obj):
+        return (obj.price_snapshot or {}).get("source_file_id")
