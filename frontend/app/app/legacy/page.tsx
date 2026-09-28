@@ -1,3 +1,5 @@
-import WorkspaceClient from "../../WorkspaceClient";
+import {redirect} from "next/navigation";
 
-export default WorkspaceClient;
+export default function LegacyWorkspacePage(){
+ redirect("/app");
+}
