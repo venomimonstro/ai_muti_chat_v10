@@ -1,3 +1,3 @@
-import WorkspaceUX from "../workspace/WorkspaceUX";
+import WorkspaceV2 from "../workspace/WorkspaceV2";
 
-export default WorkspaceUX;
+export default WorkspaceV2;
