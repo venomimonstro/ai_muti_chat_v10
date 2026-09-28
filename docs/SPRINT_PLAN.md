@@ -115,9 +115,9 @@
 | Sprint | Статус | Цель |
 |---|---|---|
 | 76 | DONE / RUNTIME EVIDENCE | Free-first web search: SearXNG + Yandex failover, diagnostics, sources |
-| 77 | DONE / RUNTIME EVIDENCE | Native multimodal chat: PNG/JPEG/WebP vision, immediate-ready uploads, compare/analyze UX |
-| 78 | IN PROGRESS | OpenAI Images in chat: create + edit, shared billing/storage/history, no local generation |
-| 79 | PLANNED | Full client cabinet UX/reliability audit and premium consistency |
+| 77 | DONE / RUNTIME EVIDENCE | Native multimodal chat: PNG/JPEG/WebP vision, compare/analyze UX |
+| 78 | DONE / RUNTIME EVIDENCE | OpenAI Images in chat: create + edit, shared billing/storage/history, no local generation |
+| 79 | IN PROGRESS | Full client cabinet UX/reliability audit and premium consistency |
 
 Детали: `docs/sprints/76-79-search-multimodal-images-client-ux.md`.
 
@@ -132,17 +132,29 @@
 ### Sprint 77 — реализованный код
 
 - Существующий vision backend используется напрямую: вложения маршрутизируются только на модели с capability `vision`.
-- PNG/JPEG/WebP после безопасной проверки сразу получают READY: для них не нужна асинхронная текстовая индексация.
-- В composer добавлены явные действия для фото/изображений и сравнения изображений.
-- Максимумы/ACL/tenant isolation существующего FileAsset + vision pipeline сохраняются.
+- PNG/JPEG/WebP проходят существующий owner/project scoped FileAsset + vision pipeline.
+- В composer добавлены явные действия для анализа и сравнения изображений.
+- OpenAI Responses получает нативные `input_image`; отдельный vision-backend не создаётся.
 
-### Sprint 78 — текущая реализация
+### Sprint 78 — реализованный код
 
 - OpenAI Images подключён прямо к composer через существующий `image_studio`.
 - Используются существующие reservation/settlement, async queue, private storage и conversation history.
 - Добавлена операция OpenAI image edit для owner-scoped PNG/JPEG/WebP; source id + SHA фиксируются в immutable snapshot и перепроверяются перед provider call.
+- Production async upload source обрабатывается bounded readiness polling вместо ложного требования мгновенного READY.
+- Добавлены regression tests на success billing, provider failure, IDOR, source tamper и multipart OpenAI edit contract.
 - Локальный image-generation runtime не добавляется.
-- До завершения Sprint 78 нужны targeted tests/build и финальная UI-integrация редактирования/истории.
+- Для закрытия runtime evidence нужны targeted tests/build и реальный OpenAI generate/edit smoke.
+
+### Sprint 79 — текущая реализация
+
+- Общий ClientAppChrome получил единый premium active/focus/touch contract и mobile bottom navigation с safe-area.
+- Settings приведён к единой типографике, карточкам, формам и responsive states.
+- Connections переведён с inline presentation на отдельный responsive CSS module без изменения ACL/secret logic.
+- Notifications получил единые unread/read/error/action states.
+- Event Autonomy и Schedules переведены на premium responsive UI с явными security/destructive/pending states.
+- Image create/edit dialog унифицирован с клиентским дизайн-языком и production async states.
+- Оставшиеся маршруты кабинета проходят статический UX audit; frontend build/runtime smoke обязателен до `DONE / RUNTIME EVIDENCE`.
 
 ## Что реализовано к Sprint 75
 
@@ -208,4 +220,4 @@
 
 ## Следующий шаг
 
-Текущая разработка: завершить Sprint 78, затем Sprint 79. После завершения продуктового пакета выполнить targeted tests/frontend build, затем один полный release gate и runtime evidence 74–75/76–79.
+Текущая разработка: завершить Sprint 79 статическим UX-аудитом оставшихся клиентских маршрутов. После этого выполнить один targeted frontend build + image/search tests, затем один полный release gate и runtime evidence 74–79.
