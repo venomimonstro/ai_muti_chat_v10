@@ -190,6 +190,12 @@ class FileAssetViewSet(viewsets.ReadOnlyModelViewSet):
                 asset.delete()
             raise FileStorageUnavailable() from exc
 
+        # Vision images need no text extraction or embedding. Finalize them immediately so
+        # users can attach a photo and send the prompt without racing the Celery queue.
+        if detected in {"png", "jpeg", "webp"}:
+            process_file(asset)
+            return Response(self.get_serializer(asset).data, status=status.HTTP_201_CREATED)
+
         async_processing = os.getenv(
             "FILE_PROCESSING_ASYNC",
             "false" if settings.DEBUG else "true",
