@@ -68,9 +68,9 @@ class ClientModelCatalogReadOnlyTests(TestCase):
     def test_llm_system_tier_uses_upstream_identity_not_local_slug(self):
         provider, _ = Provider.objects.get_or_create(slug="gigachat", defaults={"name": "GigaChat API"})
         cases = (
-            ("arbitrary-lite-local", "GigaChat-2", "LLM System · System Lite"),
-            ("arbitrary-pro-local", "GigaChat-2-Pro", "LLM System · System Pro"),
-            ("arbitrary-max-local", "GigaChat-2-Max", "LLM System · System Max"),
+            ("system-import-a", "GigaChat-2", "LLM System · System Lite"),
+            ("system-import-b", "GigaChat-2-Pro", "LLM System · System Pro"),
+            ("system-import-c", "GigaChat-2-Max", "LLM System · System Max"),
         )
         for slug, upstream, expected in cases:
             model = AIModel.objects.create(
