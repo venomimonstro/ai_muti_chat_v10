@@ -134,6 +134,24 @@ def test_non_retryable_bad_key_becomes_retryable_when_spare_key_exists():
 
 
 @pytest.mark.django_db
+def test_credit_exhaustion_persistently_blocks_provider_without_spare_key(monkeypatch):
+    monkeypatch.setenv("CHAT_RELIABILITY_PROVIDER_KEY", "legacy-credit-key")
+    provider = _provider(credential_env="CHAT_RELIABILITY_PROVIDER_KEY")
+
+    error = ProviderError(
+        "no credits",
+        code="credit_balance_exhausted",
+        retryable=False,
+    )
+    record_failure(provider, error)
+
+    provider.refresh_from_db()
+    assert provider.health_state == Provider.HealthState.OPEN
+    assert provider.circuit_opened_until is None
+    assert provider_available(provider) is False
+
+
+@pytest.mark.django_db
 def test_success_restores_key_and_provider_health():
     provider = _provider(health_state=Provider.HealthState.DEGRADED, consecutive_failures=2)
     key = _key(
