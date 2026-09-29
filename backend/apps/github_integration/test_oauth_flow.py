@@ -12,6 +12,21 @@ from .views import STATE_SALT
 
 
 @pytest.mark.django_db
+def test_connect_reports_not_configured_when_integration_is_disabled(monkeypatch):
+    monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "false")
+    user = User.objects.create_user(
+        username="github-disabled", email="github-disabled@example.test", password="password123"
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.get("/api/v1/github/connect/")
+
+    assert response.status_code == 200
+    assert response.json() == {"configured": False, "connect_url": None}
+
+
+@pytest.mark.django_db
 def test_setup_callback_redirects_to_oauth_with_signed_installation(monkeypatch):
     monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "true")
     monkeypatch.setenv("GITHUB_APP_CLIENT_ID", "Iv1.test-client")
