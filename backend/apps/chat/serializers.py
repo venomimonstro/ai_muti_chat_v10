@@ -54,8 +54,6 @@ def _public_routing_snapshot(generation, model_name, hide_upstream):
         "classification_confidence": routing.get("classification_confidence"),
         "required_capabilities": routing.get("required_capabilities", []),
         "estimated_cost_rub": routing.get("estimated_cost_rub"),
-        # Internal providers/models and fallback candidates are intentionally not
-        # exposed through the customer API. Full diagnostics remain in admin data.
         "candidates": [],
     }
 
@@ -64,8 +62,6 @@ def _public_context_components(generation):
     components = generation.context_snapshot.get("components", [])
     if not isinstance(components, list):
         return []
-    # System prompts are implementation/security controls, not customer-visible
-    # context. Memory/file/history entries remain inspectable as before.
     return [
         item for item in components
         if not isinstance(item, dict) or item.get("kind") not in INTERNAL_CONTEXT_KINDS
@@ -168,7 +164,11 @@ class ConversationSerializer(serializers.ModelSerializer):
         return None
 
     def create(self, validated_data):
-        mode = validated_data.get("routing_mode", Conversation.RoutingMode.MANUAL)
+        # Customer chats should be resilient by default. Manual routing is an
+        # explicit advanced choice; an omitted mode starts on System Pro so the
+        # router can fail over from an exhausted external provider to GigaChat.
+        mode = validated_data.get("routing_mode") or Conversation.RoutingMode.BALANCED
+        validated_data["routing_mode"] = mode
         selected = validated_data.get("selected_model")
         if mode == Conversation.RoutingMode.MANUAL:
             if not selected or selected == "echo-v1":
@@ -179,8 +179,6 @@ class ConversationSerializer(serializers.ModelSerializer):
                     )
                 validated_data["selected_model"] = model.slug
         else:
-            # AUTO has exactly one source of truth: the admin tier matrix. Never
-            # let a stale browser/manual selection override or block AUTO creation.
             validated_data["selected_model"] = "echo-v1"
         return super().create(validated_data)
 
@@ -191,7 +189,6 @@ class ConversationSerializer(serializers.ModelSerializer):
             Conversation.RoutingMode.BALANCED,
             Conversation.RoutingMode.MAXIMUM,
         }:
-            # Ignore any stale/manual model posted by the client in AUTO mode.
             return "echo-v1"
         try:
             model = AIModel.objects.select_related("provider", "current_version").get(
