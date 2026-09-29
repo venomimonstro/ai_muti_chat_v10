@@ -10,6 +10,7 @@ import "./workspace-model-picker.css";
 import "./workspace-media.css";
 import "./product-studio.css";
 import "./product-studio-detail.css";
+import "./dev-studio-flow.css";
 import "./workspace-billing-dialog.css";
 import "./client-chrome.css";
 
