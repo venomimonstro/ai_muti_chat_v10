@@ -452,6 +452,7 @@ def run(generation, *, adapter=None):
                 started = time.monotonic()
                 emitted = False
                 attempt_completed = None
+                provider_adapter = adapter
                 try:
                     provider_adapter = adapter or adapter_for(model)
                     max_output_tokens = min(
@@ -478,17 +479,24 @@ def run(generation, *, adapter=None):
                         raise ProviderError("Stream ended without usage", code="invalid_stream", retryable=True)
                     latency = int((time.monotonic() - started) * 1000)
                     _finish_attempt(attempt, state=GenerationAttempt.State.COMPLETED, started=started)
-                    record_success(model.provider, latency)
+                    record_success(model.provider, latency, adapter=provider_adapter)
                     completed = attempt_completed
                     selected_model = model
                     break
                 except ProviderError as exc:
                     last_error = exc
                     _finish_attempt(attempt, state=GenerationAttempt.State.FAILED, started=started, error=exc)
-                    record_failure(model.provider, exc)
+                    record_failure(model.provider, exc, adapter=provider_adapter)
                     if emitted:
                         raise
-                    if exc.retryable and retry_index + 1 < max_attempts:
+                    model.provider.refresh_from_db(
+                        fields=["enabled", "emergency_disabled", "health_state", "circuit_opened_until"]
+                    )
+                    if (
+                        exc.retryable
+                        and retry_index + 1 < max_attempts
+                        and provider_available(model.provider)
+                    ):
                         yield sse("recovery", {"action": "retry", "provider": model.provider.slug})
                         continue
                     break
