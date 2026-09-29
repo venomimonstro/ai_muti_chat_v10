@@ -14,12 +14,108 @@ from apps.accounts.models import Notification, SupportRequest, User
 from .recovery import recover_stale_operations
 
 WORKER_HEARTBEAT_KEY = "system:celery-worker-heartbeat"
+PROVIDER_HEALTH_WATCH_LOCK = "system:provider-health-watch-lock"
+
+
+@shared_task
+def provider_health_watch_task():
+    """Continuously verify and recover AI providers outside customer requests.
+
+    Customer traffic is fail-closed and never serves as a half-open circuit probe.
+    This watcher is therefore the only automatic path that re-admits a recovered
+    provider. A distributed cache lock prevents overlapping sweeps when an upstream
+    health endpoint is slow.
+    """
+    if not cache.add(PROVIDER_HEALTH_WATCH_LOCK, "1", timeout=240):
+        return {"status": "skipped", "reason": "already_running"}
+
+    from apps.ai_registry.models import Provider
+    from apps.ai_registry.reliability import check_provider, provider_available
+
+    now = timezone.now()
+    checked = 0
+    healthy = 0
+    unavailable = 0
+    errors = 0
+    try:
+        providers = (
+            Provider.objects.filter(enabled=True, emergency_disabled=False, models__enabled=True)
+            .distinct()
+            .order_by("priority", "slug")
+        )
+        for provider in providers.iterator():
+            # Healthy channels are revalidated every 3 minutes. Unknown/degraded
+            # channels are probed each sweep. Persistent auth/billing OPEN circuits
+            # are retried every 5 minutes to avoid hammering a known-bad account.
+            if provider.last_checked_at:
+                age = (now - provider.last_checked_at).total_seconds()
+                if provider.health_state == Provider.HealthState.HEALTHY and age < 180:
+                    healthy += int(provider_available(provider))
+                    continue
+                if (
+                    provider.health_state == Provider.HealthState.OPEN
+                    and provider.circuit_opened_until is None
+                    and age < 300
+                ):
+                    unavailable += 1
+                    continue
+                if (
+                    provider.health_state == Provider.HealthState.OPEN
+                    and provider.circuit_opened_until is not None
+                    and provider.circuit_opened_until > now
+                ):
+                    unavailable += 1
+                    continue
+            try:
+                check_provider(provider)
+                checked += 1
+            except Exception:
+                errors += 1
+                continue
+            provider.refresh_from_db(
+                fields=[
+                    "enabled",
+                    "emergency_disabled",
+                    "health_state",
+                    "circuit_opened_until",
+                    "last_checked_at",
+                ]
+            )
+            if provider_available(provider):
+                healthy += 1
+            else:
+                unavailable += 1
+
+        if healthy == 0 and (checked or unavailable):
+            bucket = timezone.now().strftime("%Y-%m-%d-%H-%M")[:-1]
+            _notify_platform_admins(
+                dedupe_key=f"ai-provider-outage:{bucket}",
+                title="Нет доступных AI-провайдеров",
+                body=(
+                    "Автоматическая проверка не нашла ни одного подтверждённо рабочего "
+                    "AI-канала. Клиентские модели скрыты до успешного health-check."
+                ),
+                action_url="/admin-console/chat-diagnostics",
+                level=Notification.Level.WARNING,
+            )
+        return {
+            "status": "ok" if errors == 0 else "partial",
+            "checked": checked,
+            "ready": healthy,
+            "unavailable": unavailable,
+            "errors": errors,
+        }
+    finally:
+        cache.delete(PROVIDER_HEALTH_WATCH_LOCK)
 
 
 @shared_task
 def system_heartbeat_task():
     now = timezone.now().isoformat()
     cache.set(WORKER_HEARTBEAT_KEY, now, timeout=180)
+    # The beat already runs this heartbeat every minute. Dispatch the provider
+    # watcher separately so a slow external API can never block worker liveness.
+    provider_health_watch_task.delay()
     return now
 
 
