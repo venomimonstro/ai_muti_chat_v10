@@ -22,6 +22,7 @@ echo '[chat-check] run chat reliability regressions'
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   pytest -q \
   apps/chat/test_public_error_codes.py \
+  apps/chat/test_reconnect_fast_path.py \
   apps/ai_registry/test_chat_reliability.py
 
 echo 'CHAT RELIABILITY CHECK: PASS'
