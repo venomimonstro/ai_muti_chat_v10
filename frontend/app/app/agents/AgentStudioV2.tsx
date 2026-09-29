@@ -19,7 +19,7 @@ export default function AgentStudioV2(){
  const router=useRouter();
  const[agents,setAgents]=useState<Agent[]>([]);const[templates,setTemplates]=useState<Template[]>([]);const[projects,setProjects]=useState<Project[]>([]);const[summary,setSummary]=useState<OpsSummary|null>(null);const[loading,setLoading]=useState(true);const[busy,setBusy]=useState("");const[error,setError]=useState("");
  const[description,setDescription]=useState("");const[details,setDetails]=useState(false);const[business,setBusiness]=useState("");const[projectId,setProjectId]=useState("");const[sources,setSources]=useState<string[]>(["web"]);const[autonomy,setAutonomy]=useState<Autonomy>("semi_autonomous");
- const availableProjects=useMemo(()=>projects.filter(project=>!project.archived_at&&project.role!=="viewer"),[projects]);
+ const availableProjects=useMemo(()=>projects.filter(project=>!project.archived_at&&project.role==="owner"),[projects]);
  const load=async()=>{setLoading(true);try{const[a,t,s,p]=await Promise.all([api<Agent[]>("/agents/"),api<Template[]>("/agents/templates/"),api<OpsSummary>("/agents/operations/summary/"),api<Project[]>("/projects/")]);setAgents(a);setTemplates(t);setSummary(s);setProjects(p);setError("")}catch(e){setError(e instanceof Error?e.message:"Не удалось загрузить AI-сотрудников")}finally{setLoading(false)}};
  useEffect(()=>{void load()},[]);
  const sourceText=useMemo(()=>[sources.includes("web")?"актуальный интернет-поиск":"",sources.includes("files")?"файлы выбранного проекта":""].filter(Boolean).join(", "),[sources]);
