@@ -75,12 +75,7 @@ def _provider_blocking_error(error: ProviderError) -> bool:
 
 
 def _most_recent_api_key(provider: Provider):
-    """Best-effort key attribution for legacy callers that do not pass an adapter.
-
-    Runtime chat paths should pass the exact adapter whenever possible. This
-    fallback remains for diagnostics/legacy integrations and explicitly keeps
-    PostgreSQL NULL last so an unused spare is not blamed for another key's error.
-    """
+    """Best-effort key attribution for legacy callers that do not pass an adapter."""
     try:
         return (
             provider.api_keys.filter(enabled=True)
@@ -154,14 +149,12 @@ def provider_available(provider: Provider) -> bool:
     """Fail-closed customer-traffic readiness predicate.
 
     Customer requests never act as provider health probes. OPEN, UNKNOWN and
-    explicitly disabled providers stay out of routing until ``check_provider``
-    records a successful probe. This prevents a thundering herd when a circuit
-    cooldown expires and ensures an administrator's disable switch is authoritative.
+    explicitly disabled external providers stay out of routing until a successful
+    health probe records recovery. For key-pool providers at least one verified
+    HEALTHY key is required.
 
-    For key-pool providers at least one verified HEALTHY key is required. A
-    DEGRADED provider may still serve traffic when a different key is healthy;
-    the failed key remains isolated while the healthy spare carries requests.
-    Legacy single-secret providers must have a HEALTHY provider state.
+    The ECHO adapter is an isolated deterministic test fixture and needs no external
+    credential; it follows only the provider's explicit enabled/health controls.
     """
     if not provider.enabled or provider.emergency_disabled:
         return False
@@ -171,6 +164,11 @@ def provider_available(provider: Provider) -> bool:
         Provider.HealthState.DISABLED,
     }:
         return False
+    if provider.adapter_type == Provider.AdapterType.ECHO:
+        return provider.health_state in {
+            Provider.HealthState.HEALTHY,
+            Provider.HealthState.DEGRADED,
+        }
     if not provider.credential_configured():
         return False
     if _has_pool_keys(provider):
@@ -180,7 +178,7 @@ def provider_available(provider: Provider) -> bool:
 
 def model_client_ready(model: AIModel) -> bool:
     """Return whether a model is safe to expose or route to a customer now."""
-    if not model.enabled or not model.current_version_id or not str(model.upstream_model or "").strip():
+    if not model.enabled or not str(model.upstream_model or "").strip():
         return False
     if not provider_available(model.provider):
         return False
@@ -271,13 +269,7 @@ def candidate_models(primary: AIModel) -> list[AIModel]:
 
 @transaction.atomic
 def record_failure(provider: Provider, error: ProviderError, adapter=None):
-    """Record runtime failure and keep dead credentials away from customers.
-
-    Credential-specific failure is isolated to the selected key first. If a spare
-    healthy/unknown key exists, the provider stays DEGRADED so the health watcher
-    can validate that spare. Customer traffic itself only retries while a verified
-    HEALTHY spare remains available.
-    """
+    """Record runtime failure and keep dead credentials away from customers."""
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
     has_spare_key = record_api_key_failure(locked, adapter, error)
     if has_spare_key:
