@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from django.core import signing
 from django.urls import reverse
 from django.utils import timezone
@@ -13,6 +16,25 @@ from .permissions import IsPlatformAdmin
 
 DIAGNOSTICS_SHARE_SALT = "admin-ops-diagnostics-share-v1"
 DIAGNOSTICS_SHARE_MAX_AGE_SECONDS = 6 * 60 * 60
+UPDATE_STATUS_PATH = Path("/app/logs/latest-update-status.json")
+
+
+def _release_status():
+    try:
+        payload = json.loads(UPDATE_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "status": str(payload.get("status") or "unknown")[:32],
+        "phase": str(payload.get("phase") or "")[:240],
+        "exit_code": payload.get("exit_code"),
+        "commit": str(payload.get("commit") or "")[:80],
+        "occurred_at": str(payload.get("occurred_at") or "")[:80],
+        "log_file": str(payload.get("log_file") or "")[:160],
+        "failures": [str(item)[:500] for item in (payload.get("failures") or [])[:40]],
+    }
 
 
 def build_system_diagnostics():
@@ -88,16 +110,19 @@ def build_system_diagnostics():
         1 for item in providers
         if item["health"] not in {"healthy", "unknown"} or item["emergency_disabled"]
     )
+    release_status = _release_status()
 
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": timezone.now(),
         "summary": {
             "open_system_issues": open_issues,
             "recent_failed_generations": len(recent_errors),
             "unhealthy_providers": unhealthy_providers,
             "providers_total": len(providers),
+            "release_gate_failed": bool(release_status and release_status.get("status") == "failed"),
         },
+        "release_status": release_status,
         "providers": providers,
         "recent_chat_errors": recent_errors,
         "system_issues": issues,
@@ -107,6 +132,7 @@ def build_system_diagnostics():
             "user_identity": False,
             "tracebacks": False,
             "credentials": False,
+            "raw_release_logs": False,
         },
     }
 
