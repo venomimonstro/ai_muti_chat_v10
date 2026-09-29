@@ -1,6 +1,7 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
 const TEST_USER_KEY = "aiws:test-user";
 const API_TIMEOUT_MS = 12000;
+const STREAM_RECONNECT_DELAYS_MS = [500, 1000, 1600, 2500, 4000, 6000, 8000];
 
 export class ApiError extends Error {
   constructor(
@@ -170,6 +171,8 @@ type CostConfirmationError = ChatCostPreview & {
   detail?: string;
 };
 
+type ConsumeResult = "completed" | "retry" | "terminal";
+
 const pendingKey = (conversationId: string) => `aiws:pending-stream:${conversationId}`;
 const fileIds = (value: StreamPayload) => value.file_ids ?? [];
 const samePayload = (left: StreamPayload, right: StreamPayload) =>
@@ -240,6 +243,25 @@ async function previewChatCost(conversationId: string, payload: StreamPayload) {
   });
 }
 
+function waitForReconnect(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", aborted);
+      resolve();
+    }, ms);
+    const aborted = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", aborted);
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", aborted, {once: true});
+  });
+}
+
 export async function streamMessage(
   conversationId: string,
   payload: StreamPayload,
@@ -297,78 +319,134 @@ export async function streamMessage(
     });
   };
 
-  await ensureCsrf();
-  let response = await send(Boolean(pending.confirmedCost));
-  if (response.status === 409) {
-    let details: CostConfirmationError | null = null;
-    try {
-      details = (await response.json()) as CostConfirmationError;
-    } catch {
-      details = null;
+  const openResponse = async () => {
+    await ensureCsrf();
+    let response = await send(Boolean(pending.confirmedCost));
+
+    // A session can outlive the CSRF token cached in this browser tab. Refresh it
+    // once before surfacing a 403 as a chat failure.
+    if (response.status === 403 && !signal.aborted) {
+      csrfToken = "";
+      await ensureCsrf();
+      response = await send(Boolean(pending.confirmedCost));
     }
-    if (details?.code === "cost_confirmation_required") {
-      if (!askCostConfirmation(details.estimated_max_rub)) {
-        clearPending(conversationId);
-        throw new ApiError("Запрос отменён до списания средств", 499);
+
+    if (response.status === 409) {
+      let details: CostConfirmationError | null = null;
+      try {
+        details = (await response.json()) as CostConfirmationError;
+      } catch {
+        details = null;
       }
-      pending.confirmedCost = true;
-      pending.confirmedMaxRub = details.estimated_max_rub;
-      writePending(conversationId, pending);
-      response = await send(true);
-    } else if (details?.code === "cost_confirmation_changed") {
-      clearPending(conversationId);
-      throw new ApiError(
-        `Стоимость контекста изменилась до ${formatRub(details.estimated_max_rub)} ₽. Деньги не списаны — отправьте запрос ещё раз для нового подтверждения.`,
-        409,
-        details,
-      );
+      if (details?.code === "cost_confirmation_required") {
+        if (!askCostConfirmation(details.estimated_max_rub)) {
+          clearPending(conversationId);
+          throw new ApiError("Запрос отменён до списания средств", 499);
+        }
+        pending.confirmedCost = true;
+        pending.confirmedMaxRub = details.estimated_max_rub;
+        writePending(conversationId, pending);
+        response = await send(true);
+      } else if (details?.code === "cost_confirmation_changed") {
+        clearPending(conversationId);
+        throw new ApiError(
+          `Стоимость контекста изменилась до ${formatRub(details.estimated_max_rub)} ₽. Деньги не списаны — отправьте запрос ещё раз для нового подтверждения.`,
+          409,
+          details,
+        );
+      }
     }
+
+    if (!response.ok || !response.body) {
+      if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+        clearPending(conversationId);
+      }
+      let message = `Ошибка ${response.status}`;
+      let errorPayload: unknown = null;
+      try {
+        errorPayload = await response.json();
+        message = errorText(errorPayload);
+      } catch {
+        // Response without JSON body.
+      }
+      throw new ApiError(message, response.status, errorPayload);
+    }
+    return response;
+  };
+
+  const consume = async (response: Response): Promise<ConsumeResult> => {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let terminal = false;
+    let inProgress = false;
+
+    while (true) {
+      const {done, value} = await reader.read();
+      buffer += decoder.decode(value, {stream: !done});
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) {
+        let event = "message";
+        let data = "{}";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          if (line.startsWith("data:")) data = line.slice(5).trim();
+        }
+        const parsed = JSON.parse(data) as Record<string, unknown>;
+        if (["snapshot", "completed"].includes(event)) {
+          terminal = true;
+          clearPending(conversationId);
+        } else if (event === "error" && parsed.code === "generation_in_progress") {
+          inProgress = true;
+          continue;
+        } else if (event === "error") {
+          terminal = true;
+          clearPending(conversationId);
+          parsed.message = publicStreamError(parsed.code, parsed.message);
+        }
+        if (event === "heartbeat") continue;
+        if (event === "research_progress" && typeof parsed.message === "string") {
+          onEvent({event: "routing", data: {explanation: parsed.message}});
+        } else if (event === "web_search" && parsed.status === "completed") {
+          const sources = Array.isArray(parsed.sources) ? parsed.sources.length : 0;
+          onEvent({event: "routing", data: {explanation: sources > 0 ? `Проверил источники: ${sources}. Формирую ответ…` : "Проверил внешние данные. Формирую ответ…"}});
+        }
+        onEvent({event, data: parsed});
+      }
+      if (done) {
+        if (terminal) return "completed";
+        if (inProgress) return "retry";
+        return "retry";
+      }
+    }
+  };
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= STREAM_RECONNECT_DELAYS_MS.length; attempt += 1) {
+    if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    try {
+      const response = await openResponse();
+      const result = await consume(response);
+      if (result === "completed" || result === "terminal") return;
+      lastError = new ApiError("Поток ответа завершился раньше времени", 503, {code: "stream_interrupted"});
+    } catch (reason) {
+      if (signal.aborted || (reason instanceof DOMException && reason.name === "AbortError")) throw reason;
+      if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500 && ![408, 409, 429].includes(reason.status)) {
+        throw reason;
+      }
+      lastError = reason;
+    }
+
+    if (attempt >= STREAM_RECONNECT_DELAYS_MS.length) break;
+    onEvent({
+      event: "routing",
+      data: {explanation: "Соединение прервалось. Восстанавливаю тот же ответ без повторного списания…"},
+    });
+    await waitForReconnect(STREAM_RECONNECT_DELAYS_MS[attempt], signal);
   }
 
-  if (!response.ok || !response.body) {
-    if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-      clearPending(conversationId);
-    }
-    let message = `Ошибка ${response.status}`;
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-      message = errorText(payload);
-    } catch {
-      // Response without JSON body.
-    }
-    throw new ApiError(message, response.status, payload);
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const {done, value} = await reader.read();
-    buffer += decoder.decode(value, {stream: !done});
-    const blocks = buffer.split("\n\n");
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) {
-      let event = "message";
-      let data = "{}";
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        if (line.startsWith("data:")) data = line.slice(5).trim();
-      }
-      const parsed = JSON.parse(data) as Record<string, unknown>;
-      if (["snapshot", "completed"].includes(event)) {
-        clearPending(conversationId);
-      } else if (event === "error" && parsed.code !== "generation_in_progress") {
-        clearPending(conversationId);
-        parsed.message = publicStreamError(parsed.code, parsed.message);
-      }
-      if (event === "research_progress" && typeof parsed.message === "string") {
-        onEvent({event: "routing", data: {explanation: parsed.message}});
-      } else if (event === "web_search" && parsed.status === "completed") {
-        const sources = Array.isArray(parsed.sources) ? parsed.sources.length : 0;
-        onEvent({event: "routing", data: {explanation: sources > 0 ? `Проверил источники: ${sources}. Формирую ответ…` : "Проверил внешние данные. Формирую ответ…"}});
-      }
-      onEvent({event, data: parsed});
-    }
-    if (done) break;
-  }
+  throw lastError instanceof Error
+    ? lastError
+    : new ApiError("Не удалось восстановить соединение с чатом. Запрос сохранён — обновите чат через несколько секунд.", 503);
 }
