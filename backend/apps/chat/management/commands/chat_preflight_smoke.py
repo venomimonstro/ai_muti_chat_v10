@@ -35,9 +35,11 @@ class Command(BaseCommand):
                     email=f"runtime-smoke-{marker}@example.test",
                     password=uuid.uuid4().hex,
                 )
+                # Large synthetic promo balance exists only inside this rollback-only
+                # transaction, so the smoke is independent of commercial price level.
                 credit(
                     user,
-                    Decimal("10.0000"),
+                    Decimal("1000.0000"),
                     "runtime-smoke",
                     marker,
                     bucket="promo",
