@@ -92,6 +92,15 @@ def _rehash(snapshot: dict):
         snapshot["budget"]["remaining"] = max(0, input_limit - input_tokens)
 
 
+def _insert_system_message(snapshot: dict, content: str):
+    messages = snapshot.setdefault("provider_messages", [])
+    index = next(
+        (i for i, item in enumerate(messages) if item.get("role") != "system"),
+        len(messages),
+    )
+    messages.insert(index, {"role": "system", "content": content})
+
+
 def _append_quality_contract(snapshot: dict):
     messages = snapshot.setdefault("provider_messages", [])
     if any(
@@ -103,7 +112,7 @@ def _append_quality_contract(snapshot: dict):
     remaining = max(0, input_limit - _message_tokens(messages))
     content, _ = _trim_tokens(QUALITY_PREAMBLE, max(0, min(420, remaining - 4)))
     if content:
-        messages.append({"role": "system", "content": content})
+        _insert_system_message(snapshot, content)
         snapshot.setdefault("components", []).append(
             {
                 "kind": "system_policy",
@@ -129,9 +138,7 @@ def _append_live_context(snapshot: dict, query: str) -> bool:
     )
     content, truncated = _trim_tokens(content, max(0, remaining - 4))
     if content:
-        snapshot.setdefault("provider_messages", []).append(
-            {"role": "system", "content": content}
-        )
+        _insert_system_message(snapshot, content)
         snapshot.setdefault("components", []).append(
             {
                 "kind": "live_tool",
@@ -187,9 +194,7 @@ def enrich_snapshot_with_web(snapshot: dict, query: str, *, required: bool) -> d
         )
         warning, _ = _trim_tokens(warning, max(0, remaining - 4))
         if warning:
-            snapshot.setdefault("provider_messages", []).append(
-                {"role": "system", "content": warning}
-            )
+            _insert_system_message(snapshot, warning)
         _rehash(snapshot)
         return snapshot
 
@@ -223,9 +228,7 @@ def enrich_snapshot_with_web(snapshot: dict, query: str, *, required: bool) -> d
         "truncated": truncated,
     }
     snapshot["web_sources"] = visible_sources
-    snapshot.setdefault("provider_messages", []).append(
-        {"role": "system", "content": content}
-    )
+    _insert_system_message(snapshot, content)
     snapshot.setdefault("components", []).append(
         {
             "kind": "web_search",
