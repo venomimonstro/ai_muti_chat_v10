@@ -269,6 +269,10 @@ def select_route(*, conversation, content):
     for model in AIModel.objects.filter(enabled=True).select_related("provider", "current_version"):
         model_lookup[model.slug] = model
         reasons = []
+        if not model.current_version_id:
+            reasons.append("model_version_missing")
+        if not str(model.upstream_model or "").strip():
+            reasons.append("upstream_model_missing")
         missing = set(classification.required_capabilities) - _capabilities(model)
         if missing:
             reasons.append("missing_capabilities:" + ",".join(sorted(missing)))
@@ -358,8 +362,6 @@ def select_route(*, conversation, content):
     selected_cost = Decimal(selected_item["estimated_cost_rub"])
     multiplier = Decimal(str(thresholds.get("fallback_price_multiplier", 1.5)))
 
-    # A configured tier model is always attempted first. Remaining eligible
-    # external API models are ordered by score and act only as API fallbacks.
     fallback_items = [item for item in eligible if item["model"] != selected_item["model"]]
     ranked = [selected_item, *fallback_items]
     ordered_models = []
