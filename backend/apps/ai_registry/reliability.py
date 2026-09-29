@@ -16,6 +16,22 @@ from .models import (
 )
 
 
+PROVIDER_BLOCKING_ERROR_CODES = {
+    "authentication_error",
+    "invalid_api_key",
+    "credential_missing",
+    "permission_denied",
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "billing_hard_limit_reached",
+    "gigachat_oauth_authentication_error",
+    "gigachat_oauth_quota_exhausted",
+    "gigachat_authentication_error",
+    "gigachat_quota_exhausted",
+    "gigachat_permission_denied",
+}
+
+
 def _has_healthy_key(provider: Provider) -> bool:
     return ProviderApiKey.objects.filter(
         provider_id=provider.id,
@@ -31,6 +47,20 @@ def _normalized_secret(value):
 def _adapter_secret(adapter):
     return _normalized_secret(
         getattr(adapter, "api_key", "") or getattr(adapter, "authorization_key", "")
+    )
+
+
+def _provider_blocking_error(error: ProviderError) -> bool:
+    code = str(error.code or "").strip().casefold()
+    if code in PROVIDER_BLOCKING_ERROR_CODES:
+        return True
+    return code.endswith(
+        (
+            "_authentication_error",
+            "_quota_exhausted",
+            "_permission_denied",
+            "_credential_missing",
+        )
     )
 
 
@@ -118,8 +148,9 @@ def provider_available(provider: Provider) -> bool:
     """Return whether a provider may receive a customer request right now.
 
     A healthy stored API key is configuration evidence, but it must never
-    override a runtime OPEN circuit. After cooldown we allow one half-open probe;
-    only record_success() closes the circuit.
+    override a runtime OPEN circuit. A circuit without a cooldown represents a
+    provider-level credential/billing block and stays closed to customer traffic
+    until an explicit successful health/runtime recovery records success.
     """
     if provider.emergency_disabled:
         return False
@@ -200,16 +231,17 @@ def candidate_models(primary: AIModel) -> list[AIModel]:
 
 
 @transaction.atomic
-def record_failure(provider: Provider, error: ProviderError):
-    """Record a runtime failure without sacrificing a provider that has spare keys.
+def record_failure(provider: Provider, error: ProviderError, adapter=None):
+    """Record runtime failure and keep dead credentials away from customers.
 
-    A credential-specific 401/402/403/quota/rate-limit is first isolated to the
-    selected key. If another healthy/unknown key exists, the same chat attempt is
-    made retryable and the provider circuit is kept available so the next adapter
-    construction rotates credentials automatically.
+    Credential-specific failure is isolated to the selected key first. If a spare
+    healthy/unknown key exists, the same request may retry. Provider-level billing,
+    authentication and permission failures without a spare key open a persistent
+    circuit (no cooldown) so AUTO routing immediately falls back to another working
+    provider instead of sending every customer request to a known-dead credential.
     """
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
-    has_spare_key = record_api_key_failure(locked, None, error)
+    has_spare_key = record_api_key_failure(locked, adapter, error)
     if has_spare_key:
         error.retryable = True
         locked.health_state = Provider.HealthState.DEGRADED
@@ -220,6 +252,31 @@ def record_failure(provider: Provider, error: ProviderError):
 
     locked.consecutive_failures += 1
     locked.last_checked_at = timezone.now()
+
+    if _provider_blocking_error(error):
+        locked.health_state = Provider.HealthState.OPEN
+        locked.circuit_opened_until = None
+        if not ReliabilityIncident.objects.filter(
+            provider=locked, state=ReliabilityIncident.State.OPEN
+        ).exists():
+            ReliabilityIncident.objects.create(
+                provider=locked,
+                error_code=str(error.code or "provider_blocked")[:80],
+                details={
+                    "consecutive_failures": locked.consecutive_failures,
+                    "persistent": True,
+                },
+            )
+        locked.save(
+            update_fields=[
+                "consecutive_failures",
+                "last_checked_at",
+                "health_state",
+                "circuit_opened_until",
+            ]
+        )
+        return
+
     threshold = settings.AI_CIRCUIT_FAILURE_THRESHOLD
     if error.retryable and locked.consecutive_failures >= threshold:
         locked.health_state = Provider.HealthState.OPEN
@@ -247,9 +304,9 @@ def record_failure(provider: Provider, error: ProviderError):
 
 
 @transaction.atomic
-def record_success(provider: Provider, latency_ms: int):
+def record_success(provider: Provider, latency_ms: int, adapter=None):
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
-    record_api_key_success(locked, None, latency_ms)
+    record_api_key_success(locked, adapter, latency_ms)
     was_unhealthy = locked.health_state in {
         Provider.HealthState.OPEN,
         Provider.HealthState.DEGRADED,
@@ -288,9 +345,7 @@ def check_provider(provider: Provider):
         health = adapter.health_check()
     except ProviderError as exc:
         health = None
-        if "adapter" in locals():
-            record_api_key_failure(provider, adapter, exc)
-        record_failure(provider, exc)
+        record_failure(provider, exc, adapter=adapter if "adapter" in locals() else None)
         ProviderHealthSnapshot.objects.create(
             provider=provider, healthy=False, error_code=exc.code
         )
@@ -302,10 +357,8 @@ def check_provider(provider: Provider):
         error_code=health.error_code,
     )
     if health.healthy:
-        record_api_key_success(provider, adapter, health.latency_ms)
-        record_success(provider, health.latency_ms)
+        record_success(provider, health.latency_ms, adapter=adapter)
     else:
         error = ProviderError("Health check failed", code=health.error_code)
-        record_api_key_failure(provider, adapter, error)
-        record_failure(provider, error)
+        record_failure(provider, error, adapter=adapter)
     return health
