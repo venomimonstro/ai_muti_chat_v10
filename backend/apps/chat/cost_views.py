@@ -14,7 +14,7 @@ from apps.ai_registry.models import AIModel
 from apps.billing.models import BalanceReservation
 from apps.billing.services import release
 
-from .asgi_stream import managed_run_async
+from .asgi_stream import follow_generation_async, managed_run_async
 from .cost_preview import chat_cost_preview
 from .managed_stream import managed_run
 from .models import Conversation, Generation, Message
@@ -81,14 +81,18 @@ def _fail_pre_provider_generation(generation, code):
     generation.save(update_fields=["state", "error_code", "completed_at"])
 
 
-def _customer_stream(request, generation):
-    """Use Django's native iterator type for the active deployment protocol.
+def _customer_stream(request, generation, *, created):
+    """Use the iterator type required by the active deployment protocol.
 
     Production is ASGI/Uvicorn, where StreamingHttpResponse must receive an async
-    iterator. The synchronous path is retained for WSGI/test clients.
+    iterator. A reconnect to an already-running idempotent generation becomes a
+    read-only follower instead of starting or charging another provider request.
+    The synchronous path is retained for WSGI/test clients.
     """
     raw_request = getattr(request, "_request", None)
     if isinstance(raw_request, ASGIRequest):
+        if not created and generation.state != Generation.State.QUEUED:
+            return follow_generation_async(generation)
         return managed_run_async(generation)
     return managed_run(generation)
 
@@ -231,7 +235,7 @@ class ConfirmedConversationStreamView(APIView):
                 return Response(payload, status=status.HTTP_409_CONFLICT)
 
         response = StreamingHttpResponse(
-            _customer_stream(request, generation),
+            _customer_stream(request, generation, created=created),
             content_type="text/event-stream; charset=utf-8",
         )
         response["Cache-Control"] = "no-cache, no-transform"
