@@ -5,11 +5,13 @@ import threading
 from django.db import close_old_connections
 
 from .managed_stream import managed_run
+from .models import Generation
 from .streaming import sse
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEARTBEAT_SECONDS = 10.0
+FOLLOW_POLL_SECONDS = 1.0
 
 
 def _enqueue(loop, queue, item, detached):
@@ -49,6 +51,94 @@ def _produce(generation, loop, queue, detached):
         close_old_connections()
         if not detached.is_set():
             _enqueue(loop, queue, ("done", None), detached)
+
+
+def _generation_snapshot(generation_id):
+    close_old_connections()
+    try:
+        row = (
+            Generation.objects.select_related("assistant_message")
+            .only(
+                "id",
+                "state",
+                "error_code",
+                "actual_cost_rub",
+                "assistant_message__content",
+                "assistant_message__status",
+            )
+            .get(pk=generation_id)
+        )
+        return {
+            "state": row.state,
+            "error_code": row.error_code,
+            "cost_rub": str(row.actual_cost_rub or 0),
+            "text": row.assistant_message.content,
+            "message_status": row.assistant_message.status,
+        }
+    finally:
+        close_old_connections()
+
+
+async def follow_generation_async(
+    generation,
+    *,
+    heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
+    poll_seconds=FOLLOW_POLL_SECONDS,
+):
+    """Follow an already-running idempotent generation after transport reconnect.
+
+    The original provider request remains the single writer. This follower only
+    observes durable DB state, so reconnects cannot double-call a provider or
+    reserve/charge the user twice.
+    """
+    heartbeat_deadline = asyncio.get_running_loop().time()
+    while True:
+        snapshot = await asyncio.to_thread(_generation_snapshot, generation.id)
+        state = snapshot["state"]
+        if state == Generation.State.COMPLETED:
+            yield sse(
+                "snapshot",
+                {
+                    "text": snapshot["text"],
+                    "state": state,
+                    "cost_rub": snapshot["cost_rub"],
+                    "reconnected": True,
+                },
+            )
+            return
+        if state in {Generation.State.FAILED, Generation.State.CANCELLED}:
+            if snapshot["text"]:
+                yield sse(
+                    "snapshot",
+                    {
+                        "text": snapshot["text"],
+                        "state": state,
+                        "cost_rub": snapshot["cost_rub"],
+                        "reconnected": True,
+                    },
+                )
+            yield sse(
+                "error",
+                {
+                    "code": snapshot["error_code"] or "generation_failed",
+                    "partial": bool(snapshot["text"]),
+                    "message": "Запрос завершился с ошибкой после восстановления соединения.",
+                },
+            )
+            return
+
+        now = asyncio.get_running_loop().time()
+        if now >= heartbeat_deadline:
+            yield sse(
+                "heartbeat",
+                {
+                    "generation_id": str(generation.id),
+                    "state": state,
+                    "reconnected": True,
+                },
+            )
+            heartbeat_deadline = now + max(1.0, float(heartbeat_seconds))
+        await asyncio.sleep(max(0.2, float(poll_seconds)))
 
 
 async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS):
