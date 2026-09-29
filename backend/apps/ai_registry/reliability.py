@@ -34,11 +34,31 @@ def _adapter_secret(adapter):
     )
 
 
-def selected_api_key(provider: Provider, adapter):
+def _most_recent_api_key(provider: Provider):
+    """Best-effort key attribution for request paths that only pass Provider.
+
+    Provider.select_api_key() updates last_used_at immediately before building an
+    adapter, so the newest usable key is the credential that most likely served
+    the current attempt. Direct adapter-aware paths still use exact secret matching.
+    """
+    try:
+        return (
+            provider.api_keys.filter(enabled=True)
+            .exclude(health_state=ProviderApiKey.HealthState.DISABLED)
+            .order_by("-last_used_at", "priority", "created_at")
+            .first()
+        )
+    except Exception:
+        return None
+
+
+def selected_api_key(provider: Provider, adapter=None):
     """Resolve the stored key used by an adapter without persisting/logging secrets."""
+    if adapter is None:
+        return _most_recent_api_key(provider)
     secret = _adapter_secret(adapter)
     if not secret:
-        return None
+        return _most_recent_api_key(provider)
     try:
         keys = provider.api_keys.filter(enabled=True).exclude(
             health_state=ProviderApiKey.HealthState.DISABLED
@@ -49,16 +69,11 @@ def selected_api_key(provider: Provider, adapter):
                 return key
     except Exception:
         return None
-    return None
+    return _most_recent_api_key(provider)
 
 
 def record_api_key_failure(provider: Provider, adapter, error: ProviderError) -> bool:
-    """Degrade only the key that failed and report whether another key can retry.
-
-    Returning True means the caller may retry the same model immediately with a
-    different HEALTHY/UNKNOWN credential, even when the provider error itself is
-    non-retryable for the failed credential (401/402/403/quota, for example).
-    """
+    """Degrade only the failing key and return whether another key can retry."""
     key = selected_api_key(provider, adapter)
     if key is None:
         return False
@@ -94,11 +109,9 @@ def record_api_key_success(provider: Provider, adapter, latency_ms: int):
 def provider_available(provider: Provider) -> bool:
     """Return whether a provider may receive a customer request right now.
 
-    A healthy stored API key is useful configuration evidence, but it must never
-    override a runtime circuit that was opened because the provider is currently
-    failing. Only record_success() clears runtime failure history. After the
-    cooldown expires the provider is allowed a half-open probe; its state remains
-    OPEN until that real request/health-check succeeds.
+    A healthy stored API key is configuration evidence, but it must never
+    override a runtime OPEN circuit. After cooldown we allow one half-open probe;
+    only record_success() closes the circuit.
     """
     if provider.emergency_disabled:
         return False
@@ -180,7 +193,23 @@ def candidate_models(primary: AIModel) -> list[AIModel]:
 
 @transaction.atomic
 def record_failure(provider: Provider, error: ProviderError):
+    """Record a runtime failure without sacrificing a provider that has spare keys.
+
+    A credential-specific 401/402/403/quota/rate-limit is first isolated to the
+    selected key. If another healthy/unknown key exists, the same chat attempt is
+    made retryable and the provider circuit is kept available so the next adapter
+    construction rotates credentials automatically.
+    """
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
+    has_spare_key = record_api_key_failure(locked, None, error)
+    if has_spare_key:
+        error.retryable = True
+        locked.health_state = Provider.HealthState.DEGRADED
+        locked.last_checked_at = timezone.now()
+        locked.circuit_opened_until = None
+        locked.save(update_fields=["health_state", "last_checked_at", "circuit_opened_until"])
+        return
+
     locked.consecutive_failures += 1
     locked.last_checked_at = timezone.now()
     threshold = settings.AI_CIRCUIT_FAILURE_THRESHOLD
@@ -212,6 +241,7 @@ def record_failure(provider: Provider, error: ProviderError):
 @transaction.atomic
 def record_success(provider: Provider, latency_ms: int):
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
+    record_api_key_success(locked, None, latency_ms)
     was_unhealthy = locked.health_state in {
         Provider.HealthState.OPEN,
         Provider.HealthState.DEGRADED,
