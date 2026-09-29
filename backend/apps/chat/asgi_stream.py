@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import threading
 
@@ -12,6 +13,61 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HEARTBEAT_SECONDS = 10.0
 FOLLOW_POLL_SECONDS = 1.0
+
+_PROVIDER_ERROR_MARKERS = (
+    "provider_",
+    "gigachat_",
+    "deepseek_",
+    "openai_",
+    "anthropic_",
+    "openrouter_",
+    "gemini_",
+    "xai_",
+)
+_PROVIDER_ERROR_CODES = {
+    "timeout",
+    "invalid_stream",
+    "network_error",
+    "rate_limited",
+    "authentication_error",
+    "permission_denied",
+    "model_not_found",
+    "invalid_api_key",
+    "credential_missing",
+    "credit_balance_exhausted",
+    "insufficient_quota",
+    "organization_usage_limit_exceeded",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+}
+
+
+def _is_provider_error(code):
+    value = str(code or "").casefold()
+    return value in _PROVIDER_ERROR_CODES or any(marker in value for marker in _PROVIDER_ERROR_MARKERS)
+
+
+def _public_chunk(chunk):
+    """Hide provider/key/quota internals while keeping raw codes in durable DB diagnostics."""
+    if not isinstance(chunk, str) or not chunk.startswith("event: error\n"):
+        return chunk
+    try:
+        data_line = next(line for line in chunk.splitlines() if line.startswith("data: "))
+        payload = json.loads(data_line[6:])
+    except Exception:
+        return chunk
+    code = str(payload.get("code") or "")
+    if code == "generation_in_progress":
+        return chunk
+    if _is_provider_error(code):
+        payload["code"] = "AI-102"
+        payload["support_code"] = "AI-102"
+        payload["message"] = (
+            "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списываются. "
+            "Повторите запрос — система автоматически выберет доступный AI-канал."
+        )
+        return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+    return chunk
 
 
 def _enqueue(loop, queue, item, detached):
@@ -117,12 +173,19 @@ async def follow_generation_async(
                         "reconnected": True,
                     },
                 )
+            public_code = "AI-102" if _is_provider_error(snapshot["error_code"]) else (snapshot["error_code"] or "generation_failed")
             yield sse(
                 "error",
                 {
-                    "code": snapshot["error_code"] or "generation_failed",
+                    "code": public_code,
+                    "support_code": public_code,
                     "partial": bool(snapshot["text"]),
-                    "message": "Запрос завершился с ошибкой после восстановления соединения.",
+                    "message": (
+                        "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списываются. "
+                        "Повторите запрос."
+                        if public_code == "AI-102"
+                        else "Запрос завершился с ошибкой после восстановления соединения."
+                    ),
                 },
             )
             return
@@ -173,15 +236,14 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                 continue
 
             if kind == "chunk":
-                yield value
+                yield _public_chunk(value)
                 continue
             if kind == "error":
-                # managed_run converts normal provider/runtime failures to public
-                # SSE errors. This branch covers only a bridge-level crash.
                 yield sse(
                     "error",
                     {
-                        "code": "stream_bridge_error",
+                        "code": "AI-103",
+                        "support_code": "AI-103",
                         "message": "Соединение с AI временно прервалось. Ответ сохранён; выполняется безопасное восстановление.",
                     },
                 )
@@ -189,8 +251,6 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
             if kind == "done":
                 return
     except (asyncio.CancelledError, GeneratorExit):
-        # Never close the synchronous provider generator on transport loss. The
-        # worker persists the final answer and billing state for safe reconnect.
         detached.set()
         raise
     finally:
