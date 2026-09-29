@@ -83,8 +83,8 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
  const currentMode=modes.find(item=>item.value===value);
  const currentModel=!currentMode&&value.startsWith("model:")?models.find(item=>`model:${item.slug}`===value):undefined;
  const currentProvider=currentModel?normalizedProvider(currentModel):"";
- const[firstProvider]=groups[0]??["",[]];
- const[selectedProvider,setSelectedProvider]=useState(currentProvider||firstProvider||"");
+ const firstProvider=groups[0]?.[0]??"";
+ const[selectedProvider,setSelectedProvider]=useState<string>(currentProvider||firstProvider);
 
  useEffect(()=>{
   if(value.startsWith("model:")){
