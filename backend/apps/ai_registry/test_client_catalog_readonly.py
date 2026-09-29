@@ -60,6 +60,7 @@ class ClientModelCatalogReadOnlyTests(TestCase):
         self.assertIn(gigachat.id, ids)
         self.assertIn(visible.id, ids)
         payload = AIModelSerializer(gigachat).data
+        self.assertEqual(payload["provider"], "llm-system")
         self.assertEqual(payload["provider_name"], "LLM System")
         self.assertEqual(payload["display_name"], "LLM System · System Max")
         self.assertEqual(payload["exact_api_id"], "")
