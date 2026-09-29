@@ -18,7 +18,7 @@ PUBLIC_PROVIDER_NAMES = {
 
 class AIModelSerializer(serializers.ModelSerializer):
     display_name = serializers.SerializerMethodField()
-    provider = serializers.CharField(source="provider.slug")
+    provider = serializers.SerializerMethodField()
     provider_name = serializers.SerializerMethodField()
     available = serializers.SerializerMethodField()
     health_state = serializers.CharField(source="provider.health_state")
@@ -42,6 +42,9 @@ class AIModelSerializer(serializers.ModelSerializer):
             "health_state",
             "price",
         )
+
+    def get_provider(self, obj):
+        return "llm-system" if obj.provider.slug == "gigachat" else obj.provider.slug
 
     def get_provider_name(self, obj):
         return PUBLIC_PROVIDER_NAMES.get(obj.provider.slug, obj.provider.name or obj.provider.slug)
