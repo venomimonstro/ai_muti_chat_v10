@@ -1,4 +1,4 @@
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.models import AIModel, ProviderApiKey
@@ -133,8 +133,7 @@ class Command(BaseCommand):
             queryset = queryset.filter(slug=requested_model)
         models = list(queryset)
         if not models:
-            self.stdout.write("NO_MODELS_CONFIGURED")
-            return
+            raise CommandError("NO_MODELS_CONFIGURED")
 
         routable = 0
         live_failures = 0
@@ -214,4 +213,6 @@ class Command(BaseCommand):
         if options["live"]:
             self.stdout.write(f"LIVE_FAILURES={live_failures}")
         if routable == 0:
-            self.stderr.write("CHAT_BLOCKED: no routable models")
+            raise CommandError("CHAT_BLOCKED: no routable models")
+        if options["live"] and live_failures:
+            raise CommandError(f"CHAT_LIVE_BROKEN: live_failures={live_failures}")
