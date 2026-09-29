@@ -17,6 +17,10 @@ class GitHubInstallation(models.Model):
     account_type = models.CharField(max_length=40, blank=True)
     repository_selection = models.CharField(max_length=24, blank=True)
     permissions = models.JSONField(default=dict, blank=True)
+    # Organization installations are usable only after the service user has
+    # completed the user-scoped GitHub OAuth verification flow. Existing rows
+    # stay fail-closed until the owner reconnects GitHub.
+    user_verified_at = models.DateTimeField(null=True, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -55,9 +59,12 @@ class GitHubRepositoryBinding(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        if (self.installation.account_type or "").casefold() == "organization":
+        if (
+            (self.installation.account_type or "").casefold() == "organization"
+            and not self.installation.user_verified_at
+        ):
             raise ValidationError(
-                "GitHub-репозитории организаций временно заблокированы до user-scoped revalidation"
+                "GitHub-репозиторий организации требует повторного user-scoped OAuth-подтверждения"
             )
         if self.write_enabled:
             permissions = self.installation.permissions or {}
