@@ -108,7 +108,7 @@
 
 Детали: `docs/sprints/67-*` … `docs/sprints/75-*`.
 
-## Product expansion 76–79
+## Product expansion 76–80
 
 Владелец продукта открыл следующий продуктовый цикл после Sprint 75. Это не отменяет runtime/release gates 74–75: перед заявлением о production-ready они всё равно должны дать фактический PASS.
 
@@ -118,8 +118,9 @@
 | 77 | DONE / RUNTIME EVIDENCE | Native multimodal chat: PNG/JPEG/WebP vision, compare/analyze UX |
 | 78 | DONE / RUNTIME EVIDENCE | OpenAI Images in chat: create + edit, shared billing/storage/history, no local generation |
 | 79 | DONE / RUNTIME EVIDENCE | Full client cabinet UX/reliability audit and premium consistency |
+| 80 | DONE / RUNTIME EVIDENCE | Production chat reliability: fail-closed model catalog, exact key attribution, circuit isolation, cross-provider fallback, automatic provider recovery |
 
-Детали: `docs/sprints/76-79-search-multimodal-images-client-ux.md`.
+Детали Sprint 76–79: `docs/sprints/76-79-search-multimodal-images-client-ux.md`.
 
 ### Sprint 76 — реализованный код
 
@@ -158,6 +159,17 @@
 - Projects, Agent Studio, Dev Studio, Usage, Wallet, Account и Help проверены; существующие component/CSS contracts сохранены без лишнего дублирования.
 - Старый `/app/legacy` больше не открывает второй расходящийся интерфейс и перенаправляется в текущий `/app`.
 - Добавлен `scripts/product_expansion_check.sh`: один targeted gate собирает свежие backend/frontend images, проверяет Django/migration drift, search failover, image edit regressions и live SearXNG/fallback diagnostic.
+
+### Sprint 80 — production chat reliability
+
+- Клиентский каталог теперь fail-closed: недоступные, непроверенные, OPEN/DISABLED, без upstream/version/безопасной цены модели не показываются пользователю.
+- AUTO и manual routing используют единый readiness contract; customer traffic не используется как half-open health probe.
+- Ошибка конкретного API-ключа привязывается к точному adapter credential, поэтому параллельный запрос не деградирует чужой ключ.
+- Retry внутри провайдера происходит только при наличии подтверждённого HEALTHY spare key; иначе запрос переходит к следующему кандидату.
+- Cross-provider emergency failover сохраняет ответ атомарным: ответ резервной модели буферизуется и не смешивается с частичным ответом основной модели.
+- OPEN/UNKNOWN/DEGRADED провайдеры восстанавливаются отдельным health watcher, а не первым клиентским запросом.
+- Legacy GigaChat/OpenRouter с ошибочным `adapter_type=echo` автоматически нормализуются перед health probe и до этого не получают клиентский трафик.
+- Расширен `scripts/chat_reliability_check.sh`: key isolation, router, client catalog, reconnect, managed continuity, provider exhaustion failover, partial billing, reservation cleanup и money safety.
 
 ## Что реализовано к Sprint 75
 
@@ -200,28 +212,31 @@
 
 `scripts/release_check.sh` блокирует релиз на syntax/undefined-name defects, failing PostgreSQL tests, migration drift, economic/billing failures, Agent security/commercial/recovery failures, Dev Studio audit и frontend build/lint/runtime smoke.
 
+`scripts/chat_reliability_check.sh` — отдельный blocking gate стабильности чата и provider failover перед production update.
+
 `scripts/agent_runtime_drill.sh` выполняет restart drill worker/beat и повторные production audits.
 
 `scripts/agent_release_candidate_check.sh` объединяет runtime drill, существующий commercial launch gate, live paid E2E и финальные Agent/Dev audits с evidence/checksums.
 
 ## Обязательные runtime evidence / launch blockers
 
-Наличие кода Sprint 76–79 не отменяет следующие реальные проверки:
+Наличие кода Sprint 76–80 не отменяет следующие реальные проверки:
 
-1. `sudo bash scripts/product_expansion_check.sh` проходит на текущем `main` и возвращает `PRODUCT EXPANSION CHECK: PASS`.
-2. `sudo bash scripts/update.sh --full` проходит полностью после targeted gate.
-3. PostgreSQL regression/security/commercial tests проходят на текущем коде.
-4. `agent_runtime_drill.sh` возвращает `AGENT RUNTIME DRILL: PASS` после реальных restart worker/beat.
-5. Production configuration/secrets complete.
-6. Real payment/refund/receipt flow verified.
-7. Backup restore/application rollback drill verified.
-8. Legal/provider human sign-offs complete.
-9. Live dedicated E2E account configured (`E2E_USERNAME` / `E2E_PASSWORD`) with small positive balance.
-10. `commercial_launch_check.sh` проходит live paid workspace AI + B2B API/billing E2E.
-11. `agent_release_candidate_check.sh` завершается `AGENT RELEASE CANDIDATE v1.0: PASS`.
-12. `web_search_diagnose` даёт production evidence хотя бы одного рабочего live-search provider и fallback policy.
-13. OpenAI image generate/edit smoke подтверждает real provider response, billing settlement и private media delivery.
+1. `sudo bash scripts/chat_reliability_check.sh` проходит на текущем `main` и возвращает `CHAT RELIABILITY CHECK: PASS`.
+2. `sudo bash scripts/product_expansion_check.sh` проходит на текущем `main` и возвращает `PRODUCT EXPANSION CHECK: PASS`.
+3. `sudo bash scripts/update.sh --full` проходит полностью после targeted gates.
+4. PostgreSQL regression/security/commercial tests проходят на текущем коде.
+5. `agent_runtime_drill.sh` возвращает `AGENT RUNTIME DRILL: PASS` после реальных restart worker/beat.
+6. Production configuration/secrets complete.
+7. Real payment/refund/receipt flow verified.
+8. Backup restore/application rollback drill verified.
+9. Legal/provider human sign-offs complete.
+10. Live dedicated E2E account configured (`E2E_USERNAME` / `E2E_PASSWORD`) with small positive balance.
+11. `commercial_launch_check.sh` проходит live paid workspace AI + B2B API/billing E2E.
+12. `agent_release_candidate_check.sh` завершается `AGENT RELEASE CANDIDATE v1.0: PASS`.
+13. `web_search_diagnose` даёт production evidence хотя бы одного рабочего live-search provider и fallback policy.
+14. OpenAI image generate/edit smoke подтверждает real provider response, billing settlement и private media delivery.
 
 ## Следующий шаг
 
-Код Sprint 76–79 завершён. Следующий этап — один targeted gate для нового пакета, затем один полный production release gate и runtime evidence 74–79. Не запускать полный suite после каждого отдельного CSS/UX изменения.
+Код Sprint 80 завершён. Следующий этап — production-like `chat_reliability_check.sh`, затем `update.sh --full`; после реального PASS Sprint 80 получает runtime evidence. Остальные runtime/release gates 74–79 остаются обязательными для общего production-ready статуса.
