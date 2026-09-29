@@ -164,11 +164,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         return None
 
     def create(self, validated_data):
-        # Customer chats should be resilient by default. Manual routing is an
-        # explicit advanced choice; an omitted mode starts on System Pro so the
-        # router can fail over from an exhausted external provider to GigaChat.
-        mode = validated_data.get("routing_mode") or Conversation.RoutingMode.BALANCED
-        validated_data["routing_mode"] = mode
+        mode = validated_data.get("routing_mode", Conversation.RoutingMode.MANUAL)
         selected = validated_data.get("selected_model")
         if mode == Conversation.RoutingMode.MANUAL:
             if not selected or selected == "echo-v1":
