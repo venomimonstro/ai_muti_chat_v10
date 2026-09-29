@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
+from django.core.handlers.asgi import ASGIRequest
 from django.db.models import Q
 from django.http import StreamingHttpResponse
 from django.utils import timezone
@@ -13,6 +14,7 @@ from apps.ai_registry.models import AIModel
 from apps.billing.models import BalanceReservation
 from apps.billing.services import release
 
+from .asgi_stream import managed_run_async
 from .cost_preview import chat_cost_preview
 from .managed_stream import managed_run
 from .models import Conversation, Generation, Message
@@ -77,6 +79,18 @@ def _fail_pre_provider_generation(generation, code):
     generation.error_code = code
     generation.completed_at = timezone.now()
     generation.save(update_fields=["state", "error_code", "completed_at"])
+
+
+def _customer_stream(request, generation):
+    """Use Django's native iterator type for the active deployment protocol.
+
+    Production is ASGI/Uvicorn, where StreamingHttpResponse must receive an async
+    iterator. The synchronous path is retained for WSGI/test clients.
+    """
+    raw_request = getattr(request, "_request", None)
+    if isinstance(raw_request, ASGIRequest):
+        return managed_run_async(generation)
+    return managed_run(generation)
 
 
 class ChatCostPreviewView(APIView):
@@ -217,7 +231,7 @@ class ConfirmedConversationStreamView(APIView):
                 return Response(payload, status=status.HTTP_409_CONFLICT)
 
         response = StreamingHttpResponse(
-            managed_run(generation),
+            _customer_stream(request, generation),
             content_type="text/event-stream; charset=utf-8",
         )
         response["Cache-Control"] = "no-cache, no-transform"
