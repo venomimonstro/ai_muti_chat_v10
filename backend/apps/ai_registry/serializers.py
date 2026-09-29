@@ -16,6 +16,31 @@ PUBLIC_PROVIDER_NAMES = {
 }
 
 
+def _system_tier_name(obj):
+    """Map the internal GigaChat model to the customer-facing LLM System tier.
+
+    Do not rely on the local slug: imported/discovered/test models can use an
+    arbitrary slug while the real upstream model still carries Pro/Max family
+    information. Inspect all model identity fields and prefer the strongest tier
+    marker when more than one field is populated.
+    """
+    identity = " ".join(
+        str(value or "")
+        for value in (
+            obj.upstream_model,
+            obj.display_name,
+            obj.slug,
+            getattr(obj.current_version, "exact_api_id", "") if obj.current_version_id else "",
+            getattr(obj.current_version, "version", "") if obj.current_version_id else "",
+        )
+    ).casefold()
+    if "max" in identity:
+        return "System Max"
+    if "pro" in identity:
+        return "System Pro"
+    return "System Lite"
+
+
 class AIModelSerializer(serializers.ModelSerializer):
     display_name = serializers.SerializerMethodField()
     provider = serializers.SerializerMethodField()
@@ -52,14 +77,7 @@ class AIModelSerializer(serializers.ModelSerializer):
     def get_display_name(self, obj):
         provider = self.get_provider_name(obj)
         if obj.provider.slug == "gigachat":
-            lowered = (obj.slug or obj.upstream_model or "").casefold()
-            if "max" in lowered:
-                model_name = "System Max"
-            elif "pro" in lowered:
-                model_name = "System Pro"
-            else:
-                model_name = "System Lite"
-            return f"{provider} · {model_name}"
+            return f"{provider} · {_system_tier_name(obj)}"
         name = (obj.display_name or obj.upstream_model or obj.slug).strip()
         if name.casefold().startswith(provider.casefold()):
             return name
