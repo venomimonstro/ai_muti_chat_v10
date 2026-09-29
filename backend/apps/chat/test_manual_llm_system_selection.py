@@ -16,16 +16,24 @@ def test_customer_can_select_branded_llm_system_model_manually():
         email="manual-system@example.test",
         password="password123",
     )
-    provider = Provider.objects.create(
+    provider, _ = Provider.objects.get_or_create(
         slug="gigachat",
-        name="GigaChat API",
-        enabled=True,
-        emergency_disabled=False,
-        health_state=Provider.HealthState.HEALTHY,
+        defaults={"name": "GigaChat API"},
     )
+    provider.name = "GigaChat API"
+    provider.enabled = True
+    provider.emergency_disabled = False
+    provider.health_state = Provider.HealthState.HEALTHY
+    provider.circuit_opened_until = None
+    provider.save(
+        update_fields=[
+            "name", "enabled", "emergency_disabled", "health_state", "circuit_opened_until"
+        ]
+    )
+    provider.api_keys.all().delete()
     key = ProviderApiKey(
         provider=provider,
-        label="primary",
+        label="manual-system-primary",
         enabled=True,
         health_state=ProviderApiKey.HealthState.HEALTHY,
     )
