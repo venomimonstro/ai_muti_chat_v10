@@ -1,6 +1,7 @@
 from django.test import TestCase
 
 from .models import AIModel, Provider
+from .serializers import AIModelSerializer
 from .views import AIModelViewSet
 
 
@@ -26,7 +27,7 @@ class ClientModelCatalogReadOnlyTests(TestCase):
         self.assertFalse(model.enabled)
         self.assertNotIn(model.id, {item.id for item in rows})
 
-    def test_gigachat_is_internal_only_even_when_enabled_for_auto_router(self):
+    def test_gigachat_is_exposed_only_as_branded_llm_system(self):
         provider, _ = Provider.objects.get_or_create(slug="gigachat", defaults={"name": "GigaChat API"})
         provider.enabled = True
         provider.emergency_disabled = False
@@ -56,5 +57,9 @@ class ClientModelCatalogReadOnlyTests(TestCase):
         rows = list(AIModelViewSet().get_queryset())
         ids = {item.id for item in rows}
 
-        self.assertNotIn(gigachat.id, ids)
+        self.assertIn(gigachat.id, ids)
         self.assertIn(visible.id, ids)
+        payload = AIModelSerializer(gigachat).data
+        self.assertEqual(payload["provider_name"], "LLM System")
+        self.assertEqual(payload["display_name"], "LLM System · System Max")
+        self.assertEqual(payload["exact_api_id"], "")
