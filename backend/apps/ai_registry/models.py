@@ -86,14 +86,14 @@ class Provider(models.Model):
         except (InvalidToken, ValueError, UnicodeError):
             return ""
 
-    def select_api_key(self):
+    def select_api_key(self, *, exclude_key_ids=None):
         """Return ``(secret, key_id)`` using health-aware pool rotation.
 
-        When several usable keys exist, runtime traffic is spread by least-recent
-        use so a retry is not pinned to the credential that just failed. A funding
-        account's preferred key remains the single-key choice, but it cannot force
-        traffic onto a degraded/disabled credential while healthier keys exist.
+        Callers may exclude credentials that already failed in the same customer
+        request. That guarantees a retry rotates to another usable key instead of
+        repeatedly hitting a known-bad credential.
         """
+        excluded = {str(item) for item in (exclude_key_ids or []) if item}
         preferred = None
         try:
             funding = (
@@ -110,7 +110,7 @@ class Provider(models.Model):
                 .select_related("api_key")
                 .first()
             )
-            if funding is not None:
+            if funding is not None and str(funding.api_key_id) not in excluded:
                 preferred = funding.api_key
         except Exception:
             preferred = None
@@ -123,6 +123,8 @@ class Provider(models.Model):
                     ProviderApiKey.HealthState.UNKNOWN,
                 ),
             )
+            if excluded:
+                healthy_pool = healthy_pool.exclude(pk__in=excluded)
             if preferred is not None and healthy_pool.count() <= 1:
                 value = preferred.get_secret()
                 if value:
@@ -134,10 +136,10 @@ class Provider(models.Model):
                 ProviderApiKey.HealthState.UNKNOWN,
                 ProviderApiKey.HealthState.DEGRADED,
             ):
-                keys = self.api_keys.filter(
-                    enabled=True,
-                    health_state=health_state,
-                ).order_by(
+                keys = self.api_keys.filter(enabled=True, health_state=health_state)
+                if excluded:
+                    keys = keys.exclude(pk__in=excluded)
+                keys = keys.order_by(
                     models.F("last_used_at").asc(nulls_first=True),
                     "priority",
                     "created_at",
@@ -179,9 +181,6 @@ class Provider(models.Model):
         return "none"
 
     def _hydrate_runtime_credential(self):
-        # Never dereference deferred model fields from __init__. Doing so makes
-        # Django call refresh_from_db(), which constructs another Provider and
-        # can recurse indefinitely for .only()/.defer() querysets.
         credential_env = self.__dict__.get("credential_env", "")
         credential_secret = self.__dict__.get("credential_secret", "")
         if not credential_env or not credential_secret:
