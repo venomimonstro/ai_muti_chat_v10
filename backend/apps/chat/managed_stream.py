@@ -52,8 +52,6 @@ PROVIDER_ERROR_MESSAGES = {
     ),
 }
 
-# Provider/runtime failures are eligible for the continuity path. Billing,
-# validation, user cancellation and internal data-integrity failures are not.
 _PROVIDER_FAILURE_PREFIXES = (
     "gigachat_",
     "deepseek_",
@@ -129,7 +127,6 @@ def _parse_error_chunk(chunk):
 
 
 def _rewrite_error_chunk_if_needed(generation, chunk):
-    """Keep the SSE message consistent with billing and expose actionable provider failures."""
     payload = _parse_error_chunk(chunk)
     if payload is None:
         return chunk
@@ -184,7 +181,6 @@ def _generation_route_is_internal(generation):
 
 
 def _publicize_sse_chunk(generation, chunk):
-    """Never expose the internal GigaChat provider/model in customer chat SSE."""
     if not isinstance(chunk, str) or not chunk.startswith("event: "):
         return chunk
     lines = chunk.splitlines()
@@ -240,12 +236,10 @@ def _required_capabilities(generation):
 
 
 def _emergency_candidates(generation):
-    """Return healthy models outside the commercial route for service continuity.
+    """Return verified healthy models outside the commercial route for continuity.
 
-    Normal routing optimises cost/margin and may reject a model solely because its
-    fallback price is higher. The emergency path intentionally ignores that
-    commercial rejection: the customer is charged 0 RUB for this recovery request
-    and the service absorbs provider cost.
+    The emergency path may absorb provider cost, but it never sends customer
+    traffic to an UNKNOWN/OPEN provider or to a model missing runtime metadata.
     """
     attempted = set(generation.attempts.values_list("model_slug", flat=True))
     attempted_providers = set(
@@ -271,15 +265,12 @@ def _emergency_candidates(generation):
             active_price(model.slug)
         except Exception:
             continue
-        # Prefer a genuinely different provider. Same-provider alternate models
-        # are still useful for model-not-found/model-specific incidents.
         rows.append((model.provider.slug in attempted_providers, model))
     rows.sort(key=lambda item: item[0])
     return [model for _same_provider, model in rows]
 
 
 def _record_emergency_cost(generation, model, completed):
-    """Track provider expense while keeping the user's emergency recovery free."""
     try:
         price = active_price(model.slug)
         provider_cost, _normal_charge = calculate(
@@ -348,7 +339,7 @@ def _complete_emergency_generation(generation, model, text, completed):
 
 
 def _emergency_failover(generation):
-    """Try another healthy model after the normal route failed before first token.
+    """Try another verified model after the normal route failed before first token.
 
     Output is buffered until a provider finishes successfully, preventing fragments
     from multiple providers being mixed in one customer-visible answer.
@@ -379,6 +370,7 @@ def _emergency_failover(generation):
         started = time.monotonic()
         text = ""
         completed = None
+        provider_adapter = None
         try:
             provider_adapter = adapter_for(model)
             for event in provider_adapter.stream(
@@ -401,7 +393,7 @@ def _emergency_failover(generation):
             attempt.latency_ms = latency
             attempt.finished_at = timezone.now()
             attempt.save(update_fields=["state", "latency_ms", "finished_at"])
-            record_success(model.provider, latency)
+            record_success(model.provider, latency, adapter=provider_adapter)
             _complete_emergency_generation(generation, model, text, completed)
             chunks.append(
                 "event: recovery\ndata: "
@@ -414,8 +406,6 @@ def _emergency_failover(generation):
                 )
                 + "\n\n"
             )
-            # Replay the completed answer in moderate chunks so the existing UI
-            # keeps its incremental rendering behaviour without mixing providers.
             step = 160
             for start in range(0, len(text), step):
                 chunks.append(
@@ -456,7 +446,7 @@ def _emergency_failover(generation):
                     "finished_at",
                 ]
             )
-            record_failure(model.provider, exc)
+            record_failure(model.provider, exc, adapter=provider_adapter)
         except Exception:
             logger.exception(
                 "Emergency failover candidate crashed generation_id=%s model=%s",
