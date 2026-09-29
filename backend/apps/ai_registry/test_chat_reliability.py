@@ -3,8 +3,9 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from .adapters import ProviderError
 from .models import Provider, ProviderApiKey
-from .reliability import provider_available
+from .reliability import provider_available, record_failure, record_success
 
 
 def _provider(**overrides):
@@ -103,3 +104,52 @@ def test_degraded_key_is_used_only_after_healthier_keys():
     assert secret == "healthy-secret"
     assert key_id == healthy.id
     assert key_id != degraded.id
+
+
+@pytest.mark.django_db
+def test_non_retryable_bad_key_becomes_retryable_when_spare_key_exists():
+    provider = _provider()
+    first = _key(provider, "first", "secret-first", priority=10)
+    second = _key(provider, "second", "secret-second", priority=20)
+
+    secret, selected_id = provider.select_api_key()
+    assert secret in {"secret-first", "secret-second"}
+
+    error = ProviderError("bad credential", code="authentication_error", retryable=False)
+    record_failure(provider, error)
+
+    assert error.retryable is True
+    failed = ProviderApiKey.objects.get(pk=selected_id)
+    assert failed.health_state == ProviderApiKey.HealthState.DEGRADED
+    assert failed.last_error_code == "authentication_error"
+
+    next_secret, next_id = provider.select_api_key()
+    assert next_id in {first.id, second.id}
+    assert next_id != selected_id
+    assert next_secret != secret
+
+    provider.refresh_from_db()
+    assert provider.health_state == Provider.HealthState.DEGRADED
+    assert provider.circuit_opened_until is None
+
+
+@pytest.mark.django_db
+def test_success_restores_key_and_provider_health():
+    provider = _provider(health_state=Provider.HealthState.DEGRADED, consecutive_failures=2)
+    key = _key(
+        provider,
+        "recovered",
+        "recovered-secret",
+        state=ProviderApiKey.HealthState.UNKNOWN,
+    )
+    provider.select_api_key()
+
+    record_success(provider, 123)
+
+    key.refresh_from_db()
+    provider.refresh_from_db()
+    assert key.health_state == ProviderApiKey.HealthState.HEALTHY
+    assert key.last_error_code == ""
+    assert key.last_latency_ms == 123
+    assert provider.health_state == Provider.HealthState.HEALTHY
+    assert provider.consecutive_failures == 0
