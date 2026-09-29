@@ -1,3 +1,6 @@
+from decimal import Decimal, InvalidOperation
+
+from django.conf import settings
 from django.contrib.auth import login, logout, update_session_auth_hash
 from django.contrib.sessions.models import Session
 from django.db import transaction
@@ -26,6 +29,32 @@ from .serializers import (
 )
 
 
+def _ensure_signup_promo(user):
+    """Grant the configured consumer signup credit exactly once.
+
+    The billing credit ledger provides the idempotency guarantee, so this safely
+    backfills pre-existing consumer accounts on their next login while never
+    issuing duplicate promotional money. Platform administrators are excluded.
+    """
+    if user.role == User.Role.PLATFORM_ADMIN or user.is_staff or user.is_superuser:
+        return None
+    try:
+        amount = Decimal(str(getattr(settings, "SIGNUP_PROMO_RUB", "0")))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+    from apps.billing.services import credit
+
+    return credit(
+        user,
+        amount,
+        "signup_promo",
+        str(user.id),
+        bucket="promo",
+    )
+
+
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
@@ -36,6 +65,7 @@ class RegisterView(APIView):
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        _ensure_signup_promo(user)
         login(request, user)
         request.session.pop(SESSION_MFA_KEY, None)
         transaction.on_commit(lambda: send_verification_email(user))
@@ -51,6 +81,7 @@ class LoginView(APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
+        _ensure_signup_promo(user)
 
         # Browser tabs share the same Django session cookie. A platform admin who
         # signs into a client account in another tab must never have the real admin
