@@ -29,7 +29,11 @@ export default function ProjectsPage(){
     const gc=await api<GithubConnect>("/github/connect/");setGithubConnect(gc);
     if(!gc.configured){setGithubInstallations([]);setGithubRepos({});setGithubBindings({});return}
     const gi=await api<GithubInstallation[]>("/github/installations/");setGithubInstallations(gi);
-    const repoEntries=await Promise.all(gi.map(async installation=>[installation.id,await api<GithubRepository[]>(`/github/installations/${installation.id}/repositories/`)] as const));setGithubRepos(Object.fromEntries(repoEntries));
+    const repoResults=await Promise.allSettled(gi.map(async installation=>({installation,repositories:await api<GithubRepository[]>(`/github/installations/${installation.id}/repositories/`)})));
+    const repos:Record<string,GithubRepository[]>={};const failedAccounts:string[]=[];
+    for(const result of repoResults){if(result.status==="fulfilled")repos[result.value.installation.id]=result.value.repositories;else failedAccounts.push(gi[repoResults.indexOf(result)]?.account||"GitHub")}
+    setGithubRepos(repos);
+    if(failedAccounts.length)setGithubError(`Часть подключений требует внимания: ${failedAccounts.join(", ")}. Рабочие репозитории доступны; для проблемного подключения повторите вход в GitHub.`);
     const bindingEntries=await Promise.all(owned.map(async project=>{try{return [project.id,await api<GithubBinding>(`/projects/${project.id}/github/`)] as const}catch{return [project.id,null] as const}}));setGithubBindings(Object.fromEntries(bindingEntries));
    }catch(reason){setGithubError(reason instanceof Error?reason.message:"Не удалось проверить GitHub");}
   }catch(reason){setError(reason instanceof Error?reason.message:"Не удалось загрузить проекты")}
