@@ -5,40 +5,98 @@ import type {AIModel} from "../../lib/types";
 import {Icon} from "./Icons";
 
 type Props={value:string;models:AIModel[];disabled?:boolean;onChange:(value:string)=>void};
+type PickerSection="auto"|"model";
 
 const modes=[
  {value:"auto:economy",label:"Простой",hint:"Быстро и экономно",icon:"zap" as const},
- {value:"auto:balanced",label:"Средний",hint:"Лучший баланс",icon:"spark" as const},
- {value:"auto:maximum",label:"Сложный",hint:"Анализ и сложные задачи",icon:"brain" as const},
+ {value:"auto:balanced",label:"Средний",hint:"Оптимальный баланс качества и цены",icon:"spark" as const},
+ {value:"auto:maximum",label:"Сложный",hint:"Максимум качества для сложных задач",icon:"brain" as const},
 ];
 
-function modelLabel(model:AIModel){
- const haystack=`${model.provider} ${model.slug} ${model.display_name}`.toLowerCase();
- if(haystack.includes("giga")){
-  if(haystack.includes("max"))return "Системная Продвинутая";
-  if(haystack.includes("pro"))return "Системная Расширенная";
-  return "Системная Базовая";
- }
- return model.display_name;
+const PROVIDERS:Record<string,{label:string;order:number}>={
+ "llm-system":{label:"LLM System",order:10},
+ system:{label:"LLM System",order:10},
+ gigachat:{label:"LLM System",order:10},
+ openai:{label:"ChatGPT",order:20},
+ chatgpt:{label:"ChatGPT",order:20},
+ deepseek:{label:"DeepSeek",order:30},
+ anthropic:{label:"Claude",order:40},
+ claude:{label:"Claude",order:40},
+ gemini:{label:"Gemini",order:50},
+ google:{label:"Gemini",order:50},
+ xai:{label:"Grok",order:60},
+ grok:{label:"Grok",order:60},
+ openrouter:{label:"OpenRouter",order:70},
+};
+
+function normalizedProvider(model:AIModel){
+ const raw=(model.provider||"").trim().toLowerCase();
+ if(PROVIDERS[raw])return raw;
+ const haystack=`${raw} ${model.display_name} ${model.slug}`.toLowerCase();
+ if(haystack.includes("llm system")||haystack.includes("system lite")||haystack.includes("system pro")||haystack.includes("system max")||haystack.includes("giga"))return "llm-system";
+ if(haystack.includes("chatgpt")||haystack.includes("openai")||haystack.includes("gpt-"))return "openai";
+ if(haystack.includes("deepseek"))return "deepseek";
+ if(haystack.includes("claude")||haystack.includes("anthropic"))return "anthropic";
+ if(haystack.includes("gemini")||haystack.includes("google"))return "gemini";
+ if(haystack.includes("grok")||haystack.includes("xai"))return "xai";
+ if(haystack.includes("openrouter"))return "openrouter";
+ return raw||"other";
 }
 
-function providerLabel(model:AIModel){
- const value=model.provider.trim();
- if(value.toLowerCase().includes("giga"))return "Системные модели";
- return value||"Другие модели";
+function providerLabelByKey(key:string){
+ return PROVIDERS[key]?.label??(key==="other"?"Другие модели":key);
+}
+
+function modelLabel(model:AIModel){
+ let label=(model.display_name||model.slug).trim();
+ const provider=providerLabelByKey(normalizedProvider(model));
+ const prefixes=[`${provider} · `,`${provider}: `,`${provider} - `];
+ for(const prefix of prefixes){if(label.toLowerCase().startsWith(prefix.toLowerCase())){label=label.slice(prefix.length).trim();break}}
+ if(normalizedProvider(model)==="llm-system"){
+  const haystack=`${model.slug} ${model.display_name} ${model.exact_api_id}`.toLowerCase();
+  if(haystack.includes("max"))return "System Max";
+  if(haystack.includes("pro"))return "System Pro";
+  return "System Lite";
+ }
+ return label||model.slug;
 }
 
 export function ModelPicker({value,models,disabled=false,onChange}:Props){
- const[open,setOpen]=useState(false);const root=useRef<HTMLDivElement|null>(null);
+ const[open,setOpen]=useState(false);
+ const root=useRef<HTMLDivElement|null>(null);
+ const initialSection:PickerSection=value.startsWith("model:")?"model":"auto";
+ const[section,setSection]=useState<PickerSection>(initialSection);
+
  const groups=useMemo(()=>{
   const map=new Map<string,AIModel[]>();
-  for(const model of models){const key=providerLabel(model);map.set(key,[...(map.get(key)??[]),model])}
-  return Array.from(map.entries()).sort(([a],[b])=>a.localeCompare(b,"ru"));
+  for(const model of models){
+   const key=normalizedProvider(model);
+   map.set(key,[...(map.get(key)??[]),model]);
+  }
+  return Array.from(map.entries()).sort(([a],[b])=>{
+   const ao=PROVIDERS[a]?.order??999;
+   const bo=PROVIDERS[b]?.order??999;
+   return ao-bo||providerLabelByKey(a).localeCompare(providerLabelByKey(b),"ru");
+  });
  },[models]);
+
  const currentMode=modes.find(item=>item.value===value);
  const currentModel=!currentMode&&value.startsWith("model:")?models.find(item=>`model:${item.slug}`===value):undefined;
- const label=currentMode?.label??(currentModel?modelLabel(currentModel):"Средний");
- const sub=currentMode?.hint??(currentModel?providerLabel(currentModel):"Лучший баланс");
+ const currentProvider=currentModel?normalizedProvider(currentModel):"";
+ const[firstProvider]=groups[0]??["",[]];
+ const[selectedProvider,setSelectedProvider]=useState(currentProvider||firstProvider||"");
+
+ useEffect(()=>{
+  if(value.startsWith("model:")){
+   setSection("model");
+   const model=models.find(item=>`model:${item.slug}`===value);
+   if(model)setSelectedProvider(normalizedProvider(model));
+  }
+ },[value,models]);
+ useEffect(()=>{
+  if(!selectedProvider&&firstProvider)setSelectedProvider(firstProvider);
+  if(selectedProvider&&!groups.some(([key])=>key===selectedProvider)&&firstProvider)setSelectedProvider(firstProvider);
+ },[groups,selectedProvider,firstProvider]);
  useEffect(()=>{
   if(!open)return;
   const outside=(event:MouseEvent)=>{if(root.current&&!root.current.contains(event.target as Node))setOpen(false)};
@@ -46,18 +104,35 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
   document.addEventListener("mousedown",outside);window.addEventListener("keydown",key);
   return()=>{document.removeEventListener("mousedown",outside);window.removeEventListener("keydown",key)};
  },[open]);
+
  const choose=(next:string)=>{if(disabled)return;onChange(next);setOpen(false)};
+ const label=currentMode?`AUTO · ${currentMode.label}`:currentModel?`${providerLabelByKey(currentProvider)} · ${modelLabel(currentModel)}`:"AUTO · Средний";
+ const sub=currentMode?.hint??(currentModel?(currentModel.available?"Конкретная модель":"Модель недоступна"):"Оптимальный баланс качества и цены");
+ const providerModels=groups.find(([key])=>key===selectedProvider)?.[1]??[];
+
  return <div className="modelPicker" ref={root}>
-  <button type="button" className="modelPickerTrigger" disabled={disabled} onClick={()=>setOpen(v=>!v)} aria-haspopup="dialog" aria-expanded={open} title="Выбрать сложность или конкретную модель">
+  <button type="button" className="modelPickerTrigger" disabled={disabled} onClick={()=>setOpen(v=>!v)} aria-haspopup="dialog" aria-expanded={open} title="Выбрать AUTO-уровень или конкретную нейросеть">
    <span className="modelPickerMark"><Icon name={currentMode?.icon??"brain"} size={14}/></span>
    <span className="modelPickerCurrent"><b>{label}</b><small>{sub}</small></span>
    <Icon name="chevron" size={13}/>
   </button>
-  {open&&<div className="modelPickerMenu" role="dialog" aria-label="Выбор режима нейросети">
-   <div className="modelPickerHead"><div><b>Как отвечать?</b><span>Выберите уровень — или конкретную модель.</span></div><button type="button" onClick={()=>setOpen(false)} aria-label="Закрыть"><Icon name="x" size={15}/></button></div>
-   <div className="modelModeGrid">{modes.map(item=><button type="button" key={item.value} className={value===item.value?"active":""} onClick={()=>choose(item.value)}><span><Icon name={item.icon} size={16}/></span><b>{item.label}</b><small>{item.hint}</small>{value===item.value&&<Icon name="check" size={15}/>}</button>)}</div>
-   <div className="modelPickerDivider"><span>Конкретная модель</span></div>
-   <div className="modelPickerModels">{groups.length?groups.map(([provider,items])=><section key={provider}><h4>{provider}</h4>{items.map(model=>{const selected=value===`model:${model.slug}`;return <button type="button" key={model.slug} disabled={!model.available} className={selected?"active":""} onClick={()=>choose(`model:${model.slug}`)}><span className="modelDot"/><span className="modelCopy"><b>{modelLabel(model)}</b><small>{model.available?"Доступна":`Недоступна · ${model.health_state||"проверьте подключение"}`}</small></span>{selected&&<Icon name="check" size={15}/>}</button>})}</section>):<div className="modelPickerEmpty">Модели ещё загружаются…</div>}</div>
+  {open&&<div className="modelPickerMenu modelPickerMenuV2" role="dialog" aria-label="Выбор нейросети">
+   <div className="modelPickerHead"><div><b>Выбор нейросети</b><span>Используйте AUTO или зафиксируйте конкретную модель.</span></div><button type="button" onClick={()=>setOpen(false)} aria-label="Закрыть"><Icon name="x" size={15}/></button></div>
+   <div className="modelPickerTabs" role="tablist" aria-label="Способ выбора модели">
+    <button type="button" role="tab" aria-selected={section==="auto"} className={section==="auto"?"active":""} onClick={()=>setSection("auto")}><Icon name="spark" size={15}/>AUTO</button>
+    <button type="button" role="tab" aria-selected={section==="model"} className={section==="model"?"active":""} onClick={()=>setSection("model")}><Icon name="brain" size={15}/>Конкретная модель</button>
+   </div>
+   {section==="auto"?<div className="modelPickerPane">
+    <p className="modelPickerHelp">AUTO сам выбирает рабочую модель и может переключиться на резервный провайдер при сбое.</p>
+    <div className="modelModeGrid">{modes.map(item=><button type="button" key={item.value} className={value===item.value?"active":""} onClick={()=>choose(item.value)}><span><Icon name={item.icon} size={16}/></span><b>{item.label}</b><small>{item.hint}</small>{value===item.value&&<Icon name="check" size={15}/>}</button>)}</div>
+   </div>:<div className="modelPickerPane">
+    <p className="modelPickerHelp">Сначала выберите нейросеть, затем конкретную модель. Недоступные модели нельзя запустить.</p>
+    <div className="modelProviderTabs" role="tablist" aria-label="Провайдер нейросети">{groups.map(([provider,items])=>{
+     const available=items.filter(item=>item.available).length;
+     return <button type="button" role="tab" aria-selected={selectedProvider===provider} key={provider} className={selectedProvider===provider?"active":""} onClick={()=>setSelectedProvider(provider)}><b>{providerLabelByKey(provider)}</b><small>{available}/{items.length} доступно</small></button>
+    })}</div>
+    <div className="modelPickerModels modelPickerProviderModels">{providerModels.length?providerModels.map(model=>{const selected=value===`model:${model.slug}`;return <button type="button" key={model.slug} disabled={!model.available} className={selected?"active":""} onClick={()=>choose(`model:${model.slug}`)}><span className={`modelDot ${model.available?"online":"offline"}`}/><span className="modelCopy"><b>{modelLabel(model)}</b><small>{model.available?"Готова к работе":`Недоступна · ${model.health_state||"проверьте подключение"}`}</small></span>{selected&&<Icon name="check" size={15}/>}</button>}):<div className="modelPickerEmpty">У этого провайдера пока нет моделей.</div>}</div>
+   </div>}
   </div>}
  </div>;
 }
