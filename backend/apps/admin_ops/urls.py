@@ -4,6 +4,7 @@ from .analytics_views import ProductAnalyticsView
 from .backup_views import SafeBackupActionView
 from .compliance_views import ComplianceConsoleView
 from .cost_policy_views import PricingOverheadPolicyView
+from .diagnostics_views import ChatDiagnosticsView
 from .drill_views import OperationalDrillStatusView
 from .growth_views import GrowthFunnelView
 from .infrastructure_views import InfrastructureHealthView
@@ -55,6 +56,7 @@ urlpatterns = [
     path("metrics/", OperationalMetricsView.as_view(), name="admin-metrics"),
     path("infrastructure/", InfrastructureHealthView.as_view(), name="admin-infrastructure"),
     path("system-analysis/", SystemAnalysisView.as_view(), name="admin-system-analysis"),
+    path("chat-diagnostics/", ChatDiagnosticsView.as_view(), name="admin-chat-diagnostics"),
     path("system-issues/<str:fingerprint>/action/", SystemIssueActionView.as_view(), name="admin-system-issue-action"),
     path("growth/", GrowthFunnelView.as_view(), name="admin-growth"),
     path("analytics/", ProductAnalyticsView.as_view(), name="admin-analytics"),
