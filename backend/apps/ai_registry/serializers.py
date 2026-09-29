@@ -3,7 +3,7 @@ from rest_framework import serializers
 from apps.billing.pricing import active_price
 
 from .models import AIModel
-from .reliability import provider_available
+from .reliability import model_client_ready
 
 
 PUBLIC_PROVIDER_NAMES = {
@@ -17,13 +17,7 @@ PUBLIC_PROVIDER_NAMES = {
 
 
 def _system_tier_name(obj):
-    """Map the internal GigaChat model to the customer-facing LLM System tier.
-
-    Do not rely on the local slug: imported/discovered/test models can use an
-    arbitrary slug while the real upstream model still carries Pro/Max family
-    information. Inspect all model identity fields and prefer the strongest tier
-    marker when more than one field is populated.
-    """
+    """Map the internal GigaChat model to the customer-facing LLM System tier."""
     identity = " ".join(
         str(value or "")
         for value in (
@@ -87,12 +81,7 @@ class AIModelSerializer(serializers.ModelSerializer):
         return "" if obj.provider.slug == "gigachat" else obj.upstream_model
 
     def get_available(self, obj):
-        if not obj.enabled or not provider_available(obj.provider):
-            return False
-        try:
-            return active_price(obj.slug) is not None
-        except Exception:
-            return False
+        return model_client_ready(obj)
 
     def get_model_version(self, obj):
         if obj.provider.slug == "gigachat":
@@ -100,6 +89,8 @@ class AIModelSerializer(serializers.ModelSerializer):
         return obj.current_version.version if obj.current_version else None
 
     def get_price(self, obj):
+        if not model_client_ready(obj):
+            return None
         try:
             value = active_price(obj.slug)
         except Exception:
