@@ -269,7 +269,7 @@ def select_route(*, conversation, content):
     for model in AIModel.objects.filter(enabled=True).select_related("provider", "current_version"):
         model_lookup[model.slug] = model
         reasons = []
-        if not model.current_version_id:
+        if model.provider.adapter_type != Provider.AdapterType.ECHO and not model.current_version_id:
             reasons.append("model_version_missing")
         if not str(model.upstream_model or "").strip():
             reasons.append("upstream_model_missing")
