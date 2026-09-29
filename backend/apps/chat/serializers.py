@@ -146,11 +146,11 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _default_client_model():
-        queryset = AIModel.objects.filter(enabled=True).exclude(provider__slug="gigachat").select_related(
+        queryset = AIModel.objects.filter(enabled=True).select_related(
             "provider", "current_version"
         ).order_by("provider__priority", "display_name")
         for model in queryset:
-            if not model.current_version_id or not model.upstream_model.strip():
+            if not model.upstream_model.strip():
                 continue
             if not provider_available(model.provider):
                 continue
@@ -171,7 +171,7 @@ class ConversationSerializer(serializers.ModelSerializer):
                 model = self._default_client_model()
                 if model is None:
                     raise serializers.ValidationError(
-                        {"selected_model": "Нет подключённой модели для ручного режима. Выберите AUTO или подключите клиентскую модель."}
+                        {"selected_model": "Нет доступной модели. Выберите AUTO или другую нейросеть."}
                     )
                 validated_data["selected_model"] = model.slug
         else:
@@ -192,12 +192,10 @@ class ConversationSerializer(serializers.ModelSerializer):
             )
         except AIModel.DoesNotExist as exc:
             raise serializers.ValidationError("Модель не найдена") from exc
-        if model.provider.slug == "gigachat":
-            raise serializers.ValidationError("GigaChat используется только внутренним AUTO-маршрутизатором")
-        if not model.current_version_id or not model.upstream_model.strip():
+        if not model.upstream_model.strip():
             raise serializers.ValidationError("Модель ещё не готова к работе")
         if not provider_available(model.provider):
-            raise serializers.ValidationError("Модель временно недоступна")
+            raise serializers.ValidationError("Модель временно недоступна. Выберите другую модель или AUTO.")
         try:
             price = active_price(model.slug)
             require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
