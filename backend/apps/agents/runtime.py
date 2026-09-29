@@ -164,7 +164,13 @@ def _finish_canceled_after_provider(run, step, result, actual, repository_contex
 
 def execute_run(run_id):
     with transaction.atomic():
-        run = AgentRun.objects.select_for_update().select_related("owner", "agent", "team__director", "project").get(pk=run_id)
+        # Lock only the AgentRun row. Nullable select_related joins (agent/team/project)
+        # must not become FOR UPDATE targets on PostgreSQL.
+        run = (
+            AgentRun.objects.select_for_update(of=("self",))
+            .select_related("owner", "agent", "team__director", "project")
+            .get(pk=run_id)
+        )
         if run.state != AgentRun.State.QUEUED:
             return run
         run.state = AgentRun.State.PLANNING
