@@ -40,6 +40,16 @@ def _has_healthy_key(provider: Provider) -> bool:
     ).exists()
 
 
+def _has_pool_keys(provider: Provider) -> bool:
+    try:
+        return ProviderApiKey.objects.filter(
+            provider_id=provider.id,
+            enabled=True,
+        ).exclude(health_state=ProviderApiKey.HealthState.DISABLED).exists()
+    except Exception:
+        return False
+
+
 def _normalized_secret(value):
     return str(value or "").removeprefix("Basic ").strip()
 
@@ -65,15 +75,11 @@ def _provider_blocking_error(error: ProviderError) -> bool:
 
 
 def _most_recent_api_key(provider: Provider):
-    """Best-effort key attribution for request paths that only pass Provider.
+    """Best-effort key attribution for legacy callers that do not pass an adapter.
 
-    Provider.select_api_key() updates last_used_at immediately before building an
-    adapter, so the newest usable key is the credential that most likely served
-    the current attempt. Direct adapter-aware paths still use exact secret matching.
-
-    PostgreSQL sorts NULL values first for DESC unless NULLS LAST is explicit.
-    Without the explicit ordering an unused spare key could be mistaken for the
-    credential that just failed, causing the bad key to be selected again.
+    Runtime chat paths should pass the exact adapter whenever possible. This
+    fallback remains for diagnostics/legacy integrations and explicitly keeps
+    PostgreSQL NULL last so an unused spare is not blamed for another key's error.
     """
     try:
         return (
@@ -111,7 +117,7 @@ def selected_api_key(provider: Provider, adapter=None):
 
 
 def record_api_key_failure(provider: Provider, adapter, error: ProviderError) -> bool:
-    """Degrade only the failing key and return whether another key can retry."""
+    """Degrade only the failing key and return whether another key can be probed."""
     key = selected_api_key(provider, adapter)
     if key is None:
         return False
@@ -145,32 +151,64 @@ def record_api_key_success(provider: Provider, adapter, latency_ms: int):
 
 
 def provider_available(provider: Provider) -> bool:
-    """Return whether a provider may receive a customer request right now.
+    """Fail-closed customer-traffic readiness predicate.
 
-    A healthy stored API key is configuration evidence, but it must never
-    override a runtime OPEN circuit. A circuit without a cooldown represents a
-    provider-level credential/billing block and stays closed to customer traffic
-    until an explicit successful health/runtime recovery records success.
+    Customer requests never act as provider health probes. OPEN, UNKNOWN and
+    explicitly disabled providers stay out of routing until ``check_provider``
+    records a successful probe. This prevents a thundering herd when a circuit
+    cooldown expires and ensures an administrator's disable switch is authoritative.
+
+    For key-pool providers at least one verified HEALTHY key is required. A
+    DEGRADED provider may still serve traffic when a different key is healthy;
+    the failed key remains isolated while the healthy spare carries requests.
+    Legacy single-secret providers must have a HEALTHY provider state.
     """
-    if provider.emergency_disabled:
+    if not provider.enabled or provider.emergency_disabled:
         return False
+    if provider.health_state in {
+        Provider.HealthState.UNKNOWN,
+        Provider.HealthState.OPEN,
+        Provider.HealthState.DISABLED,
+    }:
+        return False
+    if not provider.credential_configured():
+        return False
+    if _has_pool_keys(provider):
+        return _has_healthy_key(provider)
+    return provider.health_state == Provider.HealthState.HEALTHY
 
-    now = timezone.now()
-    if provider.health_state == Provider.HealthState.OPEN:
-        if not provider.circuit_opened_until:
-            return False
-        if provider.circuit_opened_until > now:
-            return False
-        return bool(provider.enabled and provider.credential_configured())
 
-    healthy_key = _has_healthy_key(provider)
-    if not provider.enabled:
-        if not healthy_key:
-            return False
-        provider.enabled = True
-        provider.save(update_fields=["enabled"])
+def model_client_ready(model: AIModel) -> bool:
+    """Return whether a model is safe to expose or route to a customer now."""
+    if not model.enabled or not model.current_version_id or not str(model.upstream_model or "").strip():
+        return False
+    if not provider_available(model.provider):
+        return False
+    try:
+        from apps.billing.pricing import active_price, quote, require_margin
 
-    return provider.health_state != Provider.HealthState.DISABLED or healthy_key
+        price = active_price(model.slug)
+        require_margin(
+            quote(
+                price,
+                1_000_000,
+                0,
+                provider_slug=model.provider.slug,
+                model_slug=model.slug,
+            )
+        )
+        require_margin(
+            quote(
+                price,
+                0,
+                1_000_000,
+                provider_slug=model.provider.slug,
+                model_slug=model.slug,
+            )
+        )
+    except Exception:
+        return False
+    return True
 
 
 @transaction.atomic
@@ -207,11 +245,10 @@ def ensure_safe_client_models() -> int:
                     model_slug=model.slug,
                 )
             )
-        except (ValidationError, Exception):
+        except Exception:
             continue
         model.enabled = True
         model.save(update_fields=["enabled"])
-        provider_available(provider)
         activated += 1
     return activated
 
@@ -222,11 +259,13 @@ def candidate_models(primary: AIModel) -> list[AIModel]:
     current = primary
     while current and current.pk not in seen:
         seen.add(current.pk)
-        if current.enabled and provider_available(current.provider):
+        if model_client_ready(current):
             candidates.append(current)
         current = current.fallback_model
         if current:
-            current = AIModel.objects.select_related("provider", "fallback_model").get(pk=current.pk)
+            current = AIModel.objects.select_related(
+                "provider", "fallback_model", "current_version"
+            ).get(pk=current.pk)
     return candidates
 
 
@@ -235,10 +274,9 @@ def record_failure(provider: Provider, error: ProviderError, adapter=None):
     """Record runtime failure and keep dead credentials away from customers.
 
     Credential-specific failure is isolated to the selected key first. If a spare
-    healthy/unknown key exists, the same request may retry. Provider-level billing,
-    authentication and permission failures without a spare key open a persistent
-    circuit (no cooldown) so AUTO routing immediately falls back to another working
-    provider instead of sending every customer request to a known-dead credential.
+    healthy/unknown key exists, the provider stays DEGRADED so the health watcher
+    can validate that spare. Customer traffic itself only retries while a verified
+    HEALTHY spare remains available.
     """
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
     has_spare_key = record_api_key_failure(locked, adapter, error)
@@ -310,6 +348,7 @@ def record_success(provider: Provider, latency_ms: int, adapter=None):
     was_unhealthy = locked.health_state in {
         Provider.HealthState.OPEN,
         Provider.HealthState.DEGRADED,
+        Provider.HealthState.UNKNOWN,
     }
     locked.health_state = Provider.HealthState.HEALTHY
     locked.consecutive_failures = 0
@@ -332,6 +371,7 @@ def record_success(provider: Provider, latency_ms: int, adapter=None):
 
 
 def check_provider(provider: Provider):
+    """Probe provider health independently from customer traffic."""
     if not provider.enabled or provider.emergency_disabled:
         provider.health_state = Provider.HealthState.DISABLED
         provider.last_checked_at = timezone.now()
