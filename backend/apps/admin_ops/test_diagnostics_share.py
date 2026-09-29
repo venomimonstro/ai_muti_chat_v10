@@ -61,7 +61,7 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
 
     assert response.status_code == 200
     payload = response.data
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["summary"]["open_system_issues"] >= 1
     provider_row = next(item for item in payload["providers"] if item["provider"] == provider.slug)
     assert provider_row["key_error_codes"]["authentication_error"] == 1
@@ -70,3 +70,4 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
     assert "secret traceback body" not in serialized
     assert payload["privacy"]["api_keys"] is False
     assert payload["privacy"]["tracebacks"] is False
+    assert payload["privacy"]["raw_release_logs"] is False
