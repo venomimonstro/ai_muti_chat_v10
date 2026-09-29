@@ -1,6 +1,6 @@
 "use client";
 
-import {Component,ReactNode} from "react";
+import {Component,ReactNode,type ErrorInfo} from "react";
 import {reportClientError} from "../components/ClientErrorReporter";
 
 type Props={children:ReactNode;fallback?:ReactNode};
@@ -9,7 +9,7 @@ type State={failed:boolean};
 export class ErrorBoundary extends Component<Props,State>{
  state:State={failed:false};
  static getDerivedStateFromError(){return{failed:true}};
- componentDidCatch(error:Error,info:React.ErrorInfo){
+ componentDidCatch(error:Error,info:ErrorInfo){
   reportClientError(
    error.name||"ReactErrorBoundary",
    error.message||"Workspace component failed",
