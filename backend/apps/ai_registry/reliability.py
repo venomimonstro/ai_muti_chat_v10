@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from .adapters import ProviderError, adapter_for
@@ -40,12 +40,20 @@ def _most_recent_api_key(provider: Provider):
     Provider.select_api_key() updates last_used_at immediately before building an
     adapter, so the newest usable key is the credential that most likely served
     the current attempt. Direct adapter-aware paths still use exact secret matching.
+
+    PostgreSQL sorts NULL values first for DESC unless NULLS LAST is explicit.
+    Without the explicit ordering an unused spare key could be mistaken for the
+    credential that just failed, causing the bad key to be selected again.
     """
     try:
         return (
             provider.api_keys.filter(enabled=True)
             .exclude(health_state=ProviderApiKey.HealthState.DISABLED)
-            .order_by("-last_used_at", "priority", "created_at")
+            .order_by(
+                models.F("last_used_at").desc(nulls_last=True),
+                "priority",
+                "created_at",
+            )
             .first()
         )
     except Exception:
