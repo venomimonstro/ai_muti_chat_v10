@@ -25,7 +25,7 @@ from .product_identity import (
     identity_sse,
 )
 from .serializers import SendMessageSerializer
-from .streaming import prepare
+from .streaming import _validate_replayed_generation, prepare
 
 
 def _conversation(user, conversation_id):
@@ -97,6 +97,24 @@ def _customer_stream(request, generation, *, created):
     return managed_run(generation)
 
 
+def _stream_response(iterator):
+    response = StreamingHttpResponse(
+        iterator,
+        content_type="text/event-stream; charset=utf-8",
+    )
+    response["Cache-Control"] = "no-cache, no-transform"
+    response["X-Accel-Buffering"] = "no"
+    return response
+
+
+def _existing_generation(user, idempotency_key):
+    return (
+        Generation.objects.filter(owner=user, idempotency_key=idempotency_key)
+        .select_related("assistant_message", "user_message")
+        .first()
+    )
+
+
 class ChatCostPreviewView(APIView):
     def post(self, request, conversation_id):
         serializer = SendMessageSerializer(data=request.data)
@@ -133,6 +151,30 @@ class ConfirmedConversationStreamView(APIView):
         client_message_id = serializer.validated_data["client_message_id"]
         file_ids = serializer.validated_data.get("file_ids") or []
 
+        # Reconnect/resume must never depend on a fresh provider route, price
+        # preview or spend check. The original idempotent generation already owns
+        # its reservation and durable state. Re-running preflight during a provider
+        # incident can otherwise prevent the client from recovering an answer that
+        # is already running or completed in the database.
+        existing = _existing_generation(request.user, key)
+        if existing is not None:
+            try:
+                _validate_replayed_generation(
+                    existing,
+                    conversation,
+                    content,
+                    client_message_id,
+                    file_ids,
+                )
+            except ValidationError as exc:
+                return Response(
+                    {"detail": getattr(exc, "messages", [str(exc)])},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return _stream_response(
+                _customer_stream(request, existing, created=False)
+            )
+
         identity_answer = direct_identity_answer(content, file_ids)
         if identity_answer is not None:
             try:
@@ -149,13 +191,7 @@ class ConfirmedConversationStreamView(APIView):
                     {"detail": getattr(exc, "messages", [str(exc)])},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            response = StreamingHttpResponse(
-                identity_sse(generation),
-                content_type="text/event-stream; charset=utf-8",
-            )
-            response["Cache-Control"] = "no-cache, no-transform"
-            response["X-Accel-Buffering"] = "no"
-            return response
+            return _stream_response(identity_sse(generation))
 
         try:
             preview = chat_cost_preview(
@@ -234,10 +270,6 @@ class ConfirmedConversationStreamView(APIView):
                 )
                 return Response(payload, status=status.HTTP_409_CONFLICT)
 
-        response = StreamingHttpResponse(
-            _customer_stream(request, generation, created=created),
-            content_type="text/event-stream; charset=utf-8",
+        return _stream_response(
+            _customer_stream(request, generation, created=created)
         )
-        response["Cache-Control"] = "no-cache, no-transform"
-        response["X-Accel-Buffering"] = "no"
-        return response
