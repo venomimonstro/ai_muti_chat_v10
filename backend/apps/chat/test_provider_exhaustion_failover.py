@@ -103,7 +103,6 @@ def _provider(slug, name, priority):
         ]
     )
     provider.api_keys.all().delete()
-    AIModel.objects.filter(provider=provider).update(enabled=False)
     return provider
 
 
@@ -115,6 +114,7 @@ def test_customer_gets_llm_system_answer_when_selected_chatgpt_has_no_credits(mo
         password="password123",
     )
     credit(user, Decimal("10"), "test", "provider-fallback")
+    AIModel.objects.all().update(enabled=False)
 
     openai = _provider("openai", "OpenAI", 10)
     system = _provider("gigachat", "GigaChat API", 20)
