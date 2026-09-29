@@ -47,21 +47,22 @@ class AIModelSerializer(serializers.ModelSerializer):
         return PUBLIC_PROVIDER_NAMES.get(obj.provider.slug, obj.provider.name or obj.provider.slug)
 
     def get_display_name(self, obj):
+        provider = self.get_provider_name(obj)
         if obj.provider.slug == "gigachat":
             lowered = (obj.slug or obj.upstream_model or "").casefold()
             if "max" in lowered:
-                return "System Max"
-            if "pro" in lowered:
-                return "System Pro"
-            return "System Lite"
+                model_name = "System Max"
+            elif "pro" in lowered:
+                model_name = "System Pro"
+            else:
+                model_name = "System Lite"
+            return f"{provider} · {model_name}"
         name = (obj.display_name or obj.upstream_model or obj.slug).strip()
-        provider = self.get_provider_name(obj)
         if name.casefold().startswith(provider.casefold()):
             return name
-        return name
+        return f"{provider} · {name}"
 
     def get_exact_api_id(self, obj):
-        # Internal implementation IDs are not part of the customer contract.
         return "" if obj.provider.slug == "gigachat" else obj.upstream_model
 
     def get_available(self, obj):
