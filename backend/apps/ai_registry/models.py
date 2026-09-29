@@ -87,12 +87,12 @@ class Provider(models.Model):
             return ""
 
     def select_api_key(self):
-        """Return ``(secret, key_id)`` using current per-key health.
+        """Return ``(secret, key_id)`` using health-aware pool rotation.
 
-        A funding account may nominate a preferred key, but a degraded/disabled
-        preferred key must never pin customer traffic to a known-bad credential.
-        Healthy keys win, then unknown keys, and degraded keys are only a last
-        resort when there is no healthier configured credential.
+        When several usable keys exist, runtime traffic is spread by least-recent
+        use so a retry is not pinned to the credential that just failed. A funding
+        account's preferred key remains the single-key choice, but it cannot force
+        traffic onto a degraded/disabled credential while healthier keys exist.
         """
         preferred = None
         try:
@@ -115,13 +115,20 @@ class Provider(models.Model):
         except Exception:
             preferred = None
 
-        if preferred is not None:
-            value = preferred.get_secret()
-            if value:
-                ProviderApiKey.objects.filter(pk=preferred.pk).update(last_used_at=timezone.now())
-                return value, preferred.pk
-
         try:
+            healthy_pool = self.api_keys.filter(
+                enabled=True,
+                health_state__in=(
+                    ProviderApiKey.HealthState.HEALTHY,
+                    ProviderApiKey.HealthState.UNKNOWN,
+                ),
+            )
+            if preferred is not None and healthy_pool.count() <= 1:
+                value = preferred.get_secret()
+                if value:
+                    ProviderApiKey.objects.filter(pk=preferred.pk).update(last_used_at=timezone.now())
+                    return value, preferred.pk
+
             for health_state in (
                 ProviderApiKey.HealthState.HEALTHY,
                 ProviderApiKey.HealthState.UNKNOWN,
@@ -130,7 +137,11 @@ class Provider(models.Model):
                 keys = self.api_keys.filter(
                     enabled=True,
                     health_state=health_state,
-                ).order_by("priority", "last_used_at", "created_at")[:10]
+                ).order_by(
+                    models.F("last_used_at").asc(nulls_first=True),
+                    "priority",
+                    "created_at",
+                )[:10]
                 for key in keys:
                     value = key.get_secret()
                     if value:
@@ -273,3 +284,80 @@ class ModelVersion(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     activated_at = models.DateTimeField(null=True, blank=True)
     retired_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["model__slug", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["model", "version"], name="unique_model_registry_version"),
+            models.UniqueConstraint(fields=["model"], condition=models.Q(stage="active"), name="unique_active_version_per_model"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            changed = previous and any(previous[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS)
+            if changed:
+                raise ValidationError("Конфигурация ModelVersion неизменяема; создайте новую версию")
+        super().save(*args, **kwargs)
+
+
+class ModelVersionTransition(models.Model):
+    class Action(models.TextChoices):
+        PROMOTE = "promote", "Продвижение"
+        ROLLBACK = "rollback", "Откат"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    model = models.ForeignKey(AIModel, on_delete=models.PROTECT, related_name="version_transitions")
+    from_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, null=True, blank=True, related_name="transitions_from")
+    to_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, related_name="transitions_to")
+    action = models.CharField(max_length=16, choices=Action.choices)
+    eval_run_id = models.UUIDField(null=True, blank=True)
+    reason = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class ProviderHealthSnapshot(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.ForeignKey(Provider, on_delete=models.CASCADE, related_name="health_snapshots")
+    healthy = models.BooleanField()
+    latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    checked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-checked_at"]
+        indexes = [models.Index(fields=["provider", "-checked_at"])]
+
+
+class ReliabilityIncident(models.Model):
+    class State(models.TextChoices):
+        OPEN = "open", "Открыт"
+        RECOVERED = "recovered", "Восстановлен"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    correlation_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
+    provider = models.ForeignKey(Provider, on_delete=models.PROTECT, related_name="incidents")
+    state = models.CharField(max_length=16, choices=State.choices, default=State.OPEN)
+    error_code = models.CharField(max_length=80)
+    details = models.JSONField(default=dict, blank=True)
+    opened_at = models.DateTimeField(auto_now_add=True)
+    recovered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-opened_at"]
+
+
+class RoutingPolicyVersion(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    version = models.SlugField(max_length=80, unique=True)
+    active = models.BooleanField(default=False)
+    mode_weights = models.JSONField(default=dict)
+    thresholds = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["active"], condition=models.Q(active=True), name="unique_active_routing_policy")]
