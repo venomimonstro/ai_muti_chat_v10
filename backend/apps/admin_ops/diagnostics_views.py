@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from pathlib import Path
 
 from django.core import signing
@@ -8,7 +9,9 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.ai_registry.models import Provider, ProviderApiKey
+from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
+from apps.billing.models import Wallet
+from apps.billing.pricing import active_price
 from apps.chat.models import Generation, GenerationAttempt
 
 from .issue_models import SystemIssue
@@ -34,6 +37,73 @@ def _release_status():
         "occurred_at": str(payload.get("occurred_at") or "")[:80],
         "log_file": str(payload.get("log_file") or "")[:160],
         "failures": [str(item)[:500] for item in (payload.get("failures") or [])[:40]],
+    }
+
+
+def _model_readiness():
+    rows = []
+    queryset = AIModel.objects.select_related("provider", "current_version").order_by(
+        "provider__priority", "provider__slug", "display_name"
+    )
+    for model in queryset:
+        healthy_keys = model.provider.api_keys.filter(
+            enabled=True,
+            health_state=ProviderApiKey.HealthState.HEALTHY,
+        ).count()
+        price_configured = False
+        price_error = ""
+        try:
+            active_price(model.slug)
+            price_configured = True
+        except Exception as exc:
+            price_error = str(exc)[:240]
+        reasons = []
+        if not model.enabled:
+            reasons.append("model_disabled")
+        if not model.upstream_model.strip():
+            reasons.append("upstream_missing")
+        if model.current_version_id is None:
+            reasons.append("active_version_missing")
+        if not model.provider.enabled:
+            reasons.append("provider_disabled")
+        if model.provider.emergency_disabled:
+            reasons.append("provider_emergency_disabled")
+        if model.provider.health_state in {Provider.HealthState.OPEN, Provider.HealthState.DISABLED}:
+            reasons.append(f"provider_{model.provider.health_state}")
+        if not price_configured:
+            reasons.append("price_missing")
+        rows.append(
+            {
+                "model": model.slug,
+                "display_name": model.display_name,
+                "provider": model.provider.slug,
+                "enabled": model.enabled,
+                "upstream_configured": bool(model.upstream_model.strip()),
+                "current_version": model.current_version.version if model.current_version else None,
+                "provider_health": model.provider.health_state,
+                "healthy_keys": healthy_keys,
+                "price_configured": price_configured,
+                "price_error": price_error,
+                "ready": not reasons,
+                "reasons": reasons,
+            }
+        )
+    return rows
+
+
+def _chat_readiness_summary():
+    since = timezone.now() - timedelta(hours=24)
+    generations = Generation.objects.filter(created_at__gte=since)
+    wallets = Wallet.objects.all()
+    return {
+        "window_hours": 24,
+        "completed_generations": generations.filter(state=Generation.State.COMPLETED).count(),
+        "failed_generations": generations.filter(state=Generation.State.FAILED).count(),
+        "cancelled_generations": generations.filter(state=Generation.State.CANCELLED).count(),
+        "preflight_failed": generations.filter(error_code="preflight_failed").count(),
+        "wallets_total": wallets.count(),
+        "wallets_with_positive_balance": wallets.filter(available_rub__gt=0).count(),
+        "wallets_without_available_balance": wallets.filter(available_rub__lte=0).count(),
     }
 
 
@@ -73,6 +143,7 @@ def build_system_diagnostics():
             "internal_error_code": generation.error_code,
             "provider": generation.provider_slug,
             "routed_model": generation.routed_model,
+            "requested_model": generation.model,
             "actual_cost_rub": generation.actual_cost_rub,
             "created_at": generation.created_at,
             "completed_at": generation.completed_at,
@@ -105,25 +176,32 @@ def build_system_diagnostics():
         )
     )
 
+    models = _model_readiness()
+    chat_readiness = _chat_readiness_summary()
     open_issues = sum(1 for item in issues if item["status"] in {"open", "investigating"})
     unhealthy_providers = sum(
         1 for item in providers
         if item["health"] not in {"healthy", "unknown"} or item["emergency_disabled"]
     )
+    blocked_models = sum(1 for item in models if not item["ready"])
     release_status = _release_status()
 
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_at": timezone.now(),
         "summary": {
             "open_system_issues": open_issues,
             "recent_failed_generations": len(recent_errors),
             "unhealthy_providers": unhealthy_providers,
             "providers_total": len(providers),
+            "blocked_models": blocked_models,
+            "models_total": len(models),
             "release_gate_failed": bool(release_status and release_status.get("status") == "failed"),
         },
         "release_status": release_status,
+        "chat_readiness": chat_readiness,
         "providers": providers,
+        "models": models,
         "recent_chat_errors": recent_errors,
         "system_issues": issues,
         "privacy": {
