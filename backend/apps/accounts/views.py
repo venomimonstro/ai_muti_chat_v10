@@ -33,8 +33,9 @@ def _ensure_signup_promo(user):
     """Grant the configured consumer signup credit exactly once.
 
     The billing credit ledger provides the idempotency guarantee, so this safely
-    backfills pre-existing consumer accounts on their next login while never
-    issuing duplicate promotional money. Platform administrators are excluded.
+    backfills pre-existing consumer accounts on their next login or workspace
+    bootstrap while never issuing duplicate promotional money. Platform
+    administrators are excluded.
     """
     if user.role == User.Role.PLATFORM_ADMIN or user.is_staff or user.is_superuser:
         return None
@@ -124,6 +125,7 @@ class LogoutView(APIView):
 
 class MeView(APIView):
     def get(self, request):
+        _ensure_signup_promo(request.user)
         return Response(UserSerializer(request.user).data)
 
 
