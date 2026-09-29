@@ -20,6 +20,19 @@ def _frontend_projects_url(status):
     return f"{base}/app/projects?{urlencode({'github': status})}"
 
 
+def _verified_oauth_state(request):
+    state = str(request.query_params.get("state") or "").strip()
+    if not state:
+        raise ValidationError("GitHub OAuth state is missing")
+    try:
+        payload = signing.loads(state, salt=OAUTH_STATE_SALT, max_age=STATE_MAX_AGE)
+    except (signing.BadSignature, signing.SignatureExpired) as exc:
+        raise ValidationError("GitHub OAuth state is invalid or expired") from exc
+    if payload.get("user_id") != str(request.user.id):
+        raise ValidationError("GitHub OAuth state belongs to another user")
+    return payload
+
+
 class GitHubSetupView(APIView):
     """GitHub App setup URL: installation -> verified OAuth authorization."""
 
@@ -68,16 +81,17 @@ class GitHubOAuthCallbackView(APIView):
     """GitHub user authorization callback. No user token is persisted."""
 
     def get(self, request):
+        payload = _verified_oauth_state(request)
+        oauth_error = str(request.query_params.get("error") or "").strip()
+        if oauth_error:
+            # User cancellation is not an API failure. Return the person to the
+            # product with an actionable state instead of exposing a raw DRF 400.
+            status = "cancelled" if oauth_error == "access_denied" else "error"
+            return HttpResponseRedirect(_frontend_projects_url(status))
+
         code = str(request.query_params.get("code") or "").strip()
-        state = str(request.query_params.get("state") or "").strip()
-        if not code or not state:
+        if not code:
             raise ValidationError("GitHub OAuth callback is incomplete")
-        try:
-            payload = signing.loads(state, salt=OAUTH_STATE_SALT, max_age=STATE_MAX_AGE)
-        except (signing.BadSignature, signing.SignatureExpired) as exc:
-            raise ValidationError("GitHub OAuth state is invalid or expired") from exc
-        if payload.get("user_id") != str(request.user.id):
-            raise ValidationError("GitHub OAuth state belongs to another user")
         try:
             installation_id = int(payload["installation_id"])
         except (KeyError, TypeError, ValueError) as exc:
