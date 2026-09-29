@@ -1,5 +1,6 @@
 import pytest
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
@@ -33,6 +34,7 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
     key.set_secret("must-never-appear-in-report")
     key.last_error_code = "authentication_error"
     key.save()
+    now = timezone.now()
     SystemIssue.objects.create(
         fingerprint="diag-share-test",
         status=SystemIssue.Status.OPEN,
@@ -40,8 +42,8 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
         exception_type="RuntimeError",
         summary="Provider route failed",
         source="backend:test",
-        first_seen_at=provider.created_at,
-        last_seen_at=provider.created_at,
+        first_seen_at=now,
+        last_seen_at=now,
         sample_traceback="secret traceback body",
     )
 
@@ -61,7 +63,8 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
     payload = response.data
     assert payload["schema_version"] == 2
     assert payload["summary"]["open_system_issues"] >= 1
-    assert payload["providers"][0]["key_error_codes"]["authentication_error"] == 1
+    provider_row = next(item for item in payload["providers"] if item["provider"] == provider.slug)
+    assert provider_row["key_error_codes"]["authentication_error"] == 1
     serialized = str(payload)
     assert "must-never-appear-in-report" not in serialized
     assert "secret traceback body" not in serialized
