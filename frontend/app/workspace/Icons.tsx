@@ -1,6 +1,6 @@
 import type {SVGProps} from "react";
 
-export type IconName="panel"|"plus"|"search"|"folder"|"folderPlus"|"pin"|"more"|"wallet"|"settings"|"user"|"bell"|"send"|"stop"|"copy"|"pencil"|"retry"|"trash"|"chevron"|"spark"|"zap"|"scale"|"brain"|"calendar"|"check"|"x"|"arrowDown";
+export type IconName="panel"|"plus"|"search"|"folder"|"folderPlus"|"pin"|"more"|"wallet"|"settings"|"user"|"bell"|"send"|"stop"|"copy"|"pencil"|"retry"|"trash"|"chevron"|"spark"|"zap"|"scale"|"brain"|"calendar"|"check"|"x"|"arrowDown"|"warning";
 
 const paths:Record<IconName,string>={
  panel:"M4 5h16v14H4zM9 5v14",
@@ -29,6 +29,7 @@ const paths:Record<IconName,string>={
  check:"m5 12 4 4L19 6",
  x:"M6 6l12 12M18 6 6 18",
  arrowDown:"M12 5v14m-6-6 6 6 6-6",
+ warning:"M12 3 2 20h20L12 3Zm0 6v5m0 3h.01",
 };
 
 export function Icon({name,size=18,...props}:{name:IconName;size?:number}&SVGProps<SVGSVGElement>){return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d={paths[name]}/></svg>}
