@@ -1,3 +1,4 @@
+import hmac
 from datetime import timedelta
 
 from django.conf import settings
@@ -23,6 +24,73 @@ def _has_healthy_key(provider: Provider) -> bool:
     ).exists()
 
 
+def _normalized_secret(value):
+    return str(value or "").removeprefix("Basic ").strip()
+
+
+def _adapter_secret(adapter):
+    return _normalized_secret(
+        getattr(adapter, "api_key", "") or getattr(adapter, "authorization_key", "")
+    )
+
+
+def selected_api_key(provider: Provider, adapter):
+    """Resolve the stored key used by an adapter without persisting/logging secrets."""
+    secret = _adapter_secret(adapter)
+    if not secret:
+        return None
+    try:
+        keys = provider.api_keys.filter(enabled=True).exclude(
+            health_state=ProviderApiKey.HealthState.DISABLED
+        )
+        for key in keys:
+            candidate = _normalized_secret(key.get_secret())
+            if candidate and hmac.compare_digest(candidate, secret):
+                return key
+    except Exception:
+        return None
+    return None
+
+
+def record_api_key_failure(provider: Provider, adapter, error: ProviderError) -> bool:
+    """Degrade only the key that failed and report whether another key can retry.
+
+    Returning True means the caller may retry the same model immediately with a
+    different HEALTHY/UNKNOWN credential, even when the provider error itself is
+    non-retryable for the failed credential (401/402/403/quota, for example).
+    """
+    key = selected_api_key(provider, adapter)
+    if key is None:
+        return False
+    now = timezone.now()
+    ProviderApiKey.objects.filter(pk=key.pk).update(
+        health_state=ProviderApiKey.HealthState.DEGRADED,
+        last_error_code=str(error.code or "provider_error")[:80],
+        last_checked_at=now,
+    )
+    return ProviderApiKey.objects.filter(
+        provider_id=provider.id,
+        enabled=True,
+        health_state__in=(
+            ProviderApiKey.HealthState.HEALTHY,
+            ProviderApiKey.HealthState.UNKNOWN,
+        ),
+    ).exclude(pk=key.pk).exists()
+
+
+def record_api_key_success(provider: Provider, adapter, latency_ms: int):
+    key = selected_api_key(provider, adapter)
+    if key is None:
+        return
+    ProviderApiKey.objects.filter(pk=key.pk).update(
+        health_state=ProviderApiKey.HealthState.HEALTHY,
+        last_error_code="",
+        last_latency_ms=max(0, int(latency_ms)),
+        last_checked_at=timezone.now(),
+        last_used_at=timezone.now(),
+    )
+
+
 def provider_available(provider: Provider) -> bool:
     """Return whether a provider may receive a customer request right now.
 
@@ -41,14 +109,10 @@ def provider_available(provider: Provider) -> bool:
             return False
         if provider.circuit_opened_until > now:
             return False
-        # Cooldown elapsed: allow a half-open attempt without erasing failure
-        # history. Success/failure of that attempt decides the next state.
         return bool(provider.enabled and provider.credential_configured())
 
     healthy_key = _has_healthy_key(provider)
     if not provider.enabled:
-        # Key verification may repair an interrupted automatic activation flow,
-        # but it must not rewrite health/circuit state on every customer request.
         if not healthy_key:
             return False
         provider.enabled = True
@@ -59,12 +123,6 @@ def provider_available(provider: Provider) -> bool:
 
 @transaction.atomic
 def ensure_safe_client_models() -> int:
-    """Recover saved models that are commercially safe but still disabled.
-
-    This repairs interrupted admin activation flows. It never enables a model
-    without a healthy provider key, an active model version, an active price,
-    and margin above the configured floor for both input and output.
-    """
     from apps.billing.pricing import active_price, quote, require_margin
 
     activated = 0
@@ -188,9 +246,12 @@ def check_provider(provider: Provider):
         model = provider.models.filter(enabled=True).first()
         if model is None:
             raise ProviderError("Provider has no enabled models", code="no_models", retryable=False)
-        health = adapter_for(model).health_check()
+        adapter = adapter_for(model)
+        health = adapter.health_check()
     except ProviderError as exc:
         health = None
+        if "adapter" in locals():
+            record_api_key_failure(provider, adapter, exc)
         record_failure(provider, exc)
         ProviderHealthSnapshot.objects.create(
             provider=provider, healthy=False, error_code=exc.code
@@ -203,7 +264,10 @@ def check_provider(provider: Provider):
         error_code=health.error_code,
     )
     if health.healthy:
+        record_api_key_success(provider, adapter, health.latency_ms)
         record_success(provider, health.latency_ms)
     else:
-        record_failure(provider, ProviderError("Health check failed", code=health.error_code))
+        error = ProviderError("Health check failed", code=health.error_code)
+        record_api_key_failure(provider, adapter, error)
+        record_failure(provider, error)
     return health
