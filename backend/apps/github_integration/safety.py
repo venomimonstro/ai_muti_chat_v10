@@ -71,13 +71,25 @@ def _request_path(request):
     return _request_json(request).get("path", "")
 
 
+def _unverified_organization(installation):
+    return bool(
+        installation
+        and (installation.account_type or "").casefold() == "organization"
+        and not installation.user_verified_at
+    )
+
+
 def _organization_scope_blocked(request, kwargs):
     from .models import GitHubInstallation, GitHubRepositoryBinding
 
     installation_pk = kwargs.get("installation_id")
     if installation_pk:
-        installation = GitHubInstallation.objects.filter(pk=installation_pk).only("account_type").first()
-        if installation and (installation.account_type or "").casefold() == "organization":
+        installation = (
+            GitHubInstallation.objects.filter(pk=installation_pk)
+            .only("account_type", "user_verified_at")
+            .first()
+        )
+        if _unverified_organization(installation):
             return True
 
     project_id = kwargs.get("project_id")
@@ -85,16 +97,20 @@ def _organization_scope_blocked(request, kwargs):
         binding = (
             GitHubRepositoryBinding.objects.filter(project_id=project_id)
             .select_related("installation")
-            .only("installation__account_type")
+            .only("installation__account_type", "installation__user_verified_at")
             .first()
         )
-        if binding and (binding.installation.account_type or "").casefold() == "organization":
+        if binding and _unverified_organization(binding.installation):
             return True
         if request.method == "POST" and binding is None:
             installation_pk = _request_json(request).get("installation")
             if installation_pk:
-                installation = GitHubInstallation.objects.filter(pk=installation_pk).only("account_type").first()
-                if installation and (installation.account_type or "").casefold() == "organization":
+                installation = (
+                    GitHubInstallation.objects.filter(pk=installation_pk)
+                    .only("account_type", "user_verified_at")
+                    .first()
+                )
+                if _unverified_organization(installation):
                     return True
     return False
 
@@ -113,7 +129,7 @@ def github_guard(view, *, protect_path=False):
             return _json_error("GitHub интеграция отключена администратором", 503)
         if _organization_scope_blocked(request, kwargs):
             return _json_error(
-                "GitHub-репозитории организаций временно недоступны: требуется user-scoped повторная проверка прав",
+                "GitHub-репозиторий организации требует повторного user-scoped OAuth-подтверждения",
                 403,
             )
         if protect_path and not sensitive_path_allowed():
