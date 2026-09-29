@@ -24,47 +24,37 @@ def _has_healthy_key(provider: Provider) -> bool:
 
 
 def provider_available(provider: Provider) -> bool:
+    """Return whether a provider may receive a customer request right now.
+
+    A healthy stored API key is useful configuration evidence, but it must never
+    override a runtime circuit that was opened because the provider is currently
+    failing. Only record_success() clears runtime failure history. After the
+    cooldown expires the provider is allowed a half-open probe; its state remains
+    OPEN until that real request/health-check succeeds.
+    """
     if provider.emergency_disabled:
         return False
 
-    # A verified key is the strongest runtime signal we have. If the provider
-    # still carries stale disabled/open/degraded state from an earlier failure,
-    # heal that state automatically. Commercial model activation remains the
-    # gate for exposing a model to clients, and pricing/margin is checked by the
-    # router before any paid request is started.
-    if _has_healthy_key(provider):
-        dirty = False
-        if not provider.enabled:
-            provider.enabled = True
-            dirty = True
-        if provider.health_state in {
-            Provider.HealthState.OPEN,
-            Provider.HealthState.DEGRADED,
-            Provider.HealthState.DISABLED,
-            Provider.HealthState.UNKNOWN,
-        }:
-            provider.health_state = Provider.HealthState.HEALTHY
-            provider.consecutive_failures = 0
-            provider.circuit_opened_until = None
-            provider.last_checked_at = timezone.now()
-            dirty = True
-        if dirty:
-            provider.save(
-                update_fields=[
-                    "enabled",
-                    "health_state",
-                    "consecutive_failures",
-                    "circuit_opened_until",
-                    "last_checked_at",
-                ]
-            )
-        return True
+    now = timezone.now()
+    if provider.health_state == Provider.HealthState.OPEN:
+        if not provider.circuit_opened_until:
+            return False
+        if provider.circuit_opened_until > now:
+            return False
+        # Cooldown elapsed: allow a half-open attempt without erasing failure
+        # history. Success/failure of that attempt decides the next state.
+        return bool(provider.enabled and provider.credential_configured())
 
+    healthy_key = _has_healthy_key(provider)
     if not provider.enabled:
-        return False
-    if provider.health_state != Provider.HealthState.OPEN:
-        return True
-    return bool(provider.circuit_opened_until and provider.circuit_opened_until <= timezone.now())
+        # Key verification may repair an interrupted automatic activation flow,
+        # but it must not rewrite health/circuit state on every customer request.
+        if not healthy_key:
+            return False
+        provider.enabled = True
+        provider.save(update_fields=["enabled"])
+
+    return provider.health_state != Provider.HealthState.DISABLED or healthy_key
 
 
 @transaction.atomic
