@@ -36,10 +36,10 @@ class WorkingSystemAdapter:
         )
 
 
-def _key(provider, secret):
+def _key(provider, label, secret):
     key = ProviderApiKey(
         provider=provider,
-        label="primary",
+        label=label,
         enabled=True,
         health_state=ProviderApiKey.HealthState.HEALTHY,
     )
@@ -82,6 +82,31 @@ def _model(provider, slug, upstream):
     return model
 
 
+def _provider(slug, name, priority):
+    provider, _ = Provider.objects.get_or_create(slug=slug, defaults={"name": name})
+    provider.name = name
+    provider.enabled = True
+    provider.emergency_disabled = False
+    provider.health_state = Provider.HealthState.HEALTHY
+    provider.consecutive_failures = 0
+    provider.circuit_opened_until = None
+    provider.priority = priority
+    provider.save(
+        update_fields=[
+            "name",
+            "enabled",
+            "emergency_disabled",
+            "health_state",
+            "consecutive_failures",
+            "circuit_opened_until",
+            "priority",
+        ]
+    )
+    provider.api_keys.all().delete()
+    AIModel.objects.filter(provider=provider).update(enabled=False)
+    return provider
+
+
 @pytest.mark.django_db(transaction=True)
 def test_customer_gets_llm_system_answer_when_selected_chatgpt_has_no_credits(monkeypatch):
     user = User.objects.create_user(
@@ -91,22 +116,10 @@ def test_customer_gets_llm_system_answer_when_selected_chatgpt_has_no_credits(mo
     )
     credit(user, Decimal("10"), "test", "provider-fallback")
 
-    openai = Provider.objects.create(
-        slug="openai",
-        name="OpenAI",
-        enabled=True,
-        health_state=Provider.HealthState.HEALTHY,
-        priority=10,
-    )
-    system = Provider.objects.create(
-        slug="gigachat",
-        name="GigaChat API",
-        enabled=True,
-        health_state=Provider.HealthState.HEALTHY,
-        priority=20,
-    )
-    _key(openai, "openai-test-key")
-    _key(system, "system-test-key")
+    openai = _provider("openai", "OpenAI", 10)
+    system = _provider("gigachat", "GigaChat API", 20)
+    _key(openai, "fallback-openai-primary", "openai-test-key")
+    _key(system, "fallback-system-primary", "system-test-key")
     chatgpt = _model(openai, "openai-test-chat", "gpt-test")
     system_model = _model(system, "gigachat-test-pro", "GigaChat-2-Pro")
 
