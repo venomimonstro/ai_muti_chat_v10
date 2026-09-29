@@ -96,6 +96,32 @@ def test_oauth_callback_verifies_installation_before_persisting(monkeypatch):
     assert installation.owner_id == user.id
     assert installation.account_login == "github-oauth"
     assert installation.permissions == {"contents": "write"}
+    assert installation.user_verified_at is not None
+
+
+@pytest.mark.django_db
+def test_oauth_cancellation_returns_user_to_projects(monkeypatch):
+    monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "true")
+    monkeypatch.setenv("FRONTEND_PUBLIC_URL", "https://ai.example.test")
+    user = User.objects.create_user(
+        username="github-cancel", email="github-cancel@example.test", password="password123"
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+    oauth_state = signing.dumps(
+        {"user_id": str(user.id), "installation_id": 22223},
+        salt=OAUTH_STATE_SALT,
+        compress=True,
+    )
+
+    response = client.get(
+        "/api/v1/github/callback/",
+        {"error": "access_denied", "state": oauth_state},
+    )
+
+    assert response.status_code == 302
+    assert response["Location"] == "https://ai.example.test/app/projects?github=cancelled"
+    assert not GitHubInstallation.objects.filter(installation_id=22223).exists()
 
 
 @pytest.mark.django_db
