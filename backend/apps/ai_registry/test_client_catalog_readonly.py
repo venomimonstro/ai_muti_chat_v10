@@ -64,3 +64,20 @@ class ClientModelCatalogReadOnlyTests(TestCase):
         self.assertEqual(payload["provider_name"], "LLM System")
         self.assertEqual(payload["display_name"], "LLM System · System Max")
         self.assertEqual(payload["exact_api_id"], "")
+
+    def test_llm_system_tier_uses_upstream_identity_not_local_slug(self):
+        provider, _ = Provider.objects.get_or_create(slug="gigachat", defaults={"name": "GigaChat API"})
+        cases = (
+            ("arbitrary-lite-local", "GigaChat-2", "LLM System · System Lite"),
+            ("arbitrary-pro-local", "GigaChat-2-Pro", "LLM System · System Pro"),
+            ("arbitrary-max-local", "GigaChat-2-Max", "LLM System · System Max"),
+        )
+        for slug, upstream, expected in cases:
+            model = AIModel.objects.create(
+                provider=provider,
+                slug=slug,
+                display_name="Imported system model",
+                upstream_model=upstream,
+                enabled=True,
+            )
+            self.assertEqual(AIModelSerializer(model).data["display_name"], expected)
