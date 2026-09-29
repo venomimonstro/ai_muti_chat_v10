@@ -1,6 +1,7 @@
 "use client";
 
 import {KeyboardEvent,useEffect,useRef,useState} from "react";
+import {api} from "../../lib/api";
 import type {AIModel} from "../../lib/types";
 import {ChatImageStudio} from "./ChatImageStudio";
 import {Icon} from "./Icons";
@@ -30,25 +31,8 @@ function existingModelControl(){
  return document.querySelector<HTMLSelectElement>(".headerControls .selectControl:first-child select");
 }
 
-function guessProvider(slug:string,label:string){
- const text=`${slug} ${label}`.toLowerCase();
- if(text.includes("llm-system")||text.includes("llm system")||text.includes("system lite")||text.includes("system pro")||text.includes("system max")||text.includes("giga")||text.includes("системная"))return "llm-system";
- if(text.includes("claude")||text.includes("anthropic"))return "anthropic";
- if(text.includes("deepseek"))return "deepseek";
- if(text.includes("gemini")||text.includes("google"))return "gemini";
- if(text.includes("grok")||text.includes("xai"))return "xai";
- if(text.includes("openrouter"))return "openrouter";
- if(text.includes("chatgpt")||text.includes("gpt")||text.includes("openai")||text.includes("o1")||text.includes("o3")||text.includes("o4"))return "openai";
- return "other";
-}
-
-function readExistingModels():AIModel[]{
- const select=existingModelControl();if(!select)return [];
- return Array.from(select.options).filter(option=>option.value.startsWith("model:")).map(option=>{const slug=option.value.slice(6);const label=(option.textContent??option.value).replace(/ · недоступна$/," ").trim();return {slug,display_name:label,provider:guessProvider(slug,label),model_version:null,exact_api_id:"",capabilities:[],context_window:0,max_output_tokens:0,available:!option.disabled,health_state:option.disabled?"unavailable":"healthy",price:null}});
-}
-
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools,modelValue,models,onModelChange,conversationId,ensureConversation,onAttachImage,sourceImageId}:ComposerProps){
- const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState("auto:balanced");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[imageStudioOpen,setImageStudioOpen]=useState(false);const syncSignature=useRef("");const submitGate=useRef(false);const gateTimer=useRef<number|null>(null);
+ const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState("auto:balanced");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[imageStudioOpen,setImageStudioOpen]=useState(false);const submitGate=useRef(false);const gateTimer=useRef<number|null>(null);
  const trimmed=value.trim();const tooLong=value.length>MAX_MESSAGE_CHARS;const nearLimit=value.length>90000;
  const selectedManualSlug=controlValue.startsWith("model:")?controlValue.slice(6):"";
  const selectedManualModel=selectedManualSlug?controlModels.find(item=>item.slug===selectedManualSlug):undefined;
@@ -57,7 +41,19 @@ export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenToo
  useEffect(()=>{if(!sending){setSlow(false);return;}submitGate.current=false;if(gateTimer.current!==null){window.clearTimeout(gateTimer.current);gateTimer.current=null}const timer=window.setTimeout(()=>setSlow(true),30000);return()=>window.clearTimeout(timer)},[sending]);
  useEffect(()=>{if(!trimmed){submitGate.current=false;if(gateTimer.current!==null){window.clearTimeout(gateTimer.current);gateTimer.current=null}}},[trimmed]);
  useEffect(()=>()=>{if(gateTimer.current!==null)window.clearTimeout(gateTimer.current)},[]);
- useEffect(()=>{const nextModels=modelValue?(models??[]):readExistingModels();const nextValue=modelValue??existingModelControl()?.value??"auto:balanced";const signature=nextModels.map(item=>`${item.slug}:${item.provider}:${item.available}:${item.display_name}`).join("|");if(syncSignature.current!==signature){syncSignature.current=signature;setControlModels(nextModels)}if(controlValue!==nextValue)setControlValue(nextValue)});
+ useEffect(()=>{
+  let cancelled=false;
+  const hidden=existingModelControl();
+  const syncValue=()=>{if(!cancelled)setControlValue(modelValue??hidden?.value??"auto:balanced")};
+  syncValue();
+  if(modelValue!==undefined||models!==undefined){
+   setControlModels(models??[]);
+  }else{
+   void api<AIModel[]>("/models/").then(rows=>{if(!cancelled)setControlModels(rows)}).catch(()=>{if(!cancelled)setControlModels([])});
+  }
+  hidden?.addEventListener("change",syncValue);
+  return()=>{cancelled=true;hidden?.removeEventListener("change",syncValue)};
+ },[modelValue,models]);
  const submit=()=>{if(!trimmed||tooLong||offline||sending||selectedModelUnavailable||submitGate.current)return;submitGate.current=true;setSlow(false);onSend();gateTimer.current=window.setTimeout(()=>{submitGate.current=false;gateTimer.current=null},10000)};
  const stop=()=>{setSlow(false);onStop()};
  const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();submit();}};
