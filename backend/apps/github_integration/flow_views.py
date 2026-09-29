@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 from django.core import signing
 from django.core.exceptions import ImproperlyConfigured, ValidationError as DjangoValidationError
 from django.http import HttpResponseRedirect
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
@@ -97,6 +98,7 @@ class GitHubOAuthCallbackView(APIView):
             "account_type": str(account.get("type") or "")[:40],
             "repository_selection": str(installation.get("repository_selection") or "")[:24],
             "permissions": installation.get("permissions") or {},
+            "user_verified_at": timezone.now(),
             "active": True,
         }
         if existing is None:
