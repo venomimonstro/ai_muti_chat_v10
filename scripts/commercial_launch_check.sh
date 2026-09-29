@@ -24,6 +24,29 @@ set +a
 compose(){ docker compose --ansi never --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 checksum(){ sha256sum "$1" >"$1.sha256"; }
 
+validate_required_github() {
+  [[ "${GITHUB_REQUIRED_FOR_LAUNCH:-false}" == "true" ]] || return 0
+  if [[ "${GITHUB_INTEGRATION_ENABLED:-false}" != "true" ]]; then
+    echo "COMMERCIAL LAUNCH: BLOCKED BY GITHUB CONFIGURATION" >&2
+    echo "GITHUB_REQUIRED_FOR_LAUNCH=true, but GITHUB_INTEGRATION_ENABLED is not true." >&2
+    return 2
+  fi
+  local missing=()
+  local name
+  for name in GITHUB_APP_ID GITHUB_APP_SLUG GITHUB_APP_CLIENT_ID GITHUB_APP_CLIENT_SECRET GITHUB_APP_PRIVATE_KEY; do
+    [[ -n "${!name:-}" ]] || missing+=("$name")
+  done
+  if (( ${#missing[@]} > 0 )); then
+    echo "COMMERCIAL LAUNCH: BLOCKED BY GITHUB CONFIGURATION" >&2
+    printf 'Missing required GitHub App settings: %s\n' "${missing[*]}" >&2
+    return 2
+  fi
+  printf 'GitHub launch configuration: PASS\n'
+}
+
+printf 'Checking required product integrations...\n'
+validate_required_github
+
 printf 'Running immutable release gate...\n'
 set +e
 bash "$PROJECT_DIR/scripts/release_check.sh" >"${RELEASE_LOG}.tmp" 2>&1
