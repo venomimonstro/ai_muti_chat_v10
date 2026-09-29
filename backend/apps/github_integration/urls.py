@@ -14,7 +14,11 @@ from .views import (
 )
 
 urlpatterns = [
-    path("github/connect/", github_guard(GitHubConnectView.as_view()), name="github-connect"),
+    # Keep the connection/readiness endpoint available to authenticated users even
+    # when the integration is disabled. It is intentionally read-only and returns
+    # configured=false, which lets the UI explain the real setup state instead of
+    # masking it behind the fail-closed 503 used for GitHub data operations.
+    path("github/connect/", GitHubConnectView.as_view(), name="github-connect"),
     path("github/setup/", github_guard(GitHubSetupView.as_view()), name="github-setup"),
     path(
         "github/callback/",
