@@ -89,9 +89,10 @@ class Provider(models.Model):
     def select_api_key(self, *, exclude_key_ids=None):
         """Return ``(secret, key_id)`` using health-aware pool rotation.
 
-        Callers may exclude credentials that already failed in the same customer
-        request. That guarantees a retry rotates to another usable key instead of
-        repeatedly hitting a known-bad credential.
+        A healthy key linked to the active default funding account is authoritative:
+        provider spend accounting and the runtime credential must refer to the same
+        purchased balance. Failed keys may still be excluded per request, allowing
+        safe rotation to a spare credential without reusing the bad key.
         """
         excluded = {str(item) for item in (exclude_key_ids or []) if item}
         preferred = None
@@ -116,16 +117,7 @@ class Provider(models.Model):
             preferred = None
 
         try:
-            healthy_pool = self.api_keys.filter(
-                enabled=True,
-                health_state__in=(
-                    ProviderApiKey.HealthState.HEALTHY,
-                    ProviderApiKey.HealthState.UNKNOWN,
-                ),
-            )
-            if excluded:
-                healthy_pool = healthy_pool.exclude(pk__in=excluded)
-            if preferred is not None and healthy_pool.count() <= 1:
+            if preferred is not None:
                 value = preferred.get_secret()
                 if value:
                     ProviderApiKey.objects.filter(pk=preferred.pk).update(last_used_at=timezone.now())
