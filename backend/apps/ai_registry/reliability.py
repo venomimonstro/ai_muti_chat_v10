@@ -30,6 +30,7 @@ PROVIDER_BLOCKING_ERROR_CODES = {
     "gigachat_quota_exhausted",
     "gigachat_permission_denied",
 }
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter"}
 
 
 def _has_healthy_key(provider: Provider) -> bool:
@@ -48,6 +49,29 @@ def _has_pool_keys(provider: Provider) -> bool:
         ).exclude(health_state=ProviderApiKey.HealthState.DISABLED).exists()
     except Exception:
         return False
+
+
+def _is_test_echo_provider(provider: Provider) -> bool:
+    return (
+        provider.adapter_type == Provider.AdapterType.ECHO
+        and provider.slug not in SPECIAL_EXTERNAL_PROVIDER_SLUGS
+    )
+
+
+def _normalize_special_external_provider(provider: Provider) -> Provider:
+    """Prevent legacy special providers from falling through to EchoAdapter.
+
+    GigaChat/OpenRouter are selected by slug inside adapter_for(), but legacy rows
+    may still carry the model default adapter_type=echo. Persisting a non-ECHO
+    sentinel guarantees adapter_for() reaches the slug-specific production adapter.
+    """
+    if (
+        provider.slug in SPECIAL_EXTERNAL_PROVIDER_SLUGS
+        and provider.adapter_type == Provider.AdapterType.ECHO
+    ):
+        provider.adapter_type = Provider.AdapterType.OPENAI_RESPONSES
+        provider.save(update_fields=["adapter_type"])
+    return provider
 
 
 def _normalized_secret(value):
@@ -153,8 +177,9 @@ def provider_available(provider: Provider) -> bool:
     health probe records recovery. For key-pool providers at least one verified
     HEALTHY key is required.
 
-    The ECHO adapter is an isolated deterministic test fixture and needs no external
-    credential; it follows only the provider's explicit enabled/health controls.
+    Only genuine internal Echo providers bypass external credential requirements.
+    Slug-routed external providers such as GigaChat/OpenRouter are never treated as
+    Echo even when a legacy database row still contains the default adapter type.
     """
     if not provider.enabled or provider.emergency_disabled:
         return False
@@ -164,7 +189,7 @@ def provider_available(provider: Provider) -> bool:
         Provider.HealthState.DISABLED,
     }:
         return False
-    if provider.adapter_type == Provider.AdapterType.ECHO:
+    if _is_test_echo_provider(provider):
         return provider.health_state in {
             Provider.HealthState.HEALTHY,
             Provider.HealthState.DEGRADED,
@@ -180,7 +205,7 @@ def model_client_ready(model: AIModel) -> bool:
     """Return whether a model is safe to expose or route to a customer now."""
     if not model.enabled or not str(model.upstream_model or "").strip():
         return False
-    if model.provider.adapter_type != Provider.AdapterType.ECHO and not model.current_version_id:
+    if not _is_test_echo_provider(model.provider) and not model.current_version_id:
         return False
     if not provider_available(model.provider):
         return False
@@ -223,7 +248,7 @@ def ensure_safe_client_models() -> int:
     )
     for model in candidates:
         provider = model.provider
-        if provider.emergency_disabled or not _has_healthy_key(provider):
+        if provider.emergency_disabled or not provider_available(provider):
             continue
         try:
             price = active_price(model.slug)
@@ -371,6 +396,8 @@ def check_provider(provider: Provider):
         provider.last_checked_at = timezone.now()
         provider.save(update_fields=["health_state", "last_checked_at"])
         return None
+
+    provider = _normalize_special_external_provider(provider)
     try:
         model = provider.models.filter(enabled=True).first()
         if model is None:
