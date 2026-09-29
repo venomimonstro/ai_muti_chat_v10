@@ -26,7 +26,7 @@ def test_sensitive_repository_paths_are_detected(path):
 
 
 @pytest.mark.django_db
-def test_github_routes_fail_closed_when_integration_disabled(monkeypatch):
+def test_github_connect_reports_disabled_configuration_without_opening_operations(monkeypatch):
     monkeypatch.setenv("GITHUB_INTEGRATION_ENABLED", "false")
     user = User.objects.create_user(
         username="github-off", email="github-off@example.test", password="password123"
@@ -36,8 +36,8 @@ def test_github_routes_fail_closed_when_integration_disabled(monkeypatch):
 
     response = client.get("/api/v1/github/connect/")
 
-    assert response.status_code == 503
-    assert "отключена" in str(response.json())
+    assert response.status_code == 200
+    assert response.json() == {"configured": False, "connect_url": None}
 
 
 @pytest.mark.django_db
