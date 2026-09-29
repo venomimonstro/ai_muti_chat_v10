@@ -7,4 +7,30 @@
 .systemTierPicker select:hover{background:#f1f1f3;color:#222}
 .systemTierPicker select:focus-visible{box-shadow:0 0 0 3px rgba(23,23,23,.08)}
 .systemTierPicker select:disabled{cursor:default;opacity:.58}
-@media (max-width:700px){.composerEconomy{display:none}.systemTierPicker select{max-width:126px;font-size:11px;padding-inline:4px}.composerRight{gap:5px}}
+
+.modelPicker{position:relative;min-width:0}
+.modelPickerTrigger{min-height:38px;max-width:280px;border:1px solid #e3e0e9;border-radius:12px;background:#f8f7fb;padding:5px 8px;display:flex;align-items:center;gap:7px;text-align:left}
+.modelPickerTrigger:hover{background:#f1eef7;border-color:#d5cfe3}
+.modelPickerMark{width:27px;height:27px;flex:none;display:grid;place-items:center;border-radius:8px;background:#ece8fa;color:#654be0}
+.modelPickerCurrent{display:grid;min-width:0;line-height:1.05}
+.modelPickerCurrent b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:750}
+.modelPickerCurrent small{margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#888391;font-size:9px}
+.modelPickerTrigger>svg:last-child{flex:none;color:#8d8796}
+.modelPickerMenu{position:absolute;left:0;bottom:calc(100% + 9px);z-index:120;width:min(520px,calc(100vw - 34px));max-height:min(610px,72vh);overflow:auto;border:1px solid #ded9e8;border-radius:16px;background:white;box-shadow:0 24px 70px #221a3f2b;padding:12px}
+.modelPickerHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:3px 3px 10px}
+.modelPickerHead>div{display:grid;gap:3px}.modelPickerHead b{font-size:14px}.modelPickerHead span{color:#7e7889;font-size:11px}
+.modelPickerHead>button{width:30px;height:30px;border:0;border-radius:9px;background:transparent;display:grid;place-items:center}.modelPickerHead>button:hover{background:#f1eef6}
+.modelPickerTabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px;border-radius:12px;background:#f4f2f7}
+.modelPickerTabs>button{min-height:38px;border:0;border-radius:9px;background:transparent;display:flex;align-items:center;justify-content:center;gap:7px;color:#696374;font-size:12px;font-weight:700}
+.modelPickerTabs>button.active{background:white;color:#2d2836;box-shadow:0 2px 8px #33264a12}
+.modelPickerPane{padding-top:11px}.modelPickerHelp{margin:0 2px 10px;color:#7d7788;font-size:10px;line-height:1.45}
+.modelModeGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.modelModeGrid>button{min-height:90px;border:1px solid #e5e1eb;border-radius:12px;background:white;padding:10px;display:grid;grid-template-columns:auto 1fr auto;grid-template-rows:auto auto;column-gap:7px;text-align:left;align-items:start}
+.modelModeGrid>button:hover{border-color:#cfc6eb;background:#fcfbff}.modelModeGrid>button.active{border-color:#8e79e7;background:#f7f4ff;box-shadow:0 0 0 2px #7b62df12}
+.modelModeGrid>button>span{width:26px;height:26px;display:grid;place-items:center;border-radius:8px;background:#eeeafd;color:#684fe0}.modelModeGrid>button>b{font-size:12px;align-self:center}.modelModeGrid>button>small{grid-column:1/-1;margin-top:7px;color:#817b8c;font-size:9px;line-height:1.35}.modelModeGrid>button>svg{color:#654be0}
+.modelProviderTabs{display:flex;gap:6px;overflow:auto;padding:1px 1px 7px;scrollbar-width:thin}
+.modelProviderTabs>button{flex:0 0 auto;min-width:112px;border:1px solid #e5e1eb;border-radius:11px;background:white;padding:8px 10px;text-align:left}.modelProviderTabs>button:hover{border-color:#cec6e4}.modelProviderTabs>button.active{border-color:#8e79e7;background:#f7f4ff}.modelProviderTabs b,.modelProviderTabs small{display:block}.modelProviderTabs b{font-size:11px}.modelProviderTabs small{margin-top:3px;color:#8b8594;font-size:8px}
+.modelPickerProviderModels{display:grid;gap:5px;max-height:290px;overflow:auto;padding-top:2px}.modelPickerProviderModels>button{width:100%;min-height:48px;border:0;border-radius:10px;background:transparent;padding:8px;display:grid;grid-template-columns:11px 1fr 18px;gap:8px;align-items:center;text-align:left}.modelPickerProviderModels>button:hover:not(:disabled){background:#f7f5fa}.modelPickerProviderModels>button.active{background:#f1edfd}.modelPickerProviderModels>button:disabled{opacity:.54}.modelCopy{min-width:0}.modelCopy b,.modelCopy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.modelCopy b{font-size:11px}.modelCopy small{margin-top:3px;color:#8a8493;font-size:9px}.modelDot{width:8px;height:8px;border-radius:50%;background:#bbb6c2}.modelDot.online{background:#2f9e6f}.modelDot.offline{background:#c75a68}.modelPickerEmpty{padding:22px;text-align:center;color:#8a8493;font-size:11px}
+.modelUnavailableNotice{width:min(840px,100%);margin:0 auto 7px;border:1px solid #efc7ce;border-radius:11px;background:#fff0f2;color:#973a4a;padding:8px 10px;display:flex;align-items:center;gap:8px;font-size:11px;line-height:1.35}
+
+@media (max-width:700px){.composerEconomy{display:none}.systemTierPicker select{max-width:126px;font-size:11px;padding-inline:4px}.composerRight{gap:5px}.modelPickerTrigger{max-width:205px}.modelPickerMenu{left:-54px;width:min(460px,calc(100vw - 20px))}.modelModeGrid{grid-template-columns:1fr}.modelModeGrid>button{min-height:64px}.modelProviderTabs>button{min-width:102px}}
