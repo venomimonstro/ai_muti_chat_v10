@@ -1,4 +1,5 @@
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from django.utils import timezone
@@ -51,7 +52,7 @@ def test_healthy_key_does_not_bypass_active_provider_circuit():
 
 
 @pytest.mark.django_db
-def test_elapsed_circuit_allows_probe_without_erasing_failure_history(monkeypatch):
+def test_elapsed_circuit_stays_out_of_customer_traffic_until_health_probe(monkeypatch):
     monkeypatch.setenv("CHAT_RELIABILITY_PROVIDER_KEY", "legacy-probe-key")
     provider = _provider(
         health_state=Provider.HealthState.OPEN,
@@ -60,11 +61,47 @@ def test_elapsed_circuit_allows_probe_without_erasing_failure_history(monkeypatc
         credential_env="CHAT_RELIABILITY_PROVIDER_KEY",
     )
 
-    assert provider_available(provider) is True
+    assert provider_available(provider) is False
 
     provider.refresh_from_db()
     assert provider.health_state == Provider.HealthState.OPEN
     assert provider.consecutive_failures == 4
+
+
+@pytest.mark.django_db
+def test_unknown_provider_is_not_customer_ready_even_with_verified_key():
+    provider = _provider(health_state=Provider.HealthState.UNKNOWN)
+    _key(provider, "healthy", "secret-one")
+
+    assert provider_available(provider) is False
+
+
+@pytest.mark.django_db
+def test_admin_disabled_provider_is_never_reenabled_by_readiness_check():
+    provider = _provider(enabled=False, health_state=Provider.HealthState.HEALTHY)
+    _key(provider, "healthy", "secret-one")
+
+    assert provider_available(provider) is False
+    provider.refresh_from_db()
+    assert provider.enabled is False
+
+
+@pytest.mark.django_db
+def test_degraded_provider_with_verified_spare_remains_customer_ready():
+    provider = _provider(health_state=Provider.HealthState.DEGRADED)
+    _key(provider, "failed", "failed-secret", state=ProviderApiKey.HealthState.DEGRADED)
+    _key(provider, "spare", "spare-secret", state=ProviderApiKey.HealthState.HEALTHY)
+
+    assert provider_available(provider) is True
+
+
+@pytest.mark.django_db
+def test_degraded_provider_with_only_unknown_spare_is_hidden_until_probe():
+    provider = _provider(health_state=Provider.HealthState.DEGRADED)
+    _key(provider, "failed", "failed-secret", state=ProviderApiKey.HealthState.DEGRADED)
+    _key(provider, "unknown", "unknown-secret", state=ProviderApiKey.HealthState.UNKNOWN)
+
+    assert provider_available(provider) is False
 
 
 @pytest.mark.django_db
@@ -131,6 +168,26 @@ def test_non_retryable_bad_key_becomes_retryable_when_spare_key_exists():
     provider.refresh_from_db()
     assert provider.health_state == Provider.HealthState.DEGRADED
     assert provider.circuit_opened_until is None
+
+
+@pytest.mark.django_db
+def test_exact_adapter_prevents_concurrent_request_from_degrading_wrong_key():
+    provider = _provider()
+    first = _key(provider, "first", "secret-first", priority=10)
+    second = _key(provider, "second", "secret-second", priority=20)
+
+    # Simulate another concurrent request touching the second key most recently.
+    ProviderApiKey.objects.filter(pk=second.pk).update(last_used_at=timezone.now())
+    adapter = SimpleNamespace(api_key="secret-first")
+    error = ProviderError("bad credential", code="authentication_error", retryable=False)
+
+    record_failure(provider, error, adapter=adapter)
+
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.health_state == ProviderApiKey.HealthState.DEGRADED
+    assert first.last_error_code == "authentication_error"
+    assert second.health_state == ProviderApiKey.HealthState.HEALTHY
 
 
 @pytest.mark.django_db
