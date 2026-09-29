@@ -180,6 +180,8 @@ def model_client_ready(model: AIModel) -> bool:
     """Return whether a model is safe to expose or route to a customer now."""
     if not model.enabled or not str(model.upstream_model or "").strip():
         return False
+    if model.provider.adapter_type != Provider.AdapterType.ECHO and not model.current_version_id:
+        return False
     if not provider_available(model.provider):
         return False
     try:
