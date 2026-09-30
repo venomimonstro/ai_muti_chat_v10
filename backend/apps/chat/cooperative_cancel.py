@@ -4,7 +4,7 @@ import sys
 
 from django.utils import timezone
 
-from .cancellation import cancel_requested, clear_cancel
+from .cancellation import cancel_requested, clear_cancel, forget_cancel_probe
 from .models import Generation, Message
 from .partial_billing import settle_delivered_partial
 from .streaming import sse
@@ -67,41 +67,46 @@ def install(streaming_module) -> None:
         return
 
     def run(generation, *args, **kwargs):
-        # Covers the race where Stop arrives while prepare() is still committing.
-        if cancel_requested(generation):
-            try:
-                if _cancel_before_provider(generation):
-                    yield _cancelled_event(generation)
-            finally:
-                clear_cancel(generation)
-            return
-
-        iterator = raw_run(generation, *args, **kwargs)
         try:
-            for chunk in iterator:
-                if cancel_requested(generation):
-                    # A late Stop must never rewrite a durable terminal outcome.
-                    # This closes the millisecond race between DB completion and
-                    # delivery of the final SSE event to the browser.
-                    if _terminal_now(generation):
-                        clear_cancel(generation)
-                        yield chunk
-                        continue
-
-                    # Closing raw streaming.run enters its authoritative GeneratorExit
-                    # settlement path. It alone decides whether confirmed usage exists.
-                    iterator.close()
-                    clear_cancel(generation)
-                    yield _cancelled_event(generation)
-                    return
-                yield chunk
-        finally:
+            # Covers the race where Stop arrives while prepare() is still committing.
             if cancel_requested(generation):
                 try:
-                    if not _terminal_now(generation):
-                        iterator.close()
+                    if _cancel_before_provider(generation):
+                        yield _cancelled_event(generation)
                 finally:
                     clear_cancel(generation)
+                return
+
+            iterator = raw_run(generation, *args, **kwargs)
+            try:
+                for chunk in iterator:
+                    if cancel_requested(generation):
+                        # A late Stop must never rewrite a durable terminal outcome.
+                        # This closes the millisecond race between DB completion and
+                        # delivery of the final SSE event to the browser.
+                        if _terminal_now(generation):
+                            clear_cancel(generation)
+                            yield chunk
+                            continue
+
+                        # Closing raw streaming.run enters its authoritative GeneratorExit
+                        # settlement path. It alone decides whether confirmed usage exists.
+                        iterator.close()
+                        clear_cancel(generation)
+                        yield _cancelled_event(generation)
+                        return
+                    yield chunk
+            finally:
+                if cancel_requested(generation):
+                    try:
+                        if not _terminal_now(generation):
+                            iterator.close()
+                    finally:
+                        clear_cancel(generation)
+        finally:
+            # Every generation polls the DB fallback while streaming. Release its
+            # short-lived process-local cache even when Stop was never requested.
+            forget_cancel_probe(generation)
 
     run._ai_workspace_cooperative_cancel = True
     run._raw_run = raw_run
