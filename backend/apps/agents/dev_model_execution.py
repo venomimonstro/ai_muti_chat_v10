@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from django.db import transaction
+
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
@@ -105,16 +107,20 @@ def execute_with_model_fallback(
                 )
             )
             actual = min(actual_quote.user_charge_rub, customer_reservation.amount_rub)
-            settle_agent_provider_spend(
-                reservation=provider_reservation,
-                model=model,
-                result=result,
-                actual_quote=actual_quote,
-                source_id=source_id,
-                customer_charge=actual,
-            )
+            # Provider accounting and customer wallet settlement are one database
+            # unit after delivery. If either side fails, neither side is committed;
+            # the still-active reservations remain recoverable by the run prefixes.
+            with transaction.atomic():
+                settle_agent_provider_spend(
+                    reservation=provider_reservation,
+                    model=model,
+                    result=result,
+                    actual_quote=actual_quote,
+                    source_id=source_id,
+                    customer_charge=actual,
+                )
+                settle(customer_reservation.id, actual)
             provider_reservation = None
-            settle(customer_reservation.id, actual)
             customer_reservation = None
             evidence.append(
                 {
