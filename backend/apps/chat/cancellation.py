@@ -53,8 +53,12 @@ def request_cancel(*, owner_id, idempotency_key: str, generation_id=None) -> Non
     key = str(idempotency_key or "").strip()
     if not key:
         return
+    now = timezone.now()
     digest = _hash(key)
-    expires_at = timezone.now() + timedelta(seconds=CANCEL_TTL_SECONDS)
+    expires_at = now + timedelta(seconds=CANCEL_TTL_SECONDS)
+    # Stop is a low-frequency user action, so opportunistic indexed cleanup keeps
+    # the durable marker table bounded without adding another background scheduler.
+    ChatCancellationMarker.objects.filter(expires_at__lte=now).delete()
     ChatCancellationMarker.objects.update_or_create(
         owner_id=owner_id,
         idempotency_hash=digest,
