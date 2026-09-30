@@ -108,6 +108,7 @@ def check_vk(connection) -> VKProfile:
     display_name = " ".join(
         part for part in (str(user.get("first_name") or "").strip(), str(user.get("last_name") or "").strip()) if part
     ).strip() or "VK"
+    selected_group_id = str((connection.metadata or {}).get("selected_group_id") or "").strip().lstrip("-")
     groups: list[dict] = []
     try:
         result = api_call(
@@ -128,7 +129,17 @@ def check_vk(connection) -> VKProfile:
                 }
             )
     except ValidationError:
+        if selected_group_id:
+            raise ValidationError(
+                "VK подтвердил аккаунт, но не удалось проверить права на выбранное сообщество. "
+                "Автопубликация остановлена до восстановления доступа"
+            )
         groups = []
+    if selected_group_id and not any(str(item.get("id") or "") == selected_group_id for item in groups):
+        raise ValidationError(
+            "Выбранное сообщество больше недоступно с правами управления. "
+            "Выберите другое сообщество или восстановите права в VK"
+        )
     return VKProfile(user_id=user_id, display_name=display_name, groups=groups)
 
 
