@@ -21,12 +21,19 @@ def provider_and_text_model():
         upstream_model="loss-v1",
         capabilities=["text"],
     )
-    return provider, model
+    sibling = AIModel.objects.create(
+        provider=provider,
+        slug="loss-watchdog-sibling",
+        display_name="Loss watchdog sibling",
+        upstream_model="loss-v2",
+        capabilities=["text"],
+    )
+    return provider, model, sibling
 
 
 @pytest.mark.django_db
-def test_b2b_negative_margin_auto_disables_provider(provider_and_text_model):
-    provider, model = provider_and_text_model
+def test_b2b_negative_margin_auto_disables_only_model(provider_and_text_model):
+    provider, model, sibling = provider_and_text_model
     user = User.objects.create_user(
         username="watchdog-b2b", email="watchdog-b2b@example.test", password="password123"
     )
@@ -53,15 +60,19 @@ def test_b2b_negative_margin_auto_disables_provider(provider_and_text_model):
     )
 
     provider.refresh_from_db()
-    assert provider.emergency_disabled is True
+    model.refresh_from_db()
+    sibling.refresh_from_db()
+    assert model.enabled is False
+    assert sibling.enabled is True
+    assert provider.emergency_disabled is False
     assert CostAnomaly.objects.filter(
         dedupe_key=f"loss-watchdog:b2b_api:{usage.id}", severity="critical"
     ).exists()
 
 
 @pytest.mark.django_db
-def test_compare_negative_margin_auto_disables_provider(provider_and_text_model):
-    provider, model = provider_and_text_model
+def test_compare_negative_margin_auto_disables_only_model(provider_and_text_model):
+    provider, model, sibling = provider_and_text_model
     user = User.objects.create_user(
         username="watchdog-compare",
         email="watchdog-compare@example.test",
@@ -91,20 +102,31 @@ def test_compare_negative_margin_auto_disables_provider(provider_and_text_model)
     )
 
     provider.refresh_from_db()
-    assert provider.emergency_disabled is True
+    model.refresh_from_db()
+    sibling.refresh_from_db()
+    assert model.enabled is False
+    assert sibling.enabled is True
+    assert provider.emergency_disabled is False
     assert CostAnomaly.objects.filter(
         dedupe_key=f"loss-watchdog:compare:{variant.id}", severity="critical"
     ).exists()
 
 
 @pytest.mark.django_db
-def test_image_negative_margin_auto_disables_provider():
+def test_image_negative_margin_auto_disables_only_image_model():
     provider = Provider.objects.create(slug="loss-image-provider", name="Loss image")
     image_model = ImageModel.objects.create(
         provider=provider,
         slug="loss-image-model",
         display_name="Loss image model",
         upstream_model="image-v1",
+        provider_price_per_image=Decimal("5"),
+    )
+    sibling = ImageModel.objects.create(
+        provider=provider,
+        slug="loss-image-sibling",
+        display_name="Loss image sibling",
+        upstream_model="image-v2",
         provider_price_per_image=Decimal("5"),
     )
     user = User.objects.create_user(
@@ -127,7 +149,11 @@ def test_image_negative_margin_auto_disables_provider():
     )
 
     provider.refresh_from_db()
-    assert provider.emergency_disabled is True
+    image_model.refresh_from_db()
+    sibling.refresh_from_db()
+    assert image_model.enabled is False
+    assert sibling.enabled is True
+    assert provider.emergency_disabled is False
     assert CostAnomaly.objects.filter(
         dedupe_key=f"loss-watchdog:images:{generation.id}", severity="critical"
     ).exists()
