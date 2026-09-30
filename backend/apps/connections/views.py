@@ -174,6 +174,29 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
         status = "connected" if connection.health_state == ExternalConnection.Health.HEALTHY else "degraded"
         return redirect(f"/app/integrations?vk={status}&connection={connection.id}")
 
+    @action(detail=True, methods=["post"], url_path="vk-select-group")
+    def vk_select_group(self, request, pk=None):
+        connection = self.get_object()
+        if connection.kind != ExternalConnection.Kind.VK:
+            raise ValidationError({"detail": "Это не VK-подключение"})
+        if connection.health_state != ExternalConnection.Health.HEALTHY:
+            raise ValidationError({"detail": "Сначала авторизуйте и проверьте VK"})
+        group_id = str(request.data.get("group_id") or "").strip().lstrip("-")
+        groups = [item for item in ((connection.metadata or {}).get("groups") or []) if isinstance(item, dict)]
+        selected = next((item for item in groups if str(item.get("id") or "") == group_id), None)
+        if selected is None:
+            raise ValidationError({"group_id": "Выберите доступное сообщество из списка VK"})
+        _ensure_connection_idle(connection.id)
+        connection.metadata = {
+            **(connection.metadata or {}),
+            "selected_group_id": group_id,
+            "selected_group_name": str(selected.get("name") or "")[:160],
+            "selected_group_screen_name": str(selected.get("screen_name") or "")[:160],
+            "selected_group_photo": str(selected.get("photo_100") or "")[:500],
+        }
+        connection.save(update_fields=["metadata", "updated_at"])
+        return Response(self.get_serializer(connection).data)
+
     def perform_update(self, serializer):
         _ensure_connection_idle(serializer.instance.id)
         serializer.save()
