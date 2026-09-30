@@ -7,10 +7,11 @@ from pgvector.django import VectorField
 
 class Conversation(models.Model):
     class RoutingMode(models.TextChoices):
-        MANUAL = "manual", "Вручную"
-        ECONOMY = "economy", "Эконом"
-        BALANCED = "balanced", "Баланс"
-        MAXIMUM = "maximum", "Максимум"
+        AUTO = "auto", "AUTO"
+        MANUAL = "manual", "Модель"
+        ECONOMY = "economy", "Простой"
+        BALANCED = "balanced", "Средний"
+        MAXIMUM = "maximum", "Сложный"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(
@@ -19,7 +20,7 @@ class Conversation(models.Model):
     title = models.CharField(max_length=200, default="Новый чат")
     selected_model = models.CharField(max_length=100, default="echo-v1")
     routing_mode = models.CharField(
-        max_length=16, choices=RoutingMode.choices, default=RoutingMode.MANUAL
+        max_length=16, choices=RoutingMode.choices, default=RoutingMode.AUTO
     )
     project = models.ForeignKey(
         "projects.Project",
