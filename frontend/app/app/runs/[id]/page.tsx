@@ -6,6 +6,7 @@ import {useEffect,useMemo,useState} from "react";
 import {api} from "../../../../lib/api";
 import DevPullRequestAction from "../DevPullRequestAction";
 import DevPlanPanel from "./DevPlanPanel";
+import DevVerificationPanel from "./DevVerificationPanel";
 import styles from "./run.module.css";
 
 type Step={id:string;node_id:string;agent_name:string;sequence:number;title:string;action_type:string;state:string;public_log:string;cost_rub:string;started_at:string|null;finished_at:string|null};
@@ -47,6 +48,7 @@ export default function AgentRunPage(){
   {error&&<div className={styles.errorNotice} role="alert">{error}</div>}
   <section className={styles.card}><span className={styles.eyebrow}>Задача</span><p className={styles.objective}>{run.objective}</p>{run.output_payload?.repository&&<div className={styles.submeta}>Repository: <strong>{run.output_payload.repository}</strong>{run.output_payload.repository_files?.length?` · прочитано ключевых файлов: ${run.output_payload.repository_files.length}`:""}{run.output_payload.workspace_id?` · workspace: ${run.output_payload.workspace_id}`:""}</div>}</section>
   {run.team_kind==="development"&&run.plan?.length>0&&<DevPlanPanel plan={run.plan} runState={run.state} steps={run.steps}/>} 
+  {run.team_kind==="development"&&<DevVerificationPanel branch={run.output_payload?.working_branch} workspaceId={run.output_payload?.workspace_id} sandbox={run.output_payload?.sandbox} appliedChanges={run.output_payload?.applied_changes||[]}/>} 
   {roleCosts.length>0&&<section className={styles.card}><span className={styles.eyebrow}>Экономика запуска</span><h2>Расход по участникам</h2><div className={styles.economyRows}>{roleCosts.map(row=>{const share=totalCost>0?Math.min(100,(row.cost/totalCost)*100):0;return <div key={row.name} className={styles.economyRow}><div className={styles.economyName}><strong>{row.name}</strong><span>{row.paidSteps} платн. шаг.</span></div><div className={styles.bar} aria-label={`Доля расхода ${Math.round(share)}%`}><span style={{width:`${share}%`}}/></div><strong className={styles.economyValue}>{row.cost.toFixed(2)} ₽</strong></div>})}</div><div className={styles.submeta}>Показана фактическая стоимость завершённых платных шагов, а не предварительная оценка.</div></section>}
   {publication&&<section className={`${styles.card} ${styles.cardSuccess}`}><span className={styles.eyebrow}>WordPress</span><h2>{publication.status==="publish"?"Материал опубликован":"Материал сохранён как черновик"}</h2><div className={styles.submeta}>Сайт: <strong>{publication.connection_name||"WordPress"}</strong> · Post ID: {publication.post_id}{publication.slug?` · ${publication.slug}`:""}</div>{publication.url&&<a className={styles.externalLink} href={publication.url} target="_blank" rel="noreferrer">Открыть материал ↗</a>}</section>}
   {run.team_kind==="development"&&<DevPullRequestAction runId={run.id} state={run.state} workingBranch={run.output_payload?.working_branch} initial={run.output_payload?.pull_request||null}/>}  
