@@ -96,6 +96,7 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(plan_id=plan_id)
         return queryset
 
+    @transaction.atomic
     def perform_update(self, serializer):
         instance = serializer.instance
         if instance.status == SMMContentItem.Status.PUBLISHED:
@@ -133,9 +134,10 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="publish")
     def publish(self, request, pk=None):
         item = self.get_object()
-        key = str(request.headers.get("Idempotency-Key") or request.data.get("idempotency_key") or "").strip()
-        if not key:
-            raise ValidationError({"detail": "Idempotency-Key обязателен"})
+        # Manual publication is intrinsically one external action per content item.
+        # A stable server-side key protects against browser retries and lost HTTP responses,
+        # even if an older client sends a new random Idempotency-Key on every click.
+        key = f"manual:{item.id}"
         try:
             attempt = publish_item(item, idempotency_key=key)
         except DjangoValidationError as exc:
