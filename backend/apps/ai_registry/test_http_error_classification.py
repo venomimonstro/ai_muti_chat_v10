@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from . import adapters
 from .http_errors import classify_http_error
 
 
@@ -8,6 +9,10 @@ def _error(status, payload=None):
     request = httpx.Request("POST", "https://provider.example/v1/chat")
     response = httpx.Response(status, request=request, json=payload or {})
     return httpx.HTTPStatusError("provider error", request=request, response=response)
+
+
+def test_runtime_http_error_mapper_is_installed():
+    assert adapters._http_error is classify_http_error
 
 
 @pytest.mark.parametrize(
