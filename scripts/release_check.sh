@@ -173,10 +173,15 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python mana
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_commercial_limits_audit
 pass 14 'Agent Studio integrity, security and commercial limits'
 
-step 15 'Agent recovery and external connection integrity'
+step 15 'Agent recovery, connections and SMM Studio integrity'
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_recovery_audit
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py connection_health_audit
-pass 15 'Agent recovery and external connection integrity'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py smm_runtime_check
+run_pytest 'SMM Studio safety regressions' \
+  apps/connections/test_smm_studio.py \
+  apps/connections/test_connection_validation.py \
+  apps/connections/test_agent_connection_freeze.py
+pass 15 'Agent recovery, connections and SMM Studio integrity'
 
 step 16 'Dev Studio readiness'
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_audit
@@ -220,7 +225,7 @@ for _attempt in $(seq 1 30); do
   sleep 1
 done
 [[ "$READY" == true ]] || { echo 'Frontend runtime did not become ready' >&2; exit 1; }
-for route in / /pricing /faq /login /register /api /use-cases/marketing /app /app/account /app/wallet /app/usage /app/settings /app/projects /app/projects/00000000-0000-0000-0000-000000000000/github /app/help /app/notifications /app/images /app/compare /app/agents /app/teams /app/schedules /app/events /app/dev /app/runs /app/runs/00000000-0000-0000-0000-000000000000 /admin-console /admin-console/system /admin-console/providers /admin-console/finance /admin-console/security /admin-console/operations /admin-console/drills /admin-console/compliance /sitemap.xml /robots.txt; do
+for route in / /pricing /faq /login /register /api /use-cases/marketing /app /app/account /app/wallet /app/usage /app/settings /app/projects /app/projects/00000000-0000-0000-0000-000000000000/github /app/help /app/notifications /app/images /app/compare /app/agents /app/teams /app/schedules /app/events /app/integrations /app/smm /app/dev /app/runs /app/runs/00000000-0000-0000-0000-000000000000 /admin-console /admin-console/system /admin-console/providers /admin-console/finance /admin-console/security /admin-console/operations /admin-console/drills /admin-console/compliance /sitemap.xml /robots.txt; do
   printf '[SMOKE] %-70s ' "$route"
   if curl -fsS --max-time 5 "http://127.0.0.1:${FRONTEND_SMOKE_PORT}${route}" >/dev/null; then
     printf 'PASS\n'
