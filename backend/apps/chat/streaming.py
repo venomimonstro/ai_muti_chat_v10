@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+from types import SimpleNamespace
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -24,6 +25,7 @@ from apps.billing.pricing import (
 from apps.billing.reconciliation import record_cost_outcome
 from apps.billing.services import release, reserve, settle
 from apps.memory_store.services import extract_memory_candidates, process_explicit_command, record_memory_usage
+from apps.procurement.readiness import quote_has_procurement_capacity
 from apps.workspace_search.embeddings import index_message
 
 from .attachment_context import enrich_snapshot_with_attachments
@@ -78,6 +80,36 @@ def _validate_replayed_generation(generation, conversation, content, client_mess
     ):
         raise ValidationError("Idempotency-Key уже использован для другого запроса")
     return generation
+
+
+def _mark_candidate_rejected(decision, model_slug, reason):
+    changed = False
+    snapshot = []
+    for item in list(decision.candidate_snapshot or []):
+        row = dict(item)
+        if row.get("model") == model_slug:
+            reasons = list(row.get("reasons") or [])
+            if reason not in reasons:
+                reasons.append(reason)
+            row["reasons"] = reasons
+            row["status"] = "rejected"
+            row["fallback_allowed"] = False
+            changed = True
+        snapshot.append(row)
+    if changed:
+        decision.candidate_snapshot = snapshot
+        decision.save(update_fields=["candidate_snapshot"])
+    return changed
+
+
+def _snapshot_capacity(model, route_price):
+    if not isinstance(route_price, dict):
+        return True
+    probe = SimpleNamespace(
+        provider_cost_rub=route_price.get("expected_provider_cost_rub"),
+        pricing_snapshot=route_price.get("pricing_snapshot") or {},
+    )
+    return quote_has_procurement_capacity(model.provider, probe)
 
 
 def prepare(*, user, conversation, content, client_message_id, idempotency_key, file_ids=None):
@@ -245,18 +277,51 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
         input_budget, output_budget = conservative_token_budget(history, snapshot["budget"]["output_reserved"])
         input_budget += len(vision_assets) * VISION_RESERVE_TOKENS_PER_IMAGE
         priced = []
+        rejected = set()
         for model in candidates:
-            price = active_price(model.slug)
-            price_quote = require_margin(
-                quote(
-                    price,
-                    input_budget,
-                    output_budget,
-                    provider_slug=model.provider.slug,
-                    model_slug=model.slug,
+            try:
+                price = active_price(model.slug)
+                price_quote = require_margin(
+                    quote(
+                        price,
+                        input_budget,
+                        output_budget,
+                        provider_slug=model.provider.slug,
+                        model_slug=model.slug,
+                    )
                 )
-            )
+            except ValidationError:
+                rejected.add(model.slug)
+                _mark_candidate_rejected(decision, model.slug, "commercial_quote_unavailable")
+                continue
+            if not quote_has_procurement_capacity(model.provider, price_quote):
+                rejected.add(model.slug)
+                _mark_candidate_rejected(decision, model.slug, "procurement_balance_insufficient_exact")
+                continue
             priced.append((model, price, price_quote))
+        if not priced:
+            raise ValidationError("Сейчас нет модели с доступным API-балансом для этого запроса")
+
+        selected_model = priced[0][0]
+        if selected_model.pk != decision.selected_model_id:
+            decision.selected_model = selected_model
+            decision.explanation = (
+                f"Основной маршрут стал коммерчески недоступен; запрос направлен в {selected_model.display_name}."
+            )
+            decision.save(update_fields=["selected_model", "explanation"])
+            generation.model = selected_model.slug
+            generation.save(update_fields=["model"])
+            snapshot["routing"]["selected_model"] = selected_model.slug
+            snapshot["routing"]["model_version"] = (
+                selected_model.current_version.version if selected_model.current_version else None
+            )
+            snapshot["routing"]["exact_api_id"] = selected_model.upstream_model
+            snapshot["routing"]["explanation"] = decision.explanation
+        if rejected:
+            snapshot["routing"]["candidates"] = decision.candidate_snapshot
+            generation.context_snapshot = snapshot
+            generation.save(update_fields=["context_snapshot"])
+
         estimates = [item.user_charge_rub for _, _, item in priced]
         estimated = max(estimates)
         reservation = reserve(user, estimated, f"generation:{generation.id}")
@@ -310,6 +375,22 @@ def _finish_attempt(attempt, *, state, started, error=None):
         attempt.retryable = error.retryable
         fields += ["error_code", "retryable"]
     attempt.save(update_fields=fields)
+
+
+def _commercial_skip_attempt(generation, model, sequence, error):
+    attempt = GenerationAttempt.objects.create(
+        generation=generation,
+        provider=model.provider,
+        model_slug=model.slug,
+        sequence=sequence,
+    )
+    started = time.monotonic()
+    _finish_attempt(
+        attempt,
+        state=GenerationAttempt.State.FAILED,
+        started=started,
+        error=error,
+    )
 
 
 def run(generation, *, adapter=None):
@@ -431,7 +512,25 @@ def run(generation, *, adapter=None):
             request_cost = RequestCost.objects.get(generation_id=generation.id)
             route_price = generation.route_price_snapshot.get(model.slug)
             if not route_price:
-                raise ValidationError("Missing route price snapshot")
+                last_error = ProviderError(
+                    "Missing route price snapshot",
+                    code="provider_funding_unavailable",
+                    retryable=True,
+                )
+                sequence += 1
+                _commercial_skip_attempt(generation, model, sequence, last_error)
+                continue
+            if not _snapshot_capacity(model, route_price):
+                last_error = ProviderError(
+                    "Provider funding capacity is no longer sufficient",
+                    code="provider_funding_unavailable",
+                    retryable=True,
+                )
+                sequence += 1
+                _commercial_skip_attempt(generation, model, sequence, last_error)
+                if model != candidates[-1]:
+                    yield sse("recovery", {"action": "fallback", "from_model": model.slug})
+                continue
             if isinstance(route_price, str):
                 request_cost.price_version_id = route_price
                 fields = ["price_version"]
@@ -442,7 +541,20 @@ def run(generation, *, adapter=None):
                 request_cost.expected_provider_cost_rub = route_price["expected_provider_cost_rub"]
                 request_cost.model_version_id_snapshot = route_price["model_version_id"]
                 fields = ["price_version", "fx_snapshot", "pricing_snapshot", "expected_provider_cost_rub", "model_version_id_snapshot"]
-            request_cost.save(update_fields=fields)
+            try:
+                with transaction.atomic():
+                    request_cost.save(update_fields=fields)
+            except ValidationError:
+                last_error = ProviderError(
+                    "Provider funding reservation failed",
+                    code="provider_funding_unavailable",
+                    retryable=True,
+                )
+                sequence += 1
+                _commercial_skip_attempt(generation, model, sequence, last_error)
+                if model != candidates[-1]:
+                    yield sse("recovery", {"action": "fallback", "from_model": model.slug})
+                continue
             max_attempts = 1 if adapter else settings.AI_PROVIDER_MAX_ATTEMPTS
             for retry_index in range(max_attempts):
                 sequence += 1
