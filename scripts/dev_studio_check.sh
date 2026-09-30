@@ -23,7 +23,9 @@ python3 -m compileall -q \
   backend/apps/agents/sandbox_server.py \
   backend/apps/agents/team_readiness.py \
   backend/apps/agents/team_runtime.py \
+  backend/apps/agents/team_runtime_v2.py \
   backend/apps/agents/management/commands/dev_studio_recover.py \
+  backend/apps/agents/management/commands/dev_studio_runtime_audit.py \
   backend/apps/agents/management/commands/dev_studio_e2e_audit.py
 printf '[PASS] Python syntax\n'
 
@@ -54,6 +56,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_provider_retry.py \
     apps/agents/test_dev_model_fallback.py \
     apps/agents/test_dev_model_execution.py \
+    apps/agents/test_team_runtime_v2_activation.py \
     apps/agents/test_dev_recovery.py \
     apps/agents/test_dev_security.py \
     apps/agents/test_dev_prompt_boundary.py \
@@ -73,7 +76,8 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python mana
 printf '[PASS] Django checks and migration drift\n'
 
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_audit
-printf '[PASS] Dev Studio audit\n'
+docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_runtime_audit
+printf '[PASS] Dev Studio audits\n'
 
 DOCKER_BUILDKIT=1 docker build --progress=plain \
   -f backend/Dockerfile.sandbox \
