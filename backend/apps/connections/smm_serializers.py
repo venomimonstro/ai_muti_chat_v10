@@ -37,11 +37,15 @@ class SMMContentItemSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"content": "Для публикации нужен текст поста"})
         if status == SMMContentItem.Status.SCHEDULED and not scheduled_at:
             raise serializers.ValidationError({"scheduled_at": "Укажите дату и время публикации"})
-        if media_generation_id is not None and not ImageGeneration.objects.filter(
-            pk=media_generation_id,
-            owner=user,
-        ).exists():
-            raise serializers.ValidationError({"media_generation_id": "Изображение недоступно"})
+        if media_generation_id is not None:
+            generation_ok = ImageGeneration.objects.filter(
+                pk=media_generation_id,
+                owner=user,
+                state=ImageGeneration.State.COMPLETED,
+                images__isnull=False,
+            ).distinct().exists()
+            if not generation_ok:
+                raise serializers.ValidationError({"media_generation_id": "Готовая AI-генерация недоступна"})
         if media_source == SMMContentItem.MediaSource.GENERATED and media_generation_id is None:
             raise serializers.ValidationError({"media_generation_id": "Выберите готовую AI-генерацию"})
         if media_source == SMMContentItem.MediaSource.STOCK and not media_url:
