@@ -1,0 +1,125 @@
+import uuid
+from decimal import Decimal
+
+import pytest
+from django.utils import timezone
+from rest_framework.test import APIClient
+
+from apps.accounts.models import User
+from apps.ai_registry.models import AIModel, Provider
+from apps.billing.models import BalanceReservation, PriceVersion
+from apps.billing.services import credit
+
+from .models import Conversation, Generation, Message
+from .streaming import prepare, run
+
+
+class MustNotRunAdapter:
+    def stream(self, **_kwargs):
+        raise AssertionError("provider must not be called after cancellation")
+        yield  # pragma: no cover
+
+
+def _fixture():
+    user = User.objects.create_user(
+        username=f"cancel-{uuid.uuid4()}",
+        email=f"cancel-{uuid.uuid4()}@example.test",
+        password="password123!",
+    )
+    credit(user, Decimal("20"), "test", f"cancel-credit-{uuid.uuid4()}")
+    provider = Provider.objects.create(
+        slug=f"cancel-echo-{uuid.uuid4()}",
+        name="Cancel Echo",
+        adapter_type=Provider.AdapterType.ECHO,
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    model = AIModel.objects.create(
+        provider=provider,
+        slug=f"cancel-model-{uuid.uuid4()}",
+        display_name="Cancel model",
+        upstream_model="cancel-model",
+        enabled=True,
+        capabilities=["text", "streaming"],
+        context_window=8192,
+        max_output_tokens=1024,
+    )
+    PriceVersion.objects.create(
+        model_slug=model.slug,
+        input_rub_per_million=Decimal("1"),
+        output_rub_per_million=Decimal("2"),
+        markup_percent=Decimal("100"),
+        effective_from=timezone.now(),
+    )
+    conversation = Conversation.objects.create(
+        owner=user,
+        title="Cancelable",
+        selected_model=model.slug,
+        routing_mode=Conversation.RoutingMode.MANUAL,
+    )
+    key = f"cancel:{uuid.uuid4()}"
+    generation, created = prepare(
+        user=user,
+        conversation=conversation,
+        content="Останови этот запрос",
+        client_message_id=uuid.uuid4(),
+        idempotency_key=key,
+    )
+    assert created is True
+    return user, conversation, generation, key
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stop_before_provider_call_cancels_without_external_request_or_charge():
+    user, conversation, generation, key = _fixture()
+    reservation = BalanceReservation.objects.get(pk=generation.reservation_id)
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/cancel/",
+        {"idempotency_key": key},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=key,
+    )
+    assert response.status_code == 202
+
+    body = "".join(run(generation, adapter=MustNotRunAdapter()))
+
+    generation.refresh_from_db()
+    generation.assistant_message.refresh_from_db()
+    reservation.refresh_from_db()
+    user.wallet.refresh_from_db()
+
+    assert "client_cancelled" in body
+    assert generation.state == Generation.State.CANCELLED
+    assert generation.error_code == "client_cancelled"
+    assert generation.actual_cost_rub == Decimal("0.0000")
+    assert generation.assistant_message.status == Message.Status.FAILED
+    assert reservation.state == BalanceReservation.State.RELEASED
+    assert reservation.actual_rub == Decimal("0.0000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert user.wallet.available_rub == Decimal("20.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_user_cannot_cancel_another_users_generation():
+    owner, conversation, generation, key = _fixture()
+    stranger = User.objects.create_user(
+        username=f"stranger-{uuid.uuid4()}",
+        email=f"stranger-{uuid.uuid4()}@example.test",
+        password="password123!",
+    )
+    client = APIClient()
+    client.force_authenticate(stranger)
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/cancel/",
+        {"idempotency_key": key},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=key,
+    )
+
+    assert response.status_code == 404
+    generation.refresh_from_db()
+    assert generation.state == Generation.State.QUEUED
