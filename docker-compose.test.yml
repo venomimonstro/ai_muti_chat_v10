@@ -15,6 +15,29 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
 
+  sandbox:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.sandbox
+    environment:
+      SANDBOX_PORT: "8090"
+      SANDBOX_SHARED_SECRET: release-test-sandbox-secret
+      SANDBOX_TIMEOUT_SECONDS: "30"
+      SANDBOX_WORKSPACE_TTL_SECONDS: "600"
+    read_only: true
+    tmpfs:
+      - /workspace:rw,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 96
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=3).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
   backend-test:
     build:
       context: ./backend
@@ -27,6 +50,10 @@ services:
       REDIS_URL: redis://localhost:6379/0
       FILE_PROCESSING_ASYNC: "false"
       WEB_FETCH_PAGES: "false"
+      SANDBOX_URL: http://sandbox:8090
+      SANDBOX_SHARED_SECRET: release-test-sandbox-secret
     depends_on:
       postgres:
+        condition: service_healthy
+      sandbox:
         condition: service_healthy
