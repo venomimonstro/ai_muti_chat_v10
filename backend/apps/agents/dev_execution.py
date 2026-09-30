@@ -20,6 +20,12 @@ from .sandbox_client import (
 
 
 MAX_EXECUTION_CHANGES = 12
+SAFE_PROJECT_CHECKS = {
+    "django-check",
+    "django-check-backend",
+    "pytest",
+    "pytest-backend",
+}
 
 
 def enrich_changes_with_snapshot(changes, repository_context):
@@ -66,7 +72,7 @@ def enrich_changes_with_snapshot(changes, repository_context):
     return result
 
 
-def _sandbox_checks(changes):
+def _sandbox_checks(changes, workspace_profile=None):
     paths = [str(item["path"]).lower() for item in changes]
     checks = []
     if any(path.endswith(".json") for path in paths):
@@ -75,6 +81,13 @@ def _sandbox_checks(changes):
         checks.append("node-check")
     if any(path.endswith(".py") for path in paths):
         checks.append("python-compile")
+
+    profile = workspace_profile or {}
+    if profile.get("snapshot_complete"):
+        for check in profile.get("project_checks_available") or []:
+            check = str(check or "")
+            if check in SAFE_PROJECT_CHECKS and check not in checks:
+                checks.append(check)
     return checks
 
 
@@ -103,7 +116,10 @@ def _workspace_operations(changes):
 def _verification_metadata(workspace_profile, *, checks):
     profile = workspace_profile or {}
     snapshot_complete = bool(profile.get("snapshot_complete"))
-    if not checks:
+    project_checks = [check for check in checks if check in SAFE_PROJECT_CHECKS]
+    if project_checks:
+        evidence_level = "project_checks_complete_snapshot"
+    elif not checks:
         evidence_level = "structural"
     elif snapshot_complete:
         evidence_level = "syntax_complete_snapshot"
@@ -113,6 +129,7 @@ def _verification_metadata(workspace_profile, *, checks):
         "evidence_level": evidence_level,
         "snapshot_complete": snapshot_complete,
         "repository_evidence_level": str(profile.get("evidence_level") or "unknown"),
+        "project_checks": project_checks,
         "project_types": {
             "python": bool(profile.get("python_project")),
             "django": bool(profile.get("django_project")),
@@ -122,7 +139,7 @@ def _verification_metadata(workspace_profile, *, checks):
 
 
 def validate_changes_in_sandbox(changes, *, workspace_id=None, base_files=None, workspace_profile=None):
-    checks = _sandbox_checks(changes)
+    checks = _sandbox_checks(changes, workspace_profile)
     metadata = _verification_metadata(workspace_profile, checks=checks)
     if not checks:
         return {
@@ -201,8 +218,8 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
         raise ValidationError("Dev Studio остановлен до sandbox/GitHub write")
 
     workspace_id = f"devrun-{str(run_id).replace('-', '')[:24]}"
-    checks = _sandbox_checks(changes)
-    if checks:
+    base_checks = _sandbox_checks(changes)
+    if base_checks:
         repository_context = build_repository_context(project, ref=binding.default_branch)
         _persist_run_execution_state(run_id, phase="validating_changes", workspace_id=workspace_id)
         sandbox_result = validate_changes_in_sandbox(
@@ -268,7 +285,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
                     "run_id": str(run_id),
                     "sequence": index,
                     "applied_before_failure": len(applied),
-                    "workspace_id": workspace_id if checks else "",
+                    "workspace_id": workspace_id if base_checks else "",
                     "risk_flags": change.get("risk_flags") or [],
                     "error": str(exc)[:2000],
                 },
@@ -288,7 +305,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
             metadata={
                 "run_id": str(run_id),
                 "sequence": index,
-                "workspace_id": workspace_id if checks else "",
+                "workspace_id": workspace_id if base_checks else "",
                 "risk_flags": change.get("risk_flags") or [],
                 "commit_sha": result.get("commit_sha"),
                 "content_sha": result.get("content_sha"),
@@ -306,12 +323,12 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
     _persist_run_execution_state(
         run_id,
         phase="changes_written",
-        workspace_id=workspace_id if checks else "",
+        workspace_id=workspace_id if base_checks else "",
         working_branch=branch_name,
     )
     return {
         "branch": branch_name,
         "changes": applied,
         "sandbox": sandbox_result,
-        "workspace_id": workspace_id if checks else None,
+        "workspace_id": workspace_id if base_checks else None,
     }
