@@ -9,7 +9,9 @@ class ChatConfig(AppConfig):
         # UI-only organization models are registered here to keep inference models focused.
         from . import (
             billing_recovery,
+            manual_selection_recovery,
             runtime_readiness,
+            serializers,
             signals,
             single_flight,
             streaming,
@@ -21,6 +23,7 @@ class ChatConfig(AppConfig):
         # stale provider/model candidate, and one conversation must never create two
         # concurrent generations through double-click/multi-tab races.
         billing_recovery.install()
+        manual_selection_recovery.install(serializers)
         runtime_readiness.install(streaming)
         single_flight.install(streaming)
         terminal_recovery.install(streaming)
