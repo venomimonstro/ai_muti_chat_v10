@@ -12,15 +12,36 @@ def sandbox_enabled():
     return bool(os.getenv("SANDBOX_SHARED_SECRET", "").strip())
 
 
+def _base_url():
+    return os.getenv("SANDBOX_URL", "http://sandbox:8090").rstrip("/")
+
+
+def sandbox_health(*, timeout=2.5):
+    if not sandbox_enabled():
+        return {"healthy": False, "configured": False, "workspace_api": False, "error": "sandbox_not_configured"}
+    try:
+        response = httpx.get(f"{_base_url()}/health", timeout=float(timeout))
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"healthy": False, "configured": True, "workspace_api": False, "error": exc.__class__.__name__}
+    healthy = response.status_code == 200 and data.get("status") == "ok" and bool(data.get("configured"))
+    return {
+        "healthy": healthy,
+        "configured": bool(data.get("configured")),
+        "workspace_api": bool(data.get("workspace_api")),
+        "commands": list(data.get("commands") or []),
+        "error": "" if healthy else str(data.get("error") or f"http_{response.status_code}"),
+    }
+
+
 def _request(path, payload):
     secret = os.getenv("SANDBOX_SHARED_SECRET", "").strip()
     if not secret:
         raise SandboxUnavailable("Sandbox не настроен: задайте SANDBOX_SHARED_SECRET")
-    url = os.getenv("SANDBOX_URL", "http://sandbox:8090").rstrip("/")
     timeout = float(os.getenv("SANDBOX_CLIENT_TIMEOUT_SECONDS", "140"))
     try:
         response = httpx.post(
-            f"{url}{path}",
+            f"{_base_url()}{path}",
             headers={"X-Sandbox-Token": secret},
             json=payload,
             timeout=timeout,
