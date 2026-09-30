@@ -43,6 +43,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_context_discovery.py \
     apps/agents/test_dev_plan.py \
     apps/agents/test_dev_changes_v2.py \
+    apps/agents/test_dev_preapproval_validation.py \
     apps/agents/test_dev_provider_retry.py \
     apps/agents/test_sandbox.py \
     apps/agents/test_sandbox_client_health.py \
