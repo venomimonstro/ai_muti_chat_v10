@@ -1,6 +1,7 @@
 "use client";
 
 import {useEffect,useMemo,useRef,useState} from "react";
+import {api} from "../../lib/api";
 import type {AIModel} from "../../lib/types";
 import {Icon} from "./Icons";
 
@@ -64,13 +65,28 @@ function modelLabel(model:AIModel){
 
 export function ModelPicker({value,models,disabled=false,onChange}:Props){
  const[open,setOpen]=useState(false);
+ const[catalog,setCatalog]=useState<AIModel[]>(()=>models.filter(item=>item.available));
  const root=useRef<HTMLDivElement|null>(null);
  const initialSection:PickerSection=value.startsWith("model:")?"model":"auto";
  const[section,setSection]=useState<PickerSection>(initialSection);
 
+ useEffect(()=>{setCatalog(models.filter(item=>item.available));},[models]);
+ useEffect(()=>{
+  let active=true;
+  const refresh=async()=>{
+   if(typeof document!=="undefined"&&document.visibilityState==="hidden")return;
+   try{const rows=await api<AIModel[]>("/models/");if(active)setCatalog(rows.filter(item=>item.available));}catch{}
+  };
+  const timer=window.setInterval(()=>void refresh(),30000);
+  const wake=()=>void refresh();
+  window.addEventListener("online",wake);
+  window.addEventListener("focus",wake);
+  return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",wake);window.removeEventListener("focus",wake)};
+ },[]);
+
  const groups=useMemo(()=>{
   const map=new Map<string,AIModel[]>();
-  for(const model of models){
+  for(const model of catalog){
    const key=normalizedProvider(model);
    map.set(key,[...(map.get(key)??[]),model]);
   }
@@ -79,10 +95,11 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
    const bo=PROVIDERS[b]?.order??999;
    return ao-bo||providerLabelByKey(a).localeCompare(providerLabelByKey(b),"ru");
   });
- },[models]);
+ },[catalog]);
 
  const currentMode=modes.find(item=>item.value===value);
- const currentModel=!currentMode&&value.startsWith("model:")?models.find(item=>`model:${item.slug}`===value):undefined;
+ const currentModel=!currentMode&&value.startsWith("model:")?catalog.find(item=>`model:${item.slug}`===value):undefined;
+ const unavailableManual=!currentMode&&value.startsWith("model:")&&!currentModel;
  const currentProvider=currentModel?normalizedProvider(currentModel):"";
  const firstProvider=groups[0]?.[0]??"";
  const[selectedProvider,setSelectedProvider]=useState<string>(currentProvider||firstProvider);
@@ -90,10 +107,10 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
  useEffect(()=>{
   if(value.startsWith("model:")){
    setSection("model");
-   const model=models.find(item=>`model:${item.slug}`===value);
+   const model=catalog.find(item=>`model:${item.slug}`===value);
    if(model)setSelectedProvider(normalizedProvider(model));
   }
- },[value,models]);
+ },[value,catalog]);
  useEffect(()=>{
   if(!selectedProvider&&firstProvider)setSelectedProvider(firstProvider);
   if(selectedProvider&&!groups.some(([key])=>key===selectedProvider)&&firstProvider)setSelectedProvider(firstProvider);
@@ -107,8 +124,8 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
  },[open]);
 
  const choose=(next:string)=>{if(disabled)return;onChange(next);setOpen(false)};
- const label=currentMode?(currentMode.value==="auto:auto"?"AUTO":`AUTO · ${currentMode.label}`):currentModel?`${providerLabelByKey(currentProvider)} · ${modelLabel(currentModel)}`:"AUTO";
- const sub=currentMode?.hint??(currentModel?(currentModel.available?"Конкретная модель":"Модель недоступна"):"Сам определит сложность и выберет подходящую модель");
+ const label=currentMode?(currentMode.value==="auto:auto"?"AUTO":`AUTO · ${currentMode.label}`):currentModel?`${providerLabelByKey(currentProvider)} · ${modelLabel(currentModel)}`:unavailableManual?"Резервный маршрут":"AUTO";
+ const sub=currentMode?.hint??(currentModel?"Конкретная модель":unavailableManual?"Ранее выбранная модель временно недоступна — чат переключится на рабочую резервную модель":"Сам определит сложность и выберет подходящую модель");
  const providerModels=groups.find(([key])=>key===selectedProvider)?.[1]??[];
 
  return <div className="modelPicker" ref={root}>
@@ -127,12 +144,11 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
     <p className="modelPickerHelp">AUTO определяет сложность запроса и выбирает модель из настроенного администратором пула. Уровни позволяют зафиксировать класс моделей.</p>
     <div className="modelModeGrid">{modes.map(item=><button type="button" key={item.value} className={value===item.value?"active":""} onClick={()=>choose(item.value)}><span><Icon name={item.icon} size={16}/></span><b>{item.label}</b><small>{item.hint}</small>{value===item.value&&<Icon name="check" size={15}/>}</button>)}</div>
    </div>:<div className="modelPickerPane">
-    <p className="modelPickerHelp">Сначала выберите нейросеть, затем конкретную модель. Недоступные модели не показываются каталогом backend и дополнительно блокируются здесь.</p>
+    <p className="modelPickerHelp">Сначала выберите нейросеть, затем конкретную модель. Каталог автоматически обновляется и показывает только реально готовые модели.</p>
     <div className="modelProviderTabs" role="tablist" aria-label="Провайдер нейросети">{groups.map(([provider,items])=>{
-     const available=items.filter(item=>item.available).length;
-     return <button type="button" role="tab" aria-selected={selectedProvider===provider} key={provider} className={selectedProvider===provider?"active":""} onClick={()=>setSelectedProvider(provider)}><b>{providerLabelByKey(provider)}</b><small>{available}/{items.length} доступно</small></button>
+     return <button type="button" role="tab" aria-selected={selectedProvider===provider} key={provider} className={selectedProvider===provider?"active":""} onClick={()=>setSelectedProvider(provider)}><b>{providerLabelByKey(provider)}</b><small>{items.length} доступно</small></button>
     })}</div>
-    <div className="modelPickerModels modelPickerProviderModels">{providerModels.length?providerModels.map(model=>{const selected=value===`model:${model.slug}`;return <button type="button" key={model.slug} disabled={!model.available} className={selected?"active":""} onClick={()=>choose(`model:${model.slug}`)}><span className={`modelDot ${model.available?"online":"offline"}`}/><span className="modelCopy"><b>{modelLabel(model)}</b><small>{model.available?"Готова к работе":`Недоступна · ${model.health_state||"проверьте подключение"}`}</small></span>{selected&&<Icon name="check" size={15}/>}</button>}):<div className="modelPickerEmpty">У этого провайдера пока нет моделей.</div>}</div>
+    <div className="modelPickerModels modelPickerProviderModels">{providerModels.length?providerModels.map(model=>{const selected=value===`model:${model.slug}`;return <button type="button" key={model.slug} className={selected?"active":""} onClick={()=>choose(`model:${model.slug}`)}><span className="modelDot online"/><span className="modelCopy"><b>{modelLabel(model)}</b><small>Готова к работе</small></span>{selected&&<Icon name="check" size={15}/>}</button>}):<div className="modelPickerEmpty">У этого провайдера сейчас нет доступных моделей.</div>}</div>
    </div>}
   </div>}
  </div>;
