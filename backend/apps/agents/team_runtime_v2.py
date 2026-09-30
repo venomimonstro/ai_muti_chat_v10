@@ -15,9 +15,7 @@ from apps.ai_registry.token_estimator import estimate_message_tokens
 
 from . import team_runtime as legacy
 from .dev_model_execution import DevStageCanceled, execute_with_model_fallback
-from .limits import effective_remaining_budget
 from .models import AgentRun, AgentStepRun
-from .runtime import _model_for
 
 
 def _mark_budget_exceeded(run, step, *, title, estimated_message, sequence, code):
@@ -66,13 +64,15 @@ def _run_llm_stage_v2(*, run, agent, role, repository_context, previous, sequenc
     )
 
     try:
-        primary_model = _model_for(agent)
+        # Resolve through legacy module intentionally: existing safety tests and
+        # operational monkeypatches keep the same seam after Sprint 87.
+        primary_model = legacy._model_for(agent)
         messages = legacy._messages(run, agent, role, repository_context, previous, task=task)
         requested_output = min(max(400, legacy.OUTPUT_TOKENS), int(primary_model.max_output_tokens))
         estimated_input = max(32, estimate_message_tokens(messages) + 16)
 
         team_remaining = max(Decimal("0"), budget - total)
-        agent_remaining, agent_budget = effective_remaining_budget(agent, run=run)
+        agent_remaining, agent_budget = legacy.effective_remaining_budget(agent, run=run)
         effective_remaining = min(team_remaining, agent_remaining)
         if effective_remaining <= 0:
             code = "agent_period_budget_exceeded" if agent_remaining <= team_remaining else "team_budget_exceeded"
