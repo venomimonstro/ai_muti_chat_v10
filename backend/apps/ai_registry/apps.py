@@ -6,11 +6,12 @@ class AIRegistryConfig(AppConfig):
     name = "apps.ai_registry"
 
     def ready(self):
-        # Install fail-safe runtime dispatch and the authoritative routing-pool
-        # resolver once per process. Modules that imported adapter_for directly
-        # before AppConfig.ready() must also be rebound explicitly.
+        # Install fail-safe runtime dispatch and authoritative routing resolvers
+        # once per process. Modules that imported adapter_for directly before
+        # AppConfig.ready() must also be rebound explicitly.
         from . import (  # noqa: F401
             adapters,
+            auto_continuity,
             dispatch,
             manual_continuity,
             reliability,
@@ -23,3 +24,4 @@ class AIRegistryConfig(AppConfig):
         reliability.adapter_for = dispatch.adapter_for
         routing_pools.install_router_pool_resolver(router)
         manual_continuity.install(router)
+        auto_continuity.install(router)
