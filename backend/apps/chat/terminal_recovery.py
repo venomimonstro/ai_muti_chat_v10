@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 
 from django.db import transaction
@@ -9,6 +10,8 @@ from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.pricing import calculate, calculate_from_snapshot
 
 from .models import Generation, Message
+
+logger = logging.getLogger(__name__)
 
 
 def _event_name(chunk):
@@ -103,6 +106,27 @@ def _confirmed_overrun_payload(generation_id):
         }
 
 
+def _post_complete(streaming_module, generation_id):
+    """Run the same non-financial completion hooks as the ordinary success path.
+
+    These hooks are best-effort by design: a search-index or rolling-summary failure
+    must never turn an already paid, fully delivered answer back into a user-visible
+    chat failure.
+    """
+    try:
+        generation = (
+            Generation.objects.select_related("assistant_message", "user_message__conversation")
+            .get(pk=generation_id)
+        )
+        streaming_module._index_history(generation.assistant_message)
+        streaming_module.refresh_rolling_summary(generation.user_message.conversation)
+    except Exception:
+        logger.exception(
+            "Recovered chat completion post-processing failed generation_id=%s",
+            generation_id,
+        )
+
+
 def install(streaming_module) -> None:
     raw_run = streaming_module.run
     if getattr(raw_run, "_ai_workspace_terminal_recovery", False):
@@ -113,6 +137,7 @@ def install(streaming_module) -> None:
             if _event_name(chunk) == "error":
                 payload = _confirmed_overrun_payload(generation.id)
                 if payload is not None:
+                    _post_complete(streaming_module, generation.id)
                     yield streaming_module.sse("completed", payload)
                     continue
             yield chunk
