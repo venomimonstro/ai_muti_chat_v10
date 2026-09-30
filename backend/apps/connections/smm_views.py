@@ -8,6 +8,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from .models import ExternalConnection
+from .smm_media import prepare_item_media, search_free_stock
 from .smm_models import SMMContentItem, SMMContentPlan, SMMPublicationAttempt
 from .smm_serializers import SMMContentItemSerializer, SMMContentPlanSerializer, SMMPublicationAttemptSerializer
 from .smm_service import ensure_smm_agent, publish_item, start_plan_generation, sync_generated_plan
@@ -87,7 +88,7 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = (
             SMMContentItem.objects.filter(plan__owner=self.request.user)
-            .select_related("plan", "plan__connection", "plan__agent")
+            .select_related("plan", "plan__connection", "plan__agent", "plan__owner")
             .prefetch_related("publication_attempts")
         )
         plan_id = str(self.request.query_params.get("plan") or "").strip()
@@ -106,6 +107,28 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
             item.full_clean()
         except DjangoValidationError as exc:
             raise ValidationError({"detail": exc.messages}) from exc
+
+    @action(detail=False, methods=["get"], url_path="stock-search")
+    def stock_search(self, request):
+        query = str(request.query_params.get("q") or "").strip()
+        try:
+            return Response(search_free_stock(query, per_page=12))
+        except DjangoValidationError as exc:
+            raise ValidationError({"detail": exc.messages}) from exc
+
+    @action(detail=True, methods=["post"], url_path="prepare-media")
+    def prepare_media(self, request, pk=None):
+        item = self.get_object()
+        if item.status == SMMContentItem.Status.PUBLISHED:
+            raise ValidationError({"detail": "Пост уже опубликован"})
+        try:
+            attachment = prepare_item_media(item)
+        except DjangoValidationError as exc:
+            raise ValidationError({"detail": exc.messages}) from exc
+        item.vk_attachment = attachment
+        item.publish_error = ""
+        item.save(update_fields=["vk_attachment", "publish_error", "updated_at"])
+        return Response(self.get_serializer(item).data)
 
     @action(detail=True, methods=["post"], url_path="publish")
     def publish(self, request, pk=None):
