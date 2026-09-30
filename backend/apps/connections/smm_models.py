@@ -15,6 +15,7 @@ class SMMContentPlan(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="smm_content_plans")
     agent = models.ForeignKey("agents.Agent", on_delete=models.PROTECT, related_name="smm_content_plans")
+    generation_run = models.ForeignKey("agents.AgentRun", on_delete=models.SET_NULL, null=True, blank=True, related_name="smm_generated_plans")
     connection = models.ForeignKey("connections.ExternalConnection", on_delete=models.PROTECT, related_name="smm_content_plans")
     project = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True, related_name="smm_content_plans")
     title = models.CharField(max_length=180, default="Контент-план VK")
