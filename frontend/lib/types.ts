@@ -63,7 +63,7 @@ export type GenerationMeta = {
     dropped_or_deduplicated: number;
     routing: {
       decision_id: string;
-      mode: "manual" | "economy" | "balanced" | "maximum";
+      mode: "auto" | "manual" | "economy" | "balanced" | "maximum";
       task_taxonomy: string;
       selected_model: string;
       model_version: string | null;
@@ -103,7 +103,7 @@ export type Conversation = {
   id: string;
   title: string;
   selected_model: string;
-  routing_mode: "manual" | "economy" | "balanced" | "maximum";
+  routing_mode: "auto" | "manual" | "economy" | "balanced" | "maximum";
   project: string | null;
   memory_enabled: boolean;
   active_branch: string | null;
