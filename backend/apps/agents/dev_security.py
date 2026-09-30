@@ -11,6 +11,10 @@ SECRET_PATTERNS = (
     ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b")),
     ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
     ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{24,}\b")),
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
+    ("stripe_live_key", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b")),
+    ("slack_token", re.compile(r"\bxox(?:b|p|a|r|s)-[A-Za-z0-9-]{20,}\b")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
 )
 SENSITIVE_ASSIGNMENT = re.compile(
     r"(?im)^\s*[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*['\"]?([^'\"\s#]{8,})"
@@ -32,7 +36,6 @@ DEPENDENCY_FILES = {
     "cargo.lock",
 }
 DEPLOYMENT_NAMES = {
-    "dockerfile",
     "docker-compose.yml",
     "docker-compose.yaml",
     "docker-compose.prod.yml",
@@ -42,6 +45,15 @@ DEPLOYMENT_NAMES = {
     "caddyfile",
     "nginx.conf",
 }
+DEPLOYMENT_PREFIXES = (
+    "deploy/",
+    "infra/",
+    "ops/",
+    "k8s/",
+    "kubernetes/",
+    "helm/",
+    ".github/workflows/",
+)
 
 
 def _secret_finding(path, content):
@@ -64,7 +76,13 @@ def classify_change_risk(path, operation):
     risks = []
     if name in DEPENDENCY_FILES:
         risks.append("dependency_manifest")
-    if name in DEPLOYMENT_NAMES or normalized.startswith(("deploy/", "infra/", "ops/")):
+    if (
+        name in DEPLOYMENT_NAMES
+        or name.startswith("dockerfile")
+        or normalized.startswith(DEPLOYMENT_PREFIXES)
+        or normalized.endswith(".tf")
+        or normalized.endswith(".tfvars")
+    ):
         risks.append("deployment")
     if "/migrations/" in f"/{normalized}" or name.startswith("migration"):
         risks.append("database_migration")
