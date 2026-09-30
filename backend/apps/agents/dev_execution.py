@@ -46,9 +46,6 @@ def enrich_changes_with_snapshot(changes, repository_context):
             item["expected_sha"] = expected_sha
         result.append(item)
 
-    # A real repository proposal must be executable before the user is asked to
-    # approve it. This is intentionally repeated again immediately before write
-    # in apply_approved_changes() to close the time-of-check/time-of-use gap.
     if repository_context.get("repository"):
         workspace_id = f"preview-{uuid.uuid4().hex[:24]}"
         try:
@@ -56,6 +53,7 @@ def enrich_changes_with_snapshot(changes, repository_context):
                 result,
                 workspace_id=workspace_id,
                 base_files=repository_context.get("files") or [],
+                workspace_profile=repository_context.get("workspace_profile") or {},
             )
         finally:
             if sandbox_enabled():
@@ -100,14 +98,37 @@ def _workspace_operations(changes):
     return operations
 
 
-def validate_changes_in_sandbox(changes, *, workspace_id=None, base_files=None):
+def _verification_metadata(workspace_profile, *, checks):
+    profile = workspace_profile or {}
+    snapshot_complete = bool(profile.get("snapshot_complete"))
+    if not checks:
+        evidence_level = "structural"
+    elif snapshot_complete:
+        evidence_level = "syntax_complete_snapshot"
+    else:
+        evidence_level = "syntax_bounded_snapshot"
+    return {
+        "evidence_level": evidence_level,
+        "snapshot_complete": snapshot_complete,
+        "repository_evidence_level": str(profile.get("evidence_level") or "unknown"),
+        "project_types": {
+            "python": bool(profile.get("python_project")),
+            "django": bool(profile.get("django_project")),
+            "node": bool(profile.get("node_project")),
+        },
+    }
+
+
+def validate_changes_in_sandbox(changes, *, workspace_id=None, base_files=None, workspace_profile=None):
     checks = _sandbox_checks(changes)
+    metadata = _verification_metadata(workspace_profile, checks=checks)
     if not checks:
         return {
             "ok": True,
             "command": "structural-validation",
             "checks": [],
             "output": "Для изменённых типов файлов нет безопасной исполняемой проверки; выполнена структурная валидация.",
+            **metadata,
         }
     if not sandbox_enabled():
         raise ValidationError("Sandbox не настроен; запись кода заблокирована")
@@ -135,6 +156,7 @@ def validate_changes_in_sandbox(changes, *, workspace_id=None, base_files=None):
             f"({failed.get('command') or 'workspace-check'}): "
             f"{str(failed.get('output') or failed.get('error') or '')[-4000:]}"
         )
+    result.update(metadata)
     return result
 
 
@@ -159,7 +181,6 @@ def _persist_run_execution_state(run_id, **values):
 
 
 def _persist_working_branch(run_id, branch_name):
-    """Persist the external GitHub side effect before the first file write."""
     return _persist_run_execution_state(run_id, phase="writing_changes", working_branch=branch_name)
 
 
@@ -186,6 +207,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
             changes,
             workspace_id=workspace_id,
             base_files=repository_context.get("files") or [],
+            workspace_profile=repository_context.get("workspace_profile") or {},
         )
     else:
         sandbox_result = validate_changes_in_sandbox(changes)
