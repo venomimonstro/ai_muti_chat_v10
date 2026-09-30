@@ -149,17 +149,22 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
         raise ValidationError("Dev Studio остановлен до sandbox/GitHub write")
 
     workspace_id = f"devrun-{str(run_id).replace('-', '')[:24]}"
-    repository_context = build_repository_context(project, ref=binding.default_branch)
-    _persist_run_execution_state(
-        run_id,
-        phase="validating_changes",
-        workspace_id=workspace_id,
-    )
-    sandbox_result = validate_changes_in_sandbox(
-        changes,
-        workspace_id=workspace_id,
-        base_files=repository_context.get("files") or [],
-    )
+    checks = _sandbox_checks(changes)
+    if checks:
+        repository_context = build_repository_context(project, ref=binding.default_branch)
+        _persist_run_execution_state(
+            run_id,
+            phase="validating_changes",
+            workspace_id=workspace_id,
+        )
+        sandbox_result = validate_changes_in_sandbox(
+            changes,
+            workspace_id=workspace_id,
+            base_files=repository_context.get("files") or [],
+        )
+    else:
+        sandbox_result = validate_changes_in_sandbox(changes)
+
     if cancel_check():
         raise ValidationError("Dev Studio остановлен после sandbox и до создания рабочей ветки")
 
@@ -206,7 +211,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
                     "run_id": str(run_id),
                     "sequence": index,
                     "applied_before_failure": len(applied),
-                    "workspace_id": workspace_id,
+                    "workspace_id": workspace_id if checks else "",
                     "error": str(exc)[:2000],
                 },
             )
@@ -225,7 +230,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
             metadata={
                 "run_id": str(run_id),
                 "sequence": index,
-                "workspace_id": workspace_id,
+                "workspace_id": workspace_id if checks else "",
                 "commit_sha": result.get("commit_sha"),
                 "content_sha": result.get("content_sha"),
             },
@@ -241,12 +246,12 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
     _persist_run_execution_state(
         run_id,
         phase="changes_written",
-        workspace_id=workspace_id,
+        workspace_id=workspace_id if checks else "",
         working_branch=branch_name,
     )
     return {
         "branch": branch_name,
         "changes": applied,
         "sandbox": sandbox_result,
-        "workspace_id": workspace_id,
+        "workspace_id": workspace_id if checks else None,
     }
