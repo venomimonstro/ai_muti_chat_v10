@@ -49,6 +49,18 @@ app.conf.beat_schedule = {
         "task": "apps.agents.tasks.dispatch_due_agent_schedules",
         "schedule": 60.0,
     },
+    "check-external-connections": {
+        "task": "apps.connections.tasks.check_external_connections",
+        "schedule": 300.0,
+    },
+    "sync-smm-generations": {
+        "task": "apps.connections.tasks.sync_smm_generations",
+        "schedule": 30.0,
+    },
+    "publish-due-smm-posts": {
+        "task": "apps.connections.tasks.publish_due_smm_posts",
+        "schedule": 60.0,
+    },
 }
 
 
