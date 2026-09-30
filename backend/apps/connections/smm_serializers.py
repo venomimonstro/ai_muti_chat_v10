@@ -21,13 +21,26 @@ class SMMContentItemSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         instance = self.instance
+        user = self.context["request"].user
+        plan = attrs.get("plan", getattr(instance, "plan", None))
         status = attrs.get("status", getattr(instance, "status", SMMContentItem.Status.IDEA))
         scheduled_at = attrs.get("scheduled_at", getattr(instance, "scheduled_at", None))
         content = str(attrs.get("content", getattr(instance, "content", "")) or "").strip()
+        media_source = attrs.get("media_source", getattr(instance, "media_source", SMMContentItem.MediaSource.NONE))
+        media_generation = attrs.get("media_generation_id", getattr(instance, "media_generation_id", None))
+        media_url = str(attrs.get("media_url", getattr(instance, "media_url", "")) or "").strip()
+        if plan and plan.owner_id != user.id:
+            raise serializers.ValidationError({"plan": "Контент-план недоступен"})
         if status in {SMMContentItem.Status.SCHEDULED, SMMContentItem.Status.PUBLISHING, SMMContentItem.Status.PUBLISHED} and not content:
             raise serializers.ValidationError({"content": "Для публикации нужен текст поста"})
         if status == SMMContentItem.Status.SCHEDULED and not scheduled_at:
             raise serializers.ValidationError({"scheduled_at": "Укажите дату и время публикации"})
+        if media_generation is not None and media_generation.owner_id != user.id:
+            raise serializers.ValidationError({"media_generation_id": "Изображение недоступно"})
+        if media_source == SMMContentItem.MediaSource.GENERATED and media_generation is None:
+            raise serializers.ValidationError({"media_generation_id": "Выберите готовую AI-генерацию"})
+        if media_source == SMMContentItem.MediaSource.STOCK and not media_url:
+            raise serializers.ValidationError({"media_url": "Выберите изображение фотостока"})
         return attrs
 
 
@@ -78,8 +91,10 @@ class SMMContentPlanSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"connection": "VK-подключение недоступно"})
             if connection.kind != "vk":
                 raise serializers.ValidationError({"connection": "Нужно подключение ВКонтакте"})
-            if connection.health_state != "healthy":
+            if not connection.enabled or connection.health_state != "healthy":
                 raise serializers.ValidationError({"connection": "Сначала проверьте подключение VK"})
+            if not str((connection.metadata or {}).get("selected_group_id") or "").strip():
+                raise serializers.ValidationError({"connection": "Выберите сообщество VK для публикаций"})
         if project and project.owner_id != user.id:
             raise serializers.ValidationError({"project": "Проект недоступен"})
         if period_start and period_end and period_end < period_start:
