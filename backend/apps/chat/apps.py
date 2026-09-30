@@ -9,6 +9,7 @@ class ChatConfig(AppConfig):
         # UI-only organization models are registered here to keep inference models focused.
         from . import (
             billing_recovery,
+            cooperative_cancel,
             manual_selection_recovery,
             runtime_readiness,
             serializers,
@@ -20,10 +21,12 @@ class ChatConfig(AppConfig):
         )  # noqa: F401
 
         # Install guards before terminal recovery. Customer traffic must never probe a
-        # stale provider/model candidate, and one conversation must never create two
-        # concurrent generations through double-click/multi-tab races.
+        # stale provider/model candidate, one conversation must never create two
+        # concurrent generations, and a client Stop must cooperatively terminate the
+        # same generation without creating another provider request.
         billing_recovery.install()
         manual_selection_recovery.install(serializers)
         runtime_readiness.install(streaming)
         single_flight.install(streaming)
+        cooperative_cancel.install(streaming)
         terminal_recovery.install(streaming)
