@@ -13,6 +13,7 @@ VK_API_BASE_URL = os.getenv("VK_API_BASE_URL", "https://api.vk.com/method")
 VK_API_VERSION = os.getenv("VK_API_VERSION", "5.199")
 VK_SCOPES = os.getenv("VK_OAUTH_SCOPES", "wall,photos,groups,offline")
 VK_TIMEOUT_SECONDS = max(3, int(os.getenv("VK_API_TIMEOUT_SECONDS", "15")))
+VK_WALL_IDEMPOTENCY_PARAM = os.getenv("VK_WALL_IDEMPOTENCY_PARAM", "guid").strip()
 
 
 @dataclass(frozen=True)
@@ -127,8 +128,6 @@ def check_vk(connection) -> VKProfile:
                 }
             )
     except ValidationError:
-        # A valid account can have no group-list permission. The credential remains healthy;
-        # publishing will still fail closed until a community is selected and writable.
         groups = []
     return VKProfile(user_id=user_id, display_name=display_name, groups=groups)
 
@@ -140,6 +139,7 @@ def publish_wall_post(
     message: str,
     attachments: str = "",
     publish_date: int | None = None,
+    request_guid: str = "",
 ) -> str:
     group_id = str(group_id or "").strip().lstrip("-")
     message = str(message or "").strip()
@@ -156,6 +156,8 @@ def publish_wall_post(
         params["attachments"] = attachments
     if publish_date:
         params["publish_date"] = int(publish_date)
+    if request_guid and VK_WALL_IDEMPOTENCY_PARAM:
+        params[VK_WALL_IDEMPOTENCY_PARAM] = str(request_guid)[:64]
     result = api_call(connection.get_secret(), "wall.post", params).get("response") or {}
     post_id = result.get("post_id") if isinstance(result, dict) else None
     if not post_id:
