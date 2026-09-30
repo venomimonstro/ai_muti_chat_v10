@@ -49,6 +49,11 @@ def _cache_delete(key: str) -> None:
         pass
 
 
+def forget_cancel_probe(generation) -> None:
+    """Drop process-local polling state after any terminal/closed stream."""
+    _DB_CHECKS.pop(str(generation.id), None)
+
+
 def request_cancel(*, owner_id, idempotency_key: str, generation_id=None) -> None:
     key = str(idempotency_key or "").strip()
     if not key:
@@ -116,4 +121,4 @@ def clear_cancel(generation) -> None:
     except Exception:
         # Marker expires automatically and cannot affect another tenant.
         pass
-    _DB_CHECKS.pop(str(generation.id), None)
+    forget_cancel_probe(generation)
