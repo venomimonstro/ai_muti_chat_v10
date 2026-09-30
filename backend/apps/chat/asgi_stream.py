@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import threading
+from decimal import Decimal, InvalidOperation
 
 from django.db import close_old_connections
 
@@ -47,8 +48,15 @@ def _is_provider_error(code):
     return value in _PROVIDER_ERROR_CODES or any(marker in value for marker in _PROVIDER_ERROR_MARKERS)
 
 
+def _positive_cost(value) -> bool:
+    try:
+        return Decimal(str(value or "0")) > 0
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+
+
 def _public_chunk(chunk):
-    """Hide provider/key/quota internals while keeping raw codes in durable DB diagnostics."""
+    """Hide provider/key/quota internals without contradicting authoritative billing."""
     if not isinstance(chunk, str) or not chunk.startswith("event: error\n"):
         return chunk
     try:
@@ -62,10 +70,19 @@ def _public_chunk(chunk):
     if _is_provider_error(code):
         payload["code"] = "AI-102"
         payload["support_code"] = "AI-102"
-        payload["message"] = (
-            "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списываются. "
-            "Повторите запрос — система автоматически выберет доступный AI-канал."
-        )
+        if _positive_cost(payload.get("cost_rub")):
+            # managed_stream has already reconciled confirmed provider usage. Do not
+            # overwrite that truth with the generic no-charge transport message.
+            payload["message"] = (
+                f"Ответ прервался после подтверждённого расхода AI. Списана только подтверждённая "
+                f"стоимость {payload['cost_rub']} ₽; остаток резерва возвращён. Повторите запрос — "
+                "система автоматически выберет доступный AI-канал."
+            )
+        else:
+            payload["message"] = (
+                "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списаны. "
+                "Повторите запрос — система автоматически выберет доступный AI-канал."
+            )
         return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
     return chunk
 
@@ -174,18 +191,27 @@ async def follow_generation_async(
                     },
                 )
             public_code = "AI-102" if _is_provider_error(snapshot["error_code"]) else (snapshot["error_code"] or "generation_failed")
+            charged = _positive_cost(snapshot["cost_rub"])
+            if charged:
+                message = (
+                    f"Запрос прервался после подтверждённого расхода AI. Списана только подтверждённая "
+                    f"стоимость {snapshot['cost_rub']} ₽; остаток резерва возвращён."
+                )
+            elif public_code == "AI-102":
+                message = (
+                    "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списаны. "
+                    "Повторите запрос."
+                )
+            else:
+                message = "Запрос завершился с ошибкой после восстановления соединения. Деньги без подтверждённого расхода не списаны."
             yield sse(
                 "error",
                 {
                     "code": public_code,
                     "support_code": public_code,
                     "partial": bool(snapshot["text"]),
-                    "message": (
-                        "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списываются. "
-                        "Повторите запрос."
-                        if public_code == "AI-102"
-                        else "Запрос завершился с ошибкой после восстановления соединения."
-                    ),
+                    "cost_rub": snapshot["cost_rub"],
+                    "message": message,
                 },
             )
             return
