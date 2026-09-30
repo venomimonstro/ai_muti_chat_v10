@@ -121,3 +121,43 @@ def test_explicit_tier_remains_strict_when_its_pool_is_unavailable():
 
     with pytest.raises(ValidationError, match="нет доступных моделей"):
         select_route(conversation=conversation, content="Привет. Ответь коротко.")
+
+
+@pytest.mark.django_db
+def test_complete_auto_outage_returns_controlled_validation_error_and_restores_mode():
+    user = User.objects.create_user(
+        username="auto-complete-outage",
+        email="auto-complete-outage@example.test",
+        password="password123!",
+    )
+    provider = Provider.objects.create(
+        slug="auto-outage-echo",
+        name="Auto outage echo",
+        adapter_type=Provider.AdapterType.ECHO,
+        health_state=Provider.HealthState.HEALTHY,
+        priority=10,
+    )
+    for tier, slug in (
+        (RoutingTierAssignment.Tier.SIMPLE, "auto-economy-down"),
+        (RoutingTierAssignment.Tier.MEDIUM, "auto-balanced-all-down"),
+        (RoutingTierAssignment.Tier.COMPLEX, "auto-maximum-down"),
+    ):
+        model = _model(provider, slug, enabled=False)
+        RoutingTierAssignment.objects.create(
+            tier=tier,
+            model=model,
+            priority=10,
+            enabled=True,
+        )
+    conversation = Conversation.objects.create(
+        owner=user,
+        title="AUTO complete outage",
+        routing_mode=Conversation.RoutingMode.AUTO,
+        selected_model="echo-v1",
+    )
+
+    with pytest.raises(ValidationError) as error:
+        select_route(conversation=conversation, content="Привет. Ответь коротко.")
+
+    assert "доступных моделей" in str(error.value)
+    assert conversation.routing_mode == Conversation.RoutingMode.AUTO
