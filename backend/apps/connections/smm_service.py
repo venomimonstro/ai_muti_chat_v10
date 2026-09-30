@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from apps.agents.models import Agent, AgentRun
 from apps.agents.run_views import create_single_agent_run
@@ -18,6 +20,14 @@ from .vk import publish_wall_post
 
 
 SMM_AGENT_NAME = "SMM-специалист VK"
+ACTIVE_RUN_STATES = {
+    AgentRun.State.QUEUED,
+    AgentRun.State.PLANNING,
+    AgentRun.State.RUNNING,
+    AgentRun.State.WAITING_TOOL,
+    AgentRun.State.WAITING_APPROVAL,
+    AgentRun.State.REVIEWING,
+}
 
 
 def ensure_smm_agent(*, owner, connection):
@@ -26,38 +36,57 @@ def ensure_smm_agent(*, owner, connection):
     agent = Agent.objects.filter(
         owner=owner,
         name=SMM_AGENT_NAME,
-        status__in=[Agent.Status.ACTIVE, Agent.Status.DRAFT],
-    ).first()
+        status__in=[Agent.Status.ACTIVE, Agent.Status.PAUSED, Agent.Status.DRAFT],
+    ).order_by("created_at").first()
+    defaults = {
+        "role": "SMM-специалист ВКонтакте",
+        "objective": (
+            "Планировать и готовить контент для сообщества ВКонтакте: изучать бизнес и аудиторию, "
+            "создавать контент-планы и тексты постов, предлагать визуалы и CTA."
+        ),
+        "instructions": (
+            "Не выдумывай факты о компании. Для актуальных сведений используй web, если он доступен. "
+            "Публикация во внешнюю сеть выполняется только отдельным инструментом платформы. "
+            "Для контент-плана возвращай строго JSON по схеме из задачи запуска."
+        ),
+        "autonomy": Agent.Autonomy.SEMI_AUTONOMOUS,
+        "status": Agent.Status.ACTIVE,
+        "system_level": "balanced",
+        "tool_policy": {
+            "web": True,
+            "browser": True,
+            "files": True,
+            "vk": True,
+            "image_generation": True,
+            "stock_search": True,
+            "publish": False,
+        },
+        "memory_policy": {"enabled": True, "scope": "project_and_user"},
+        "max_cost_rub_per_run": 20,
+        "max_cost_rub_per_day": 100,
+        "max_cost_rub_per_month": 1500,
+        "max_steps": 30,
+        "max_tool_calls": 30,
+        "max_handoffs": 5,
+        "max_retries_per_step": 2,
+        "max_runtime_seconds": 900,
+    }
     if agent is None:
-        agent = Agent.objects.create(
-            owner=owner,
-            name=SMM_AGENT_NAME,
-            role="SMM-специалист ВКонтакте",
-            objective=(
-                "Планировать и готовить контент для сообщества ВКонтакте: изучать бизнес и аудиторию, "
-                "создавать контент-планы и тексты постов, предлагать визуалы и CTA."
-            ),
-            instructions=(
-                "Не выдумывай факты о компании. Для актуальных сведений используй web, если он доступен. "
-                "Публикация во внешнюю сеть выполняется только отдельным инструментом платформы. "
-                "Для контент-плана возвращай строго JSON по схеме из задачи запуска."
-            ),
-            autonomy=Agent.Autonomy.SEMI_AUTONOMOUS,
-            status=Agent.Status.ACTIVE,
-            system_level="balanced",
-            tool_policy={"web": True, "browser": True, "vk": True, "image_generation": True},
-            max_cost_rub_per_run=20,
-            max_cost_rub_per_day=100,
-            max_cost_rub_per_month=1500,
-            max_steps=30,
-            max_tool_calls=30,
-        )
-    AgentConnectionBinding.objects.get_or_create(
+        agent = Agent(owner=owner, name=SMM_AGENT_NAME, **defaults)
+    else:
+        for field, value in defaults.items():
+            setattr(agent, field, value)
+    agent.full_clean()
+    agent.save()
+    binding, _ = AgentConnectionBinding.objects.get_or_create(
         agent=agent,
         connection=connection,
         purpose="publish",
         defaults={"enabled": True},
     )
+    if not binding.enabled:
+        binding.enabled = True
+        binding.save(update_fields=["enabled"])
     return agent
 
 
@@ -73,22 +102,22 @@ Tone of voice: {plan.tone or 'экспертный, понятный, живой
 
 Верни ТОЛЬКО валидный JSON-массив, без markdown и пояснений. Каждый объект:
 {{"title":"...","topic":"...","objective":"...","content":"полный текст поста","cta":"...","hashtags":["#тег"],"scheduled_at":"YYYY-MM-DDTHH:MM:SS+03:00","media_prompt":"описание изображения без текста на картинке"}}
-Требования: даты внутри периода; без повторов; факты не выдумывать; текст готов к публикации; CTA уместный, не навязчивый.
+Требования: даты внутри периода; не более одной публикации в день; без повторов; факты не выдумывать; текст готов к публикации; CTA уместный, не навязчивый.
 """
 
 
 def start_plan_generation(plan: SMMContentPlan, *, post_count: int = 12):
+    if plan.connection.health_state != ExternalConnection.Health.HEALTHY or not plan.connection.enabled:
+        raise ValidationError("VK-подключение не прошло проверку")
+    if not str((plan.connection.metadata or {}).get("selected_group_id") or "").strip():
+        raise ValidationError("Сначала выберите сообщество VK")
     if plan.generation_run_id:
         run = plan.generation_run
-        if run.state in {
-            AgentRun.State.QUEUED,
-            AgentRun.State.PLANNING,
-            AgentRun.State.RUNNING,
-            AgentRun.State.WAITING_TOOL,
-            AgentRun.State.WAITING_APPROVAL,
-            AgentRun.State.REVIEWING,
-        }:
+        if run.state in ACTIVE_RUN_STATES:
             return run
+    active = AgentRun.objects.filter(owner=plan.owner, agent=plan.agent, state__in=ACTIVE_RUN_STATES).order_by("-created_at").first()
+    if active is not None:
+        raise ValidationError("SMM-специалист уже выполняет другую задачу")
     run = create_single_agent_run(
         owner=plan.owner,
         agent=plan.agent,
@@ -103,6 +132,9 @@ def start_plan_generation(plan: SMMContentPlan, *, post_count: int = 12):
 
 def _extract_json_array(text: str):
     text = str(text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
     try:
         payload = json.loads(text)
         if isinstance(payload, list):
@@ -121,6 +153,18 @@ def _extract_json_array(text: str):
     return payload
 
 
+def _schedule_from_value(value, plan):
+    parsed = parse_datetime(str(value or "").strip())
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+    local_day = timezone.localtime(parsed).date()
+    if not (plan.period_start <= local_day <= plan.period_end):
+        return None
+    return parsed
+
+
 @transaction.atomic
 def sync_generated_plan(plan: SMMContentPlan):
     plan = SMMContentPlan.objects.select_for_update().select_related("generation_run").get(pk=plan.pk)
@@ -136,47 +180,47 @@ def sync_generated_plan(plan: SMMContentPlan):
     if plan.items.exists():
         return {"state": run.state, "created": 0}
     items = _extract_json_array((run.output_payload or {}).get("text") or "")
-    created = 0
+    prepared = []
+    seen_days = set()
     for index, raw in enumerate(items[:60]):
         if not isinstance(raw, dict):
             continue
-        scheduled_at = None
-        value = str(raw.get("scheduled_at") or "").strip()
-        if value:
-            try:
-                scheduled_at = timezone.datetime.fromisoformat(value)
-                if timezone.is_naive(scheduled_at):
-                    scheduled_at = timezone.make_aware(scheduled_at)
-            except ValueError:
+        scheduled_at = _schedule_from_value(raw.get("scheduled_at"), plan)
+        if scheduled_at:
+            day = timezone.localtime(scheduled_at).date().isoformat()
+            if day in seen_days:
                 scheduled_at = None
-        if scheduled_at and not (plan.period_start <= scheduled_at.date() <= plan.period_end):
-            scheduled_at = None
+            else:
+                seen_days.add(day)
         content = str(raw.get("content") or "").strip()
         title = str(raw.get("title") or raw.get("topic") or f"Публикация {index + 1}").strip()[:220]
         if not content:
             continue
         hashtags = raw.get("hashtags") if isinstance(raw.get("hashtags"), list) else []
-        SMMContentItem.objects.create(
-            plan=plan,
-            title=title,
-            topic=str(raw.get("topic") or "")[:240],
-            objective=str(raw.get("objective") or "")[:240],
-            content=content,
-            cta=str(raw.get("cta") or "")[:300],
-            hashtags=[str(tag)[:80] for tag in hashtags[:20]],
-            status=SMMContentItem.Status.DRAFT,
-            scheduled_at=scheduled_at,
-            media_prompt=str(raw.get("media_prompt") or "")[:2000],
-            sort_order=(index + 1) * 10,
+        prepared.append(
+            SMMContentItem(
+                plan=plan,
+                title=title or f"Публикация {index + 1}",
+                topic=str(raw.get("topic") or "")[:240],
+                objective=str(raw.get("objective") or "")[:240],
+                content=content,
+                cta=str(raw.get("cta") or "")[:300],
+                hashtags=[str(tag)[:80] for tag in hashtags[:20] if str(tag).strip()],
+                status=SMMContentItem.Status.DRAFT,
+                scheduled_at=scheduled_at,
+                media_prompt=str(raw.get("media_prompt") or "")[:2000],
+                sort_order=(index + 1) * 10,
+            )
         )
-        created += 1
-    if not created:
+    if not prepared:
         plan.generation_error = "Генерация завершилась, но валидные публикации не найдены"
-    else:
-        plan.status = SMMContentPlan.Status.ACTIVE
-        plan.generation_error = ""
+        plan.save(update_fields=["generation_error", "updated_at"])
+        return {"state": run.state, "created": 0}
+    SMMContentItem.objects.bulk_create(prepared)
+    plan.status = SMMContentPlan.Status.ACTIVE
+    plan.generation_error = ""
     plan.save(update_fields=["status", "generation_error", "updated_at"])
-    return {"state": run.state, "created": created}
+    return {"state": run.state, "created": len(prepared)}
 
 
 def _publication_message(item: SMMContentItem):
@@ -189,35 +233,79 @@ def _publication_message(item: SMMContentItem):
     return "\n\n".join(part for part in parts if part)
 
 
-def publish_item(item: SMMContentItem, *, idempotency_key: str):
-    key = str(idempotency_key or "").strip()[:180]
-    if not key:
-        raise ValidationError("Idempotency-Key обязателен")
-    existing = SMMPublicationAttempt.objects.filter(idempotency_key=key).first()
-    if existing:
-        return existing
-    plan = item.plan
-    connection = plan.connection
-    if connection.health_state != ExternalConnection.Health.HEALTHY or not connection.enabled:
-        raise ValidationError("VK-подключение недоступно")
-    group_id = str((connection.metadata or {}).get("selected_group_id") or "").strip()
-    if not group_id:
-        raise ValidationError("Выберите сообщество VK в разделе Интеграции")
-    if item.external_post_id:
-        return SMMPublicationAttempt.objects.create(
-            item=item,
-            idempotency_key=key,
-            state=SMMPublicationAttempt.State.SKIPPED,
-            external_post_id=item.external_post_id,
-            error_code="already_published",
-            error_message="Публикация уже существует",
-            finished_at=timezone.now(),
+def _publication_guid(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
+
+def _claim_publication(item_id, key):
+    with transaction.atomic():
+        item = (
+            SMMContentItem.objects.select_for_update()
+            .select_related("plan__connection", "plan__owner")
+            .get(pk=item_id)
         )
-    attempt = SMMPublicationAttempt.objects.create(item=item, idempotency_key=key)
-    item.status = SMMContentItem.Status.PUBLISHING
-    item.publish_error = ""
-    item.save(update_fields=["status", "publish_error", "updated_at"])
-    request_guid = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        existing = SMMPublicationAttempt.objects.select_for_update().filter(idempotency_key=key).first()
+        if existing is not None and existing.item_id != item.id:
+            raise ValidationError("Idempotency-Key уже используется другой публикацией")
+        if item.external_post_id:
+            if existing is None:
+                existing = SMMPublicationAttempt.objects.create(
+                    item=item,
+                    idempotency_key=key,
+                    state=SMMPublicationAttempt.State.SKIPPED,
+                    external_post_id=item.external_post_id,
+                    error_code="already_published",
+                    error_message="Публикация уже существует",
+                    finished_at=timezone.now(),
+                )
+            return item, existing, False
+        if existing is not None:
+            if existing.state in {SMMPublicationAttempt.State.COMPLETED, SMMPublicationAttempt.State.SKIPPED}:
+                return item, existing, False
+            if existing.state == SMMPublicationAttempt.State.STARTED and existing.started_at >= timezone.now() - timedelta(minutes=5):
+                return item, existing, False
+            existing.state = SMMPublicationAttempt.State.STARTED
+            existing.external_post_id = ""
+            existing.error_code = ""
+            existing.error_message = ""
+            existing.finished_at = None
+            existing.save(update_fields=["state", "external_post_id", "error_code", "error_message", "finished_at"])
+            attempt = existing
+        else:
+            try:
+                attempt = SMMPublicationAttempt.objects.create(item=item, idempotency_key=key)
+            except IntegrityError:
+                attempt = SMMPublicationAttempt.objects.select_for_update().get(idempotency_key=key)
+                if attempt.item_id != item.id:
+                    raise ValidationError("Idempotency-Key уже используется другой публикацией")
+                return item, attempt, False
+        if item.status not in {
+            SMMContentItem.Status.APPROVED,
+            SMMContentItem.Status.SCHEDULED,
+            SMMContentItem.Status.FAILED,
+            SMMContentItem.Status.PUBLISHING,
+        }:
+            raise ValidationError("Пост должен быть одобрен или запланирован перед публикацией")
+        connection = item.plan.connection
+        if connection.health_state != ExternalConnection.Health.HEALTHY or not connection.enabled:
+            raise ValidationError("VK-подключение недоступно")
+        if not str((connection.metadata or {}).get("selected_group_id") or "").strip():
+            raise ValidationError("Выберите сообщество VK в разделе Интеграции")
+        item.status = SMMContentItem.Status.PUBLISHING
+        item.publish_error = ""
+        item.save(update_fields=["status", "publish_error", "updated_at"])
+        return item, attempt, True
+
+
+def publish_item(item: SMMContentItem, *, idempotency_key: str):
+    key = str(idempotency_key or "").strip()
+    if not key or len(key) > 180:
+        raise ValidationError("Корректный Idempotency-Key обязателен")
+    item, attempt, claimed = _claim_publication(item.id, key)
+    if not claimed:
+        return attempt
+    connection = item.plan.connection
+    group_id = str((connection.metadata or {}).get("selected_group_id") or "").strip()
     try:
         if not item.vk_attachment and item.media_source in {
             SMMContentItem.MediaSource.GENERATED,
@@ -230,29 +318,37 @@ def publish_item(item: SMMContentItem, *, idempotency_key: str):
             group_id=group_id,
             message=_publication_message(item),
             attachments=item.vk_attachment,
-            request_guid=request_guid,
+            request_guid=_publication_guid(key),
         )
     except Exception as exc:
-        attempt.state = SMMPublicationAttempt.State.FAILED
-        attempt.error_code = "vk_publish_failed"
-        attempt.error_message = str(exc)[:500]
-        attempt.finished_at = timezone.now()
-        attempt.save(update_fields=["state", "error_code", "error_message", "finished_at"])
-        item.status = SMMContentItem.Status.FAILED
-        item.publish_error = str(exc)[:500]
-        item.save(update_fields=["status", "publish_error", "updated_at"])
+        with transaction.atomic():
+            locked_attempt = SMMPublicationAttempt.objects.select_for_update().get(pk=attempt.pk)
+            locked_item = SMMContentItem.objects.select_for_update().get(pk=item.pk)
+            locked_attempt.state = SMMPublicationAttempt.State.FAILED
+            locked_attempt.error_code = "vk_publish_failed"
+            locked_attempt.error_message = str(exc)[:500]
+            locked_attempt.finished_at = timezone.now()
+            locked_attempt.save(update_fields=["state", "error_code", "error_message", "finished_at"])
+            locked_item.status = SMMContentItem.Status.FAILED
+            locked_item.publish_error = str(exc)[:500]
+            locked_item.save(update_fields=["status", "publish_error", "updated_at"])
         raise
     now = timezone.now()
-    attempt.state = SMMPublicationAttempt.State.COMPLETED
-    attempt.external_post_id = external_id
-    attempt.finished_at = now
-    attempt.save(update_fields=["state", "external_post_id", "finished_at"])
-    item.status = SMMContentItem.Status.PUBLISHED
-    item.external_post_id = external_id
-    item.published_at = now
-    item.publish_error = ""
-    item.save(update_fields=["status", "external_post_id", "published_at", "publish_error", "updated_at"])
-    return attempt
+    with transaction.atomic():
+        locked_attempt = SMMPublicationAttempt.objects.select_for_update().get(pk=attempt.pk)
+        locked_item = SMMContentItem.objects.select_for_update().get(pk=item.pk)
+        locked_attempt.state = SMMPublicationAttempt.State.COMPLETED
+        locked_attempt.external_post_id = external_id
+        locked_attempt.error_code = ""
+        locked_attempt.error_message = ""
+        locked_attempt.finished_at = now
+        locked_attempt.save(update_fields=["state", "external_post_id", "error_code", "error_message", "finished_at"])
+        locked_item.status = SMMContentItem.Status.PUBLISHED
+        locked_item.external_post_id = external_id
+        locked_item.published_at = now
+        locked_item.publish_error = ""
+        locked_item.save(update_fields=["status", "external_post_id", "published_at", "publish_error", "updated_at"])
+    return locked_attempt
 
 
 def due_items(limit=50):
