@@ -8,6 +8,7 @@ type Props={value:string;models:AIModel[];disabled?:boolean;onChange:(value:stri
 type PickerSection="auto"|"model";
 
 const modes=[
+ {value:"auto:auto",label:"AUTO",hint:"Сам определит сложность и выберет подходящую модель",icon:"spark" as const},
  {value:"auto:economy",label:"Простой",hint:"Быстро и экономно",icon:"zap" as const},
  {value:"auto:balanced",label:"Средний",hint:"Оптимальный баланс качества и цены",icon:"spark" as const},
  {value:"auto:maximum",label:"Сложный",hint:"Максимум качества для сложных задач",icon:"brain" as const},
@@ -106,27 +107,27 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
  },[open]);
 
  const choose=(next:string)=>{if(disabled)return;onChange(next);setOpen(false)};
- const label=currentMode?`AUTO · ${currentMode.label}`:currentModel?`${providerLabelByKey(currentProvider)} · ${modelLabel(currentModel)}`:"AUTO · Средний";
- const sub=currentMode?.hint??(currentModel?(currentModel.available?"Конкретная модель":"Модель недоступна"):"Оптимальный баланс качества и цены");
+ const label=currentMode?(currentMode.value==="auto:auto"?"AUTO":`AUTO · ${currentMode.label}`):currentModel?`${providerLabelByKey(currentProvider)} · ${modelLabel(currentModel)}`:"AUTO";
+ const sub=currentMode?.hint??(currentModel?(currentModel.available?"Конкретная модель":"Модель недоступна"):"Сам определит сложность и выберет подходящую модель");
  const providerModels=groups.find(([key])=>key===selectedProvider)?.[1]??[];
 
  return <div className="modelPicker" ref={root}>
-  <button type="button" className="modelPickerTrigger" disabled={disabled} onClick={()=>setOpen(v=>!v)} aria-haspopup="dialog" aria-expanded={open} title="Выбрать AUTO-уровень или конкретную нейросеть">
+  <button type="button" className="modelPickerTrigger" disabled={disabled} onClick={()=>setOpen(v=>!v)} aria-haspopup="dialog" aria-expanded={open} title="Выбрать AUTO, уровень или конкретную нейросеть">
    <span className="modelPickerMark"><Icon name={currentMode?.icon??"brain"} size={14}/></span>
    <span className="modelPickerCurrent"><b>{label}</b><small>{sub}</small></span>
    <Icon name="chevron" size={13}/>
   </button>
   {open&&<div className="modelPickerMenu modelPickerMenuV2" role="dialog" aria-label="Выбор нейросети">
-   <div className="modelPickerHead"><div><b>Выбор нейросети</b><span>Используйте AUTO или зафиксируйте конкретную модель.</span></div><button type="button" onClick={()=>setOpen(false)} aria-label="Закрыть"><Icon name="x" size={15}/></button></div>
+   <div className="modelPickerHead"><div><b>Выбор нейросети</b><span>AUTO определяет сложность сам; уровни фиксируют класс моделей.</span></div><button type="button" onClick={()=>setOpen(false)} aria-label="Закрыть"><Icon name="x" size={15}/></button></div>
    <div className="modelPickerTabs" role="tablist" aria-label="Способ выбора модели">
-    <button type="button" role="tab" aria-selected={section==="auto"} className={section==="auto"?"active":""} onClick={()=>setSection("auto")}><Icon name="spark" size={15}/>AUTO</button>
+    <button type="button" role="tab" aria-selected={section==="auto"} className={section==="auto"?"active":""} onClick={()=>setSection("auto")}><Icon name="spark" size={15}/>AUTO и уровни</button>
     <button type="button" role="tab" aria-selected={section==="model"} className={section==="model"?"active":""} onClick={()=>setSection("model")}><Icon name="brain" size={15}/>Конкретная модель</button>
    </div>
    {section==="auto"?<div className="modelPickerPane">
-    <p className="modelPickerHelp">AUTO сам выбирает рабочую модель и может переключиться на резервный провайдер при сбое.</p>
+    <p className="modelPickerHelp">AUTO определяет сложность запроса и выбирает модель из настроенного администратором пула. Уровни позволяют зафиксировать класс моделей.</p>
     <div className="modelModeGrid">{modes.map(item=><button type="button" key={item.value} className={value===item.value?"active":""} onClick={()=>choose(item.value)}><span><Icon name={item.icon} size={16}/></span><b>{item.label}</b><small>{item.hint}</small>{value===item.value&&<Icon name="check" size={15}/>}</button>)}</div>
    </div>:<div className="modelPickerPane">
-    <p className="modelPickerHelp">Сначала выберите нейросеть, затем конкретную модель. Недоступные модели нельзя запустить.</p>
+    <p className="modelPickerHelp">Сначала выберите нейросеть, затем конкретную модель. Недоступные модели не показываются каталогом backend и дополнительно блокируются здесь.</p>
     <div className="modelProviderTabs" role="tablist" aria-label="Провайдер нейросети">{groups.map(([provider,items])=>{
      const available=items.filter(item=>item.available).length;
      return <button type="button" role="tab" aria-selected={selectedProvider===provider} key={provider} className={selectedProvider===provider?"active":""} onClick={()=>setSelectedProvider(provider)}><b>{providerLabelByKey(provider)}</b><small>{available}/{items.length} доступно</small></button>
