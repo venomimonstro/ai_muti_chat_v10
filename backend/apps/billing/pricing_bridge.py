@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -11,6 +11,7 @@ from apps.ai_registry.models import AIModel
 from .models import PriceVersion
 
 ZERO = Decimal("0")
+NATIVE_STEP = Decimal("0.000001")
 
 
 def install(pricing_module) -> None:
@@ -48,10 +49,45 @@ def install(pricing_module) -> None:
         router.active_price = active_price
 
 
+def _provider_price_currency(model: AIModel) -> tuple[str, Decimal]:
+    """Resolve the native currency and RUB/native FX for the funded credential.
+
+    AIModel legacy cost fields are explicitly RUB-denominated. Provider procurement
+    balances, however, are stored in the native currency of the default funding
+    account (USD/EUR/RUB/etc.). The immutable PriceVersion must therefore use the
+    same native currency as procurement or a funded provider would be rejected by
+    strict runtime readiness despite having a valid key and positive balance.
+    """
+    try:
+        account = (
+            model.provider.funding_accounts.filter(active=True, is_default=True)
+            .only("currency")
+            .first()
+        )
+    except Exception:
+        account = None
+    currency = str(getattr(account, "currency", "") or "RUB").upper().strip()
+    if not currency:
+        currency = "RUB"
+    if currency == "RUB":
+        return "RUB", Decimal("1")
+
+    # Reuse billing's governed FX snapshot (including staleness checks). This makes
+    # the native price deterministic at bridge creation while the original RUB
+    # legacy values remain preserved for operator visibility.
+    from .pricing import active_fx_snapshot
+
+    fx = active_fx_snapshot(currency)
+    if fx is None or fx.rate <= ZERO:
+        raise ValidationError(f"Не настроен корректный FX snapshot {currency}/RUB")
+    return currency, Decimal(fx.rate)
+
+
 @transaction.atomic
 def ensure_price_from_model_cost(model_slug: str) -> PriceVersion | None:
     model = (
         AIModel.objects.select_for_update()
+        .select_related("provider")
         .filter(slug=model_slug, enabled=True)
         .first()
     )
@@ -70,19 +106,31 @@ def ensure_price_from_model_cost(model_slug: str) -> PriceVersion | None:
     if existing is not None:
         return existing
 
-    input_cost = Decimal(str(model.input_price_rub_per_million or 0))
-    output_cost = Decimal(str(model.output_price_rub_per_million or 0))
-    if input_cost <= ZERO or output_cost <= ZERO:
+    input_cost_rub = Decimal(str(model.input_price_rub_per_million or 0))
+    output_cost_rub = Decimal(str(model.output_price_rub_per_million or 0))
+    if input_cost_rub <= ZERO or output_cost_rub <= ZERO:
         return None
+
+    currency, rub_per_native = _provider_price_currency(model)
+    input_native = (input_cost_rub / rub_per_native).quantize(
+        NATIVE_STEP, rounding=ROUND_UP
+    )
+    output_native = (output_cost_rub / rub_per_native).quantize(
+        NATIVE_STEP, rounding=ROUND_UP
+    )
+    if input_native <= ZERO or output_native <= ZERO:
+        raise ValidationError("Не удалось преобразовать закупочную цену модели в валюту API-баланса")
 
     now = timezone.now()
     return PriceVersion.objects.create(
         model_slug=model.slug,
-        input_rub_per_million=input_cost,
-        output_rub_per_million=output_cost,
-        provider_currency="RUB",
-        input_price_per_million=input_cost,
-        output_price_per_million=output_cost,
+        # Keep the original operator-entered RUB values for display/backward
+        # compatibility. Billing uses the native fields + governed FX snapshot.
+        input_rub_per_million=input_cost_rub,
+        output_rub_per_million=output_cost_rub,
+        provider_currency=currency,
+        input_price_per_million=input_native,
+        output_price_per_million=output_native,
         markup_percent=Decimal("100"),
         active=True,
         effective_from=now,
