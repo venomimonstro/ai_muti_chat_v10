@@ -6,22 +6,18 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
+from apps.ai_registry.adapters import ProviderError
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.pricing import active_price, quote, require_margin
-from apps.billing.services import release, reserve, settle
+from apps.billing.services import release
 
-from .accounting import (
-    release_agent_provider_spend,
-    reserve_agent_provider_spend,
-    settle_agent_provider_spend,
-)
+from .accounting import release_agent_provider_spend
 from .dev_changes import developer_output_contract, parse_change_proposal
 from .dev_context import build_repository_context
 from .dev_execution import apply_approved_changes, enrich_changes_with_snapshot
+from .dev_model_execution import DevStageCanceled, execute_with_model_fallback
 from .dev_plan import director_output_contract, plan_for_run, plan_rows_for_ui
 from .dev_prompt import build_dev_messages
-from .dev_provider_retry import generate_with_key_failover
 from .limits import effective_remaining_budget
 from .models import AgentApproval, AgentRun, AgentStepRun
 from .runtime import _model_for
@@ -177,28 +173,26 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
         public_log=f"{title}: выполняется.",
         started_at=timezone.now(),
     )
-    customer_reservation = None
-    provider_reservation = None
     try:
-        model = _model_for(agent)
+        primary_model = _model_for(agent)
         messages = _messages(run, agent, role, repository_context, previous, task=task)
-        output_tokens = min(max(400, OUTPUT_TOKENS), model.max_output_tokens)
+        output_tokens = min(max(400, OUTPUT_TOKENS), primary_model.max_output_tokens)
         estimated_input = max(32, estimate_message_tokens(messages) + 16)
-        price = active_price(model.slug)
-        preflight = require_margin(
+        primary_price = active_price(primary_model.slug)
+        primary_preflight = require_margin(
             quote(
-                price,
+                primary_price,
                 estimated_input,
                 output_tokens,
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
+                provider_slug=primary_model.provider.slug,
+                model_slug=primary_model.slug,
                 operation_type="agent",
             )
         )
         team_remaining = max(Decimal("0"), budget - total)
         agent_remaining, agent_budget = effective_remaining_budget(agent, run=run)
         effective_remaining = min(team_remaining, agent_remaining)
-        if preflight.user_charge_rub > effective_remaining:
+        if primary_preflight.user_charge_rub > effective_remaining:
             if _is_canceled(run):
                 _mark_step_canceled(step)
                 return None, total, run
@@ -206,7 +200,7 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             if agent_remaining <= team_remaining:
                 step.public_log = (
                     f"{title}: шаг не запущен из-за лимита сотрудника. "
-                    f"Расчётный максимум {preflight.user_charge_rub} ₽, доступно {agent_remaining} ₽. "
+                    f"Расчётный максимум {primary_preflight.user_charge_rub} ₽, доступно {agent_remaining} ₽. "
                     f"За запуск {agent_budget['run_spend']}/{agent_budget['run_limit']} ₽; "
                     f"сегодня {agent_budget['day_spend']}/{agent_budget['day_limit']} ₽; "
                     f"за месяц {agent_budget['month_spend']}/{agent_budget['month_limit']} ₽."
@@ -214,7 +208,7 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
                 error_code = "agent_period_budget_exceeded"
             else:
                 step.public_log = (
-                    f"Шаг не запущен: расчётный максимум {preflight.user_charge_rub} ₽ превышает "
+                    f"Шаг не запущен: расчётный максимум {primary_preflight.user_charge_rub} ₽ превышает "
                     f"остаток бюджета Dev Team {team_remaining} ₽."
                 )
                 error_code = "team_budget_exceeded"
@@ -231,49 +225,20 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
         if _is_canceled(run):
             _mark_step_canceled(step)
             return None, total, run
-        customer_reservation = reserve(run.owner, preflight.user_charge_rub, f"agent-run:{run.id}:step:{sequence}")
-        provider_reservation = reserve_agent_provider_spend(
-            model=model,
-            provider_cost_rub=preflight.provider_cost_rub,
-            fx_snapshot=preflight.fx_snapshot,
-            source_key=f"agent:{run.id}:step:{sequence}",
-        )
-        if _is_canceled(run):
-            _release_customer(customer_reservation)
-            customer_reservation = None
-            _release_provider(provider_reservation)
-            provider_reservation = None
-            _mark_step_canceled(step, "Запуск отменён до обращения к модели; резерв освобождён.")
-            return None, total, run
 
-        result, provider_attempts = generate_with_key_failover(
-            model=model,
+        generation = execute_with_model_fallback(
+            run=run,
+            sequence=sequence,
+            primary_model=primary_model,
             messages=messages,
-            max_output_tokens=output_tokens,
-            adapter_factory=adapter_for,
+            estimated_input_tokens=estimated_input,
+            requested_output_tokens=output_tokens,
+            remaining_budget_rub=effective_remaining,
+            is_canceled=lambda: _is_canceled(run),
         )
-        actual_quote = require_margin(
-            quote(
-                price,
-                max(1, result.input_tokens),
-                max(1, result.output_tokens),
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
-                operation_type="agent",
-            )
-        )
-        actual = min(actual_quote.user_charge_rub, customer_reservation.amount_rub)
-        settle_agent_provider_spend(
-            reservation=provider_reservation,
-            model=model,
-            result=result,
-            actual_quote=actual_quote,
-            source_id=f"{run.id}:step:{sequence}",
-            customer_charge=actual,
-        )
-        provider_reservation = None
-        settle(customer_reservation.id, actual)
-        customer_reservation = None
+        result = generation.result
+        selected_model = generation.model
+        actual = generation.actual_rub
         total += actual
 
         if _is_canceled(run):
@@ -282,9 +247,11 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
         step.state = AgentStepRun.State.COMPLETED
         step.output_payload = {
             "text": result.text,
-            "model": model.slug,
+            "model": selected_model.slug,
+            "primary_model": primary_model.slug,
             "provider_request_id": result.provider_request_id,
-            "provider_attempts": provider_attempts,
+            "provider_attempts": generation.provider_attempts,
+            "model_attempts": generation.model_attempts,
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "director_task": task or None,
@@ -302,10 +269,17 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
         run.cost_actual_rub = total
         run.save(update_fields=["step_count", "handoff_count", "cost_actual_rub", "updated_at"])
         return result.text, total, None
+    except DevStageCanceled:
+        _mark_step_canceled(step, "Запуск отменён во время выбора/переключения модели; активные резервы освобождены.")
+        return None, total, run
     except ProviderError as exc:
-        return None, total, _fail(run, step, exc.code, str(exc), customer_reservation, provider_reservation)
+        attempts = getattr(exc, "model_attempts", None)
+        if attempts:
+            step.output_payload = {"model_attempts": attempts}
+            step.save(update_fields=["output_payload"])
+        return None, total, _fail(run, step, exc.code, str(exc))
     except Exception as exc:
-        return None, total, _fail(run, step, "team_runtime_failed", str(exc), customer_reservation, provider_reservation)
+        return None, total, _fail(run, step, "team_runtime_failed", str(exc))
 
 
 def _members(run):
@@ -348,7 +322,12 @@ def _await_write_approval(run, developer_step, changes, repository_context):
         "repository": repository_context["repository"],
         "repository_files": [item["path"] for item in repository_context["files"]],
         "pending_changes": [
-            {"path": item["path"], "operation": item["operation"], "reason": item.get("reason", "")}
+            {
+                "path": item["path"],
+                "operation": item["operation"],
+                "reason": item.get("reason", ""),
+                "risk_flags": item.get("risk_flags") or [],
+            }
             for item in enriched
         ],
         "director_plan": run.plan,
