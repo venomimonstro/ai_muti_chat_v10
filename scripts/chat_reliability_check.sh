@@ -12,6 +12,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
+echo '[chat-check] authoritative architecture contract'
+test -s docs/CHAT_ARCHITECTURE.md
+
 echo '[chat-check] build isolated backend test image'
 COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test
 
@@ -33,7 +36,9 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_client_catalog_readonly.py \
   apps/billing/test_pricing_bridge.py \
   apps/billing/test_confirmed_usage_guard.py \
+  apps/billing/test_model_loss_isolation.py \
   apps/procurement/test_chat_reservation_cleanup.py \
+  apps/procurement/test_special_provider_procurement.py \
   apps/chat/test_default_auto_routing.py \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_manual_selection_race.py \
