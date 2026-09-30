@@ -25,6 +25,7 @@ printf '[3/5] Django system + migration drift checks\n'
 printf '[4/5] SMM/connection regressions\n'
 "${DC[@]}" run --rm backend-test pytest -q \
   apps/connections/test_smm_studio.py \
+  apps/connections/test_vk_health.py \
   apps/connections/test_connection_validation.py \
   apps/connections/test_agent_connection_freeze.py
 
