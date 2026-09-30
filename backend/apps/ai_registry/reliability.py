@@ -41,26 +41,6 @@ def _has_healthy_key(provider: Provider) -> bool:
     ).exists()
 
 
-def _has_probeable_key(provider: Provider) -> bool:
-    """A newly configured UNKNOWN key is allowed one real runtime probe.
-
-    This prevents a valid newly-added credential from being permanently hidden
-    until a background health worker happens to run, while still excluding keys
-    that have already failed and were marked DEGRADED/DISABLED.
-    """
-    try:
-        return ProviderApiKey.objects.filter(
-            provider_id=provider.id,
-            enabled=True,
-            health_state__in=(
-                ProviderApiKey.HealthState.HEALTHY,
-                ProviderApiKey.HealthState.UNKNOWN,
-            ),
-        ).exists()
-    except Exception:
-        return False
-
-
 def _has_pool_keys(provider: Provider) -> bool:
     try:
         return ProviderApiKey.objects.filter(
@@ -131,9 +111,14 @@ def _most_recent_api_key(provider: Provider):
 
 
 def selected_api_key(provider: Provider, adapter=None):
-    """Resolve the stored key used by an adapter without persisting/logging secrets."""
+    """Resolve the exact stored key used by an adapter without logging secrets."""
     if adapter is None:
         return _most_recent_api_key(provider)
+    key_id = str(getattr(adapter, "_ai_workspace_key_id", "") or "").strip()
+    if key_id:
+        key = provider.api_keys.filter(pk=key_id, enabled=True).first()
+        if key is not None:
+            return key
     secret = _adapter_secret(adapter)
     if not secret:
         return _most_recent_api_key(provider)
@@ -151,7 +136,7 @@ def selected_api_key(provider: Provider, adapter=None):
 
 
 def record_api_key_failure(provider: Provider, adapter, error: ProviderError) -> bool:
-    """Degrade only the failing key and return whether another key can be tried."""
+    """Degrade only the failing key and report a verified customer-safe spare."""
     key = selected_api_key(provider, adapter)
     if key is None:
         return False
@@ -161,14 +146,12 @@ def record_api_key_failure(provider: Provider, adapter, error: ProviderError) ->
         last_error_code=str(error.code or "provider_error")[:80],
         last_checked_at=now,
     )
-    return ProviderApiKey.objects.filter(
-        provider_id=provider.id,
-        enabled=True,
-        health_state__in=(
-            ProviderApiKey.HealthState.HEALTHY,
-            ProviderApiKey.HealthState.UNKNOWN,
-        ),
-    ).exclude(pk=key.pk).exists()
+    # Do not retry a customer request on UNKNOWN/DEGRADED credentials. The runtime
+    # selector also respects the default procurement account, so this cannot create
+    # a request/account mismatch when several paid keys exist for one provider.
+    from .dispatch import runtime_credential_ready
+
+    return runtime_credential_ready(provider)
 
 
 def record_api_key_success(provider: Provider, adapter, latency_ms: int):
@@ -186,12 +169,7 @@ def record_api_key_success(provider: Provider, adapter, latency_ms: int):
 
 
 def _procurement_ready(provider: Provider) -> bool:
-    """Return whether a commercial provider has usable purchased capacity.
-
-    Legacy providers without procurement configuration remain supported while
-    PROCUREMENT_RUNTIME_FAIL_CLOSED is disabled. Once an account is configured,
-    its real available balance is authoritative for customer routing.
-    """
+    """Return whether a commercial provider has usable purchased capacity."""
     if _is_test_echo_provider(provider):
         return True
     try:
@@ -212,28 +190,29 @@ def _procurement_ready(provider: Provider) -> bool:
 
 
 def provider_available(provider: Provider) -> bool:
-    """Customer-traffic readiness with circuit-breaker half-open recovery.
+    """Fail-closed readiness for real customer traffic.
 
-    Permanent blocking errors (for example bad credentials/quota) open the circuit
-    without a cooldown and require credential/balance repair. Transient OPEN state
-    becomes probeable after its cooldown. UNKNOWN is probeable so a newly connected
-    API does not remain invisible until a separate worker runs.
+    UNKNOWN and OPEN providers are never probed by a customer request. Background
+    health checks own recovery and re-admit a channel only after a successful probe.
+    DEGRADED is allowed only when the runtime can still select a verified HEALTHY
+    credential that matches the active procurement account.
     """
     if not provider.enabled or provider.emergency_disabled:
         return False
     if provider.health_state == Provider.HealthState.DISABLED:
         return False
-    if provider.health_state == Provider.HealthState.OPEN:
-        if provider.circuit_opened_until is None:
-            return False
-        if provider.circuit_opened_until > timezone.now():
-            return False
-        # Half-open: allow a real request to prove recovery. record_success closes it.
     if _is_test_echo_provider(provider):
         return True
+    if provider.health_state not in {
+        Provider.HealthState.HEALTHY,
+        Provider.HealthState.DEGRADED,
+    }:
+        return False
     if not provider.credential_configured():
         return False
-    if _has_pool_keys(provider) and not _has_probeable_key(provider):
+    from .dispatch import runtime_credential_ready
+
+    if not runtime_credential_ready(provider):
         return False
     return _procurement_ready(provider)
 
@@ -275,21 +254,16 @@ def model_client_ready(model: AIModel) -> bool:
 
 @transaction.atomic
 def ensure_safe_client_models() -> int:
-    """Activate configured models only when the unified readiness contract passes."""
-    activated = 0
-    candidates = AIModel.objects.select_for_update().select_related("provider").filter(enabled=False)
-    for model in candidates:
-        model.enabled = True
-        try:
-            if not model_client_ready(model):
-                model.enabled = False
-                continue
-        finally:
-            # The optimistic in-memory flag must never accidentally persist here.
-            pass
-        model.save(update_fields=["enabled"])
-        activated += 1
-    return activated
+    """Return the number of explicitly enabled models that are currently safe.
+
+    This function intentionally does not re-enable administrator-disabled models.
+    Readiness and administrative publication are separate controls.
+    """
+    return sum(
+        1
+        for model in AIModel.objects.select_related("provider", "current_version").filter(enabled=True)
+        if model_client_ready(model)
+    )
 
 
 def candidate_models(primary: AIModel) -> list[AIModel]:
@@ -310,7 +284,7 @@ def candidate_models(primary: AIModel) -> list[AIModel]:
 
 @transaction.atomic
 def record_failure(provider: Provider, error: ProviderError, adapter=None):
-    """Record one runtime failure exactly once and preserve healthy spare keys."""
+    """Record one runtime failure exactly once and preserve verified spare keys."""
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
     has_spare_key = record_api_key_failure(locked, adapter, error)
     if has_spare_key:
@@ -416,7 +390,9 @@ def check_provider(provider: Provider):
         model = provider.models.filter(enabled=True).first()
         if model is None:
             raise ProviderError("Provider has no enabled models", code="no_models", retryable=False)
-        adapter = adapter_for(model)
+        from .dispatch import adapter_for as runtime_adapter_for
+
+        adapter = runtime_adapter_for(model, allow_probe=True)
         health = adapter.health_check()
     except ProviderError as exc:
         record_failure(provider, exc, adapter=adapter if "adapter" in locals() else None)
