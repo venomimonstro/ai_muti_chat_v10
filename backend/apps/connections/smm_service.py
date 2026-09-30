@@ -12,6 +12,7 @@ from apps.agents.models import Agent, AgentRun
 from apps.agents.run_views import create_single_agent_run
 
 from .models import AgentConnectionBinding, ExternalConnection
+from .smm_media import prepare_item_media
 from .smm_models import SMMContentItem, SMMContentPlan, SMMPublicationAttempt
 from .vk import publish_wall_post
 
@@ -218,6 +219,12 @@ def publish_item(item: SMMContentItem, *, idempotency_key: str):
     item.save(update_fields=["status", "publish_error", "updated_at"])
     request_guid = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
     try:
+        if not item.vk_attachment and item.media_source in {
+            SMMContentItem.MediaSource.GENERATED,
+            SMMContentItem.MediaSource.STOCK,
+        }:
+            item.vk_attachment = prepare_item_media(item)
+            item.save(update_fields=["vk_attachment", "updated_at"])
         external_id = publish_wall_post(
             connection,
             group_id=group_id,
@@ -259,6 +266,6 @@ def due_items(limit=50):
             plan__connection__enabled=True,
             plan__connection__health_state=ExternalConnection.Health.HEALTHY,
         )
-        .select_related("plan__connection")
+        .select_related("plan__connection", "plan__owner")
         .order_by("scheduled_at")[: max(1, min(int(limit), 200))]
     )
