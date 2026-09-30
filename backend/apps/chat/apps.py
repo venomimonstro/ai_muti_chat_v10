@@ -7,6 +7,10 @@ class ChatConfig(AppConfig):
 
     def ready(self):
         # UI-only organization models are registered here to keep inference models focused.
-        from . import signals, streaming, terminal_recovery, ux_models  # noqa: F401
+        from . import billing_recovery, signals, streaming, terminal_recovery, ux_models  # noqa: F401
 
+        # Install the billing guard before terminal recovery. A confirmed upstream
+        # result must settle the authorized reserve (capped) before the terminal
+        # wrapper can safely convert an over-reserve failure into COMPLETED.
+        billing_recovery.install()
         terminal_recovery.install(streaming)
