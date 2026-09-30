@@ -32,9 +32,9 @@ NEXT_PUBLIC_SITE_URL=https://dev-check.example.test \
 docker compose --ansi never --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 printf '[PASS] Production compose syntax\n'
 
-COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test
+COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test sandbox
 
-docker compose --ansi never -f "$TEST_COMPOSE" up -d postgres
+docker compose --ansi never -f "$TEST_COMPOSE" up -d postgres sandbox
 cleanup(){ docker compose --ansi never -f "$TEST_COMPOSE" down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
