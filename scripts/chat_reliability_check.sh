@@ -24,6 +24,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_chat_reliability.py \
   apps/ai_registry/test_provider_key_selection.py \
   apps/ai_registry/test_router.py \
+  apps/ai_registry/test_routing_pools.py \
   apps/ai_registry/test_client_catalog_readonly.py \
   apps/chat/test_public_error_codes.py \
   apps/chat/test_reconnect_fast_path.py \
