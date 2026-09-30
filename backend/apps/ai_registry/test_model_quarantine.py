@@ -58,7 +58,7 @@ def test_model_not_found_quarantines_only_failing_model():
     )
     broken = _model(provider, "quarantine-broken")
     sibling = _model(provider, "quarantine-sibling")
-    adapter = SimpleNamespace(_ai_workspace_model_slug=broken.slug)
+    adapter = SimpleNamespace(_ai_workspace_model_slug=broken.slug, _ai_workspace_probe_mode=False)
 
     reliability.record_failure(
         provider,
@@ -79,6 +79,32 @@ def test_model_not_found_quarantines_only_failing_model():
         details__model_slug=broken.slug,
     )
     assert incident.error_code == "model_not_found"
+
+
+@pytest.mark.django_db
+def test_provider_health_probe_never_quarantines_model():
+    _install_runtime()
+    provider = Provider.objects.create(
+        slug="quarantine-provider-probe-echo",
+        name="Quarantine Provider Probe Echo",
+        adapter_type=Provider.AdapterType.ECHO,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    model = _model(provider, "quarantine-provider-probe-model")
+    adapter = SimpleNamespace(
+        _ai_workspace_model_slug=model.slug,
+        _ai_workspace_probe_mode=True,
+    )
+
+    reliability.record_failure(
+        provider,
+        ProviderError("models endpoint missing", code="gigachat_model_not_found", retryable=False),
+        adapter=adapter,
+    )
+
+    provider.refresh_from_db()
+    assert provider.health_state == Provider.HealthState.DEGRADED
+    assert model_runtime_available(model) is True
 
 
 @pytest.mark.django_db
@@ -188,6 +214,7 @@ def test_background_probe_recovers_quarantined_model(monkeypatch):
 
     fake = SimpleNamespace(
         _ai_workspace_model_slug=model.slug,
+        _ai_workspace_probe_mode=False,
         generate=lambda **_kwargs: ProviderResult(
             text="OK",
             input_tokens=2,
