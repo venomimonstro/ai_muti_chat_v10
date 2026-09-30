@@ -66,8 +66,7 @@ def test_generation_in_progress_remains_internal_reconnect_signal():
     assert _public_chunk(raw) == raw
 
 
-@pytest.mark.asyncio
-async def test_reconnect_reports_confirmed_partial_charge_truthfully():
+def test_reconnect_reports_confirmed_partial_charge_truthfully():
     generation = SimpleNamespace(id="00000000-0000-0000-0000-000000000001")
     snapshot = {
         "state": Generation.State.FAILED,
@@ -76,8 +75,12 @@ async def test_reconnect_reports_confirmed_partial_charge_truthfully():
         "text": "частичный ответ",
         "message_status": "partial",
     }
+
+    async def collect():
+        return [chunk async for chunk in follow_generation_async(generation, poll_seconds=0.01)]
+
     with patch("apps.chat.asgi_stream._generation_snapshot", return_value=snapshot):
-        chunks = [chunk async for chunk in follow_generation_async(generation, poll_seconds=0.01)]
+        chunks = asyncio.run(collect())
 
     error = next(chunk for chunk in chunks if chunk.startswith("event: error\n"))
     payload = json.loads(next(line[6:] for line in error.splitlines() if line.startswith("data: ")))
