@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from datetime import timedelta
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -22,7 +22,11 @@ SMM_AGENT_NAME = "SMM-специалист VK"
 def ensure_smm_agent(*, owner, connection):
     if connection.owner_id != owner.id or connection.kind != ExternalConnection.Kind.VK:
         raise ValidationError("VK-подключение недоступно")
-    agent = Agent.objects.filter(owner=owner, name=SMM_AGENT_NAME, status__in=[Agent.Status.ACTIVE, Agent.Status.DRAFT]).first()
+    agent = Agent.objects.filter(
+        owner=owner,
+        name=SMM_AGENT_NAME,
+        status__in=[Agent.Status.ACTIVE, Agent.Status.DRAFT],
+    ).first()
     if agent is None:
         agent = Agent.objects.create(
             owner=owner,
@@ -212,13 +216,14 @@ def publish_item(item: SMMContentItem, *, idempotency_key: str):
     item.status = SMMContentItem.Status.PUBLISHING
     item.publish_error = ""
     item.save(update_fields=["status", "publish_error", "updated_at"])
+    request_guid = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
     try:
         external_id = publish_wall_post(
             connection,
             group_id=group_id,
             message=_publication_message(item),
             attachments=item.vk_attachment,
-            idempotency_key=key,
+            request_guid=request_guid,
         )
     except Exception as exc:
         attempt.state = SMMPublicationAttempt.State.FAILED
