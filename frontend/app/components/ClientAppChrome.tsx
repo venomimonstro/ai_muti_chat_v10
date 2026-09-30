@@ -9,11 +9,13 @@ const primary=[
  {href:"/app",label:"Чат",icon:"plus" as const,mobile:true},
  {href:"/app/projects",label:"Проекты",icon:"folder" as const,mobile:true},
  {href:"/app/agents",label:"Агенты",icon:"brain" as const,mobile:true},
- {href:"/app/dev",label:"Dev Studio",icon:"zap" as const,mobile:true},
+ {href:"/app/smm",label:"SMM Studio",icon:"spark" as const,mobile:true},
+ {href:"/app/dev",label:"Dev Studio",icon:"zap" as const,mobile:false},
  {href:"/app/images",label:"Изображения",icon:"spark" as const,mobile:false},
  {href:"/app/compare",label:"Сравнение",icon:"scale" as const,mobile:false},
 ];
 const account=[
+ {href:"/app/integrations",label:"Интеграции",icon:"settings" as const},
  {href:"/app/usage",label:"Использование",icon:"brain" as const},
  {href:"/app/wallet",label:"Баланс",icon:"wallet" as const},
  {href:"/app/account",label:"Аккаунт",icon:"user" as const},
