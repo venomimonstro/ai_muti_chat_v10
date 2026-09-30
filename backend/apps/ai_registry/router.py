@@ -9,16 +9,17 @@ from apps.evals.models import EvalCase, EvalRun, ModelScore
 from apps.files.models import FileAsset
 
 from .models import AIModel, Provider, RoutingPolicyVersion
-from .reliability import candidate_models, provider_available
+from .reliability import provider_available
 from .token_estimator import estimate_text_tokens
 
 OUTPUT_TOKENS = 1024
 CONTEXT_SAFETY_TOKENS = 64
 MODE_LABELS = {
-    "manual": "Вручную",
-    "economy": "Слабая",
-    "balanced": "Средняя",
-    "maximum": "Высокая",
+    "auto": "AUTO",
+    "manual": "Модель",
+    "economy": "Простой",
+    "balanced": "Средний",
+    "maximum": "Сложный",
 }
 TASK_LABELS = dict(EvalCase.Taxonomy.choices)
 DEFAULT_WEIGHTS = {
@@ -48,6 +49,21 @@ RULES = [
     (EvalCase.Taxonomy.REASONING, ("почему", "рассчитай", "задач", "логик", "обоснуй")),
     (EvalCase.Taxonomy.RUSSIAN_STYLE, ("по-русски", "стилист", "канцеляр", "грамотн")),
 ]
+
+SIMPLE_TAXONOMIES = {
+    EvalCase.Taxonomy.TRANSLATION,
+    EvalCase.Taxonomy.EXTRACTION,
+    EvalCase.Taxonomy.EDITING,
+    EvalCase.Taxonomy.RUSSIAN_STYLE,
+}
+COMPLEX_TAXONOMIES = {
+    EvalCase.Taxonomy.DEBUGGING,
+    EvalCase.Taxonomy.CODING,
+    EvalCase.Taxonomy.RESEARCH,
+    EvalCase.Taxonomy.REASONING,
+    EvalCase.Taxonomy.LONG_DOCUMENTS,
+    EvalCase.Taxonomy.SPREADSHEETS,
+}
 
 
 @dataclass(frozen=True)
@@ -82,7 +98,9 @@ def classify_task(content, conversation):
     taxonomy = matches[0][1] if matches else EvalCase.Taxonomy.QA
     confidence = min(0.98, 0.58 + (matches[0][0] * 0.12)) if matches else 0.52
     content_tokens = estimate_text_tokens(content)
-    long_context = content_tokens > 2000 or any(token in normalized for token in ("длинный документ", "весь документ", "большой файл"))
+    long_context = content_tokens > 2000 or any(
+        token in normalized for token in ("длинный документ", "весь документ", "большой файл")
+    )
     if long_context and not matches:
         taxonomy = EvalCase.Taxonomy.LONG_DOCUMENTS
         confidence = 0.82
@@ -105,7 +123,25 @@ def classify_task(content, conversation):
     )
     image_request = any(token in normalized for token in ("изображен", "фото", "картин", "скриншот"))
     needs_vision = image_request and has_visual_files
-    needs_tools = any(token in normalized for token in ("найди акту", "проверь в интернете", "сегодня", "последние новости"))
+    needs_tools = any(
+        token in normalized
+        for token in (
+            "найди акту",
+            "проверь в интернете",
+            "сегодня",
+            "сейчас",
+            "последние новости",
+            "новости",
+            "курс",
+            "цена",
+            "стоимость",
+            "расписание",
+            "закон",
+            "тариф",
+            "кто сейчас",
+            "последняя версия",
+        )
+    )
     capabilities = ["text"]
     if needs_vision:
         capabilities.append("vision")
@@ -159,8 +195,9 @@ def _fits_context(model, input_tokens, output_tokens=OUTPUT_TOKENS):
 def _health_score(provider):
     return {
         Provider.HealthState.HEALTHY: 1.0,
-        Provider.HealthState.UNKNOWN: 0.75,
-        Provider.HealthState.DEGRADED: 0.4,
+        Provider.HealthState.UNKNOWN: 0.70,
+        Provider.HealthState.DEGRADED: 0.45,
+        Provider.HealthState.OPEN: 0.20,
     }.get(provider.health_state, 0.0)
 
 
@@ -174,31 +211,65 @@ def _active_policy():
     policy = RoutingPolicyVersion.objects.filter(active=True).first()
     if not policy:
         policy, _created = RoutingPolicyVersion.objects.get_or_create(
-            version="router-v1",
-            defaults={"active": True, "mode_weights": DEFAULT_WEIGHTS, "thresholds": DEFAULT_THRESHOLDS},
+            version="router-v2",
+            defaults={
+                "active": True,
+                "mode_weights": DEFAULT_WEIGHTS,
+                "thresholds": DEFAULT_THRESHOLDS,
+            },
         )
         if not policy.active:
             raise ValidationError("Активная политика AUTO Router не настроена")
     return policy
 
 
-def _manual_route(policy, classification, conversation, input_tokens):
+def _auto_tier(classification: TaskClassification) -> str:
+    """Map task complexity to one of the three admin-managed model pools."""
+    signals = classification.signals
+    if (
+        classification.taxonomy in COMPLEX_TAXONOMIES
+        or signals.get("long_context")
+        or signals.get("needs_vision")
+        or signals.get("needs_tools")
+        or int(signals.get("content_tokens") or 0) >= 1200
+    ):
+        return "maximum"
+    if (
+        classification.taxonomy in SIMPLE_TAXONOMIES
+        and int(signals.get("content_tokens") or 0) < 700
+        and not signals.get("has_project_files")
+    ):
+        return "economy"
+    return "balanced"
+
+
+def _tier_pool(thresholds: dict, tier: str):
+    raw = (thresholds.get("tier_models") or {}).get(tier)
+    if isinstance(raw, str):
+        return [raw.strip()] if raw.strip() else []
+    if isinstance(raw, (list, tuple)):
+        return [str(value).strip() for value in raw if str(value).strip()]
+    return []
+
+
+def _tier_configuration_present(thresholds: dict) -> bool:
+    raw = thresholds.get("tier_models")
+    return isinstance(raw, dict) and any(_tier_pool(thresholds, tier) for tier in DEFAULT_WEIGHTS)
+
+
+def _route_row(model, classification, input_tokens, *, default_quality, unknown_latency):
+    reasons = []
+    if not str(model.upstream_model or "").strip():
+        reasons.append("upstream_model_missing")
+    missing = set(classification.required_capabilities) - _capabilities(model)
+    if missing:
+        reasons.append("missing_capabilities:" + ",".join(sorted(missing)))
+    if not provider_available(model.provider):
+        reasons.append("provider_unavailable")
+    if not _fits_context(model, input_tokens):
+        reasons.append("context_window_too_small")
+    price_quote = None
     try:
-        primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(
-            slug=conversation.selected_model, enabled=True
-        )
-    except AIModel.DoesNotExist as exc:
-        raise ValidationError("Выбранная модель недоступна") from exc
-    available = candidate_models(primary)
-    if not available:
-        raise ValidationError("Выбранная модель временно недоступна")
-    priced = []
-    primary_cost = None
-    multiplier = Decimal(str((policy.thresholds or {}).get("fallback_price_multiplier", 1.5)))
-    for model in available:
-        reasons = []
-        if not _fits_context(model, input_tokens):
-            reasons.append("context_window_too_small")
         price = active_price(model.slug)
         price_quote = quote(
             price,
@@ -208,42 +279,119 @@ def _manual_route(policy, classification, conversation, input_tokens):
             model_slug=model.slug,
         )
         charge = price_quote.user_charge_rub
-        if primary_cost is None:
-            primary_cost = charge
         if not price_quote.margin_allowed:
             reasons.append("margin_below_floor")
-        if charge > primary_cost * multiplier:
-            reasons.append("fallback_price_requires_consent")
-        priced.append({
-            "model": model.slug,
-            "provider": model.provider.slug,
-            "model_version": model.current_version.version if model.current_version else None,
-            "exact_api_id": model.upstream_model,
-            "status": "eligible" if not reasons else "rejected",
-            "reasons": reasons,
-            "estimated_input_tokens": input_tokens,
-            "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
-            "estimated_cost_rub": str(charge),
-            "gross_margin_percent": str(price_quote.gross_margin_percent),
-            "score": None,
-        })
-    allowed_models = [model for model, item in zip(available, priced, strict=True) if item["status"] == "eligible"]
-    for rank, item in enumerate((item for item in priced if item["status"] == "eligible"), 1):
-        item["rank"] = rank
-        item["fallback_allowed"] = True
-    if not allowed_models:
-        raise ValidationError("Выбранная модель не помещает запрос в контекст или нарушает лимит стоимости")
-    selected_item = next(item for item in priced if item["status"] == "eligible")
+    except ValidationError:
+        charge = None
+        reasons.append("price_not_configured")
+    quality, quality_source, eval_run = _quality(
+        model, classification.taxonomy, default_quality
+    )
+    return {
+        "model": model.slug,
+        "provider": model.provider.slug,
+        "model_version": model.current_version.version if model.current_version else None,
+        "exact_api_id": model.upstream_model,
+        "status": "rejected" if reasons else "eligible",
+        "reasons": reasons,
+        "quality": quality,
+        "quality_source": quality_source,
+        "eval_run": eval_run,
+        "latency_ms": model.provider.last_latency_ms or unknown_latency,
+        "health": model.provider.health_state,
+        "context_window": model.context_window,
+        "estimated_input_tokens": input_tokens,
+        "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
+        "estimated_cost_rub": str(charge) if charge is not None else None,
+        "gross_margin_percent": str(price_quote.gross_margin_percent) if price_quote else None,
+        "score": None,
+    }
+
+
+def _manual_route(policy, classification, conversation, input_tokens):
+    try:
+        primary = AIModel.objects.select_related(
+            "provider", "fallback_model", "current_version"
+        ).get(slug=conversation.selected_model, enabled=True)
+    except AIModel.DoesNotExist as exc:
+        raise ValidationError("Выбранная модель недоступна") from exc
+
+    thresholds = policy.thresholds or {}
+    default_quality = float(thresholds.get("default_quality", 0.55))
+    unknown_latency = int(thresholds.get("unknown_latency_ms", 1500))
+    multiplier = Decimal(str(thresholds.get("fallback_price_multiplier", 1.5)))
+
+    # Primary first, then its explicit fallback chain, then every other routable
+    # model as continuity protection. Duplicates are removed deterministically.
+    ordered = []
+    seen = set()
+    current = primary
+    while current and current.pk not in seen:
+        seen.add(current.pk)
+        ordered.append(current)
+        current = current.fallback_model
+        if current:
+            current = AIModel.objects.select_related(
+                "provider", "fallback_model", "current_version"
+            ).filter(pk=current.pk, enabled=True).first()
+    for model in AIModel.objects.filter(enabled=True).select_related(
+        "provider", "current_version"
+    ).order_by("provider__priority", "display_name"):
+        if model.pk not in seen:
+            ordered.append(model)
+            seen.add(model.pk)
+
+    rows = [
+        _route_row(
+            model,
+            classification,
+            input_tokens,
+            default_quality=default_quality,
+            unknown_latency=unknown_latency,
+        )
+        for model in ordered
+    ]
+    primary_row = rows[0]
+    eligible_rows = [row for row in rows if row["status"] == "eligible"]
+    if not eligible_rows:
+        raise ValidationError("Нет доступной модели для выполнения запроса")
+
+    baseline = None
+    if primary_row.get("estimated_cost_rub") is not None:
+        baseline = Decimal(primary_row["estimated_cost_rub"])
+    if baseline is None:
+        baseline = Decimal(eligible_rows[0]["estimated_cost_rub"])
+
+    allowed = []
+    for row in eligible_rows:
+        charge = Decimal(row["estimated_cost_rub"])
+        row["fallback_allowed"] = charge <= baseline * multiplier or row is eligible_rows[0]
+        if row["fallback_allowed"]:
+            row["rank"] = len(allowed) + 1
+            allowed.append(row)
+    if not allowed:
+        raise ValidationError("Резервная модель превышает допустимый лимит стоимости")
+
+    lookup = {model.slug: model for model in ordered}
+    selected_row = allowed[0]
+    selected = lookup[selected_row["model"]]
+    if selected.pk == primary.pk:
+        explanation = f"Используется выбранная модель {primary.display_name}."
+    else:
+        explanation = (
+            f"Выбранная модель {primary.display_name} сейчас недоступна; "
+            f"запрос автоматически направлен в {selected.display_name}."
+        )
     return RouteSelection(
         policy=policy,
         classification=classification,
-        selected=allowed_models[0],
-        ordered_models=allowed_models,
-        candidates=priced,
-        explanation=f"Модель {allowed_models[0].display_name} выбрана пользователем вручную.",
+        selected=selected,
+        ordered_models=[lookup[row["model"]] for row in allowed],
+        candidates=rows,
+        explanation=explanation,
         estimated_input_tokens=input_tokens,
-        estimated_output_tokens=min(OUTPUT_TOKENS, allowed_models[0].max_output_tokens),
-        estimated_cost_rub=Decimal(selected_item["estimated_cost_rub"]),
+        estimated_output_tokens=min(OUTPUT_TOKENS, selected.max_output_tokens),
+        estimated_cost_rub=Decimal(selected_row["estimated_cost_rub"]),
     )
 
 
@@ -251,90 +399,78 @@ def select_route(*, conversation, content):
     policy = _active_policy()
     classification = classify_task(content, conversation)
     input_tokens = _estimated_input(conversation, content)
-    mode = conversation.routing_mode
-    if mode == "manual":
+    requested_mode = conversation.routing_mode
+    if requested_mode == "manual":
         return _manual_route(policy, classification, conversation, input_tokens)
 
-    weights = (policy.mode_weights or {}).get(mode) or DEFAULT_WEIGHTS.get(mode)
+    effective_tier = _auto_tier(classification) if requested_mode == "auto" else requested_mode
+    weights = (policy.mode_weights or {}).get(effective_tier) or DEFAULT_WEIGHTS.get(effective_tier)
     if not weights:
-        raise ValidationError("Неизвестный режим AUTO Router")
+        raise ValidationError("Неизвестный режим маршрутизации")
+
     thresholds = policy.thresholds or {}
     default_quality = float(thresholds.get("default_quality", 0.55))
     economy_min = float(thresholds.get("economy_min_quality", 0.60))
     unknown_latency = int(thresholds.get("unknown_latency_ms", 1500))
-    pinned_slug = str((thresholds.get("tier_models") or {}).get(mode) or "").strip()
+    pool = _tier_pool(thresholds, effective_tier)
+    configured_pools = _tier_configuration_present(thresholds)
+    if configured_pools and not pool:
+        raise ValidationError(
+            f"Администратор не настроил модели для уровня «{MODE_LABELS[effective_tier]}»"
+        )
+
+    queryset = AIModel.objects.filter(enabled=True).select_related("provider", "current_version")
+    if pool:
+        queryset = queryset.filter(slug__in=pool)
 
     candidates = []
     model_lookup = {}
-    for model in AIModel.objects.filter(enabled=True).select_related("provider", "current_version"):
+    for model in queryset:
         model_lookup[model.slug] = model
-        reasons = []
-        if model.provider.adapter_type != Provider.AdapterType.ECHO and not model.current_version_id:
-            reasons.append("model_version_missing")
-        if not str(model.upstream_model or "").strip():
-            reasons.append("upstream_model_missing")
-        missing = set(classification.required_capabilities) - _capabilities(model)
-        if missing:
-            reasons.append("missing_capabilities:" + ",".join(sorted(missing)))
-        if not provider_available(model.provider):
-            reasons.append("provider_unavailable")
-        if not _fits_context(model, input_tokens):
-            reasons.append("context_window_too_small")
-        price_quote = None
-        try:
-            price = active_price(model.slug)
-            price_quote = quote(
-                price,
-                input_tokens,
-                min(OUTPUT_TOKENS, model.max_output_tokens),
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
-            )
-            charge = price_quote.user_charge_rub
-            if not price_quote.margin_allowed:
-                reasons.append("margin_below_floor")
-        except ValidationError:
-            charge = None
-            reasons.append("price_not_configured")
-        quality, quality_source, eval_run = _quality(model, classification.taxonomy, default_quality)
-        if mode == "economy" and quality_source == "eval" and quality < economy_min:
-            reasons.append("quality_below_economy_minimum")
-        latency = model.provider.last_latency_ms or unknown_latency
-        candidates.append({
-            "model": model.slug,
-            "provider": model.provider.slug,
-            "model_version": model.current_version.version if model.current_version else None,
-            "exact_api_id": model.upstream_model,
-            "status": "rejected" if reasons else "eligible",
-            "reasons": reasons,
-            "quality": quality,
-            "quality_source": quality_source,
-            "eval_run": eval_run,
-            "latency_ms": latency,
-            "health": model.provider.health_state,
-            "context_window": model.context_window,
-            "estimated_input_tokens": input_tokens,
-            "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
-            "estimated_cost_rub": str(charge) if charge is not None else None,
-            "gross_margin_percent": str(price_quote.gross_margin_percent) if price_quote else None,
-            "score": None,
-            "admin_tier_model": model.slug == pinned_slug,
-        })
+        item = _route_row(
+            model,
+            classification,
+            input_tokens,
+            default_quality=default_quality,
+            unknown_latency=unknown_latency,
+        )
+        if (
+            effective_tier == "economy"
+            and item["quality_source"] == "eval"
+            and item["quality"] < economy_min
+        ):
+            item["reasons"].append("quality_below_economy_minimum")
+            item["status"] = "rejected"
+        item["admin_tier"] = effective_tier
+        candidates.append(item)
 
     eligible = [item for item in candidates if item["status"] == "eligible"]
     if not eligible:
-        raise ValidationError("AUTO Router не нашёл подходящую доступную модель")
+        label = MODE_LABELS.get(effective_tier, effective_tier)
+        raise ValidationError(f"В уровне «{label}» сейчас нет доступных моделей")
+
     costs = [float(item["estimated_cost_rub"]) for item in eligible]
     latencies = [item["latency_ms"] for item in eligible]
     contexts = [math.log2(item["context_window"]) for item in eligible]
     for item in eligible:
-        cost_score = _normalize_inverse(float(item["estimated_cost_rub"]), min(costs), max(costs))
-        latency_score = _normalize_inverse(item["latency_ms"], min(latencies), max(latencies))
-        context_score = ((math.log2(item["context_window"]) - min(contexts)) / (max(contexts) - min(contexts))) if max(contexts) > min(contexts) else 1.0
+        cost_score = _normalize_inverse(
+            float(item["estimated_cost_rub"]), min(costs), max(costs)
+        )
+        latency_score = _normalize_inverse(
+            item["latency_ms"], min(latencies), max(latencies)
+        )
+        context_score = (
+            (math.log2(item["context_window"]) - min(contexts))
+            / (max(contexts) - min(contexts))
+            if max(contexts) > min(contexts)
+            else 1.0
+        )
         model = model_lookup[item["model"]]
         health_score = _health_score(model.provider)
         tag_bonus = 0.05 if classification.taxonomy in model.routing_tags else 0
-        needs_bonus = 0.03 if classification.signals["needs_tools"] and "tools" in _capabilities(model) else 0
+        needs_bonus = (
+            0.03 if classification.signals["needs_tools"] and "tools" in _capabilities(model) else 0
+        )
         long_bonus = 0.05 * context_score if classification.signals["long_context"] else 0
         item["score_components"] = {
             "quality": round(item["quality"], 4),
@@ -351,39 +487,50 @@ def select_route(*, conversation, content):
             + cost_score * float(weights.get("cost", 0))
             + latency_score * float(weights.get("latency", 0))
             + health_score * float(weights.get("health", 0))
-            + tag_bonus + needs_bonus + long_bonus,
+            + tag_bonus
+            + needs_bonus
+            + long_bonus,
             6,
         )
 
-    eligible.sort(key=lambda item: (-item["score"], item["model"]))
-    pinned = next((item for item in eligible if item["model"] == pinned_slug), None)
-    selected_item = pinned or eligible[0]
+    # Admin pool order is authoritative as a soft priority. Within the same pool
+    # position score decides, preserving quality/cost/latency optimization.
+    pool_rank = {slug: index for index, slug in enumerate(pool)} if pool else {}
+    eligible.sort(
+        key=lambda item: (
+            pool_rank.get(item["model"], 10_000),
+            -item["score"],
+            item["model"],
+        )
+        if pool
+        else (-item["score"], item["model"])
+    )
+    selected_item = eligible[0]
     selected = model_lookup[selected_item["model"]]
     selected_cost = Decimal(selected_item["estimated_cost_rub"])
     multiplier = Decimal(str(thresholds.get("fallback_price_multiplier", 1.5)))
 
-    fallback_items = [item for item in eligible if item["model"] != selected_item["model"]]
-    ranked = [selected_item, *fallback_items]
     ordered_models = []
-    for rank, item in enumerate(ranked, 1):
+    for rank, item in enumerate(eligible, 1):
         item["rank"] = rank
         allowed = rank == 1 or Decimal(item["estimated_cost_rub"]) <= selected_cost * multiplier
         item["fallback_allowed"] = allowed
         if allowed:
             ordered_models.append(model_lookup[item["model"]])
 
-    label = TASK_LABELS.get(classification.taxonomy, classification.taxonomy)
-    quality_note = f"eval-оценка {selected_item['quality']:.0%}" if selected_item["quality_source"] == "eval" else "базовая оценка до накопления eval"
-    if pinned:
+    task_label = TASK_LABELS.get(classification.taxonomy, classification.taxonomy)
+    tier_label = MODE_LABELS[effective_tier]
+    if requested_mode == "auto":
         explanation = (
-            f"AUTO: уровень «{MODE_LABELS[mode]}» закреплён администратором за {selected.display_name} "
-            f"({selected.provider.name}); задача «{label}», {quality_note}."
+            f"AUTO определил сложность «{tier_label}» для задачи «{task_label}» и выбрал "
+            f"{selected.display_name}; при сбое будет использована следующая доступная модель этого уровня."
         )
     else:
         explanation = (
-            f"AUTO определил задачу «{label}» и выбрал {selected.display_name}: {quality_note}, "
-            f"провайдер {selected.provider.get_health_state_display().lower()}, уровень «{MODE_LABELS[mode]}»."
+            f"Уровень «{tier_label}»: выбрана {selected.display_name}; "
+            "при сбое будет использована следующая доступная модель этого уровня."
         )
+
     return RouteSelection(
         policy=policy,
         classification=classification,
