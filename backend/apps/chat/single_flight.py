@@ -1,25 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import sys
 import threading
 from contextlib import contextmanager
 
-from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import connection
 
 from .models import Generation, Message
 
-LOCK_SECONDS = max(15, int(os.getenv("CHAT_PREPARE_LOCK_SECONDS", "180")))
 ACTIVE_STATES = {Generation.State.QUEUED, Generation.State.RUNNING}
 _LOCAL_LOCKS: dict[str, threading.Lock] = {}
 _LOCAL_LOCKS_GUARD = threading.Lock()
-
-
-def _lock_key(conversation_id) -> str:
-    return f"chat:prepare:{conversation_id}"
 
 
 def _existing_replay(*, user, conversation, client_message_id, idempotency_key):
@@ -46,13 +39,16 @@ def _advisory_key(conversation_id) -> int:
 
 
 @contextmanager
-def _database_fallback_lock(conversation_id):
-    """Serialize one conversation when Redis/cache is unavailable.
+def _conversation_lock(conversation_id):
+    """Authoritative ownership-safe lock for one conversation.
 
-    PostgreSQL advisory locks are connection-scoped and automatically disappear if
-    the process/connection dies. They do not lock unrelated conversations. SQLite
-    and other non-production engines use a process-local lock for deterministic
-    tests/development only.
+    PostgreSQL advisory locks are session-owned and cannot be accidentally released
+    by another request after a TTL rollover. This is intentionally the correctness
+    primitive for chat creation; Redis/cache remains useful for caching, but not for
+    financial single-flight semantics without fencing tokens.
+
+    A dropped PostgreSQL connection releases its advisory locks automatically.
+    SQLite/development uses a process-local lock only for deterministic tests.
     """
     if connection.vendor == "postgresql":
         key = _advisory_key(conversation_id)
@@ -65,7 +61,7 @@ def _database_fallback_lock(conversation_id):
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT pg_advisory_unlock(%s)", [key])
             except Exception:
-                # A dropped DB connection releases session advisory locks itself.
+                # If the connection was lost PostgreSQL already released the lock.
                 pass
         return
 
@@ -79,26 +75,12 @@ def _database_fallback_lock(conversation_id):
         lock.release()
 
 
-def _cache_lock_acquire(key: str):
-    try:
-        return bool(cache.add(key, "1", timeout=LOCK_SECONDS))
-    except Exception:
-        return None
-
-
-def _cache_lock_release(key: str) -> None:
-    try:
-        cache.delete(key)
-    except Exception:
-        pass
-
-
 def install(streaming_module) -> None:
     """Serialize creation of new generations for one conversation.
 
-    Idempotent replays remain legal. Redis is the fast path, but never a hard
-    dependency of the core chat: a PostgreSQL advisory lock preserves single-flight
-    semantics during cache outages without double provider calls or double billing.
+    Idempotent replays remain legal. Every non-replay creation is rechecked while
+    holding the authoritative conversation lock, preventing two tabs/processes from
+    reserving money or starting providers concurrently for the same conversation.
     """
     raw_prepare = streaming_module.prepare
     if getattr(raw_prepare, "_ai_workspace_single_flight", False):
@@ -133,6 +115,8 @@ def install(streaming_module) -> None:
         )
 
     def prepare(*, user, conversation, content, client_message_id, idempotency_key, file_ids=None):
+        # Fast replay/active checks avoid unnecessary lock waits, but correctness is
+        # established only by the identical checks repeated under the advisory lock.
         if _existing_replay(
             user=user,
             conversation=conversation,
@@ -152,23 +136,7 @@ def install(streaming_module) -> None:
                 "Предыдущий ответ ещё формируется. Дождитесь завершения или остановите его перед новым сообщением."
             )
 
-        key = _lock_key(conversation.id)
-        acquired = _cache_lock_acquire(key)
-        if acquired is False:
-            raise ValidationError(
-                "Предыдущий запрос ещё принимается. Повторите отправку после его подтверждения."
-            )
-        if acquired is None:
-            with _database_fallback_lock(conversation.id):
-                return execute_after_lock(
-                    user=user,
-                    conversation=conversation,
-                    content=content,
-                    client_message_id=client_message_id,
-                    idempotency_key=idempotency_key,
-                    file_ids=file_ids,
-                )
-        try:
+        with _conversation_lock(conversation.id):
             return execute_after_lock(
                 user=user,
                 conversation=conversation,
@@ -177,8 +145,6 @@ def install(streaming_module) -> None:
                 idempotency_key=idempotency_key,
                 file_ids=file_ids,
             )
-        finally:
-            _cache_lock_release(key)
 
     prepare._ai_workspace_single_flight = True
     prepare._raw_prepare = raw_prepare
