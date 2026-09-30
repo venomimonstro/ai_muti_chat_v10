@@ -91,6 +91,7 @@ def test_stop_before_provider_call_cancels_without_external_request_or_charge():
     reservation.refresh_from_db()
     user.wallet.refresh_from_db()
 
+    assert "event: cancelled" in body
     assert "client_cancelled" in body
     assert generation.state == Generation.State.CANCELLED
     assert generation.error_code == "client_cancelled"
