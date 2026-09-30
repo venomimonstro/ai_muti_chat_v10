@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from decimal import ROUND_UP, Decimal
 
-from django.db import transaction
-
 from apps.ai_registry.models import AIModel
 from apps.procurement.models import ProviderSpend
 
