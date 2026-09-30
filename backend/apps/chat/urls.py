@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .cancel_views import ConversationGenerationCancelView
 from .compare_views import CompareDetailView, ComparePreviewView, CompareRunView, CompareSynthesisView
 from .cost_views import ChatCostPreviewView, ConfirmedConversationStreamView
 from .message_actions import EditMessageView, RegenerateMessageView
@@ -31,6 +32,11 @@ urlpatterns = [
         "conversations/<uuid:conversation_id>/messages/stream/",
         ConfirmedConversationStreamView.as_view(),
         name="confirmed-chat-stream",
+    ),
+    path(
+        "conversations/<uuid:conversation_id>/messages/cancel/",
+        ConversationGenerationCancelView.as_view(),
+        name="chat-generation-cancel",
     ),
     path("compare/preview/", ComparePreviewView.as_view(), name="compare-preview"),
     path("compare/", CompareRunView.as_view(), name="compare-run"),
