@@ -40,6 +40,27 @@ def _terminal_now(generation) -> bool:
     return generation.state in TERMINAL_STATES
 
 
+def _cancelled_event(generation):
+    generation.refresh_from_db(fields=["state", "actual_cost_rub", "error_code"])
+    assistant = Message.objects.filter(pk=generation.assistant_message_id).only("content").first()
+    partial = bool(str(getattr(assistant, "content", "") or "").strip())
+    return sse(
+        "cancelled",
+        {
+            "code": "client_cancelled",
+            "generation_id": str(generation.id),
+            "state": generation.state,
+            "partial": partial,
+            "cost_rub": str(generation.actual_cost_rub or 0),
+            "message": (
+                "Генерация остановлена. Списана только подтверждённая стоимость уже полученной части ответа."
+                if partial
+                else "Запрос остановлен пользователем. Неподтверждённые расходы не списаны."
+            ),
+        },
+    )
+
+
 def install(streaming_module) -> None:
     raw_run = streaming_module.run
     if getattr(raw_run, "_ai_workspace_cooperative_cancel", False):
@@ -50,15 +71,7 @@ def install(streaming_module) -> None:
         if cancel_requested(generation):
             try:
                 if _cancel_before_provider(generation):
-                    yield sse(
-                        "error",
-                        {
-                            "code": "client_cancelled",
-                            "partial": False,
-                            "cost_rub": "0",
-                            "message": "Запрос остановлен пользователем. Неподтверждённые расходы не списаны.",
-                        },
-                    )
+                    yield _cancelled_event(generation)
             finally:
                 clear_cancel(generation)
             return
@@ -79,6 +92,7 @@ def install(streaming_module) -> None:
                     # settlement path. It alone decides whether confirmed usage exists.
                     iterator.close()
                     clear_cancel(generation)
+                    yield _cancelled_event(generation)
                     return
                 yield chunk
         finally:
