@@ -1,5 +1,8 @@
+from django.core import signing
 from django.db import transaction
 from django.db.models import Q
+from django.shortcuts import redirect
+from django.urls import reverse
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -10,6 +13,7 @@ from apps.agents.models import AgentRun
 
 from .models import AgentConnectionBinding, ExternalConnection
 from .serializers import AgentConnectionBindingSerializer, ExternalConnectionSerializer
+from .vk import check_vk, exchange_code, oauth_authorize_url
 from .wordpress import check_wordpress
 
 
@@ -21,6 +25,8 @@ ACTIVE_RUN_STATES = {
     AgentRun.State.WAITING_APPROVAL,
     AgentRun.State.REVIEWING,
 }
+VK_STATE_SALT = "ai-workspace-vk-oauth-v1"
+VK_STATE_MAX_AGE_SECONDS = 10 * 60
 
 
 def _agent_has_active_run(agent_id):
@@ -55,6 +61,14 @@ def _ensure_connection_idle(connection_id):
         raise ValidationError({"detail": "Подключение сейчас используется активным агентом или командой"})
 
 
+def _vk_metadata(profile):
+    return {
+        "user_id": profile.user_id,
+        "display_name": profile.display_name,
+        "groups": profile.groups,
+    }
+
+
 class ExternalConnectionViewSet(viewsets.ModelViewSet):
     serializer_class = ExternalConnectionSerializer
 
@@ -69,6 +83,8 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
         try:
             if connection.kind == ExternalConnection.Kind.WORDPRESS:
                 metadata = check_wordpress(connection)
+            elif connection.kind == ExternalConnection.Kind.VK:
+                metadata = _vk_metadata(check_vk(connection))
             else:
                 raise ValidationError({"detail": "Тип подключения не поддерживается"})
         except ValidationError as exc:
@@ -83,6 +99,80 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
         connection.metadata = {**(connection.metadata or {}), **metadata}
         connection.save(update_fields=["health_state", "last_error", "last_checked_at", "metadata", "updated_at"])
         return Response(self.get_serializer(connection).data)
+
+    @action(detail=False, methods=["post"], url_path="vk-oauth-start")
+    def vk_oauth_start(self, request):
+        connection_id = str(request.data.get("connection") or "").strip()
+        name = str(request.data.get("name") or "ВКонтакте").strip()[:160] or "ВКонтакте"
+        if connection_id:
+            connection = self.get_queryset().filter(pk=connection_id, kind=ExternalConnection.Kind.VK).first()
+            if connection is None:
+                raise ValidationError({"connection": "VK-подключение не найдено"})
+            _ensure_connection_idle(connection.id)
+        else:
+            connection = ExternalConnection.objects.create(
+                owner=request.user,
+                kind=ExternalConnection.Kind.VK,
+                name=name,
+                base_url="https://api.vk.com/method",
+                enabled=True,
+                health_state=ExternalConnection.Health.UNKNOWN,
+            )
+        state = signing.dumps(
+            {"user_id": str(request.user.id), "connection_id": str(connection.id)},
+            salt=VK_STATE_SALT,
+            compress=True,
+        )
+        callback_url = request.build_absolute_uri(reverse("external-connection-vk-oauth-callback"))
+        return Response(
+            {
+                "connection": self.get_serializer(connection).data,
+                "authorize_url": oauth_authorize_url(state=state, redirect_uri=callback_url),
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="vk-oauth-callback")
+    def vk_oauth_callback(self, request):
+        state = str(request.query_params.get("state") or "")
+        code = str(request.query_params.get("code") or "")
+        error = str(request.query_params.get("error") or "")
+        if error:
+            return redirect(f"/app/integrations?vk=error&reason={error[:80]}")
+        if not state or not code:
+            raise ValidationError({"detail": "VK OAuth callback не содержит state/code"})
+        try:
+            payload = signing.loads(state, salt=VK_STATE_SALT, max_age=VK_STATE_MAX_AGE_SECONDS)
+        except signing.BadSignature as exc:
+            raise ValidationError({"detail": "VK OAuth state недействителен или истёк"}) from exc
+        if str(payload.get("user_id")) != str(request.user.id):
+            raise ValidationError({"detail": "VK OAuth принадлежит другому пользователю"})
+        connection = self.get_queryset().filter(
+            pk=payload.get("connection_id"), kind=ExternalConnection.Kind.VK
+        ).first()
+        if connection is None:
+            raise ValidationError({"detail": "VK-подключение не найдено"})
+        _ensure_connection_idle(connection.id)
+        callback_url = request.build_absolute_uri(reverse("external-connection-vk-oauth-callback"))
+        token = exchange_code(code=code, redirect_uri=callback_url)
+        connection.set_secret(token["access_token"])
+        connection.username = token.get("user_id") or connection.username
+        connection.metadata = {
+            **(connection.metadata or {}),
+            "user_id": token.get("user_id") or "",
+            "oauth_expires_in": token.get("expires_in"),
+        }
+        try:
+            profile = check_vk(connection)
+            connection.metadata = {**connection.metadata, **_vk_metadata(profile)}
+            connection.health_state = ExternalConnection.Health.HEALTHY
+            connection.last_error = ""
+        except ValidationError as exc:
+            connection.health_state = ExternalConnection.Health.DEGRADED
+            connection.last_error = str(exc.detail if hasattr(exc, "detail") else exc)[:240]
+        connection.last_checked_at = timezone.now()
+        connection.save()
+        status = "connected" if connection.health_state == ExternalConnection.Health.HEALTHY else "degraded"
+        return redirect(f"/app/integrations?vk={status}&connection={connection.id}")
 
     def perform_update(self, serializer):
         _ensure_connection_idle(serializer.instance.id)
