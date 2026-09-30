@@ -194,13 +194,25 @@ class ConversationSerializer(serializers.ModelSerializer):
             Conversation.RoutingMode.MAXIMUM,
         }:
             return "echo-v1"
+
+        # Availability can change between the model-picker refresh and creation of
+        # the very first manual chat. Preserve the just-selected slug on CREATE so
+        # the manual continuity router can transparently use a healthy fallback.
+        # Existing chats still reject an explicit PATCH to a dead/non-existent model.
+        allow_create_race_fallback = (
+            self.instance is None and routing_mode == Conversation.RoutingMode.MANUAL
+        )
         try:
             model = AIModel.objects.select_related("provider", "current_version").get(
                 slug=value, enabled=True
             )
         except AIModel.DoesNotExist as exc:
+            if allow_create_race_fallback:
+                return value
             raise serializers.ValidationError("Модель не найдена") from exc
         if not model_client_ready(model):
+            if allow_create_race_fallback:
+                return value
             raise serializers.ValidationError(
                 "Модель сейчас недоступна. Выберите другую модель или AUTO."
             )
