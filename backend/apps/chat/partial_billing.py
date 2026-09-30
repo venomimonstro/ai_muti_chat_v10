@@ -13,6 +13,9 @@ from apps.procurement.models import ProviderSpend
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0.0000")
 MONEY_STEP = Decimal("0.0001")
+MARGIN_STEP = Decimal("0.001")
+MAX_MARGIN_PERCENT = Decimal("9999.999")
+MIN_MARGIN_PERCENT = Decimal("-9999.999")
 
 
 @transaction.atomic
@@ -87,8 +90,11 @@ def settle_delivered_partial(generation, text: str):
     economic_cost = (
         provider_cost * (Decimal("1") + overhead_percent / Decimal("100"))
     ).quantize(MONEY_STEP, rounding=ROUND_UP)
-    gross_profit = charge - economic_cost
-    gross_margin = (gross_profit / charge * Decimal("100")) if charge else ZERO
+    gross_profit = (charge - economic_cost).quantize(MONEY_STEP)
+    raw_margin = (gross_profit / charge * Decimal("100")) if charge else ZERO
+    gross_margin = min(MAX_MARGIN_PERCENT, max(MIN_MARGIN_PERCENT, raw_margin)).quantize(
+        MARGIN_STEP
+    )
 
     # Bypass RequestCost post_save procurement hooks: provider usage was already
     # confirmed and procurement was already settled when provider_cost_rub was
