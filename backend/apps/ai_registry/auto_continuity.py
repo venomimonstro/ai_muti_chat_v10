@@ -34,27 +34,31 @@ def install(router_module) -> None:
         if requested_mode != "auto":
             return raw_select_route(conversation=conversation, content=content)
 
+        original_error = None
         try:
             return raw_select_route(conversation=conversation, content=content)
-        except ValidationError as primary_error:
-            if not _availability_failure(primary_error):
+        except ValidationError as exc:
+            if not _availability_failure(exc):
                 raise
+            original_error = exc
 
         classification = router_module.classify_task(content, conversation)
         preferred_tier = router_module._auto_tier(classification)
-        fallback_errors = []
         original_mode = conversation.routing_mode
         try:
-            for tier in AUTO_FALLBACK_TIERS.get(preferred_tier, ("balanced", "maximum", "economy")):
+            for tier in AUTO_FALLBACK_TIERS.get(
+                preferred_tier, ("balanced", "maximum", "economy")
+            ):
                 conversation.routing_mode = tier
                 try:
                     route = raw_select_route(conversation=conversation, content=content)
                 except ValidationError as exc:
                     if not _availability_failure(exc):
                         raise
-                    fallback_errors.append(str(exc))
                     continue
-                preferred_label = router_module.MODE_LABELS.get(preferred_tier, preferred_tier)
+                preferred_label = router_module.MODE_LABELS.get(
+                    preferred_tier, preferred_tier
+                )
                 fallback_label = router_module.MODE_LABELS.get(tier, tier)
                 return router_module.RouteSelection(
                     policy=route.policy,
@@ -74,7 +78,9 @@ def install(router_module) -> None:
         finally:
             conversation.routing_mode = original_mode
 
-        raise primary_error
+        if original_error is not None:
+            raise original_error
+        raise ValidationError("В AUTO сейчас нет доступных моделей")
 
     select_route._ai_workspace_auto_continuity = True
     select_route._raw_select_route = raw_select_route
