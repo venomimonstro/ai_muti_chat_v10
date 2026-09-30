@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.ai_registry.models import AIModel, Provider
@@ -8,7 +9,6 @@ from apps.billing.models import PriceVersion, RequestCost
 from apps.chat.models import Conversation, Generation, Message
 
 from .models import ProviderFundingAccount, ProviderSpendReservation
-from .services import reserve_provider_spend
 
 
 class ChatProcurementCleanupTests(TestCase):
@@ -52,6 +52,7 @@ class ChatProcurementCleanupTests(TestCase):
             input_rub_per_million=Decimal("1"),
             output_rub_per_million=Decimal("1"),
             markup_percent=Decimal("100"),
+            effective_from=timezone.now(),
         )
         self.request_cost = RequestCost.objects.create(
             generation_id=self.generation.id,
