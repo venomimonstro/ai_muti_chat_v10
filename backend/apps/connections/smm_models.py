@@ -27,6 +27,7 @@ class SMMContentPlan(models.Model):
     period_end = models.DateField()
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
     auto_publish = models.BooleanField(default=False)
+    generation_error = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -75,6 +76,7 @@ class SMMContentItem(models.Model):
     scheduled_at = models.DateTimeField(null=True, blank=True, db_index=True)
     published_at = models.DateTimeField(null=True, blank=True)
     media_source = models.CharField(max_length=16, choices=MediaSource.choices, default=MediaSource.NONE)
+    media_generation_id = models.UUIDField(null=True, blank=True, db_index=True)
     media_url = models.URLField(max_length=1000, blank=True)
     media_prompt = models.TextField(blank=True)
     media_attribution = models.CharField(max_length=500, blank=True)
