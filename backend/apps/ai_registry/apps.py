@@ -8,6 +8,6 @@ class AIRegistryConfig(AppConfig):
     def ready(self):
         # Install the fail-safe dispatcher once per process. Importing here avoids
         # touching Django models before the app registry is ready.
-        from . import adapters, dispatch
+        from . import adapters, dispatch, signals  # noqa: F401
 
         adapters.adapter_for = dispatch.adapter_for
