@@ -37,7 +37,9 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_provider_exhaustion_failover.py \
   apps/chat/test_partial_cancel_billing.py \
   apps/chat/test_preflight_reservation_cleanup.py \
-  apps/chat/test_money_safety_django.py
+  apps/chat/test_money_safety_django.py \
+  apps/admin_ops/test_diagnostics_share.py \
+  apps/admin_ops/test_system_health.py
 
 echo '[chat-check] django configuration and migration drift'
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
