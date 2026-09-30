@@ -13,8 +13,8 @@ class ConversationGenerationCancelView(APIView):
     """Request cooperative cancellation of one idempotent chat generation.
 
     The endpoint is intentionally safe before Generation creation: the same
-    idempotency key is also stored as a short-lived cancellation marker, closing
-    the race where a user presses Stop while prepare() is still committing.
+    idempotency key is stored as a short-lived Redis + database cancellation marker,
+    closing the race where a user presses Stop while prepare() is still committing.
     """
 
     def post(self, request, conversation_id):
@@ -43,6 +43,7 @@ class ConversationGenerationCancelView(APIView):
             .first()
         )
         request_cancel(
+            owner_id=request.user.id,
             idempotency_key=key,
             generation_id=generation.id if generation is not None else None,
         )
