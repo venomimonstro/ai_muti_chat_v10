@@ -3,7 +3,6 @@ from decimal import Decimal
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from apps.ai_registry.models import Provider
 from apps.b2b_api.models import APIUsage
 from apps.chat.models import CompareVariant
 from apps.image_studio.models import ImageGeneration
@@ -13,7 +12,9 @@ from .models import CostAnomaly
 ZERO = Decimal("0")
 
 
-def _trip_provider(*, provider, model_slug, source, source_id, provider_cost, charged):
+def _trip_model(*, model, source, source_id, provider_cost, charged):
+    """Stop further loss on one model without disabling healthy sibling capacity."""
+    provider = model.provider
     if provider_cost is None or charged is None or provider_cost <= charged:
         return False
     CostAnomaly.objects.get_or_create(
@@ -21,7 +22,7 @@ def _trip_provider(*, provider, model_slug, source, source_id, provider_cost, ch
         defaults={
             "kind": CostAnomaly.Kind.MARGIN_FLOOR,
             "severity": "critical",
-            "model_slug": model_slug,
+            "model_slug": model.slug,
             "provider_slug": provider.slug,
             "expected_rub": charged,
             "actual_rub": provider_cost,
@@ -29,13 +30,12 @@ def _trip_provider(*, provider, model_slug, source, source_id, provider_cost, ch
                 "reason": "provider_cost_exceeds_customer_charge",
                 "source": source,
                 "source_id": str(source_id),
+                "scope": "model_economics",
             },
         },
     )
-    Provider.objects.filter(pk=provider.pk).update(
-        emergency_disabled=True,
-        health_state=Provider.HealthState.DISABLED,
-    )
+    type(model).objects.filter(pk=model.pk).update(enabled=False)
+    model.enabled = False
     return True
 
 
@@ -43,10 +43,8 @@ def _trip_provider(*, provider, model_slug, source, source_id, provider_cost, ch
 def watch_b2b_usage(sender, instance, **kwargs):
     if instance.state != APIUsage.State.COMPLETED:
         return
-    model = instance.model
-    _trip_provider(
-        provider=model.provider,
-        model_slug=model.slug,
+    _trip_model(
+        model=instance.model,
         source="b2b_api",
         source_id=instance.id,
         provider_cost=instance.provider_cost_rub,
@@ -58,10 +56,8 @@ def watch_b2b_usage(sender, instance, **kwargs):
 def watch_compare_variant(sender, instance, **kwargs):
     if instance.state != CompareVariant.State.COMPLETED:
         return
-    model = instance.model
-    _trip_provider(
-        provider=model.provider,
-        model_slug=model.slug,
+    _trip_model(
+        model=instance.model,
         source="compare",
         source_id=instance.id,
         provider_cost=instance.provider_cost_rub,
@@ -75,10 +71,8 @@ def watch_image_generation(sender, instance, **kwargs):
         return
     if instance.provider_cost_rub is None or instance.actual_cost_rub is None:
         return
-    model = instance.model
-    _trip_provider(
-        provider=model.provider,
-        model_slug=model.slug,
+    _trip_model(
+        model=instance.model,
         source="images",
         source_id=instance.id,
         provider_cost=instance.provider_cost_rub,
