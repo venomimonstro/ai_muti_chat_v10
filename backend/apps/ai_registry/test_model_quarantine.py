@@ -124,6 +124,35 @@ def test_router_rejects_quarantined_model_without_rejecting_sibling():
 
 
 @pytest.mark.django_db
+def test_generic_provider_success_does_not_recover_model_quarantine():
+    _install_runtime()
+    provider = Provider.objects.create(
+        slug="quarantine-health-echo",
+        name="Quarantine Health Echo",
+        adapter_type=Provider.AdapterType.ECHO,
+        health_state=Provider.HealthState.DEGRADED,
+        consecutive_failures=1,
+    )
+    broken = _model(provider, "quarantine-health-broken")
+    healthy = _model(provider, "quarantine-health-sibling")
+    quarantine_model(
+        broken,
+        ProviderError("gone", code="model_not_found", retryable=False),
+    )
+
+    reliability.record_success(
+        provider,
+        12,
+        adapter=SimpleNamespace(_ai_workspace_model_slug=healthy.slug),
+    )
+
+    provider.refresh_from_db()
+    assert provider.health_state == Provider.HealthState.HEALTHY
+    assert model_runtime_available(broken) is False
+    assert model_runtime_available(healthy) is True
+
+
+@pytest.mark.django_db
 def test_recover_model_reopens_only_that_model():
     provider = Provider.objects.create(
         slug="quarantine-recovery-echo",
