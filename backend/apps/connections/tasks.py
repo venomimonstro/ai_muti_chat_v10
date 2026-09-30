@@ -5,7 +5,8 @@ from django.utils import timezone
 from apps.accounts.models import Notification
 
 from .models import ExternalConnection
-from .smm_service import due_items, publish_item
+from .smm_models import SMMContentPlan
+from .smm_service import due_items, publish_item, sync_generated_plan
 from .vk import check_vk
 from .wordpress import check_wordpress
 
@@ -125,6 +126,27 @@ def check_external_connections(limit=100):
         "degraded": degraded,
         "skipped_changed": skipped_changed,
     }
+
+
+@shared_task(max_retries=0)
+def sync_smm_generations(limit=100):
+    plans = list(
+        SMMContentPlan.objects.filter(generation_run__isnull=False, items__isnull=True)
+        .select_related("generation_run")
+        .distinct()
+        .order_by("updated_at")[: max(1, min(int(limit), 500))]
+    )
+    created = 0
+    failed = 0
+    for plan in plans:
+        try:
+            result = sync_generated_plan(plan)
+            created += int(result.get("created") or 0)
+        except Exception as exc:
+            failed += 1
+            plan.generation_error = str(exc)[:500]
+            plan.save(update_fields=["generation_error", "updated_at"])
+    return {"checked": len(plans), "created": created, "failed": failed}
 
 
 @shared_task(max_retries=0)
