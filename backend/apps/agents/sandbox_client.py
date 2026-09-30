@@ -12,25 +12,54 @@ def sandbox_enabled():
     return bool(os.getenv("SANDBOX_SHARED_SECRET", "").strip())
 
 
-def run_sandbox(*, command, files):
+def _request(path, payload):
     secret = os.getenv("SANDBOX_SHARED_SECRET", "").strip()
     if not secret:
         raise SandboxUnavailable("Sandbox не настроен: задайте SANDBOX_SHARED_SECRET")
     url = os.getenv("SANDBOX_URL", "http://sandbox:8090").rstrip("/")
-    timeout = float(os.getenv("SANDBOX_CLIENT_TIMEOUT_SECONDS", "100"))
+    timeout = float(os.getenv("SANDBOX_CLIENT_TIMEOUT_SECONDS", "140"))
     try:
         response = httpx.post(
-            f"{url}/run",
+            f"{url}{path}",
             headers={"X-Sandbox-Token": secret},
-            json={"command": command, "files": files},
+            json=payload,
             timeout=timeout,
         )
     except httpx.HTTPError as exc:
         raise SandboxUnavailable("Sandbox временно недоступен") from exc
     try:
-        payload = response.json()
+        data = response.json()
     except ValueError as exc:
         raise SandboxUnavailable("Sandbox вернул некорректный ответ") from exc
     if response.status_code >= 400:
-        raise SandboxUnavailable(str(payload.get("error") or "sandbox_error"))
-    return payload
+        raise SandboxUnavailable(str(data.get("error") or "sandbox_error"))
+    return data
+
+
+def run_sandbox(*, command, files):
+    return _request("/run", {"command": command, "files": files})
+
+
+def sync_workspace(*, workspace_id, files, reset=True):
+    return _request(
+        "/workspace/sync",
+        {"workspace_id": str(workspace_id), "files": files, "reset": bool(reset)},
+    )
+
+
+def patch_workspace(*, workspace_id, operations):
+    return _request(
+        "/workspace/patch",
+        {"workspace_id": str(workspace_id), "operations": operations},
+    )
+
+
+def run_workspace_checks(*, workspace_id, checks):
+    return _request(
+        "/workspace/run",
+        {"workspace_id": str(workspace_id), "checks": list(checks)},
+    )
+
+
+def destroy_workspace(*, workspace_id):
+    return _request("/workspace/destroy", {"workspace_id": str(workspace_id)})
