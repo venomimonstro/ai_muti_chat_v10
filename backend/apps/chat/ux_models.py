@@ -62,7 +62,12 @@ class ChatCancellationMarker(models.Model):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    idempotency_hash = models.CharField(max_length=64, unique=True)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="chat_cancellation_markers",
+    )
+    idempotency_hash = models.CharField(max_length=64)
     generation = models.ForeignKey(
         "chat.Generation",
         on_delete=models.CASCADE,
@@ -75,4 +80,10 @@ class ChatCancellationMarker(models.Model):
 
     class Meta:
         ordering = ["-requested_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "idempotency_hash"],
+                name="unique_chat_cancel_owner_idem",
+            )
+        ]
         indexes = [models.Index(fields=["generation", "expires_at"], name="chat_cancel_generation_idx")]
