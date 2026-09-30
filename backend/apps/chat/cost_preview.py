@@ -1,3 +1,4 @@
+import os
 from decimal import Decimal
 
 from django.conf import settings
@@ -8,10 +9,12 @@ from apps.ai_registry.router import select_route
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.models import Wallet
 from apps.billing.pricing import active_price, quote, require_margin
+from apps.procurement.readiness import quote_has_procurement_capacity
 
 from .attachments import resolve_chat_attachments
 from .models import Conversation, Message
 
+MAX_OUTPUT_TOKENS = max(512, min(8192, int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "4096"))))
 VISION_RESERVE_TOKENS_PER_IMAGE = 2048
 PUBLIC_SYSTEM_LEVELS = {
     Conversation.RoutingMode.ECONOMY: "System Lite",
@@ -75,19 +78,27 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
     rows = []
     maximum = Decimal("0")
     minimum = None
+    selected_model = None
     for model in candidates:
-        output_tokens = min(1024, model.max_output_tokens)
+        output_tokens = min(MAX_OUTPUT_TOKENS, model.max_output_tokens)
         max_input = max(32, route.estimated_input_tokens + extra_input)
         max_input = min(max_input, max(32, model.context_window - output_tokens - 32))
-        value = require_margin(
-            quote(
-                active_price(model.slug),
-                max_input,
-                output_tokens,
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
+        try:
+            value = require_margin(
+                quote(
+                    active_price(model.slug),
+                    max_input,
+                    output_tokens,
+                    provider_slug=model.provider.slug,
+                    model_slug=model.slug,
+                )
             )
-        )
+        except ValidationError:
+            continue
+        if not quote_has_procurement_capacity(model.provider, value):
+            continue
+        if selected_model is None:
+            selected_model = model
         charge = value.user_charge_rub
         maximum = max(maximum, charge)
         minimum = charge if minimum is None else min(minimum, charge)
@@ -100,12 +111,15 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
             }
         )
 
+    if selected_model is None or not rows:
+        raise ValidationError("Сейчас нет модели с доступным API-балансом для этого запроса")
+
     threshold = Decimal(str(getattr(settings, "CHAT_CONFIRM_THRESHOLD_RUB", "20.00")))
     wallet, _ = Wallet.objects.get_or_create(user=user)
     guard = spend_guard_snapshot(wallet)
     single_limit = guard["single_request_limit_rub"]
     blocked = single_limit is not None and maximum > single_limit
-    selected_slug, _selected_name = _public_model(route.selected, conversation)
+    selected_slug, _selected_name = _public_model(selected_model, conversation)
     return {
         "estimated_min_rub": minimum or Decimal("0"),
         "estimated_max_rub": maximum,
