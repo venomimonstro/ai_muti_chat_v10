@@ -9,6 +9,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.ai_registry.model_quarantine import quarantine_status
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.ai_registry.reliability import model_client_ready, provider_available
 from apps.billing.models import BalanceReservation, Wallet
@@ -63,10 +64,13 @@ def _model_readiness():
 
         reasons = []
         warnings = []
+        quarantine = quarantine_status(model)
         if not model.enabled:
             reasons.append("model_disabled")
         if not model.upstream_model.strip():
             reasons.append("upstream_missing")
+        if quarantine["quarantined"]:
+            reasons.append("model_quarantined")
         if model.current_version_id is None:
             # ModelVersion is governance/eval metadata, not a customer-runtime gate.
             warnings.append("active_version_metadata_missing")
@@ -94,6 +98,9 @@ def _model_readiness():
                 "healthy_keys": healthy_keys,
                 "price_configured": price_configured,
                 "price_error": price_error,
+                "model_quarantined": quarantine["quarantined"],
+                "model_quarantine_error": quarantine["error_code"],
+                "model_quarantined_at": quarantine["opened_at"],
                 "ready": ready,
                 "reasons": list(dict.fromkeys(reasons)),
                 "warnings": warnings,
@@ -228,10 +235,11 @@ def build_system_diagnostics():
         if item["enabled"] and not item["customer_ready"]
     )
     blocked_models = sum(1 for item in models if not item["ready"])
+    quarantined_models = sum(1 for item in models if item["model_quarantined"])
     release_status = _release_status()
 
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "generated_at": timezone.now(),
         "summary": {
             "open_system_issues": open_issues,
@@ -239,6 +247,7 @@ def build_system_diagnostics():
             "unhealthy_providers": unhealthy_providers,
             "providers_total": len(providers),
             "blocked_models": blocked_models,
+            "quarantined_models": quarantined_models,
             "routable_models": len(models) - blocked_models,
             "models_total": len(models),
             "release_gate_failed": bool(
