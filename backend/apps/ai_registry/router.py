@@ -1,4 +1,5 @@
 import math
+import os
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -13,7 +14,7 @@ from .models import AIModel, Provider, RoutingPolicyVersion
 from .reliability import provider_available
 from .token_estimator import estimate_text_tokens
 
-OUTPUT_TOKENS = 1024
+OUTPUT_TOKENS = max(512, min(8192, int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "4096"))))
 CONTEXT_SAFETY_TOKENS = 64
 MODE_LABELS = {
     "auto": "AUTO",
