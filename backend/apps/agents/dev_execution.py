@@ -8,6 +8,7 @@ from apps.github_integration.mutations import create_repository_file, delete_rep
 from apps.github_integration.services import write_repository_file
 
 from .dev_context import build_repository_context
+from .dev_security import secure_change_set
 from .sandbox_client import (
     destroy_workspace,
     patch_workspace,
@@ -46,6 +47,7 @@ def enrich_changes_with_snapshot(changes, repository_context):
             item["expected_sha"] = expected_sha
         result.append(item)
 
+    result = secure_change_set(result)
     if repository_context.get("repository"):
         workspace_id = f"preview-{uuid.uuid4().hex[:24]}"
         try:
@@ -267,6 +269,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
                     "sequence": index,
                     "applied_before_failure": len(applied),
                     "workspace_id": workspace_id if checks else "",
+                    "risk_flags": change.get("risk_flags") or [],
                     "error": str(exc)[:2000],
                 },
             )
@@ -286,6 +289,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
                 "run_id": str(run_id),
                 "sequence": index,
                 "workspace_id": workspace_id if checks else "",
+                "risk_flags": change.get("risk_flags") or [],
                 "commit_sha": result.get("commit_sha"),
                 "content_sha": result.get("content_sha"),
             },
@@ -294,6 +298,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
             {
                 "path": change["path"],
                 "operation": change["operation"],
+                "risk_flags": change.get("risk_flags") or [],
                 "commit_sha": result.get("commit_sha"),
                 "content_sha": result.get("content_sha"),
             }
