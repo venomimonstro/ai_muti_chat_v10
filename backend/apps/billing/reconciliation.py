@@ -52,7 +52,7 @@ def model_has_open_critical_cost_anomaly(model_slug: str) -> bool:
 
 
 def _trip_loss_circuit(request_cost, model):
-    """Quarantine only the lossmaking model through a critical cost anomaly.
+    """Fail closed only the lossmaking model, never the whole provider.
 
     Provider transport/auth health is a separate concern. Disabling an entire
     provider because one model/price was under-reserved would unnecessarily take
@@ -88,6 +88,9 @@ def _trip_loss_circuit(request_cost, model):
         reconciliation_status=RequestCost.ReconciliationStatus.UNDERCHARGED
     )
     request_cost.reconciliation_status = RequestCost.ReconciliationStatus.UNDERCHARGED
+    # Stop further loss immediately, but isolate only the affected commercial model.
+    type(model).objects.filter(pk=model.pk).update(enabled=False)
+    model.enabled = False
     return True
 
 
