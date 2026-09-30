@@ -69,3 +69,12 @@ def test_delete_rejects_file_not_seen_by_developer():
             [{"path": "secret.py", "operation": "delete", "reason": "remove"}],
             {"files": []},
         )
+
+
+def test_aggregated_dev_tasks_cannot_silently_exceed_execution_limit():
+    changes = [
+        {"path": f"generated/file_{index}.txt", "operation": "create", "content": str(index)}
+        for index in range(13)
+    ]
+    with pytest.raises(ValidationError, match="максимум 12"):
+        enrich_changes_with_snapshot(changes, {"files": []})
