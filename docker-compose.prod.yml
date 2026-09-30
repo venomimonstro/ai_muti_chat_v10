@@ -39,6 +39,15 @@ services:
     volumes:
       - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
       - searxng_cache:/var/cache/searxng
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.parse,urllib.request;u='http://127.0.0.1:8080/search?'+urllib.parse.urlencode({'q':'health','format':'json'});urllib.request.urlopen(u,timeout=4).read(256)" >/dev/null
+      interval: 20s
+      timeout: 6s
+      retries: 8
+      start_period: 20s
     networks: [private, egress]
     init: true
     logging: *default-logging
@@ -99,7 +108,7 @@ services:
       timeout: 8s
       retries: 12
       start_period: 20s
-    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}, searxng: {condition: service_started}, sandbox: {condition: service_healthy}}
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}, searxng: {condition: service_healthy}, sandbox: {condition: service_healthy}}
     networks: [private, sandbox_net, edge]
     init: true
     stop_grace_period: 30s
@@ -116,7 +125,7 @@ services:
       WEB_SEARCH_BASE_URL: ${WEB_SEARCH_BASE_URL:-http://searxng:8080}
       WEB_SEARCH_TRUSTED_HOSTS: ${WEB_SEARCH_TRUSTED_HOSTS:-searxng}
     volumes: [media_data:/app/media, logs_data:/app/logs]
-    depends_on: {backend: {condition: service_healthy}, sandbox: {condition: service_healthy}, searxng: {condition: service_started}}
+    depends_on: {backend: {condition: service_healthy}, sandbox: {condition: service_healthy}, searxng: {condition: service_healthy}}
     networks: [private, sandbox_net, egress]
     init: true
     stop_grace_period: 45s
