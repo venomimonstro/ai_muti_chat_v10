@@ -38,6 +38,36 @@ def _open_incidents(model: AIModel):
     )
 
 
+def _has_open_provider_incident(provider) -> bool:
+    for incident in ReliabilityIncident.objects.filter(
+        provider=provider,
+        state=ReliabilityIncident.State.OPEN,
+    ).only("details"):
+        if (incident.details or {}).get("scope") != MODEL_SCOPE:
+            return True
+    return False
+
+
+def _ensure_provider_incident(provider, error: ProviderError):
+    """Keep provider outages visible even while one sibling model is quarantined."""
+    provider.refresh_from_db(
+        fields=["health_state", "consecutive_failures", "circuit_opened_until"]
+    )
+    if provider.health_state != provider.HealthState.OPEN:
+        return
+    if _has_open_provider_incident(provider):
+        return
+    ReliabilityIncident.objects.create(
+        provider=provider,
+        error_code=str(error.code or "provider_error")[:80],
+        details={
+            "scope": "provider",
+            "consecutive_failures": provider.consecutive_failures,
+            "persistent": provider.circuit_opened_until is None,
+        },
+    )
+
+
 def model_runtime_available(model: AIModel) -> bool:
     """A quarantined upstream model is hidden without disabling its provider."""
     try:
@@ -194,7 +224,9 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
                 if model is not None:
                     quarantine_model(model, error)
                     return None
-            return raw_failure(provider, error, adapter=adapter)
+            result = raw_failure(provider, error, adapter=adapter)
+            _ensure_provider_incident(provider, error)
+            return result
 
         record_failure._ai_workspace_model_quarantine = True
         record_failure._raw_record_failure = raw_failure
