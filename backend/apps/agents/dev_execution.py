@@ -2,7 +2,7 @@ from django.core.exceptions import ValidationError
 
 from apps.github_integration.branching import create_repository_branch
 from apps.github_integration.models import GitHubOperationLog
-from apps.github_integration.mutations import create_repository_file
+from apps.github_integration.mutations import create_repository_file, delete_repository_file
 from apps.github_integration.services import write_repository_file
 
 from .dev_context import build_repository_context
@@ -21,11 +21,11 @@ def enrich_changes_with_snapshot(changes, repository_context):
     result = []
     for change in changes[:MAX_EXECUTION_CHANGES]:
         item = dict(change)
-        if item["operation"] == "update":
+        if item["operation"] in {"update", "delete"}:
             source = visible.get(item["path"])
             if not source:
                 raise ValidationError(
-                    f"Нельзя обновить {item['path']}: файл не был прочитан Developer перед предложением изменения"
+                    f"Нельзя {item['operation']} {item['path']}: файл не был прочитан Developer перед предложением изменения"
                 )
             expected_sha = str(source.get("sha") or "").strip()
             if not expected_sha:
@@ -58,6 +58,17 @@ def _legacy_sandbox_result(changes, checks):
     return run_sandbox(command=checks[0], files=files)
 
 
+def _workspace_operations(changes):
+    operations = []
+    for item in changes:
+        operation = item.get("operation") or "update"
+        payload = {"operation": operation, "path": item["path"]}
+        if operation in {"create", "update"}:
+            payload["content"] = item.get("content", "")
+        operations.append(payload)
+    return operations
+
+
 def validate_changes_in_sandbox(changes, *, workspace_id=None, base_files=None):
     checks = _sandbox_checks(changes)
     if not checks:
@@ -77,15 +88,7 @@ def validate_changes_in_sandbox(changes, *, workspace_id=None, base_files=None):
             if item.get("path") and isinstance(item.get("content"), str)
         ]
         sync_workspace(workspace_id=workspace_id, files=files, reset=True)
-        operations = [
-            {
-                "operation": item.get("operation") or "update",
-                "path": item["path"],
-                "content": item.get("content", ""),
-            }
-            for item in changes
-            if item.get("operation") in {"create", "update"}
-        ]
+        operations = _workspace_operations(changes)
         if operations:
             patch_workspace(workspace_id=workspace_id, operations=operations)
         result = run_workspace_checks(workspace_id=workspace_id, checks=checks)
@@ -126,11 +129,7 @@ def _persist_run_execution_state(run_id, **values):
 
 def _persist_working_branch(run_id, branch_name):
     """Persist the external GitHub side effect before the first file write."""
-    return _persist_run_execution_state(
-        run_id,
-        phase="writing_changes",
-        working_branch=branch_name,
-    )
+    return _persist_run_execution_state(run_id, phase="writing_changes", working_branch=branch_name)
 
 
 def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
@@ -144,7 +143,6 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
         raise ValidationError("Для проекта не разрешена запись в GitHub")
 
     cancel_check = should_cancel or (lambda: _default_should_cancel(run_id))
-
     if cancel_check():
         raise ValidationError("Dev Studio остановлен до sandbox/GitHub write")
 
@@ -152,11 +150,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
     checks = _sandbox_checks(changes)
     if checks:
         repository_context = build_repository_context(project, ref=binding.default_branch)
-        _persist_run_execution_state(
-            run_id,
-            phase="validating_changes",
-            workspace_id=workspace_id,
-        )
+        _persist_run_execution_state(run_id, phase="validating_changes", workspace_id=workspace_id)
         sandbox_result = validate_changes_in_sandbox(
             changes,
             workspace_id=workspace_id,
@@ -194,6 +188,14 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
                     binding,
                     change["path"],
                     content=change["content"],
+                    message=message,
+                    branch=branch_name,
+                )
+            elif change["operation"] == "delete":
+                result = delete_repository_file(
+                    binding,
+                    change["path"],
+                    expected_sha=change["expected_sha"],
                     message=message,
                     branch=branch_name,
                 )
