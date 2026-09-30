@@ -11,6 +11,7 @@ class ChatConfig(AppConfig):
             billing_recovery,
             cache_safety,
             cooperative_cancel,
+            error_contract,
             manual_selection_recovery,
             runtime_readiness,
             serializers,
@@ -31,3 +32,6 @@ class ChatConfig(AppConfig):
         single_flight.install(streaming)
         cooperative_cancel.install(streaming)
         terminal_recovery.install(streaming)
+        # Keep this outermost so recovered terminal successes are never rewritten,
+        # while genuine partial failures receive financially accurate public wording.
+        error_contract.install(streaming)
