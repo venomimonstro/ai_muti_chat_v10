@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from apps.billing.pricing import active_price, quote
 from apps.evals.models import EvalCase, EvalRun, ModelScore
 from apps.files.models import FileAsset
+from apps.procurement.readiness import quote_has_procurement_capacity
 
 from .models import AIModel, Provider, RoutingPolicyVersion
 from .reliability import provider_available
@@ -281,6 +282,8 @@ def _route_row(model, classification, input_tokens, *, default_quality, unknown_
         charge = price_quote.user_charge_rub
         if not price_quote.margin_allowed:
             reasons.append("margin_below_floor")
+        if not quote_has_procurement_capacity(model.provider, price_quote):
+            reasons.append("procurement_balance_insufficient")
     except ValidationError:
         charge = None
         reasons.append("price_not_configured")
@@ -303,6 +306,7 @@ def _route_row(model, classification, input_tokens, *, default_quality, unknown_
         "estimated_input_tokens": input_tokens,
         "estimated_output_tokens": min(OUTPUT_TOKENS, model.max_output_tokens),
         "estimated_cost_rub": str(charge) if charge is not None else None,
+        "estimated_provider_cost_rub": str(price_quote.provider_cost_rub) if price_quote else None,
         "gross_margin_percent": str(price_quote.gross_margin_percent) if price_quote else None,
         "score": None,
     }
