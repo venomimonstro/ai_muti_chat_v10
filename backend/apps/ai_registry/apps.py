@@ -6,8 +6,10 @@ class AIRegistryConfig(AppConfig):
     name = "apps.ai_registry"
 
     def ready(self):
-        # Install the fail-safe dispatcher once per process. Importing here avoids
-        # touching Django models before the app registry is ready.
-        from . import adapters, dispatch, signals  # noqa: F401
+        # Install fail-safe runtime dispatch and the authoritative routing-pool
+        # resolver once per process. Importing here avoids touching Django models
+        # before the app registry is ready.
+        from . import adapters, dispatch, router, routing_pools, signals  # noqa: F401
 
         adapters.adapter_for = dispatch.adapter_for
+        routing_pools.install_router_pool_resolver(router)
