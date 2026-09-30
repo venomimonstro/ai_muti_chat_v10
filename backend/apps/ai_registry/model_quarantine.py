@@ -17,6 +17,7 @@ MODEL_SCOPED_ERROR_CODES = {
     "unknown_model",
     "gigachat_model_not_found",
     "openrouter_model_not_found",
+    "openrouter_404",
 }
 MODEL_SCOPE = "model"
 
@@ -42,8 +43,6 @@ def model_runtime_available(model: AIModel) -> bool:
     try:
         return not _open_incidents(model).exists()
     except Exception:
-        # Runtime-readiness is fail-closed: a broken incident query must not expose
-        # a model whose state cannot be verified.
         return False
 
 
@@ -71,10 +70,9 @@ def quarantine_model(model: AIModel, error: ProviderError):
 
 @transaction.atomic
 def recover_model(model: AIModel) -> int:
-    now = timezone.now()
     return _open_incidents(model).update(
         state=ReliabilityIncident.State.RECOVERED,
-        recovered_at=now,
+        recovered_at=timezone.now(),
     )
 
 
@@ -142,7 +140,6 @@ def recover_quarantined_models(*, limit: int = 8) -> dict:
             continue
 
         latency_ms = max(0, int((time.monotonic() - started) * 1000))
-        # Provider success must not implicitly recover every quarantined sibling.
         reliability.record_success(model.provider, latency_ms, adapter=adapter)
         recover_model(model)
         recovered += 1
@@ -160,9 +157,11 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
     raw_adapter_for = dispatch_module.adapter_for
     if not getattr(raw_adapter_for, "_ai_workspace_model_identity", False):
         def adapter_for(model, *args, **kwargs):
+            probe_mode = bool(kwargs.get("allow_probe", False))
             adapter = raw_adapter_for(model, *args, **kwargs)
             try:
                 adapter._ai_workspace_model_slug = str(model.slug)
+                adapter._ai_workspace_probe_mode = probe_mode
             except Exception:
                 pass
             return adapter
@@ -189,7 +188,8 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
     if not getattr(raw_failure, "_ai_workspace_model_quarantine", False):
         def record_failure(provider, error, adapter=None):
             model_slug = str(getattr(adapter, "_ai_workspace_model_slug", "") or "").strip()
-            if model_slug and is_model_scoped_error(error):
+            probe_mode = bool(getattr(adapter, "_ai_workspace_probe_mode", False))
+            if model_slug and not probe_mode and is_model_scoped_error(error):
                 model = AIModel.objects.filter(slug=model_slug, provider=provider).first()
                 if model is not None:
                     quarantine_model(model, error)
@@ -203,9 +203,6 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
     raw_success = reliability_module.record_success
     if not getattr(raw_success, "_ai_workspace_model_quarantine", False):
         def record_success(provider, latency_ms, adapter=None):
-            # Legacy provider recovery marks every open ReliabilityIncident as
-            # recovered. Preserve model-scoped incidents: a generic provider
-            # health check proves the credential/API, not any particular model id.
             with transaction.atomic():
                 model_incident_ids = list(
                     ReliabilityIncident.objects.filter(
@@ -242,22 +239,15 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
         route_row._raw_route_row = raw_route_row
         router_module._route_row = route_row
 
-    # Modules imported before AppConfig.ready() keep function objects by value.
     bindings = {
         "apps.chat.streaming": {
             "adapter_for": dispatch_module.adapter_for,
             "record_failure": reliability_module.record_failure,
             "record_success": reliability_module.record_success,
         },
-        "apps.ai_registry.views": {
-            "model_client_ready": reliability_module.model_client_ready,
-        },
-        "apps.ai_registry.serializers": {
-            "model_client_ready": reliability_module.model_client_ready,
-        },
-        "apps.chat.serializers": {
-            "model_client_ready": reliability_module.model_client_ready,
-        },
+        "apps.ai_registry.views": {"model_client_ready": reliability_module.model_client_ready},
+        "apps.ai_registry.serializers": {"model_client_ready": reliability_module.model_client_ready},
+        "apps.chat.serializers": {"model_client_ready": reliability_module.model_client_ready},
     }
     for module_name, values in bindings.items():
         module = sys.modules.get(module_name)
