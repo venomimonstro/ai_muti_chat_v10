@@ -5,7 +5,7 @@ import pytest
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.billing.models import BalanceReservation
+from apps.billing.models import BalanceReservation, PriceVersion, RequestCost
 from apps.billing.services import credit, reserve
 from apps.chat.models import CompareRun, Conversation, Generation, Message
 
@@ -51,6 +51,72 @@ def test_stale_chat_operation_releases_reservation_and_restores_wallet(settings)
     assert generation.error_code == "stale_operation_recovered"
     assert user.wallet.available_rub == Decimal("100.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stale_chat_with_confirmed_provider_usage_settles_customer_reserve(settings):
+    settings.OPERATION_STALE_TIMEOUT_SECONDS = 60
+    user = User.objects.create_user(
+        username="recovery-confirmed",
+        email="recovery-confirmed@example.test",
+        password="password123",
+    )
+    credit(user, Decimal("100"), "test", "recovery-confirmed")
+    conversation = Conversation.objects.create(owner=user, title="Recovery confirmed usage")
+    user_message = Message.objects.create(
+        conversation=conversation, role=Message.Role.USER, content="hello"
+    )
+    assistant = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.ASSISTANT,
+        content="provider already produced this partial response",
+    )
+    generation = Generation.objects.create(
+        owner=user,
+        user_message=user_message,
+        assistant_message=assistant,
+        state=Generation.State.RUNNING,
+        model="recovery-priced-model",
+        idempotency_key="recovery-confirmed-client",
+    )
+    reservation = reserve(user, Decimal("25"), f"generation:{generation.id}")
+    generation.reservation_id = reservation.id
+    generation.save(update_fields=["reservation_id"])
+    price = PriceVersion.objects.create(
+        model_slug="recovery-priced-model",
+        input_rub_per_million=Decimal("1000"),
+        output_rub_per_million=Decimal("2000"),
+        markup_percent=Decimal("100"),
+        effective_from=timezone.now(),
+    )
+    request_cost = RequestCost.objects.create(
+        generation_id=generation.id,
+        price_version=price,
+        estimated_rub=Decimal("25"),
+        provider_cost_rub=Decimal("3.0000"),
+        input_tokens=1000,
+        output_tokens=1000,
+    )
+    Generation.objects.filter(pk=generation.pk).update(
+        created_at=timezone.now() - timedelta(minutes=10)
+    )
+
+    result = recover_stale_operations()
+
+    generation.refresh_from_db()
+    reservation.refresh_from_db()
+    request_cost.refresh_from_db()
+    user.wallet.refresh_from_db()
+    assert result["generations"] == 1
+    assert reservation.state == BalanceReservation.State.SETTLED
+    assert reservation.actual_rub is not None
+    assert Decimal("0") < reservation.actual_rub <= Decimal("25")
+    assert generation.state == Generation.State.FAILED
+    assert generation.error_code == "stale_operation_recovered"
+    assert generation.actual_cost_rub == reservation.actual_rub
+    assert request_cost.charged_rub == reservation.actual_rub
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert user.wallet.available_rub == Decimal("100.0000") - reservation.actual_rub
 
 
 @pytest.mark.django_db(transaction=True)
