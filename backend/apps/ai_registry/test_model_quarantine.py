@@ -179,6 +179,48 @@ def test_generic_provider_success_does_not_recover_model_quarantine():
 
 
 @pytest.mark.django_db
+def test_provider_outage_incident_is_not_masked_by_model_quarantine():
+    _install_runtime()
+    provider = Provider.objects.create(
+        slug="quarantine-provider-outage-echo",
+        name="Quarantine Provider Outage Echo",
+        adapter_type=Provider.AdapterType.ECHO,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    broken = _model(provider, "quarantine-provider-outage-model")
+    quarantine_model(
+        broken,
+        ProviderError("model gone", code="model_not_found", retryable=False),
+    )
+
+    reliability.record_failure(
+        provider,
+        ProviderError("credential rejected", code="authentication_error", retryable=False),
+        adapter=SimpleNamespace(
+            _ai_workspace_model_slug=broken.slug,
+            _ai_workspace_probe_mode=False,
+        ),
+    )
+
+    provider.refresh_from_db()
+    assert provider.health_state == Provider.HealthState.OPEN
+    assert model_runtime_available(broken) is False
+    model_incident = ReliabilityIncident.objects.get(
+        provider=provider,
+        state=ReliabilityIncident.State.OPEN,
+        details__scope="model",
+        details__model_slug=broken.slug,
+    )
+    provider_incident = ReliabilityIncident.objects.get(
+        provider=provider,
+        state=ReliabilityIncident.State.OPEN,
+        details__scope="provider",
+    )
+    assert model_incident.error_code == "model_not_found"
+    assert provider_incident.error_code == "authentication_error"
+
+
+@pytest.mark.django_db
 def test_recover_model_reopens_only_that_model():
     provider = Provider.objects.create(
         slug="quarantine-recovery-echo",
