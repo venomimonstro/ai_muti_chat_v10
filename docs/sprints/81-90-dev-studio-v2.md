@@ -1,105 +1,114 @@
 # Dev Studio v2 — Sprint 81–90
 
-Этот документ фиксирует следующий цикл разработки после Sprint 80. Он дополняет `docs/SPRINT_PLAN.md`; production-ready статус по-прежнему требует реального runtime evidence, а не только наличия кода.
-
-## Цель цикла
-
-Сделать Dev Studio не цепочкой LLM-ответов, а управляемой средой разработки: Director планирует работу как DAG, Developer работает с реальным snapshot проекта, код проверяется до approval и перед write, выполнение наблюдаемо, восстановление после сбоев fail-closed, а расходы и provider failover остаются атомарными.
+Цикл 81–90 переводит Dev Studio из линейной цепочки LLM-ответов в управляемую инженерную среду. Кодовый цикл завершён; production-ready статус ставится только после фактического PASS targeted/release/RC gates на сервере.
 
 | Sprint | Статус | Область | Acceptance |
 |---|---|---|---|
-| 81 | DONE / RUNTIME EVIDENCE | Dev Workspace Runtime | bounded repository discovery, persistent isolated workspace API, safe patch/delete/move, Python/Node/JSON checks, dedicated sandbox image/network |
-| 82 | DONE / RUNTIME EVIDENCE | Engineering Director 2.0 | validated DAG, dependencies, roles, acceptance criteria, task-aware execution, duplicate/cycle rejection |
-| 83 | DONE / RUNTIME EVIDENCE | Coding loop & guarded changes | create/update/delete with snapshot SHA, aggregate file cap, pre-approval validation, repeated pre-write validation, isolated branch |
-| 84 | DONE / RUNTIME EVIDENCE | Dev Command Center | live Director plan, real step state mapping, per-role cost, workspace/branch/applied-files verification evidence |
-| 85 | IN PROGRESS | Test/evidence depth | project-aware safe checks where workspace completeness allows; explicit proof instead of agent assertions |
-| 86 | DONE / RUNTIME EVIDENCE | Crash/restart recovery | stale Dev execution detection, operator-only fail-closed repair, reservation cleanup, workspace cleanup, recovery evidence |
-| 87 | IN PROGRESS | Provider continuity & economics | healthy API-key retry within same priced model, exact-key degradation, single settlement, attempts evidence; cross-model fallback only when accounting contract is safe |
-| 88 | PLANNED | Dev security hardening | prompt-injection boundaries, path/symlink abuse, generated-secret scan, dependency/script execution policy, audit expansion |
-| 89 | PLANNED | Commercial E2E Dev journey | bootstrap → plan → changes → preview → approve → sandbox → branch → QA → PR, cancellation/recovery/budget scenarios |
-| 90 | PLANNED | Dev Studio RC gate | dedicated blocking gate + production-like evidence bundle/checksums and release decision |
+| 81 | CODE COMPLETE / RUNTIME GATE | Dev Workspace Runtime | bounded repository discovery, persistent isolated workspace API, safe patch/delete, Python/Node/JSON checks, dedicated sandbox image/network |
+| 82 | CODE COMPLETE / RUNTIME GATE | Engineering Director 2.0 | validated DAG, dependencies, roles, acceptance criteria, task-aware execution, duplicate/cycle rejection |
+| 83 | CODE COMPLETE / RUNTIME GATE | Coding loop & guarded changes | create/update/delete with snapshot SHA, aggregate cap, pre-approval + pre-write validation, isolated branch |
+| 84 | CODE COMPLETE / RUNTIME GATE | Dev Command Center | live Director plan, real node state mapping, per-role cost, workspace/branch/applied-files verification evidence |
+| 85 | CODE COMPLETE / RUNTIME GATE | Project-aware verification | syntax checks for bounded snapshots; django/pytest project checks only for proven complete snapshots; explicit evidence level |
+| 86 | CODE COMPLETE / RUNTIME GATE | Crash/restart recovery | stale execution detection, operator-only fail-closed repair, reservation/workspace cleanup, recovery evidence |
+| 87 | CODE COMPLETE / RUNTIME GATE | Provider continuity & economics | healthy-key retry, accounting-safe cross-model fallback, per-model pricing/reservations, atomic settle, interrupted-settlement recovery |
+| 88 | CODE COMPLETE / RUNTIME GATE | Security hardening | untrusted repository context boundary, generated-secret guard, risk classification, path/SHA controls, approvals |
+| 89 | CODE COMPLETE / LIVE E2E REQUIRED | Commercial E2E | completed Dev Run evidence: DAG → change-set → approval → sandbox → isolated branch → QA → Final Review → no active reservations |
+| 90 | CODE COMPLETE / LIVE RC REQUIRED | Dev Studio RC | targeted gate + runtime audit + stale-run audit + commercial E2E audit + immutable SHA-256 evidence manifest |
 
-## Реализовано в Sprint 81
+## Execution plane
 
-- `dev_context.py` делает bounded scan исходников и конфигурации вместо фиксированного набора манифестов.
-- Vendor/build/cache каталоги исключаются из контекста.
+- `dev_context.py` делает bounded scan реальных исходников и конфигурации; vendor/build/cache каталоги исключаются.
 - Workspace API поддерживает sync/patch/run/destroy.
-- Sandbox не открывает arbitrary shell: исполняются только whitelist-команды через `shell=False` и resource limits.
-- Production использует отдельный `Dockerfile.sandbox`, read-only filesystem, tmpfs workspace, dropped capabilities и internal-only `sandbox_net`.
-- Backend readiness проверяет реальный `/health` sandbox, а не только наличие shared secret.
+- Sandbox не открывает arbitrary shell: только whitelist-команды, `shell=False`, resource limits, read-only container и internal-only network.
+- Backend readiness делает реальный `/health` probe sandbox до запуска Dev Team.
+- Полный snapshot получает project-aware `django-check`/`pytest`; неполный snapshot получает только безопасные bounded/syntax checks с явным evidence level.
 
-## Реализовано в Sprint 82
+## Engineering Director / coding loop
 
-- Engineering Director выдаёт машиночитаемый DAG.
-- План валидирует ID, роли, зависимости, self-reference, duplicate nodes и cycles.
-- Architecture/Development получают конкретную задачу Director и acceptance criteria.
-- UI показывает план и связывает task ID с фактическим `AgentStepRun.node_id`.
-- Параллельное выполнение не включено поверх общего ORM/billing-контекста: оно будет допустимо только для действительно изолированных worker/workspace jobs.
+- Director выдаёт валидируемый DAG с зависимостями, ролями и acceptance criteria.
+- Циклы, неизвестные зависимости, duplicate/self-reference блокируются до исполнения.
+- Developer поддерживает create/update/delete; update/delete требуют файл из прочитанного snapshot и expected SHA.
+- Change-set больше лимита отклоняется целиком; конфликтующие Development-задачи не могут молча менять один путь.
+- Change-set проверяется в preview workspace до approval и повторно перед GitHub write.
+- GitHub write выполняется только в `ai-workspace/run-*`; default branch напрямую не меняется.
 
-## Реализовано в Sprint 83
+## Reliability / provider continuity
 
-- Developer contract поддерживает `create`, `update`, `delete`.
-- `update/delete` требуют файл из реально прочитанного snapshot и его expected SHA.
-- Нельзя молча обрезать change-set: >12 файлов отклоняют весь proposal.
-- Несколько Development-задач не могут конфликтующе менять один путь.
-- Для реального repository context change-set проигрывается в preview workspace до создания approval.
-- Preview workspace удаляется после проверки.
-- После пользовательского approval код повторно проверяется на свежем snapshot перед созданием рабочей ветки — защита от TOCTOU.
-- Write выполняется только в `ai-workspace/run-*`; default branch не изменяется напрямую.
+- Same-model retry использует следующий HEALTHY API key и exact-key degradation.
+- Cross-model fallback планируется только по реально доступным кандидатам и пересчитывает собственную цену/маржу каждой модели.
+- Каждый model attempt имеет отдельные customer/provider idempotency keys и отдельный reserve.
+- Failed provider attempt освобождает только свой reserve; successful attempt settle происходит один раз.
+- Provider + customer settlement после delivery выполняются одной DB-транзакцией.
+- После подтверждённого provider response settlement failure никогда не маскируется release-ом: сохраняются request/tokens/PriceVersion/reservation IDs и run получает `dev_settlement_interrupted`.
+- `dev_studio_reconcile --run-id <id> --apply` восстанавливает только финансовый settlement по сохранённому evidence и не повторяет LLM/GitHub side effects.
+- `dev_studio_runtime_audit` блокирует RC, пока существует незакрытый `dev_settlement_interrupted`.
 
-## Реализовано в Sprint 84
+## Security boundary
 
-- Run page показывает Director DAG, роль, зависимости, acceptance и фактическое состояние node.
-- Отдельная Verification panel показывает workspace ID, working branch, applied files и результаты sandbox checks.
-- Стоимость видна по фактически завершённым платным шагам.
-- `provider_attempts` сохраняется в step evidence.
+- System message содержит только trusted role/tool/task contracts.
+- Repository/README/source comments и previous-agent outputs передаются отдельным `UNTRUSTED WORKING CONTEXT` и не получают system priority.
+- High-confidence secrets/private keys блокируются до approval.
+- Dependency/deployment/migration/delete/money-sensitive изменения получают risk evidence и видны пользователю до подтверждения.
+- Path traversal, snapshot SHA и isolated-branch contracts остаются fail-closed.
 
-## Sprint 85 — текущая граница
+## Recovery
 
-Whitelist sandbox уже содержит `pytest`, `django-check`, `npm-test`, `npm-build`, `npm-lint`, но автоматический запуск project-level test suite разрешается только когда workspace содержит достаточный snapshot проекта. Нельзя выдавать неполный bounded context за полный checkout и получать ложные FAIL/PASS.
+- `dev_studio_recover` dry-run обнаруживает stale runs.
+- `--repair` завершает stale execution fail-closed, освобождает однозначно безопасные резервы и удаляет ephemeral workspace best-effort.
+- Provider/GitHub actions не переигрываются автоматически после неопределённого worker interruption.
+- WAITING_APPROVAL не считается зависанием worker.
 
-Следующий технический шаг Sprint 85: ввести признак completeness/manifest contract и выбирать test matrix на его основании; для неполного snapshot оставлять syntax/structural checks и явно показывать их уровень доказательства.
+## UI evidence
 
-## Реализовано в Sprint 86
+Run page показывает:
 
-- `dev_studio_recover` в dry-run режиме только обнаруживает stale runs и блокирует молчаливое игнорирование.
-- `--repair` используется оператором после проверки worker state.
-- WAITING_APPROVAL не восстанавливается автоматически: решение пользователя может ждать долго и не является зависанием worker.
-- PLANNING/RUNNING/WAITING_TOOL/REVIEWING старше порога переводятся в `failed/dev_runtime_interrupted`.
-- Активные steps становятся FAILED с явным recovery log.
-- Освобождаются активные customer reservations с idempotency prefix конкретного run и provider reservations с его source prefix.
-- Workspace уничтожается best-effort; рабочая ветка сохраняется в recovery evidence для аудита.
-- Никакой provider/GitHub action не переигрывается автоматически.
+- Director DAG и фактические node states;
+- рабочую ветку и workspace ID;
+- applied files;
+- sandbox/project checks с PASS/FAIL;
+- evidence level (`syntax_bounded_snapshot`, `syntax_complete_snapshot`, `project_checks_complete_snapshot`);
+- стоимость по фактически завершённым платным шагам;
+- provider/model attempts и fallback evidence.
 
-## Sprint 87 — реализованная часть
+## Blocking gates
 
-- Dev LLM stages используют retry по healthy ключам того же provider/model через `generate_with_key_failover`.
-- Использованный проблемный ключ деградируется exact-adapter attribution.
-- Новый adapter выбирает следующий healthy key.
-- Customer/provider reservation создаётся один раз и settle выполняется один раз после успешного ответа.
-- Число попыток сохраняется как `provider_attempts`.
-- Межмодельный fallback сознательно не подключён напрямую к этому пути, пока для каждой альтернативной модели не будет пересчитана цена/маржа/reservation. Иначе возможна неверная экономика.
+### Targeted
 
-## Gates
+`sudo bash scripts/dev_studio_check.sh`
 
-`scripts/dev_studio_check.sh` является targeted blocking gate цикла 81–90. Он проверяет:
+Проверяет shell/Python syntax, production compose, настоящий sandbox test service, Dev regressions, cross-model settlement integrity, Django/migration drift, runtime audits, sandbox image и frontend build/lint.
 
-- Python syntax;
-- production compose syntax;
-- test stack с настоящим sandbox service;
-- Director/changes/preapproval/provider retry/recovery/sandbox/cancel/budget/safety regressions;
-- Django checks и migration drift;
-- `dev_studio_audit`;
-- dedicated sandbox image build;
-- frontend production builder + lint.
+Успешный маркер:
 
-Главный `scripts/release_check.sh` также поднимает sandbox и содержит критические Dev Studio v2 regressions.
+`DEV_STUDIO_V2_CHECK=PASS`
 
-## Runtime evidence, которое ещё обязательно
+### Общий release
 
-1. `sudo bash scripts/dev_studio_check.sh` → `DEV_STUDIO_V2_CHECK=PASS` на production-like host.
-2. `sudo bash scripts/release_check.sh` → `RELEASE CHECK: PASS` на том же commit.
-3. Реальный Dev project: Director plan → code proposal → preapproval PASS → approval → sandbox PASS → GitHub isolated branch → QA/Final Review.
-4. Kill/restart worker drill во время Dev execution и проверка `dev_studio_recover` без двойных charge/commit.
-5. Key-pool failure drill: первый credential падает, второй healthy завершает stage, ledger содержит одно успешное списание.
-6. После Sprint 89 — полный коммерческий E2E сценарий и evidence bundle Sprint 90.
+`sudo bash scripts/release_check.sh`
+
+Полный backend PostgreSQL/pgvector suite также включает новые Dev Studio tests, затем экономические/billing/security/recovery gates и frontend production build/runtime smoke.
+
+### Sprint 89/90 commercial RC
+
+После одного реального завершённого Dev Run:
+
+`DEV_RUN_ID=<uuid> sudo bash scripts/dev_studio_release_candidate_check.sh`
+
+RC требует:
+
+1. targeted Dev Studio PASS;
+2. production runtime audit PASS;
+3. отсутствие stale execution;
+4. E2E evidence: isolated branch, Director DAG, approval, sandbox PASS, applied files, QA & Security, Final Review, GitHub operation audit;
+5. отсутствие активных customer/provider reservations по run;
+6. immutable evidence log + SHA-256 + JSON manifest с commit SHA и Dev Run ID.
+
+## Production acceptance
+
+Код Sprint 81–90 считается завершённым. Production acceptance наступает только после фактических серверных результатов:
+
+1. `DEV_STUDIO_V2_CHECK=PASS`;
+2. `RELEASE CHECK: PASS`;
+3. реальный Dev Run завершён через approval/sandbox/branch/QA/Final Review;
+4. `DEV STUDIO RELEASE CANDIDATE: PASS` на том же commit;
+5. evidence manifest/checksum сохранены в `logs/`.
