@@ -121,7 +121,9 @@ def install(streaming_module) -> None:
     run._raw_run = raw_run
     streaming_module.run = run
 
-    # managed_stream imports run by value; rebind if it was imported before ready().
-    managed_stream = sys.modules.get("apps.chat.managed_stream")
-    if managed_stream is not None:
-        managed_stream.run = run
+    # Several chat entrypoints import run by value before AppConfig.ready(). Keep
+    # streaming and non-streaming APIs on the exact same final runtime chain.
+    for module_name in ("apps.chat.managed_stream", "apps.chat.services", "apps.chat.views"):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "run"):
+            module.run = run
