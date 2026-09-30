@@ -1,4 +1,5 @@
 from django.core import signing
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import redirect
@@ -6,7 +7,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError as APIValidationError
 from rest_framework.response import Response
 
 from apps.agents.models import AgentRun
@@ -29,6 +30,12 @@ VK_STATE_SALT = "ai-workspace-vk-oauth-v1"
 VK_STATE_MAX_AGE_SECONDS = 10 * 60
 
 
+def _api_validation(exc):
+    if isinstance(exc, DjangoValidationError):
+        return APIValidationError({"detail": exc.messages})
+    return APIValidationError({"detail": str(exc)})
+
+
 def _agent_has_active_run(agent_id):
     return AgentRun.objects.filter(
         Q(agent_id=agent_id) | Q(team__members__agent_id=agent_id, team__members__enabled=True),
@@ -38,10 +45,7 @@ def _agent_has_active_run(agent_id):
 
 def _connection_has_active_run(connection_id):
     return AgentRun.objects.filter(
-        Q(
-            agent__connection_bindings__connection_id=connection_id,
-            agent__connection_bindings__enabled=True,
-        )
+        Q(agent__connection_bindings__connection_id=connection_id, agent__connection_bindings__enabled=True)
         | Q(
             team__members__agent__connection_bindings__connection_id=connection_id,
             team__members__agent__connection_bindings__enabled=True,
@@ -53,20 +57,16 @@ def _connection_has_active_run(connection_id):
 
 def _ensure_agent_idle(agent_id):
     if _agent_has_active_run(agent_id):
-        raise ValidationError({"detail": "Нельзя менять подключение агента во время активного запуска"})
+        raise APIValidationError({"detail": "Нельзя менять подключение агента во время активного запуска"})
 
 
 def _ensure_connection_idle(connection_id):
     if _connection_has_active_run(connection_id):
-        raise ValidationError({"detail": "Подключение сейчас используется активным агентом или командой"})
+        raise APIValidationError({"detail": "Подключение сейчас используется активным агентом или командой"})
 
 
 def _vk_metadata(profile):
-    return {
-        "user_id": profile.user_id,
-        "display_name": profile.display_name,
-        "groups": profile.groups,
-    }
+    return {"user_id": profile.user_id, "display_name": profile.display_name, "groups": profile.groups}
 
 
 class ExternalConnectionViewSet(viewsets.ModelViewSet):
@@ -79,20 +79,20 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
     def check(self, request, pk=None):
         connection = self.get_object()
         if not connection.enabled:
-            raise ValidationError({"detail": "Подключение отключено"})
+            raise APIValidationError({"detail": "Подключение отключено"})
         try:
             if connection.kind == ExternalConnection.Kind.WORDPRESS:
                 metadata = check_wordpress(connection)
             elif connection.kind == ExternalConnection.Kind.VK:
                 metadata = _vk_metadata(check_vk(connection))
             else:
-                raise ValidationError({"detail": "Тип подключения не поддерживается"})
-        except ValidationError as exc:
+                raise DjangoValidationError("Тип подключения не поддерживается")
+        except DjangoValidationError as exc:
             connection.health_state = ExternalConnection.Health.DEGRADED
-            connection.last_error = str(exc.detail if hasattr(exc, "detail") else exc)[:240]
+            connection.last_error = " ".join(exc.messages)[:240]
             connection.last_checked_at = timezone.now()
             connection.save(update_fields=["health_state", "last_error", "last_checked_at", "updated_at"])
-            raise
+            raise _api_validation(exc) from exc
         connection.health_state = ExternalConnection.Health.HEALTHY
         connection.last_error = ""
         connection.last_checked_at = timezone.now()
@@ -107,7 +107,7 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
         if connection_id:
             connection = self.get_queryset().filter(pk=connection_id, kind=ExternalConnection.Kind.VK).first()
             if connection is None:
-                raise ValidationError({"connection": "VK-подключение не найдено"})
+                raise APIValidationError({"connection": "VK-подключение не найдено"})
             _ensure_connection_idle(connection.id)
         else:
             connection = ExternalConnection.objects.create(
@@ -124,12 +124,13 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
             compress=True,
         )
         callback_url = request.build_absolute_uri(reverse("external-connection-vk-oauth-callback"))
-        return Response(
-            {
-                "connection": self.get_serializer(connection).data,
-                "authorize_url": oauth_authorize_url(state=state, redirect_uri=callback_url),
-            }
-        )
+        try:
+            authorize_url = oauth_authorize_url(state=state, redirect_uri=callback_url)
+        except DjangoValidationError as exc:
+            if not connection.secret_encrypted and not connection.agent_bindings.exists():
+                connection.delete()
+            raise _api_validation(exc) from exc
+        return Response({"connection": self.get_serializer(connection).data, "authorize_url": authorize_url})
 
     @action(detail=False, methods=["get"], url_path="vk-oauth-callback")
     def vk_oauth_callback(self, request):
@@ -139,21 +140,26 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
         if error:
             return redirect(f"/app/integrations?vk=error&reason={error[:80]}")
         if not state or not code:
-            raise ValidationError({"detail": "VK OAuth callback не содержит state/code"})
+            raise APIValidationError({"detail": "VK OAuth callback не содержит state/code"})
         try:
             payload = signing.loads(state, salt=VK_STATE_SALT, max_age=VK_STATE_MAX_AGE_SECONDS)
         except signing.BadSignature as exc:
-            raise ValidationError({"detail": "VK OAuth state недействителен или истёк"}) from exc
+            raise APIValidationError({"detail": "VK OAuth state недействителен или истёк"}) from exc
         if str(payload.get("user_id")) != str(request.user.id):
-            raise ValidationError({"detail": "VK OAuth принадлежит другому пользователю"})
-        connection = self.get_queryset().filter(
-            pk=payload.get("connection_id"), kind=ExternalConnection.Kind.VK
-        ).first()
+            raise APIValidationError({"detail": "VK OAuth принадлежит другому пользователю"})
+        connection = self.get_queryset().filter(pk=payload.get("connection_id"), kind=ExternalConnection.Kind.VK).first()
         if connection is None:
-            raise ValidationError({"detail": "VK-подключение не найдено"})
+            raise APIValidationError({"detail": "VK-подключение не найдено"})
         _ensure_connection_idle(connection.id)
         callback_url = request.build_absolute_uri(reverse("external-connection-vk-oauth-callback"))
-        token = exchange_code(code=code, redirect_uri=callback_url)
+        try:
+            token = exchange_code(code=code, redirect_uri=callback_url)
+        except DjangoValidationError as exc:
+            connection.health_state = ExternalConnection.Health.DEGRADED
+            connection.last_error = " ".join(exc.messages)[:240]
+            connection.last_checked_at = timezone.now()
+            connection.save(update_fields=["health_state", "last_error", "last_checked_at", "updated_at"])
+            return redirect(f"/app/integrations?vk=degraded&connection={connection.id}")
         connection.set_secret(token["access_token"])
         connection.username = token.get("user_id") or connection.username
         connection.metadata = {
@@ -166,26 +172,26 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
             connection.metadata = {**connection.metadata, **_vk_metadata(profile)}
             connection.health_state = ExternalConnection.Health.HEALTHY
             connection.last_error = ""
-        except ValidationError as exc:
+        except DjangoValidationError as exc:
             connection.health_state = ExternalConnection.Health.DEGRADED
-            connection.last_error = str(exc.detail if hasattr(exc, "detail") else exc)[:240]
+            connection.last_error = " ".join(exc.messages)[:240]
         connection.last_checked_at = timezone.now()
         connection.save()
-        status = "connected" if connection.health_state == ExternalConnection.Health.HEALTHY else "degraded"
-        return redirect(f"/app/integrations?vk={status}&connection={connection.id}")
+        connection_status = "connected" if connection.health_state == ExternalConnection.Health.HEALTHY else "degraded"
+        return redirect(f"/app/integrations?vk={connection_status}&connection={connection.id}")
 
     @action(detail=True, methods=["post"], url_path="vk-select-group")
     def vk_select_group(self, request, pk=None):
         connection = self.get_object()
         if connection.kind != ExternalConnection.Kind.VK:
-            raise ValidationError({"detail": "Это не VK-подключение"})
+            raise APIValidationError({"detail": "Это не VK-подключение"})
         if connection.health_state != ExternalConnection.Health.HEALTHY:
-            raise ValidationError({"detail": "Сначала авторизуйте и проверьте VK"})
+            raise APIValidationError({"detail": "Сначала авторизуйте и проверьте VK"})
         group_id = str(request.data.get("group_id") or "").strip().lstrip("-")
         groups = [item for item in ((connection.metadata or {}).get("groups") or []) if isinstance(item, dict)]
         selected = next((item for item in groups if str(item.get("id") or "") == group_id), None)
         if selected is None:
-            raise ValidationError({"group_id": "Выберите доступное сообщество из списка VK"})
+            raise APIValidationError({"group_id": "Выберите доступное сообщество из списка VK"})
         _ensure_connection_idle(connection.id)
         connection.metadata = {
             **(connection.metadata or {}),
