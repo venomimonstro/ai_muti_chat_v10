@@ -43,20 +43,34 @@ def _reservation_evidence(reservation):
     return str(getattr(reservation, "id", "") or "")
 
 
-def _settlement_interrupted_error(*, evidence, model, rank, customer_reservation, provider_reservation, cause_code):
+def _settlement_interrupted_error(
+    *,
+    evidence,
+    model,
+    attempt,
+    customer_reservation,
+    provider_reservation,
+    result,
+    cause_code,
+):
     evidence.append(
         {
-            "rank": rank,
+            "rank": attempt.rank,
             "model": model.slug,
             "provider": model.provider.slug,
             "status": "settlement_interrupted",
             "error_code": str(cause_code or "settlement_error")[:120],
             "customer_reservation_id": _reservation_evidence(customer_reservation),
             "provider_reservation_id": _reservation_evidence(provider_reservation),
+            "price_version_id": str(getattr(attempt.price, "id", "") or ""),
+            "provider_request_id": str(getattr(result, "provider_request_id", "") or "")[:200],
+            "input_tokens": int(getattr(result, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(result, "output_tokens", 0) or 0),
+            "estimated_charge_rub": str(attempt.estimated_charge_rub),
         }
     )
     error = ProviderError(
-        "Провайдер вернул результат, но финансовое закрытие шага прервано; автоматический release запрещён",
+        "Провайдер вернул результат, но финансовое закрытие шага прервано; требуется reconciliation",
         code="dev_settlement_interrupted",
         retryable=False,
     )
@@ -98,6 +112,7 @@ def execute_with_model_fallback(
         customer_reservation = None
         provider_reservation = None
         provider_delivered = False
+        result = None
         customer_key = f"agent-run:{run.id}:step:{sequence}:model:{rank}"
         provider_key = f"agent:{run.id}:step:{sequence}:model:{rank}"
         source_id = f"{run.id}:step:{sequence}:model:{rank}"
@@ -124,9 +139,6 @@ def execute_with_model_fallback(
             )
             provider_delivered = True
 
-            # Use the immutable PriceVersion captured during preflight whenever
-            # possible. A concurrent price update must not change settlement for
-            # an already-delivered provider response.
             price = attempt.price or active_price(model.slug)
             actual_quote = require_margin(
                 quote(
@@ -140,10 +152,6 @@ def execute_with_model_fallback(
             )
             actual = min(actual_quote.user_charge_rub, customer_reservation.amount_rub)
 
-            # Provider accounting + customer wallet settlement commit together.
-            # If this transaction rolls back after delivery, reservations remain
-            # ACTIVE intentionally for reconciliation; releasing them would hide
-            # real upstream cost.
             with transaction.atomic():
                 settle_agent_provider_spend(
                     reservation=provider_reservation,
@@ -165,6 +173,8 @@ def execute_with_model_fallback(
                     "provider_attempts": provider_attempts,
                     "estimated_charge_rub": str(attempt.estimated_charge_rub),
                     "actual_charge_rub": str(actual),
+                    "price_version_id": str(getattr(price, "id", "") or ""),
+                    "provider_request_id": str(getattr(result, "provider_request_id", "") or "")[:200],
                 }
             )
             return DevGenerationResult(
@@ -181,9 +191,10 @@ def execute_with_model_fallback(
                 raise _settlement_interrupted_error(
                     evidence=evidence,
                     model=model,
-                    rank=rank,
+                    attempt=attempt,
                     customer_reservation=customer_reservation,
                     provider_reservation=provider_reservation,
+                    result=result,
                     cause_code=exc.code,
                 ) from exc
             last_error = exc
@@ -208,9 +219,10 @@ def execute_with_model_fallback(
                 raise _settlement_interrupted_error(
                     evidence=evidence,
                     model=model,
-                    rank=rank,
+                    attempt=attempt,
                     customer_reservation=customer_reservation,
                     provider_reservation=provider_reservation,
+                    result=result,
                     cause_code="validation_error",
                 ) from exc
             _release_customer(customer_reservation)
@@ -238,9 +250,10 @@ def execute_with_model_fallback(
                 raise _settlement_interrupted_error(
                     evidence=evidence,
                     model=model,
-                    rank=rank,
+                    attempt=attempt,
                     customer_reservation=customer_reservation,
                     provider_reservation=provider_reservation,
+                    result=result,
                     cause_code="internal_error",
                 ) from exc
             _release_customer(customer_reservation)
