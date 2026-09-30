@@ -9,8 +9,17 @@ from .models import Generation, Message
 from .partial_billing import settle_delivered_partial
 from .streaming import sse
 
+TERMINAL_STATES = {
+    Generation.State.COMPLETED,
+    Generation.State.FAILED,
+    Generation.State.CANCELLED,
+}
+
 
 def _cancel_before_provider(generation):
+    generation.refresh_from_db(fields=["state"])
+    if generation.state in TERMINAL_STATES:
+        return False
     charge = settle_delivered_partial(generation, "")
     assistant = generation.assistant_message
     assistant.content = ""
@@ -23,6 +32,12 @@ def _cancel_before_provider(generation):
     generation.save(
         update_fields=["state", "error_code", "actual_cost_rub", "completed_at"]
     )
+    return True
+
+
+def _terminal_now(generation) -> bool:
+    generation.refresh_from_db(fields=["state"])
+    return generation.state in TERMINAL_STATES
 
 
 def install(streaming_module) -> None:
@@ -34,16 +49,16 @@ def install(streaming_module) -> None:
         # Covers the race where Stop arrives while prepare() is still committing.
         if cancel_requested(generation):
             try:
-                _cancel_before_provider(generation)
-                yield sse(
-                    "error",
-                    {
-                        "code": "client_cancelled",
-                        "partial": False,
-                        "cost_rub": "0",
-                        "message": "Запрос остановлен пользователем. Неподтверждённые расходы не списаны.",
-                    },
-                )
+                if _cancel_before_provider(generation):
+                    yield sse(
+                        "error",
+                        {
+                            "code": "client_cancelled",
+                            "partial": False,
+                            "cost_rub": "0",
+                            "message": "Запрос остановлен пользователем. Неподтверждённые расходы не списаны.",
+                        },
+                    )
             finally:
                 clear_cancel(generation)
             return
@@ -52,6 +67,14 @@ def install(streaming_module) -> None:
         try:
             for chunk in iterator:
                 if cancel_requested(generation):
+                    # A late Stop must never rewrite a durable terminal outcome.
+                    # This closes the millisecond race between DB completion and
+                    # delivery of the final SSE event to the browser.
+                    if _terminal_now(generation):
+                        clear_cancel(generation)
+                        yield chunk
+                        continue
+
                     # Closing raw streaming.run enters its authoritative GeneratorExit
                     # settlement path. It alone decides whether confirmed usage exists.
                     iterator.close()
@@ -61,7 +84,8 @@ def install(streaming_module) -> None:
         finally:
             if cancel_requested(generation):
                 try:
-                    iterator.close()
+                    if not _terminal_now(generation):
+                        iterator.close()
                 finally:
                     clear_cancel(generation)
 
