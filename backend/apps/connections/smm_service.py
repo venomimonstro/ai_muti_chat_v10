@@ -60,6 +60,9 @@ def ensure_smm_agent(*, owner, connection):
                 "vk": True,
                 "image_generation": True,
                 "stock_images": True,
+                # External write is deliberately not a generic agent capability.
+                # SMM publish goes only through the dedicated approval/scheduler path.
+                "publish": False,
             },
             max_cost_rub_per_run=20,
             max_cost_rub_per_day=100,
@@ -67,9 +70,26 @@ def ensure_smm_agent(*, owner, connection):
             max_steps=30,
             max_tool_calls=30,
         )
-    elif agent.status != Agent.Status.ACTIVE:
-        agent.status = Agent.Status.ACTIVE
-        agent.save(update_fields=["status", "updated_at"])
+    else:
+        changed = []
+        if agent.status != Agent.Status.ACTIVE:
+            agent.status = Agent.Status.ACTIVE
+            changed.append("status")
+        policy = dict(agent.tool_policy or {})
+        required_policy = {
+            "web": True,
+            "browser": True,
+            "vk": True,
+            "image_generation": True,
+            "stock_images": True,
+            "publish": False,
+        }
+        if any(policy.get(key) != value for key, value in required_policy.items()):
+            policy.update(required_policy)
+            agent.tool_policy = policy
+            changed.append("tool_policy")
+        if changed:
+            agent.save(update_fields=[*changed, "updated_at"])
     binding, _created = AgentConnectionBinding.objects.get_or_create(
         agent=agent,
         connection=connection,
