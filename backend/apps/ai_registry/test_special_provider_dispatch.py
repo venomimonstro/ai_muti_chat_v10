@@ -2,12 +2,15 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from . import dispatch
+from . import adapters, dispatch
 from .adapters import EchoProviderAdapter
 from .models import AIModel, Provider
 
 
 class SpecialProviderDispatchTests(TestCase):
+    def test_runtime_dispatcher_is_installed_by_app_startup(self):
+        self.assertIs(adapters.adapter_for, dispatch.adapter_for)
+
     def test_gigachat_never_falls_through_to_echo(self):
         provider = Provider.objects.create(
             slug="gigachat",
