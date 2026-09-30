@@ -44,6 +44,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_preflight_reservation_cleanup.py \
   apps/chat/test_money_safety_django.py \
   apps/admin_ops/test_stale_recovery_economics.py \
+  apps/admin_ops/test_model_quarantine_diagnostics.py \
   apps/admin_ops/test_diagnostics_share.py \
   apps/admin_ops/test_system_health.py
 
