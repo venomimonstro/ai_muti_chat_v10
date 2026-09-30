@@ -51,3 +51,28 @@ class ConversationUIState(models.Model):
 
     class Meta:
         ordering = ["-is_pinned", "-updated_at"]
+
+
+class ChatCancellationMarker(models.Model):
+    """Durable Stop marker for one idempotent chat request.
+
+    Redis remains the fast path, but a database marker guarantees that a user Stop
+    survives cache outages/restarts and is visible to another backend process.
+    The idempotency key itself is never stored; only its SHA-256 digest is persisted.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    idempotency_hash = models.CharField(max_length=64, unique=True)
+    generation = models.ForeignKey(
+        "chat.Generation",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="cancellation_markers",
+    )
+    requested_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+        indexes = [models.Index(fields=["generation", "expires_at"], name="chat_cancel_generation_idx")]
