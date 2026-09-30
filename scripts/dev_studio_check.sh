@@ -12,6 +12,7 @@ python3 -m compileall -q \
   backend/apps/agents/dev_context.py \
   backend/apps/agents/dev_changes.py \
   backend/apps/agents/dev_execution.py \
+  backend/apps/agents/dev_execution_v2.py \
   backend/apps/agents/dev_model_execution.py \
   backend/apps/agents/dev_model_fallback.py \
   backend/apps/agents/dev_plan.py \
@@ -53,6 +54,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_plan.py \
     apps/agents/test_dev_changes_v2.py \
     apps/agents/test_dev_preapproval_validation.py \
+    apps/agents/test_dev_execution_v2.py \
     apps/agents/test_dev_provider_retry.py \
     apps/agents/test_dev_model_fallback.py \
     apps/agents/test_dev_model_execution.py \
