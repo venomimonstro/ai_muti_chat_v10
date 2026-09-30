@@ -74,6 +74,13 @@ class DevRepositoryContextTests(SimpleTestCase):
         self.assertFalse(any("node_modules" in path for path in paths))
         self.assertGreaterEqual(context["discovered_count"], 8)
         self.assertIn("Repository tree (bounded scan)", context["rendered"])
+        profile = context["workspace_profile"]
+        self.assertTrue(profile["scan_complete"])
+        self.assertTrue(profile["snapshot_complete"])
+        self.assertTrue(profile["python_project"])
+        self.assertTrue(profile["django_project"])
+        self.assertTrue(profile["node_project"])
+        self.assertEqual(profile["evidence_level"], "complete_bounded_snapshot")
 
     @patch("apps.agents.dev_context.read_repository_file")
     @patch("apps.agents.dev_context.list_repository_directory")
@@ -89,4 +96,32 @@ class DevRepositoryContextTests(SimpleTestCase):
         context = build_repository_context(self.project)
 
         self.assertEqual([item["path"] for item in context["files"]], ["README.md"])
+        self.assertTrue(context["workspace_profile"]["snapshot_complete"])
         read_file.assert_called_once()
+
+    @patch("apps.agents.dev_context.MAX_SCAN_DIRECTORIES", 1)
+    @patch("apps.agents.dev_context.read_repository_file")
+    @patch("apps.agents.dev_context.list_repository_directory")
+    def test_marks_snapshot_bounded_when_directory_queue_is_truncated(self, list_directory, read_file):
+        def directory_payload(_binding, path="", *, ref=None):
+            if path == "":
+                return {
+                    "items": [
+                        {"name": "README.md", "path": "README.md", "type": "file", "size": 10},
+                        {"name": "backend", "path": "backend", "type": "dir", "size": 0},
+                        {"name": "frontend", "path": "frontend", "type": "dir", "size": 0},
+                    ]
+                }
+            if path == "backend":
+                return {"items": [{"name": "app.py", "path": "backend/app.py", "type": "file", "size": 10}]}
+            raise AssertionError(f"unexpected directory {path}")
+
+        list_directory.side_effect = directory_payload
+        read_file.side_effect = lambda _binding, path, ref=None: {"sha": "sha", "content": "x = 1\n"}
+
+        context = build_repository_context(self.project)
+
+        profile = context["workspace_profile"]
+        self.assertFalse(profile["scan_complete"])
+        self.assertFalse(profile["snapshot_complete"])
+        self.assertEqual(profile["evidence_level"], "bounded_discovery_snapshot")
