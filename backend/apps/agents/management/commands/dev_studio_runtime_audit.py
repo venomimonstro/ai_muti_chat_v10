@@ -42,6 +42,10 @@ class Command(BaseCommand):
         active_runs = AgentRun.objects.filter(team__kind=AgentTeam.Kind.DEVELOPMENT, state__in=ACTIVE_STATES)
         recent_runs = AgentRun.objects.filter(team__kind=AgentTeam.Kind.DEVELOPMENT, created_at__gte=since)
         failed_runs = recent_runs.filter(state=AgentRun.State.FAILED)
+        interrupted_settlements = AgentRun.objects.filter(
+            team__kind=AgentTeam.Kind.DEVELOPMENT,
+            error_code="dev_settlement_interrupted",
+        )
         waiting_approvals = AgentApproval.objects.filter(
             run__team__kind=AgentTeam.Kind.DEVELOPMENT,
             status=AgentApproval.Status.PENDING,
@@ -52,11 +56,18 @@ class Command(BaseCommand):
         self.stdout.write(f"recent_24h_runs={recent_runs.count()}")
         self.stdout.write(f"recent_24h_failed={failed_runs.count()}")
         self.stdout.write(f"pending_approvals={waiting_approvals.count()}")
+        self.stdout.write(f"interrupted_settlements={interrupted_settlements.count()}")
 
         for run in active_runs.select_related("team").iterator(chunk_size=200):
             reference = run.updated_at or run.started_at or run.created_at
             if reference < now - timedelta(hours=4):
                 failures.append(f"stale_run={run.id} state={run.state} updated_at={reference.isoformat()}")
+
+        for run in interrupted_settlements.only("id", "updated_at").iterator(chunk_size=200):
+            failures.append(
+                f"settlement_interrupted run={run.id} updated_at={run.updated_at.isoformat()} "
+                f"action=python_manage.py_dev_studio_reconcile_--run-id_{run.id}"
+            )
 
         failed_steps = AgentStepRun.objects.filter(
             run__team__kind=AgentTeam.Kind.DEVELOPMENT,
