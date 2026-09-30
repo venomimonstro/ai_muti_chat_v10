@@ -82,6 +82,34 @@ def test_model_not_found_quarantines_only_failing_model():
 
 
 @pytest.mark.django_db
+def test_customer_adapter_fails_locally_for_quarantined_model():
+    _install_runtime()
+    provider = Provider.objects.create(
+        slug="quarantine-local-fail-echo",
+        name="Quarantine local fail Echo",
+        adapter_type=Provider.AdapterType.ECHO,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    model = _model(provider, "quarantine-local-fail-model")
+    quarantine_model(
+        model,
+        ProviderError("removed upstream", code="model_not_found", retryable=False),
+    )
+
+    adapter = dispatch.adapter_for(model)
+    with pytest.raises(ProviderError) as exc_info:
+        adapter.generate(
+            model=model.upstream_model,
+            messages=[{"role": "user", "content": "hello"}],
+            max_output_tokens=8,
+        )
+
+    assert exc_info.value.code == "model_not_found"
+    provider.refresh_from_db()
+    assert provider.health_state == Provider.HealthState.HEALTHY
+
+
+@pytest.mark.django_db
 def test_provider_health_probe_never_quarantines_model():
     _install_runtime()
     provider = Provider.objects.create(
@@ -256,7 +284,7 @@ def test_background_probe_recovers_quarantined_model(monkeypatch):
 
     fake = SimpleNamespace(
         _ai_workspace_model_slug=model.slug,
-        _ai_workspace_probe_mode=False,
+        _ai_workspace_probe_mode=True,
         generate=lambda **_kwargs: ProviderResult(
             text="OK",
             input_tokens=2,
@@ -264,7 +292,7 @@ def test_background_probe_recovers_quarantined_model(monkeypatch):
             provider_request_id="quarantine-probe-ok",
         ),
     )
-    monkeypatch.setattr(dispatch, "adapter_for", lambda _model: fake)
+    monkeypatch.setattr(dispatch, "adapter_for", lambda _model, **_kwargs: fake)
 
     result = recover_quarantined_models(limit=4)
 
