@@ -4,7 +4,7 @@ import sys
 
 from apps.ai_registry.adapters import ProviderError
 from apps.ai_registry.models import AIModel
-from apps.ai_registry.readiness import model_client_ready
+from apps.ai_registry.reliability import model_client_ready
 
 
 LOCAL_NOT_READY_CODE = "candidate_not_ready"
