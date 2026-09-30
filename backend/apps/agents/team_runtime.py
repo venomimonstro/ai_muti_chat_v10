@@ -20,6 +20,7 @@ from .dev_changes import developer_output_contract, parse_change_proposal
 from .dev_context import build_repository_context
 from .dev_execution import apply_approved_changes, enrich_changes_with_snapshot
 from .dev_plan import director_output_contract, plan_for_run, plan_rows_for_ui
+from .dev_provider_retry import generate_with_key_failover
 from .limits import effective_remaining_budget
 from .models import AgentApproval, AgentRun, AgentStepRun
 from .runtime import _model_for
@@ -256,10 +257,11 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             _mark_step_canceled(step, "Запуск отменён до обращения к модели; резерв освобождён.")
             return None, total, run
 
-        result = adapter_for(model).generate(
-            model=model.upstream_model or model.slug,
+        result, provider_attempts = generate_with_key_failover(
+            model=model,
             messages=messages,
             max_output_tokens=output_tokens,
+            adapter_factory=adapter_for,
         )
         actual_quote = require_margin(
             quote(
@@ -293,6 +295,7 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             "text": result.text,
             "model": model.slug,
             "provider_request_id": result.provider_request_id,
+            "provider_attempts": provider_attempts,
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "director_task": task or None,
