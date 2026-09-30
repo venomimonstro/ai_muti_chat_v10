@@ -29,7 +29,8 @@ python3 -m compileall -q \
   backend/apps/agents/management/commands/dev_studio_recover.py \
   backend/apps/agents/management/commands/dev_studio_reconcile.py \
   backend/apps/agents/management/commands/dev_studio_runtime_audit.py \
-  backend/apps/agents/management/commands/dev_studio_e2e_audit.py
+  backend/apps/agents/management/commands/dev_studio_e2e_audit.py \
+  backend/apps/procurement/readiness.py
 printf '[PASS] Shell/Python syntax\n'
 
 APP_DOMAIN=dev-check.example.test \
@@ -73,7 +74,11 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_approval_revalidation.py \
     apps/agents/test_dev_safety.py \
     apps/agents/test_dev_team_guards.py \
-    apps/agents/test_team_director_order.py
+    apps/agents/test_team_director_order.py \
+    apps/procurement/test_request_capacity.py \
+    apps/procurement/test_chat_reservation_cleanup.py \
+    apps/ai_registry/test_unified_readiness.py \
+    apps/ai_registry/test_special_provider_dispatch.py
 printf '[PASS] Dev Studio backend regressions\n'
 
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py check
