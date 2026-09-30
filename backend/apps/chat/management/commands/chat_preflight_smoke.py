@@ -14,15 +14,16 @@ from apps.chat.streaming import prepare
 
 class Command(BaseCommand):
     help = (
-        "Run the real customer AUTO chat preflight (user, wallet, router, pricing, reservation, generation) "
-        "inside a rollback-only transaction. Does not call an external AI provider and leaves no test data."
+        "Run the real customer chat preflight (user, wallet, AUTO/tier router, pricing, procurement reservation, "
+        "customer reservation and generation) inside a rollback-only transaction. Does not call an external AI "
+        "provider and leaves no test data."
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--mode",
-            choices=["economy", "balanced", "maximum"],
-            default="balanced",
+            choices=["auto", "economy", "balanced", "maximum"],
+            default="auto",
         )
 
     def handle(self, *args, **options):
@@ -75,14 +76,26 @@ class Command(BaseCommand):
                     raise RuntimeError("generation has no balance reservation")
                 reservation = BalanceReservation.objects.get(pk=generation.reservation_id)
                 decision = generation.routing_decision
+                if decision.mode != mode:
+                    raise RuntimeError(
+                        f"routing decision mode is {decision.mode}, expected {mode}"
+                    )
                 if not decision.selected_model_id:
                     raise RuntimeError("router did not select a model")
                 if preview.get("blocked_by_spend_guard"):
-                    raise RuntimeError(f"preview blocked by spend guard: {preview.get('spend_guard_message')}")
+                    raise RuntimeError(
+                        f"preview blocked by spend guard: {preview.get('spend_guard_message')}"
+                    )
+                if str(preview.get("selected_model") or "") != decision.selected_model.slug:
+                    raise RuntimeError(
+                        "preview/runtime routing mismatch: "
+                        f"preview={preview.get('selected_model')} runtime={decision.selected_model.slug}"
+                    )
                 self.stdout.write(
                     self.style.SUCCESS(
                         "CHAT_PREFLIGHT_OK "
                         f"mode={mode} "
+                        f"taxonomy={decision.task_taxonomy} "
                         f"provider={decision.selected_model.provider.slug} "
                         f"model={decision.selected_model.slug} "
                         f"reservation={reservation.amount_rub} "
