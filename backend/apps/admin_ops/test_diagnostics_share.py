@@ -68,15 +68,21 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
 
     assert response.status_code == 200
     payload = response.data
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["summary"]["open_system_issues"] >= 1
     assert "chat_readiness" in payload
+    assert "stuck_generations" in payload["chat_readiness"]
+    assert "stale_customer_reservations" in payload["chat_readiness"]
     assert "models" in payload
     provider_row = next(item for item in payload["providers"] if item["provider"] == provider.slug)
     assert provider_row["key_error_codes"]["authentication_error"] == 1
+    assert provider_row["customer_ready"] is False
     model_row = next(item for item in payload["models"] if item["model"] == "diagnostics-model")
     assert model_row["provider"] == provider.slug
-    assert "active_version_missing" in model_row["reasons"]
+    assert model_row["ready"] is False
+    assert "provider_unavailable" in model_row["reasons"]
+    assert "active_version_metadata_missing" in model_row["warnings"]
+    assert "active_version_missing" not in model_row["reasons"]
     serialized = str(payload)
     assert "must-never-appear-in-report" not in serialized
     assert "secret traceback body" not in serialized
