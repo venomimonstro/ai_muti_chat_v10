@@ -145,13 +145,34 @@ def _model_is_internal(slug):
 def _generation_route_is_internal(generation):
     if str(generation.provider_slug or "").casefold() == "gigachat":
         return True
-    if _model_is_internal(generation.model):
+    if _model_is_internal(generation.routed_model or generation.model):
         return True
     try:
         selected = generation.routing_decision.selected_model
         return selected.provider.slug == "gigachat"
     except Exception:
         return False
+
+
+def _public_system_level(model_slug, *, fallback_mode="balanced"):
+    """Return the public tier of the model actually used, never provider branding."""
+    slug = str(model_slug or "").strip()
+    haystack = slug.casefold()
+    if slug:
+        model = (
+            AIModel.objects.filter(slug=slug)
+            .only("slug", "display_name", "upstream_model")
+            .first()
+        )
+        if model is not None:
+            haystack = f"{model.slug} {model.display_name} {model.upstream_model}".casefold()
+    if "max" in haystack:
+        return "System Max"
+    if "pro" in haystack:
+        return "System Pro"
+    if "lite" in haystack or "gigachat-2" in haystack or "gigachat" in haystack:
+        return "System Lite"
+    return PUBLIC_SYSTEM_LEVELS.get(str(fallback_mode or ""), "System Pro")
 
 
 def _publicize_sse_chunk(generation, chunk):
@@ -170,10 +191,13 @@ def _publicize_sse_chunk(generation, chunk):
         return chunk
 
     provider_internal = str(payload.get("provider") or "").casefold() == "gigachat"
-    model_internal = _model_is_internal(payload.get("model"))
-    from_model_internal = _model_is_internal(payload.get("from_model"))
+    model_slug = payload.get("model") or generation.routed_model or generation.model
+    from_model_slug = payload.get("from_model")
+    model_internal = _model_is_internal(model_slug)
+    from_model_internal = _model_is_internal(from_model_slug)
     if event == "routing" and not model_internal:
         model_internal = _generation_route_is_internal(generation)
+
     if not (provider_internal or model_internal or from_model_internal):
         return chunk
 
@@ -181,7 +205,7 @@ def _publicize_sse_chunk(generation, chunk):
         mode = generation.user_message.conversation.routing_mode
     except Exception:
         mode = "balanced"
-    level = PUBLIC_SYSTEM_LEVELS.get(mode, "System Pro")
+    level = _public_system_level(model_slug, fallback_mode=mode)
     if model_internal and "model" in payload:
         payload["model"] = level
     if model_internal and "model_version" in payload:
@@ -189,7 +213,7 @@ def _publicize_sse_chunk(generation, chunk):
     if provider_internal:
         payload["provider"] = "system"
     if from_model_internal:
-        payload["from_model"] = level
+        payload["from_model"] = _public_system_level(from_model_slug, fallback_mode=mode)
     if event == "routing" and "explanation" in payload and model_internal:
         payload["explanation"] = f"Использован уровень {level}."
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
