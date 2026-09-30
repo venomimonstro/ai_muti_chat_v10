@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 import threading
+import time
 from contextlib import contextmanager
 
 from django.core.exceptions import ValidationError
@@ -11,6 +13,8 @@ from django.db import connection
 from .models import Generation, Message
 
 ACTIVE_STATES = {Generation.State.QUEUED, Generation.State.RUNNING}
+LOCK_WAIT_SECONDS = max(1.0, min(float(os.getenv("CHAT_SINGLE_FLIGHT_WAIT_SECONDS", "8")), 30.0))
+LOCK_POLL_SECONDS = 0.05
 _LOCAL_LOCKS: dict[str, threading.Lock] = {}
 _LOCAL_LOCKS_GUARD = threading.Lock()
 
@@ -38,22 +42,34 @@ def _advisory_key(conversation_id) -> int:
     return int.from_bytes(raw, byteorder="big", signed=True)
 
 
+def _busy_error():
+    return ValidationError(
+        "Предыдущий запрос ещё принимается. Дождитесь подтверждения или остановите его перед новым сообщением."
+    )
+
+
 @contextmanager
 def _conversation_lock(conversation_id):
-    """Authoritative ownership-safe lock for one conversation.
+    """Authoritative bounded lock for one conversation.
 
-    PostgreSQL advisory locks are session-owned and cannot be accidentally released
-    by another request after a TTL rollover. This is intentionally the correctness
-    primitive for chat creation; Redis/cache remains useful for caching, but not for
-    financial single-flight semantics without fencing tokens.
-
-    A dropped PostgreSQL connection releases its advisory locks automatically.
-    SQLite/development uses a process-local lock only for deterministic tests.
+    PostgreSQL advisory locks are session-owned and disappear if the connection dies.
+    ``pg_try_advisory_lock`` keeps a wedged request from making the next HTTP request
+    wait forever: after a short bounded period the client gets a recoverable busy
+    response instead. Unrelated conversations use different lock keys.
     """
     if connection.vendor == "postgresql":
         key = _advisory_key(conversation_id)
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_lock(%s)", [key])
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        acquired = False
+        while time.monotonic() < deadline:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_try_advisory_lock(%s)", [key])
+                acquired = bool(cursor.fetchone()[0])
+            if acquired:
+                break
+            time.sleep(LOCK_POLL_SECONDS)
+        if not acquired:
+            raise _busy_error()
         try:
             yield
         finally:
@@ -68,7 +84,8 @@ def _conversation_lock(conversation_id):
     name = str(conversation_id)
     with _LOCAL_LOCKS_GUARD:
         lock = _LOCAL_LOCKS.setdefault(name, threading.Lock())
-    lock.acquire()
+    if not lock.acquire(timeout=LOCK_WAIT_SECONDS):
+        raise _busy_error()
     try:
         yield
     finally:
