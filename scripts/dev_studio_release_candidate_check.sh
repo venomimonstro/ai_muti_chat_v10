@@ -5,6 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROD_COMPOSE="${PROJECT_DIR}/docker-compose.prod.yml"
 ENV_FILE="${PROJECT_DIR}/.env.production"
 LOG_DIR="${PROJECT_DIR}/logs"
+DEPLOY_STATE_FILE="${LOG_DIR}/.last-deployed-sha"
 EVIDENCE_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 EVIDENCE_FILE="${LOG_DIR}/dev-studio-rc-${EVIDENCE_ID}.log"
 CHECKSUM_FILE="${EVIDENCE_FILE}.sha256"
@@ -22,7 +23,7 @@ run_checks() {
   printf 'dev_run_id=%s\n' "${DEV_RUN_ID:-missing}"
   printf 'started_at=%s\n' "$STARTED_AT"
 
-  printf '\n[1/5] Targeted Dev Studio gate\n'
+  printf '\n[1/6] Targeted Dev Studio gate\n'
   bash ./scripts/dev_studio_check.sh
   printf '[PASS] Targeted Dev Studio gate\n'
 
@@ -31,17 +32,32 @@ run_checks() {
     return 1
   fi
 
+  printf '\n[2/6] Deployed revision binding\n'
+  if [[ ! -f "$DEPLOY_STATE_FILE" ]]; then
+    echo '[FAIL] Deployment state is missing; run scripts/update.sh --full before collecting RC evidence.' >&2
+    return 1
+  fi
+  local deployed_sha
+  deployed_sha="$(tr -d '[:space:]' <"$DEPLOY_STATE_FILE")"
+  if [[ -z "$deployed_sha" || "$deployed_sha" != "$COMMIT_SHA" ]]; then
+    printf '[FAIL] RC commit is not the deployed production revision. git=%s deployed=%s\n' \
+      "$COMMIT_SHA" "${deployed_sha:-missing}" >&2
+    echo '[INFO] Deploy this exact commit with scripts/update.sh --full, then rerun the RC gate.' >&2
+    return 1
+  fi
+  printf '[PASS] Production deploy state matches commit %s\n' "$COMMIT_SHA"
+
   local compose=(sudo docker compose --env-file "$ENV_FILE" -f "$PROD_COMPOSE")
 
-  printf '\n[2/5] Production runtime audit\n'
+  printf '\n[3/6] Production runtime audit\n'
   "${compose[@]}" exec -T backend python manage.py dev_studio_runtime_audit
   printf '[PASS] Production runtime audit\n'
 
-  printf '\n[3/5] Stale-run recovery audit\n'
+  printf '\n[4/6] Stale-run recovery audit\n'
   "${compose[@]}" exec -T backend python manage.py dev_studio_recover --older-than-seconds 14400
   printf '[PASS] No stale Dev execution\n'
 
-  printf '\n[4/5] Commercial Dev journey evidence\n'
+  printf '\n[5/6] Commercial Dev journey evidence\n'
   if [[ -z "$DEV_RUN_ID" ]]; then
     echo '[FAIL] DEV_RUN_ID is required for Sprint 89/90 commercial E2E evidence.' >&2
     echo 'Run one real Dev Studio task through approval, sandbox, isolated branch, QA and Final Review, then export DEV_RUN_ID=<uuid>.' >&2
@@ -50,7 +66,8 @@ run_checks() {
   "${compose[@]}" exec -T backend python manage.py dev_studio_e2e_audit --run-id "$DEV_RUN_ID"
   printf '[PASS] Commercial Dev journey evidence\n'
 
-  printf '\n[5/5] Evidence integrity precondition\n'
+  printf '\n[6/6] Evidence integrity precondition\n'
+  printf 'deployed_commit=%s\n' "$deployed_sha"
   printf 'finished_at=%s\n' "$(date -u +%FT%TZ)"
   printf 'DEV_STUDIO_RELEASE_CANDIDATE=PASS\n'
 }
@@ -84,6 +101,7 @@ payload = {
     "kind": "dev_studio_release_candidate",
     "status": "PASS",
     "commit_sha": commit,
+    "deployed_commit_sha": commit,
     "dev_run_id": run_id,
     "started_at": started,
     "finished_at": finished,
