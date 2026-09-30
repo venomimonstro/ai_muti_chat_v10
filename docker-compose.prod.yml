@@ -42,34 +42,6 @@ services:
     networks: [private, egress]
     init: true
     logging: *default-logging
-  backend:
-    build: ./backend
-    restart: unless-stopped
-    env_file: .env.production
-    command: ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers $${UVICORN_WORKERS:-2} --proxy-headers"]
-    environment:
-      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
-      WEB_SEARCH_BASE_URL: ${WEB_SEARCH_BASE_URL:-http://searxng:8080}
-      WEB_SEARCH_TRUSTED_HOSTS: ${WEB_SEARCH_TRUSTED_HOSTS:-searxng}
-    volumes: [media_data:/app/media, static_data:/app/staticfiles, logs_data:/app/logs]
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import os,urllib.request;
-          req=urllib.request.Request('http://127.0.0.1:8000/api/v1/readiness/',headers={'Host':os.environ.get('APP_DOMAIN','localhost'),'X-Forwarded-Proto':'https'});
-          urllib.request.urlopen(req,timeout=5).read()
-      interval: 15s
-      timeout: 8s
-      retries: 12
-      start_period: 20s
-    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}, searxng: {condition: service_started}}
-    networks: [private, edge]
-    init: true
-    stop_grace_period: 30s
-    logging: *default-logging
   sandbox:
     build:
       context: ./backend
@@ -101,6 +73,36 @@ services:
       start_period: 5s
     networks: [sandbox_net]
     init: true
+    logging: *default-logging
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env.production
+    command: ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers $${UVICORN_WORKERS:-2} --proxy-headers"]
+    environment:
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      SANDBOX_URL: http://sandbox:8090
+      SANDBOX_SHARED_SECRET: ${SANDBOX_SHARED_SECRET:-}
+      WEB_SEARCH_BASE_URL: ${WEB_SEARCH_BASE_URL:-http://searxng:8080}
+      WEB_SEARCH_TRUSTED_HOSTS: ${WEB_SEARCH_TRUSTED_HOSTS:-searxng}
+    volumes: [media_data:/app/media, static_data:/app/staticfiles, logs_data:/app/logs]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os,urllib.request;
+          req=urllib.request.Request('http://127.0.0.1:8000/api/v1/readiness/',headers={'Host':os.environ.get('APP_DOMAIN','localhost'),'X-Forwarded-Proto':'https'});
+          urllib.request.urlopen(req,timeout=5).read()
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 20s
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}, searxng: {condition: service_started}, sandbox: {condition: service_healthy}}
+    networks: [private, sandbox_net, edge]
+    init: true
+    stop_grace_period: 30s
     logging: *default-logging
   worker:
     build: ./backend
