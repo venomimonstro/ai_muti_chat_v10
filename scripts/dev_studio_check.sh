@@ -12,6 +12,7 @@ python3 -m compileall -q \
   backend/apps/agents/dev_context.py \
   backend/apps/agents/dev_changes.py \
   backend/apps/agents/dev_execution.py \
+  backend/apps/agents/dev_model_execution.py \
   backend/apps/agents/dev_model_fallback.py \
   backend/apps/agents/dev_plan.py \
   backend/apps/agents/dev_prompt.py \
@@ -22,7 +23,8 @@ python3 -m compileall -q \
   backend/apps/agents/sandbox_server.py \
   backend/apps/agents/team_readiness.py \
   backend/apps/agents/team_runtime.py \
-  backend/apps/agents/management/commands/dev_studio_recover.py
+  backend/apps/agents/management/commands/dev_studio_recover.py \
+  backend/apps/agents/management/commands/dev_studio_e2e_audit.py
 printf '[PASS] Python syntax\n'
 
 APP_DOMAIN=dev-check.example.test \
@@ -51,6 +53,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_preapproval_validation.py \
     apps/agents/test_dev_provider_retry.py \
     apps/agents/test_dev_model_fallback.py \
+    apps/agents/test_dev_model_execution.py \
     apps/agents/test_dev_recovery.py \
     apps/agents/test_dev_security.py \
     apps/agents/test_dev_prompt_boundary.py \
