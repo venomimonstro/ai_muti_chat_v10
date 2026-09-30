@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -57,7 +59,7 @@ def _plan(user, connection, agent):
         connection=connection,
         title="Контент-план",
         period_start=timezone.localdate(),
-        period_end=timezone.localdate() + timezone.timedelta(days=30),
+        period_end=timezone.localdate() + timedelta(days=30),
         status=SMMContentPlan.Status.ACTIVE,
     )
 
@@ -106,7 +108,7 @@ def test_scheduling_post_enables_plan_autopublish():
     )
     client = APIClient()
     client.force_authenticate(user)
-    scheduled_at = timezone.now() + timezone.timedelta(hours=2)
+    scheduled_at = timezone.now() + timedelta(hours=2)
 
     response = client.post(
         f"/api/v1/smm/items/{item.id}/schedule/",
