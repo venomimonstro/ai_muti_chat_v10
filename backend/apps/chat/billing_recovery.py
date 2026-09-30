@@ -83,6 +83,16 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
         source_type="chat",
         source_id=str(request_cost.id),
     ).update(customer_charge_rub=actual)
+
+    # Keep the user-facing generation record aligned with the authoritative wallet
+    # and RequestCost ledger even if the stream fails after provider usage was saved.
+    from .models import Generation
+
+    Generation.objects.filter(pk=generation_uuid).update(
+        actual_cost_rub=actual,
+        input_tokens=request_cost.input_tokens,
+        output_tokens=request_cost.output_tokens,
+    )
     return True
 
 
