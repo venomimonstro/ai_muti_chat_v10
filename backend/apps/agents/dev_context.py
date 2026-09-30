@@ -17,6 +17,8 @@ ROOT_CANDIDATES = (
     "README.rst",
     "README.txt",
     "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
     "requirements.txt",
     "requirements-dev.txt",
     "package.json",
@@ -33,7 +35,7 @@ ROOT_CANDIDATES = (
     "manage.py",
 )
 NESTED_CANDIDATES = {
-    "backend": ("requirements.txt", "pyproject.toml", "manage.py", "Dockerfile"),
+    "backend": ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "pytest.ini", "manage.py", "Dockerfile"),
     "frontend": ("package.json", "tsconfig.json", "next.config.js", "next.config.mjs", "next.config.ts", "Dockerfile"),
 }
 IGNORED_DIRECTORIES = {
@@ -147,7 +149,45 @@ def _scan_repository(binding, target_ref):
             if name in IGNORED_DIRECTORIES or not child_path:
                 continue
             directories.append((child_path, depth + 1))
-    return root_items, all_items, tool_calls
+    return root_items, all_items, tool_calls, not directories, scanned
+
+
+def _workspace_profile(*, discovered, candidate_paths, files, scan_complete, content_complete):
+    discovered_paths = {str(item.get("path") or "") for item in discovered}
+    file_paths = {str(item.get("path") or "") for item in files}
+    lower_paths = {path.casefold() for path in discovered_paths}
+    python_project = any(path.endswith(".py") for path in lower_paths) or any(
+        path in lower_paths for path in {"pyproject.toml", "requirements.txt", "backend/requirements.txt"}
+    )
+    django_project = "manage.py" in lower_paths or "backend/manage.py" in lower_paths
+    node_project = "package.json" in lower_paths or "frontend/package.json" in lower_paths
+    has_pytest_contract = any(
+        path in lower_paths
+        for path in {"pytest.ini", "pyproject.toml", "setup.cfg", "backend/pytest.ini", "backend/pyproject.toml"}
+    )
+    selected_all_candidates = len(file_paths) == len(candidate_paths)
+    snapshot_complete = bool(scan_complete and content_complete and selected_all_candidates)
+    if snapshot_complete:
+        evidence_level = "complete_bounded_snapshot"
+    elif scan_complete:
+        evidence_level = "partial_content_snapshot"
+    else:
+        evidence_level = "bounded_discovery_snapshot"
+    return {
+        "scan_complete": bool(scan_complete),
+        "content_complete": bool(content_complete),
+        "snapshot_complete": snapshot_complete,
+        "evidence_level": evidence_level,
+        "candidate_count": len(candidate_paths),
+        "context_file_count": len(files),
+        "python_project": python_project,
+        "django_project": django_project,
+        "node_project": node_project,
+        "pytest_contract": has_pytest_contract,
+        # Project-level commands remain advisory until dependencies are known to
+        # exist inside the isolated runtime. Syntax checks are always safe.
+        "project_checks_available": [],
+    }
 
 
 def build_repository_context(project, *, ref=None):
@@ -157,7 +197,7 @@ def build_repository_context(project, *, ref=None):
         raise ValidationError("Dev Studio project has no GitHub repository binding") from exc
 
     target_ref = str(ref or binding.default_branch).strip()
-    root_items, discovered, tool_calls = _scan_repository(binding, target_ref)
+    root_items, discovered, tool_calls, scan_complete, scanned_directories = _scan_repository(binding, target_ref)
     tree_lines = [
         f"{item.get('type', '?')}: {item.get('path', item.get('name', ''))}"
         for item in discovered[:500]
@@ -174,25 +214,42 @@ def build_repository_context(project, *, ref=None):
     selected = sorted(candidates, key=_priority)[: max(1, MAX_FILES)]
     files = []
     remaining = max(1, MAX_CONTEXT_CHARS)
+    content_complete = len(selected) == len(candidates)
     for path in selected:
         if remaining <= 0:
+            content_complete = False
             break
         try:
             payload = read_repository_file(binding, path, ref=target_ref)
             tool_calls += 1
         except ValidationError:
+            content_complete = False
             continue
-        content = _clip(str(payload.get("content") or ""), remaining)
+        raw_content = str(payload.get("content") or "")
+        content = _clip(raw_content, remaining)
         if not content:
+            content_complete = False
             continue
+        if len(content) < len(raw_content):
+            content_complete = False
         files.append({"path": path, "content": content, "sha": payload.get("sha")})
         remaining -= len(content)
 
+    profile = _workspace_profile(
+        discovered=discovered,
+        candidate_paths=set(candidates),
+        files=files,
+        scan_complete=scan_complete,
+        content_complete=content_complete,
+    )
     rendered = "Repository: " + binding.full_name + "\n"
     rendered += "Ref: " + target_ref + "\n"
     rendered += "Default branch: " + binding.default_branch + "\n"
     rendered += "Write enabled: " + ("yes" if binding.write_enabled else "no") + "\n"
-    rendered += f"Discovered entries: {len(discovered)}; context files: {len(files)}\n\n"
+    rendered += (
+        f"Discovered entries: {len(discovered)}; context files: {len(files)}; "
+        f"evidence: {profile['evidence_level']}\n\n"
+    )
     rendered += "Repository tree (bounded scan):\n" + "\n".join(tree_lines)
     for item in files:
         rendered += f"\n\n--- {item['path']} ---\n{item['content']}"
@@ -204,6 +261,9 @@ def build_repository_context(project, *, ref=None):
         "tree": tree_lines,
         "files": files,
         "discovered_count": len(discovered),
+        "candidate_count": len(candidates),
+        "scanned_directories": scanned_directories,
+        "workspace_profile": profile,
         "tool_calls": tool_calls,
         "rendered": rendered[:MAX_CONTEXT_CHARS],
     }
