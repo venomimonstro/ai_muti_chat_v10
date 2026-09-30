@@ -1,16 +1,22 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
+from apps.ai_registry.adapters import ProviderError
+from apps.ai_registry.dispatch import adapter_for
 from apps.ai_registry.models import AIModel, ProviderApiKey
-from apps.ai_registry.reliability import ensure_safe_client_models, provider_available
+from apps.ai_registry.reliability import (
+    ensure_safe_client_models,
+    model_client_ready,
+    provider_available,
+)
 from apps.billing.pricing import active_price, quote
 from apps.procurement.official_pricing import sync_official_prices
 
 
 class Command(BaseCommand):
     help = (
-        "Show why client chat models are or are not routable; --repair restores verified "
-        "official prices and safe models; --live performs a minimal real provider inference."
+        "Show why client chat models are or are not routable; --repair refreshes verified "
+        "official prices without re-enabling administrator-disabled models; --live performs "
+        "a minimal real inference only for customer-routable models unless --model is explicit."
     )
 
     def add_arguments(self, parser):
@@ -35,10 +41,10 @@ class Command(BaseCommand):
                 )
             )
             return False
-        if not provider_available(provider):
+        if not model_client_ready(model):
             self.stderr.write(
                 self.style.ERROR(
-                    f"LIVE_BLOCKED model={model.slug} code=provider_unavailable"
+                    f"LIVE_BLOCKED model={model.slug} code=model_not_client_ready"
                 )
             )
             return False
@@ -122,8 +128,8 @@ class Command(BaseCommand):
                         )
                     )
 
-            repaired = ensure_safe_client_models()
-            self.stdout.write(f"safe_models_repaired={repaired}")
+            ready = ensure_safe_client_models()
+            self.stdout.write(f"safe_models_ready={ready}")
 
         queryset = AIModel.objects.select_related("provider", "current_version").order_by(
             "provider__slug", "slug"
@@ -148,11 +154,14 @@ class Command(BaseCommand):
                 1 for key in keys if key.health_state == ProviderApiKey.HealthState.HEALTHY
             )
             reasons = []
+            warnings = []
             if not model.enabled:
                 reasons.append("model_disabled")
+            if not str(model.upstream_model or "").strip():
+                reasons.append("upstream_model_missing")
             if model.current_version_id is None:
-                reasons.append("no_active_model_version")
-            if healthy_keys == 0:
+                warnings.append("no_active_model_version_metadata")
+            if keys and healthy_keys == 0:
                 reasons.append("no_healthy_api_key")
             if provider.emergency_disabled:
                 reasons.append("provider_emergency_disabled")
@@ -184,7 +193,10 @@ class Command(BaseCommand):
             except Exception as exc:
                 reasons.append(f"price_error:{exc}")
 
-            if not reasons:
+            client_ready = model_client_ready(model)
+            if not client_ready and not reasons:
+                reasons.append("client_readiness_failed")
+            if client_ready:
                 routable += 1
             self.stdout.write(
                 " | ".join(
@@ -201,13 +213,20 @@ class Command(BaseCommand):
                         f"keys={';'.join(f'{k.label}:{k.health_state}' for k in keys) or '-'}",
                         f"input_margin={input_margin}",
                         f"output_margin={output_margin}",
-                        f"status={'ROUTABLE' if not reasons else 'BLOCKED'}",
-                        f"reasons={','.join(reasons) if reasons else '-'}",
+                        f"status={'ROUTABLE' if client_ready else 'BLOCKED'}",
+                        f"reasons={','.join(dict.fromkeys(reasons)) if reasons else '-'}",
+                        f"warnings={','.join(warnings) if warnings else '-'}",
                     ]
                 )
             )
-            if options["live"] and not self._live_check(model):
-                live_failures += 1
+            if options["live"]:
+                if client_ready or requested_model:
+                    if not self._live_check(model):
+                        live_failures += 1
+                else:
+                    self.stdout.write(
+                        f"LIVE_SKIPPED model={model.slug} reason=not_client_ready"
+                    )
 
         self.stdout.write(f"ROUTABLE_MODELS={routable}")
         if options["live"]:
