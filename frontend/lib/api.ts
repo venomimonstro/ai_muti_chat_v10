@@ -1,6 +1,8 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
 const TEST_USER_KEY = "aiws:test-user";
 const API_TIMEOUT_MS = 12000;
+const STREAM_OPEN_TIMEOUT_MS = 30000;
+const STREAM_FIRST_EVENT_TIMEOUT_MS = 20000;
 const STREAM_RECONNECT_DELAYS_MS = [500, 1000, 1600, 2500, 4000, 6000, 8000];
 
 export class ApiError extends Error {
@@ -253,8 +255,8 @@ async function requestStreamCancellation(conversationId: string, idempotencyKey:
       body: JSON.stringify({idempotency_key: idempotencyKey}),
     });
   } catch {
-    // Best effort here. The normal stale-generation recovery remains the final
-    // safety net if the browser disappears before the cancellation request lands.
+    // Best effort here. Durable backend cancellation + stale recovery remain the
+    // safety nets if the browser disappears before this request lands.
   }
 }
 
@@ -331,7 +333,7 @@ export async function streamMessage(
       "X-CSRFToken": csrfToken,
     });
     applyTestUserHeader(headers, path);
-    return fetch(`${API_BASE}${path}`, {
+    return fetchWithTimeout(`${API_BASE}${path}`, {
       method: "POST",
       credentials: "include",
       signal,
@@ -343,7 +345,7 @@ export async function streamMessage(
           ? {confirmed_max_rub: pending.confirmedMaxRub}
           : {}),
       }),
-    });
+    }, STREAM_OPEN_TIMEOUT_MS);
   };
 
   const openResponse = async () => {
@@ -358,30 +360,41 @@ export async function streamMessage(
       response = await send(Boolean(pending.confirmedCost));
     }
 
-    if (response.status === 409) {
+    // Re-evaluate every commercial 409. The route/context can change after the
+    // preview, but a stale confirmation must never be retried silently or looped.
+    for (let confirmations = 0; response.status === 409 && confirmations < 2; confirmations += 1) {
       let details: CostConfirmationError | null = null;
       try {
         details = (await response.json()) as CostConfirmationError;
       } catch {
         details = null;
       }
-      if (details?.code === "cost_confirmation_required") {
-        if (!askCostConfirmation(details.estimated_max_rub)) {
-          clearPending(conversationId);
-          throw new ApiError("Запрос отменён до списания средств", 499);
-        }
-        pending.confirmedCost = true;
-        pending.confirmedMaxRub = details.estimated_max_rub;
-        writePending(conversationId, pending);
-        response = await send(true);
-      } else if (details?.code === "cost_confirmation_changed") {
-        clearPending(conversationId);
-        throw new ApiError(
-          `Стоимость контекста изменилась до ${formatRub(details.estimated_max_rub)} ₽. Деньги не списаны — отправьте запрос ещё раз для нового подтверждения.`,
-          409,
-          details,
-        );
+      if (!details || !["cost_confirmation_required", "cost_confirmation_changed"].includes(String(details.code ?? ""))) {
+        throw new ApiError(errorText(details), 409, details);
       }
+      if (!askCostConfirmation(details.estimated_max_rub)) {
+        clearPending(conversationId);
+        throw new ApiError("Запрос отменён до списания средств", 499, details);
+      }
+      pending.confirmedCost = true;
+      pending.confirmedMaxRub = details.estimated_max_rub;
+      writePending(conversationId, pending);
+      response = await send(true);
+    }
+
+    if (response.status === 409) {
+      clearPending(conversationId);
+      let details: CostConfirmationError | null = null;
+      try {
+        details = (await response.json()) as CostConfirmationError;
+      } catch {
+        details = null;
+      }
+      throw new ApiError(
+        "Стоимость запроса продолжает изменяться. Деньги не списаны — повторите отправку после обновления маршрута.",
+        409,
+        details,
+      );
     }
 
     if (!response.ok || !response.body) {
@@ -407,9 +420,33 @@ export async function streamMessage(
     let buffer = "";
     let terminal = false;
     let inProgress = false;
+    let receivedFirstEvent = false;
+
+    const readChunk = async () => {
+      if (receivedFirstEvent) return reader.read();
+      let timer: number | null = null;
+      try {
+        return await Promise.race([
+          reader.read(),
+          new Promise<never>((_resolve, reject) => {
+            timer = window.setTimeout(() => {
+              void reader.cancel("stream_first_event_timeout").catch(()=>undefined);
+              reject(new ApiError(
+                "Ответ не начал поступать вовремя. Восстанавливаю тот же запрос без повторного списания.",
+                504,
+                {code: "stream_first_event_timeout"},
+              ));
+            }, STREAM_FIRST_EVENT_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        if (timer !== null) window.clearTimeout(timer);
+      }
+    };
 
     while (true) {
-      const {done, value} = await reader.read();
+      const {done, value} = await readChunk();
+      if (value?.length) receivedFirstEvent = true;
       buffer += decoder.decode(value, {stream: !done});
       const blocks = buffer.split("\n\n");
       buffer = blocks.pop() ?? "";
@@ -465,7 +502,7 @@ export async function streamMessage(
         if (cancelPromise) await cancelPromise;
         throw reason;
       }
-      if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500 && ![408, 409, 429].includes(reason.status)) {
+      if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500 && ![408, 429].includes(reason.status)) {
         throw reason;
       }
       lastError = reason;
