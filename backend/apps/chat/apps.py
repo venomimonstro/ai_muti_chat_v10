@@ -7,4 +7,6 @@ class ChatConfig(AppConfig):
 
     def ready(self):
         # UI-only organization models are registered here to keep inference models focused.
-        from . import signals, ux_models  # noqa: F401
+        from . import signals, streaming, terminal_recovery, ux_models  # noqa: F401
+
+        terminal_recovery.install(streaming)
