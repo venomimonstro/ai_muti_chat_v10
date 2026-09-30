@@ -26,8 +26,19 @@ class ConfirmedOverrunAdapter:
 
 
 @pytest.mark.django_db(transaction=True)
-def test_completed_provider_response_is_not_lost_when_usage_exceeds_reserve():
+def test_completed_provider_response_is_not_lost_when_usage_exceeds_reserve(monkeypatch):
     assert getattr(run, "_ai_workspace_terminal_recovery", False) is True
+    indexed = []
+    summaries = []
+    monkeypatch.setattr(
+        "apps.chat.streaming._index_history",
+        lambda message: indexed.append(str(message.id)),
+    )
+    monkeypatch.setattr(
+        "apps.chat.streaming.refresh_rolling_summary",
+        lambda conversation: summaries.append(str(conversation.id)),
+    )
+
     user = User.objects.create_user(
         username="terminal-overrun-user",
         email="terminal-overrun@example.test",
@@ -100,3 +111,5 @@ def test_completed_provider_response_is_not_lost_when_usage_exceeds_reserve():
     assert request_cost.output_tokens == 1_000_000
     assert user.wallet.reserved_rub == Decimal("0.0000")
     assert user.wallet.available_rub == Decimal("100.0000") - reserved
+    assert indexed == [str(generation.assistant_message_id)]
+    assert summaries == [str(conversation.id)]
