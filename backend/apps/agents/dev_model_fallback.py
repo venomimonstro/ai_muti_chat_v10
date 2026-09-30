@@ -17,6 +17,7 @@ class DevModelAttempt:
     preflight: object
     estimated_charge_rub: Decimal
     rank: int
+    price: object = None
 
 
 def _preflight_for(model, *, estimated_input_tokens, requested_output_tokens):
@@ -32,7 +33,7 @@ def _preflight_for(model, *, estimated_input_tokens, requested_output_tokens):
             operation_type="agent",
         )
     )
-    return output_tokens, preflight
+    return output_tokens, preflight, price
 
 
 def plan_model_attempts(
@@ -45,13 +46,13 @@ def plan_model_attempts(
 ):
     """Build an economically safe ordered model failover plan.
 
-    Every model gets its own price/margin quote. A fallback is never allowed to
-    reuse the primary model's reservation assumptions. The caller must reserve
-    and settle independently for the selected candidate.
+    Every model gets its own immutable PriceVersion reference and margin quote.
+    A fallback never reuses the primary model's reservation assumptions. The
+    caller must reserve and settle independently for the selected candidate.
     """
     remaining = max(Decimal("0"), Decimal(str(remaining_budget_rub)))
     limit = max(1, min(int(max_attempts or MAX_MODEL_ATTEMPTS), 5))
-    primary_output, primary_quote = _preflight_for(
+    _primary_output, primary_quote, _primary_price = _preflight_for(
         primary_model,
         estimated_input_tokens=estimated_input_tokens,
         requested_output_tokens=requested_output_tokens,
@@ -62,7 +63,7 @@ def plan_model_attempts(
     available = candidate_models(primary_model)
     attempts = []
     for model in available:
-        output_tokens, preflight = _preflight_for(
+        output_tokens, preflight, price = _preflight_for(
             model,
             estimated_input_tokens=estimated_input_tokens,
             requested_output_tokens=requested_output_tokens,
@@ -79,6 +80,7 @@ def plan_model_attempts(
                 preflight=preflight,
                 estimated_charge_rub=charge,
                 rank=len(attempts) + 1,
+                price=price,
             )
         )
         if len(attempts) >= limit:
