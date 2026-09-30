@@ -94,7 +94,7 @@ def _provider_blocking_error(error: ProviderError) -> bool:
 
 
 def _most_recent_api_key(provider: Provider):
-    """Best-effort key attribution for legacy callers that do not pass an adapter."""
+    """Best-effort key attribution only for legacy callers without adapter identity."""
     try:
         return (
             provider.api_keys.filter(enabled=True)
@@ -111,17 +111,23 @@ def _most_recent_api_key(provider: Provider):
 
 
 def selected_api_key(provider: Provider, adapter=None):
-    """Resolve the exact stored key used by an adapter without logging secrets."""
+    """Resolve only the exact stored key used by a known runtime adapter.
+
+    Guessing a key by ``last_used_at`` is acceptable only for legacy callers that
+    provide no adapter at all. When an adapter exists, an unmatched ENV credential
+    or a credential deleted/disabled during an in-flight request must never degrade
+    an unrelated healthy DB key.
+    """
     if adapter is None:
         return _most_recent_api_key(provider)
+
     key_id = str(getattr(adapter, "_ai_workspace_key_id", "") or "").strip()
     if key_id:
-        key = provider.api_keys.filter(pk=key_id, enabled=True).first()
-        if key is not None:
-            return key
+        return provider.api_keys.filter(pk=key_id, enabled=True).first()
+
     secret = _adapter_secret(adapter)
     if not secret:
-        return _most_recent_api_key(provider)
+        return None
     try:
         keys = provider.api_keys.filter(enabled=True).exclude(
             health_state=ProviderApiKey.HealthState.DISABLED
@@ -132,7 +138,7 @@ def selected_api_key(provider: Provider, adapter=None):
                 return key
     except Exception:
         return None
-    return _most_recent_api_key(provider)
+    return None
 
 
 def record_api_key_failure(provider: Provider, adapter, error: ProviderError) -> bool:
