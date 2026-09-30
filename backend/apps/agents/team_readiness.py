@@ -2,7 +2,7 @@ from django.core.exceptions import ValidationError
 
 from .models import AgentTeam
 from .runtime import _model_for
-from .sandbox_client import sandbox_enabled
+from .sandbox_client import sandbox_enabled, sandbox_health
 
 
 PUBLIC_LEVELS = {
@@ -129,11 +129,23 @@ def team_readiness(team: AgentTeam):
                     blockers.append("Запись Dev Studio в рабочую ветку GitHub отключена")
                     add_action("enable_github_write", "Разрешите запись в рабочую ветку GitHub", f"/app/projects/{project.id}/github")
 
-        sandbox_ok = sandbox_enabled()
-        checks["sandbox"] = sandbox_ok
-        if not sandbox_ok:
+        configured = sandbox_enabled()
+        checks["sandbox_configured"] = configured
+        if not configured:
+            checks["sandbox"] = False
+            checks["sandbox_workspace_api"] = False
             blockers.append("Sandbox для безопасной проверки кода не настроен")
             add_action("configure_sandbox", "Администратору нужно включить изолированный sandbox")
+        else:
+            health = sandbox_health()
+            checks["sandbox"] = bool(health.get("healthy"))
+            checks["sandbox_workspace_api"] = bool(health.get("workspace_api"))
+            if not health.get("healthy"):
+                blockers.append("Sandbox настроен, но runtime недоступен")
+                add_action("repair_sandbox", "Администратору нужно восстановить Dev Workspace runtime")
+            elif not health.get("workspace_api"):
+                blockers.append("Sandbox работает в устаревшем режиме без Dev Workspace API")
+                add_action("upgrade_sandbox", "Администратору нужно обновить sandbox до Workspace API v2")
 
     return {
         "ready": not blockers,
