@@ -7,9 +7,10 @@ class AIRegistryConfig(AppConfig):
 
     def ready(self):
         # Install fail-safe runtime dispatch and the authoritative routing-pool
-        # resolver once per process. Importing here avoids touching Django models
-        # before the app registry is ready.
-        from . import adapters, dispatch, router, routing_pools, signals  # noqa: F401
+        # resolver once per process. Modules that imported adapter_for directly
+        # before AppConfig.ready() must also be rebound explicitly.
+        from . import adapters, dispatch, reliability, router, routing_pools, signals  # noqa: F401
 
         adapters.adapter_for = dispatch.adapter_for
+        reliability.adapter_for = dispatch.adapter_for
         routing_pools.install_router_pool_resolver(router)
