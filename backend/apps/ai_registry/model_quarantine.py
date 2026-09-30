@@ -142,6 +142,7 @@ def recover_quarantined_models(*, limit: int = 8) -> dict:
             continue
 
         latency_ms = max(0, int((time.monotonic() - started) * 1000))
+        # Provider success must not implicitly recover every quarantined sibling.
         reliability.record_success(model.provider, latency_ms, adapter=adapter)
         recover_model(model)
         recovered += 1
@@ -202,12 +203,23 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
     raw_success = reliability_module.record_success
     if not getattr(raw_success, "_ai_workspace_model_quarantine", False):
         def record_success(provider, latency_ms, adapter=None):
-            result = raw_success(provider, latency_ms, adapter=adapter)
-            model_slug = str(getattr(adapter, "_ai_workspace_model_slug", "") or "").strip()
-            if model_slug:
-                model = AIModel.objects.filter(slug=model_slug, provider=provider).first()
-                if model is not None:
-                    recover_model(model)
+            # Legacy provider recovery marks every open ReliabilityIncident as
+            # recovered. Preserve model-scoped incidents: a generic provider
+            # health check proves the credential/API, not any particular model id.
+            with transaction.atomic():
+                model_incident_ids = list(
+                    ReliabilityIncident.objects.filter(
+                        provider=provider,
+                        state=ReliabilityIncident.State.OPEN,
+                        details__scope=MODEL_SCOPE,
+                    ).values_list("id", flat=True)
+                )
+                result = raw_success(provider, latency_ms, adapter=adapter)
+                if model_incident_ids:
+                    ReliabilityIncident.objects.filter(id__in=model_incident_ids).update(
+                        state=ReliabilityIncident.State.OPEN,
+                        recovered_at=None,
+                    )
             return result
 
         record_success._ai_workspace_model_quarantine = True
