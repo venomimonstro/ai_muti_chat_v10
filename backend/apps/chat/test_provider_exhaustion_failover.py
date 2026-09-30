@@ -11,7 +11,7 @@ from apps.billing.models import PriceVersion
 from apps.billing.services import credit
 
 from .managed_stream import managed_run
-from .models import Conversation, Generation, Message
+from .models import Conversation, Generation, GenerationAttempt, Message
 from .streaming import prepare
 
 
@@ -143,12 +143,6 @@ def test_customer_gets_llm_system_answer_when_selected_chatgpt_has_no_credits(mo
         if model.provider.slug == "openai"
         else WorkingSystemAdapter(),
     )
-    monkeypatch.setattr(
-        "apps.chat.managed_stream.adapter_for",
-        lambda model: WorkingSystemAdapter()
-        if model.provider.slug == "gigachat"
-        else ExhaustedChatGPTAdapter(),
-    )
 
     chunks = list(managed_run(generation))
 
@@ -171,4 +165,94 @@ def test_customer_gets_llm_system_answer_when_selected_chatgpt_has_no_credits(mo
     assert "event: completed" in public_stream
     assert "event: error" not in public_stream
     assert "gigachat" not in public_stream.casefold()
-    assert "emergency_fallback" in public_stream
+    assert '"action": "fallback"' in public_stream
+
+
+@pytest.mark.django_db(transaction=True)
+def test_commercially_unavailable_primary_is_skipped_before_provider_call(monkeypatch):
+    user = User.objects.create_user(
+        username="commercial-fallback-user",
+        email="commercial-fallback@example.test",
+        password="password123",
+    )
+    credit(user, Decimal("10"), "test", "commercial-fallback")
+    AIModel.objects.all().update(enabled=False)
+
+    primary_provider = _provider("openai", "OpenAI", 10)
+    secondary_provider = _provider("gigachat", "GigaChat API", 20)
+    _key(primary_provider, "commercial-primary", "primary-test-key")
+    _key(secondary_provider, "commercial-secondary", "secondary-test-key")
+    primary = _model(primary_provider, "commercial-primary-model", "primary-upstream")
+    secondary = _model(secondary_provider, "commercial-secondary-model", "secondary-upstream")
+
+    conversation = Conversation.objects.create(
+        owner=user,
+        routing_mode=Conversation.RoutingMode.MANUAL,
+        selected_model=primary.slug,
+    )
+    generation, created = prepare(
+        user=user,
+        conversation=conversation,
+        content="Проверь коммерческий fallback без вызова недоступного API",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="commercial-capacity-failover",
+    )
+    assert created is True
+
+    primary_calls = []
+    secondary_calls = []
+
+    class ShouldNotRunAdapter:
+        def stream(self, **_kwargs):
+            primary_calls.append(True)
+            raise AssertionError("commercially unavailable primary adapter must not be called")
+            yield
+
+    class SecondaryAdapter:
+        def stream(self, **_kwargs):
+            secondary_calls.append(True)
+            yield ProviderStreamEvent(kind="delta", text_delta="Резервный ответ после проверки баланса")
+            yield ProviderStreamEvent(
+                kind="completed",
+                provider_request_id="commercial-secondary-ok",
+                input_tokens=10,
+                output_tokens=6,
+            )
+
+    monkeypatch.setattr(
+        "apps.chat.streaming.quote_has_procurement_capacity",
+        lambda provider, _quote: provider.slug != primary_provider.slug,
+    )
+    monkeypatch.setattr(
+        "apps.chat.streaming.adapter_for",
+        lambda model: ShouldNotRunAdapter()
+        if model.slug == primary.slug
+        else SecondaryAdapter(),
+    )
+
+    chunks = list(managed_run(generation))
+
+    generation.refresh_from_db()
+    generation.assistant_message.refresh_from_db()
+    primary_provider.refresh_from_db()
+    secondary_provider.refresh_from_db()
+
+    assert primary_calls == []
+    assert secondary_calls == [True]
+    assert generation.state == Generation.State.COMPLETED
+    assert generation.routed_model == secondary.slug
+    assert generation.provider_slug == secondary_provider.slug
+    assert generation.assistant_message.content == "Резервный ответ после проверки баланса"
+    assert primary_provider.health_state == Provider.HealthState.HEALTHY
+    assert secondary_provider.health_state == Provider.HealthState.HEALTHY
+    assert GenerationAttempt.objects.filter(
+        generation=generation,
+        model_slug=primary.slug,
+        error_code="provider_funding_unavailable",
+        state=GenerationAttempt.State.FAILED,
+    ).exists()
+
+    public_stream = "".join(chunks)
+    assert '"action": "fallback"' in public_stream
+    assert "Резервный ответ после проверки баланса" in public_stream
+    assert "event: error" not in public_stream
