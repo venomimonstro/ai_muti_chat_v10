@@ -149,7 +149,28 @@ class ConversationSerializer(serializers.ModelSerializer):
         ).order_by("provider__priority", "display_name")
         return next((model for model in queryset if model_client_ready(model)), None)
 
+    def _normalize_legacy_new_chat_mode(self, validated_data):
+        """Treat the historical web-client default as AUTO only on creation.
+
+        Older frontend builds created every new chat as ``balanced`` and also sent
+        an arbitrary selected_model even though non-manual modes ignore it. That
+        signature is distinct from an intentional PATCH of an existing chat to the
+        Medium level, so it can be safely normalized without changing explicit user
+        choices.
+        """
+        initial = getattr(self, "initial_data", {}) or {}
+        raw_mode = initial.get("routing_mode")
+        raw_selected = initial.get("selected_model")
+        raw_title = str(initial.get("title") or "").strip()
+        if (
+            raw_mode == Conversation.RoutingMode.BALANCED
+            and raw_selected
+            and raw_title in {"", "Новый чат"}
+        ):
+            validated_data["routing_mode"] = Conversation.RoutingMode.AUTO
+
     def create(self, validated_data):
+        self._normalize_legacy_new_chat_mode(validated_data)
         mode = validated_data.get("routing_mode", Conversation.RoutingMode.AUTO)
         selected = validated_data.get("selected_model")
         if mode == Conversation.RoutingMode.MANUAL:
