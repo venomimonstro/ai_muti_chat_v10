@@ -142,10 +142,7 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
             raise ValidationError({"detail": exc.messages}) from exc
         item = self.get_queryset().get(pk=item.pk)
         return Response(
-            {
-                "item": self.get_serializer(item).data,
-                "attempt": SMMPublicationAttemptSerializer(attempt).data,
-            }
+            {"item": self.get_serializer(item).data, "attempt": SMMPublicationAttemptSerializer(attempt).data}
         )
 
     @action(detail=True, methods=["post"], url_path="schedule")
@@ -166,6 +163,9 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
             updated.full_clean()
         except DjangoValidationError as exc:
             raise ValidationError({"detail": exc.messages}) from exc
+        if not updated.plan.auto_publish:
+            updated.plan.auto_publish = True
+            updated.plan.save(update_fields=["auto_publish", "updated_at"])
         return Response(self.get_serializer(updated).data)
 
     @action(detail=True, methods=["post"], url_path="approve")
@@ -173,6 +173,8 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
         item = self.get_object()
         if item.status == SMMContentItem.Status.PUBLISHED:
             raise ValidationError({"detail": "Пост уже опубликован"})
+        if not item.content.strip():
+            raise ValidationError({"detail": "Сначала добавьте текст поста"})
         item.status = SMMContentItem.Status.APPROVED
         item.publish_error = ""
         item.save(update_fields=["status", "publish_error", "updated_at"])
