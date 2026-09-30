@@ -236,11 +236,26 @@ function likelyNeedsResearch(value: string) {
   return /(сегодня|сейчас|текущ|актуальн|курс|доллар|евро|рубл|цена|стоим|сколько стоит|билет|авиа|рейс|расписан|новост|погода|время|интернет|источник|найди|проверь|202[4-9]|203\d)/i.test(text);
 }
 
-async function previewChatCost(conversationId: string, payload: StreamPayload) {
+async function previewChatCost(conversationId: string, payload: StreamPayload, signal?: AbortSignal) {
   return api<ChatCostPreview>(`/conversations/${conversationId}/messages/preview/`, {
     method: "POST",
+    signal,
     body: JSON.stringify(payload),
   });
+}
+
+async function requestStreamCancellation(conversationId: string, idempotencyKey: string) {
+  const path = `/conversations/${conversationId}/messages/cancel/`;
+  try {
+    await api(path, {
+      method: "POST",
+      headers: {"Idempotency-Key": idempotencyKey},
+      body: JSON.stringify({idempotency_key: idempotencyKey}),
+    });
+  } catch {
+    // Best effort here. The normal stale-generation recovery remains the final
+    // safety net if the browser disappears before the cancellation request lands.
+  }
 }
 
 function waitForReconnect(ms: number, signal: AbortSignal) {
@@ -276,6 +291,19 @@ export async function streamMessage(
     createdAt: Date.now(),
     confirmedCost: false,
   };
+  let cancelPromise: Promise<void> | null = null;
+  const cancelBackend = () => {
+    clearPending(conversationId);
+    if (!cancelPromise) {
+      cancelPromise = requestStreamCancellation(conversationId, pending.idempotencyKey);
+    }
+  };
+  signal.addEventListener("abort", cancelBackend, {once: true});
+  if (signal.aborted) {
+    cancelBackend();
+    await cancelPromise;
+    throw signal.reason ?? new DOMException("Aborted", "AbortError");
+  }
 
   if (likelyNeedsResearch(payload.content)) {
     onEvent({event: "routing", data: {explanation: "Проверяю актуальные данные и внешние источники…"}});
@@ -284,7 +312,7 @@ export async function streamMessage(
   }
 
   if (!restored) {
-    const preview = await previewChatCost(conversationId, payload);
+    const preview = await previewChatCost(conversationId, payload, signal);
     if (preview.confirmation_required) {
       if (!askCostConfirmation(preview.estimated_max_rub)) {
         throw new ApiError("Запрос отменён до списания средств", 499);
@@ -294,7 +322,6 @@ export async function streamMessage(
     }
   }
   writePending(conversationId, pending);
-  signal.addEventListener("abort", () => clearPending(conversationId), {once: true});
 
   const send = (confirmCost: boolean) => {
     const path = `/conversations/${conversationId}/messages/stream/`;
@@ -394,7 +421,7 @@ export async function streamMessage(
           if (line.startsWith("data:")) data = line.slice(5).trim();
         }
         const parsed = JSON.parse(data) as Record<string, unknown>;
-        if (["snapshot", "completed"].includes(event)) {
+        if (["snapshot", "completed", "cancelled"].includes(event)) {
           terminal = true;
           clearPending(conversationId);
         } else if (event === "error" && parsed.code === "generation_in_progress") {
@@ -424,14 +451,20 @@ export async function streamMessage(
 
   let lastError: unknown = null;
   for (let attempt = 0; attempt <= STREAM_RECONNECT_DELAYS_MS.length; attempt += 1) {
-    if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    if (signal.aborted) {
+      if (cancelPromise) await cancelPromise;
+      throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    }
     try {
       const response = await openResponse();
       const result = await consume(response);
       if (result === "completed" || result === "terminal") return;
       lastError = new ApiError("Поток ответа завершился раньше времени", 503, {code: "stream_interrupted"});
     } catch (reason) {
-      if (signal.aborted || (reason instanceof DOMException && reason.name === "AbortError")) throw reason;
+      if (signal.aborted || (reason instanceof DOMException && reason.name === "AbortError")) {
+        if (cancelPromise) await cancelPromise;
+        throw reason;
+      }
       if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500 && ![408, 409, 429].includes(reason.status)) {
         throw reason;
       }
