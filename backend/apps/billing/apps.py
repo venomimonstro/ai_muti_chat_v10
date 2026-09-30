@@ -8,6 +8,7 @@ class BillingConfig(AppConfig):
     def ready(self):
         from . import cost_policy  # noqa: F401
         from . import loss_watchdog  # noqa: F401
-        from . import pricing, pricing_bridge
+        from . import confirmed_usage_guard, pricing, pricing_bridge, services
 
         pricing_bridge.install(pricing)
+        confirmed_usage_guard.install(services)
