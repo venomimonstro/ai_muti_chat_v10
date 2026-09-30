@@ -32,6 +32,7 @@ class DevRepositoryContextTests(SimpleTestCase):
                 return {
                     "items": [
                         {"name": "manage.py", "path": "backend/manage.py", "type": "file", "size": 100},
+                        {"name": "pytest.ini", "path": "backend/pytest.ini", "type": "file", "size": 100},
                         {"name": "apps", "path": "backend/apps", "type": "dir", "size": 0},
                     ]
                 }
@@ -72,7 +73,7 @@ class DevRepositoryContextTests(SimpleTestCase):
         self.assertIn("frontend/package.json", paths)
         self.assertIn("frontend/app/page.tsx", paths)
         self.assertFalse(any("node_modules" in path for path in paths))
-        self.assertGreaterEqual(context["discovered_count"], 8)
+        self.assertGreaterEqual(context["discovered_count"], 9)
         self.assertIn("Repository tree (bounded scan)", context["rendered"])
         profile = context["workspace_profile"]
         self.assertTrue(profile["scan_complete"])
@@ -81,10 +82,11 @@ class DevRepositoryContextTests(SimpleTestCase):
         self.assertTrue(profile["django_project"])
         self.assertTrue(profile["node_project"])
         self.assertEqual(profile["evidence_level"], "complete_bounded_snapshot")
+        self.assertEqual(profile["project_checks_available"], ["django-check-backend", "pytest-backend"])
 
     @patch("apps.agents.dev_context.read_repository_file")
     @patch("apps.agents.dev_context.list_repository_directory")
-    def test_skips_large_candidates_before_reading(self, list_directory, read_file):
+    def test_skips_large_candidates_before_reading_and_marks_snapshot_partial(self, list_directory, read_file):
         list_directory.return_value = {
             "items": [
                 {"name": "README.md", "path": "README.md", "type": "file", "size": 100},
@@ -96,7 +98,10 @@ class DevRepositoryContextTests(SimpleTestCase):
         context = build_repository_context(self.project)
 
         self.assertEqual([item["path"] for item in context["files"]], ["README.md"])
-        self.assertTrue(context["workspace_profile"]["snapshot_complete"])
+        profile = context["workspace_profile"]
+        self.assertFalse(profile["snapshot_complete"])
+        self.assertEqual(profile["oversized_candidates"], ["huge.py"])
+        self.assertEqual(profile["project_checks_available"], [])
         read_file.assert_called_once()
 
     @patch("apps.agents.dev_context.MAX_SCAN_DIRECTORIES", 1)
@@ -125,3 +130,29 @@ class DevRepositoryContextTests(SimpleTestCase):
         self.assertFalse(profile["scan_complete"])
         self.assertFalse(profile["snapshot_complete"])
         self.assertEqual(profile["evidence_level"], "bounded_discovery_snapshot")
+
+    @patch("apps.agents.dev_context.MAX_DEPTH", 1)
+    @patch("apps.agents.dev_context.read_repository_file")
+    @patch("apps.agents.dev_context.list_repository_directory")
+    def test_marks_snapshot_bounded_when_nested_directories_exceed_depth(self, list_directory, read_file):
+        def directory_payload(_binding, path="", *, ref=None):
+            if path == "":
+                return {"items": [{"name": "backend", "path": "backend", "type": "dir", "size": 0}]}
+            if path == "backend":
+                return {
+                    "items": [
+                        {"name": "manage.py", "path": "backend/manage.py", "type": "file", "size": 10},
+                        {"name": "apps", "path": "backend/apps", "type": "dir", "size": 0},
+                    ]
+                }
+            raise AssertionError(f"unexpected directory {path}")
+
+        list_directory.side_effect = directory_payload
+        read_file.return_value = {"sha": "sha", "content": "print('ok')\n"}
+
+        context = build_repository_context(self.project)
+
+        profile = context["workspace_profile"]
+        self.assertFalse(profile["scan_complete"])
+        self.assertFalse(profile["snapshot_complete"])
+        self.assertEqual(profile["project_checks_available"], [])
