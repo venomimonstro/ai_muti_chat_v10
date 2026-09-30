@@ -13,6 +13,7 @@ class AIRegistryConfig(AppConfig):
             adapters,
             auto_continuity,
             dispatch,
+            http_errors,
             manual_continuity,
             model_quarantine,
             reliability,
@@ -21,6 +22,7 @@ class AIRegistryConfig(AppConfig):
             signals,
         )
 
+        http_errors.install(adapters)
         adapters.adapter_for = dispatch.adapter_for
         reliability.adapter_for = dispatch.adapter_for
         routing_pools.install_router_pool_resolver(router)
