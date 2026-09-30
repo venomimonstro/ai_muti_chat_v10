@@ -5,7 +5,8 @@ from apps.github_integration.models import GitHubOperationLog
 from apps.github_integration.mutations import create_repository_file
 from apps.github_integration.services import write_repository_file
 
-from .sandbox_client import run_sandbox, sandbox_enabled
+from .dev_context import build_repository_context
+from .sandbox_client import patch_workspace, run_sandbox, run_workspace_checks, sandbox_enabled, sync_workspace
 
 
 MAX_EXECUTION_CHANGES = 12
@@ -34,29 +35,71 @@ def enrich_changes_with_snapshot(changes, repository_context):
     return result
 
 
-def _sandbox_command(changes):
+def _sandbox_checks(changes):
     paths = [str(item["path"]).lower() for item in changes]
+    checks = []
+    if any(path.endswith(".json") for path in paths):
+        checks.append("json-check")
+    if any(path.endswith((".js", ".mjs", ".cjs")) for path in paths):
+        checks.append("node-check")
     if any(path.endswith(".py") for path in paths):
-        return "python-compile"
-    return None
+        checks.append("python-compile")
+    return checks
 
 
-def validate_changes_in_sandbox(changes):
-    command = _sandbox_command(changes)
-    if command is None:
+def _legacy_sandbox_result(changes, checks):
+    if len(checks) != 1:
+        return None
+    files = [
+        {"path": item["path"], "content": item["content"]}
+        for item in changes
+        if item.get("operation") in {"create", "update"}
+    ]
+    return run_sandbox(command=checks[0], files=files)
+
+
+def validate_changes_in_sandbox(changes, *, workspace_id=None, base_files=None):
+    checks = _sandbox_checks(changes)
+    if not checks:
         return {
             "ok": True,
-            "command": "text-validation-only",
-            "returncode": 0,
-            "output": "Для предложенных типов файлов нет исполняемой sandbox-проверки; выполнена структурная валидация.",
+            "command": "structural-validation",
+            "checks": [],
+            "output": "Для изменённых типов файлов нет безопасной исполняемой проверки; выполнена структурная валидация.",
         }
     if not sandbox_enabled():
         raise ValidationError("Sandbox не настроен; запись кода заблокирована")
-    files = [{"path": item["path"], "content": item["content"]} for item in changes]
-    result = run_sandbox(command=command, files=files)
+
+    if workspace_id and base_files is not None:
+        files = [
+            {"path": str(item.get("path") or ""), "content": str(item.get("content") or "")}
+            for item in base_files
+            if item.get("path") and isinstance(item.get("content"), str)
+        ]
+        sync_workspace(workspace_id=workspace_id, files=files, reset=True)
+        operations = [
+            {
+                "operation": item.get("operation") or "update",
+                "path": item["path"],
+                "content": item.get("content", ""),
+            }
+            for item in changes
+            if item.get("operation") in {"create", "update"}
+        ]
+        if operations:
+            patch_workspace(workspace_id=workspace_id, operations=operations)
+        result = run_workspace_checks(workspace_id=workspace_id, checks=checks)
+    else:
+        result = _legacy_sandbox_result(changes, checks)
+        if result is None:
+            raise ValidationError("Для многошаговой проверки требуется Dev Workspace")
+
     if not result.get("ok"):
+        failed = next((item for item in result.get("checks", []) if not item.get("ok")), result)
         raise ValidationError(
-            f"Sandbox отклонил изменения ({result.get('command')}): {str(result.get('output') or result.get('error') or '')[-4000:]}"
+            "Sandbox отклонил изменения "
+            f"({failed.get('command') or 'workspace-check'}): "
+            f"{str(failed.get('output') or failed.get('error') or '')[-4000:]}"
         )
     return result
 
@@ -68,24 +111,26 @@ def _default_should_cancel(run_id):
     return state == AgentRun.State.CANCELED
 
 
-def _persist_working_branch(run_id, branch_name):
-    """Persist the external GitHub side effect before the first file write.
-
-    A worker can die after branch creation. Recording the branch immediately
-    makes stale-run recovery and the UI able to point to the partial isolated
-    branch instead of pretending that no external side effect happened.
-    """
+def _persist_run_execution_state(run_id, **values):
     from .models import AgentRun
 
     run = AgentRun.objects.filter(pk=run_id).only("id", "input_payload").first()
     if run is None:
         return False
     payload = dict(run.input_payload or {})
-    payload["phase"] = "writing_changes"
-    payload["working_branch"] = branch_name
+    payload.update(values)
     run.input_payload = payload
     run.save(update_fields=["input_payload", "updated_at"])
     return True
+
+
+def _persist_working_branch(run_id, branch_name):
+    """Persist the external GitHub side effect before the first file write."""
+    return _persist_run_execution_state(
+        run_id,
+        phase="writing_changes",
+        working_branch=branch_name,
+    )
 
 
 def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
@@ -102,7 +147,19 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
 
     if cancel_check():
         raise ValidationError("Dev Studio остановлен до sandbox/GitHub write")
-    sandbox_result = validate_changes_in_sandbox(changes)
+
+    workspace_id = f"devrun-{str(run_id).replace('-', '')[:24]}"
+    repository_context = build_repository_context(project, ref=binding.default_branch)
+    _persist_run_execution_state(
+        run_id,
+        phase="validating_changes",
+        workspace_id=workspace_id,
+    )
+    sandbox_result = validate_changes_in_sandbox(
+        changes,
+        workspace_id=workspace_id,
+        base_files=repository_context.get("files") or [],
+    )
     if cancel_check():
         raise ValidationError("Dev Studio остановлен после sandbox и до создания рабочей ветки")
 
@@ -149,6 +206,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
                     "run_id": str(run_id),
                     "sequence": index,
                     "applied_before_failure": len(applied),
+                    "workspace_id": workspace_id,
                     "error": str(exc)[:2000],
                 },
             )
@@ -167,6 +225,7 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
             metadata={
                 "run_id": str(run_id),
                 "sequence": index,
+                "workspace_id": workspace_id,
                 "commit_sha": result.get("commit_sha"),
                 "content_sha": result.get("content_sha"),
             },
@@ -179,4 +238,15 @@ def apply_approved_changes(*, project, run_id, changes, should_cancel=None):
                 "content_sha": result.get("content_sha"),
             }
         )
-    return {"branch": branch_name, "changes": applied, "sandbox": sandbox_result}
+    _persist_run_execution_state(
+        run_id,
+        phase="changes_written",
+        workspace_id=workspace_id,
+        working_branch=branch_name,
+    )
+    return {
+        "branch": branch_name,
+        "changes": applied,
+        "sandbox": sandbox_result,
+        "workspace_id": workspace_id,
+    }
