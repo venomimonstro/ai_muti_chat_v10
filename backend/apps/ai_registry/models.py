@@ -252,6 +252,9 @@ class AIModel(models.Model):
     output_price_rub_per_million = models.DecimalField(max_digits=12, decimal_places=4, default=0)
     current_version = models.ForeignKey("ModelVersion", on_delete=models.PROTECT, null=True, blank=True, related_name="active_for_models")
 
+    def __str__(self):
+        return f"{self.display_name} ({self.provider.name})"
+
 
 class ModelVersion(models.Model):
     class Stage(models.TextChoices):
@@ -352,3 +355,27 @@ class RoutingPolicyVersion(models.Model):
     class Meta:
         ordering = ["-created_at"]
         constraints = [models.UniqueConstraint(fields=["active"], condition=models.Q(active=True), name="unique_active_routing_policy")]
+
+
+class RoutingTierAssignment(models.Model):
+    class Tier(models.TextChoices):
+        SIMPLE = "economy", "Простой"
+        MEDIUM = "balanced", "Средний"
+        COMPLEX = "maximum", "Сложный"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tier = models.CharField(max_length=16, choices=Tier.choices)
+    model = models.ForeignKey(AIModel, on_delete=models.CASCADE, related_name="routing_tiers")
+    priority = models.PositiveIntegerField(default=100)
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["tier", "priority", "model__display_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["tier", "model"], name="unique_model_per_routing_tier")
+        ]
+
+    def __str__(self):
+        return f"{self.get_tier_display()} · {self.model.display_name}"
