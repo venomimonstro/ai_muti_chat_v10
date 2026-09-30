@@ -102,18 +102,24 @@ def _priority(path):
     return (4, depth, normalized.casefold())
 
 
-def _is_candidate_file(item):
+def _candidate_kind(item):
     path = str(item.get("path") or "")
     if not path or item.get("type") != "file":
-        return False
-    if int(item.get("size") or 0) > MAX_CANDIDATE_BYTES:
-        return False
+        return ""
     name = path.rsplit("/", 1)[-1]
     if name in ROOT_CANDIDATES:
-        return True
+        return "manifest"
     if name in {candidate for values in NESTED_CANDIDATES.values() for candidate in values}:
-        return True
-    return name.lower().endswith(SOURCE_SUFFIXES)
+        return "manifest"
+    if name.lower().endswith(SOURCE_SUFFIXES):
+        return "source"
+    return ""
+
+
+def _is_candidate_file(item):
+    if not _candidate_kind(item):
+        return False
+    return int(item.get("size") or 0) <= MAX_CANDIDATE_BYTES
 
 
 def _scan_repository(binding, target_ref):
@@ -122,6 +128,7 @@ def _scan_repository(binding, target_ref):
     root_items = root.get("items") or []
     all_items = list(root_items)
     directories = deque()
+    scan_truncated = False
     for item in root_items:
         if item.get("type") == "dir" and str(item.get("name") or "") not in IGNORED_DIRECTORIES:
             directories.append((str(item.get("path") or ""), 1))
@@ -129,30 +136,60 @@ def _scan_repository(binding, target_ref):
     scanned = 0
     while directories and scanned < MAX_SCAN_DIRECTORIES:
         path, depth = directories.popleft()
-        if not path or depth > MAX_DEPTH:
+        if not path:
+            continue
+        if depth > MAX_DEPTH:
+            scan_truncated = True
             continue
         try:
             payload = list_repository_directory(binding, path, ref=target_ref)
             tool_calls += 1
         except ValidationError:
+            scan_truncated = True
             continue
         scanned += 1
         items = payload.get("items") or []
         all_items.extend(items)
+        child_directories = [
+            item
+            for item in items
+            if item.get("type") == "dir"
+            and str(item.get("name") or "") not in IGNORED_DIRECTORIES
+            and str(item.get("path") or "")
+        ]
         if depth >= MAX_DEPTH:
+            if child_directories:
+                scan_truncated = True
             continue
-        for item in items:
-            if item.get("type") != "dir":
-                continue
-            name = str(item.get("name") or "")
-            child_path = str(item.get("path") or "")
-            if name in IGNORED_DIRECTORIES or not child_path:
-                continue
-            directories.append((child_path, depth + 1))
-    return root_items, all_items, tool_calls, not directories, scanned
+        for item in child_directories:
+            directories.append((str(item.get("path") or ""), depth + 1))
+    if directories:
+        scan_truncated = True
+    return root_items, all_items, tool_calls, not scan_truncated, scanned
 
 
-def _workspace_profile(*, discovered, candidate_paths, files, scan_complete, content_complete):
+def _project_checks(lower_paths, snapshot_complete, has_pytest_contract):
+    if not snapshot_complete:
+        return []
+    checks = []
+    if "manage.py" in lower_paths:
+        checks.append("django-check")
+    elif "backend/manage.py" in lower_paths:
+        checks.append("django-check-backend")
+    if has_pytest_contract:
+        checks.append("pytest-backend" if "backend/manage.py" in lower_paths else "pytest")
+    return checks
+
+
+def _workspace_profile(
+    *,
+    discovered,
+    candidate_paths,
+    files,
+    scan_complete,
+    content_complete,
+    oversized_candidates,
+):
     discovered_paths = {str(item.get("path") or "") for item in discovered}
     file_paths = {str(item.get("path") or "") for item in files}
     lower_paths = {path.casefold() for path in discovered_paths}
@@ -166,13 +203,19 @@ def _workspace_profile(*, discovered, candidate_paths, files, scan_complete, con
         for path in {"pytest.ini", "pyproject.toml", "setup.cfg", "backend/pytest.ini", "backend/pyproject.toml"}
     )
     selected_all_candidates = len(file_paths) == len(candidate_paths)
-    snapshot_complete = bool(scan_complete and content_complete and selected_all_candidates)
+    snapshot_complete = bool(
+        scan_complete
+        and content_complete
+        and selected_all_candidates
+        and not oversized_candidates
+    )
     if snapshot_complete:
         evidence_level = "complete_bounded_snapshot"
     elif scan_complete:
         evidence_level = "partial_content_snapshot"
     else:
         evidence_level = "bounded_discovery_snapshot"
+    checks = _project_checks(lower_paths, snapshot_complete, has_pytest_contract)
     return {
         "scan_complete": bool(scan_complete),
         "content_complete": bool(content_complete),
@@ -180,13 +223,12 @@ def _workspace_profile(*, discovered, candidate_paths, files, scan_complete, con
         "evidence_level": evidence_level,
         "candidate_count": len(candidate_paths),
         "context_file_count": len(files),
+        "oversized_candidates": list(sorted(oversized_candidates))[:20],
         "python_project": python_project,
         "django_project": django_project,
         "node_project": node_project,
         "pytest_contract": has_pytest_contract,
-        # Project-level commands remain advisory until dependencies are known to
-        # exist inside the isolated runtime. Syntax checks are always safe.
-        "project_checks_available": [],
+        "project_checks_available": checks,
     }
 
 
@@ -204,10 +246,16 @@ def build_repository_context(project, *, ref=None):
     ]
 
     candidates = {}
+    oversized_candidates = set()
     for item in discovered:
-        if not _is_candidate_file(item):
+        kind = _candidate_kind(item)
+        if not kind:
             continue
         path = str(item.get("path") or "")
+        if int(item.get("size") or 0) > MAX_CANDIDATE_BYTES:
+            if path:
+                oversized_candidates.add(path)
+            continue
         if path:
             candidates[path] = item
 
@@ -241,6 +289,7 @@ def build_repository_context(project, *, ref=None):
         files=files,
         scan_complete=scan_complete,
         content_complete=content_complete,
+        oversized_candidates=oversized_candidates,
     )
     rendered = "Repository: " + binding.full_name + "\n"
     rendered += "Ref: " + target_ref + "\n"
