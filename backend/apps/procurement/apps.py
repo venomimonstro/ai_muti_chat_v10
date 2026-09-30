@@ -17,4 +17,4 @@ class ProcurementConfig(AppConfig):
         raw = os.getenv("PROCUREMENT_RUNTIME_FAIL_CLOSED", default).strip().casefold()
         settings.PROCUREMENT_RUNTIME_FAIL_CLOSED = raw not in {"0", "false", "no", "off"}
 
-        from . import signals  # noqa: F401
+        from . import chat_signals, signals  # noqa: F401
