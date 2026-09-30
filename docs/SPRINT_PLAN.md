@@ -171,6 +171,37 @@
 - Legacy GigaChat/OpenRouter с ошибочным `adapter_type=echo` автоматически нормализуются перед health probe и до этого не получают клиентский трафик.
 - Расширен `scripts/chat_reliability_check.sh`: key isolation, router, client catalog, reconnect, managed continuity, provider exhaustion failover, partial billing, reservation cleanup и money safety.
 
+## Dev Studio v2 81–90
+
+| Sprint | Статус | Цель |
+|---|---|---|
+| 81 | DONE / RUNTIME EVIDENCE | Persistent isolated Dev Workspace Runtime, bounded repository discovery, safe patch/run contract |
+| 82 | DONE / RUNTIME EVIDENCE | Engineering Director 2.0: validated DAG, dependencies, roles, acceptance criteria |
+| 83 | DONE / RUNTIME EVIDENCE | Coding loop: create/update/delete, expected SHA, aggregate limits, pre-approval + pre-write validation |
+| 84 | DONE / RUNTIME EVIDENCE | Dev Command Center: Director plan, real node states, cost and verification evidence |
+| 85 | IN PROGRESS | Test/evidence depth with project-completeness-aware safe test matrix |
+| 86 | DONE / RUNTIME EVIDENCE | Fail-closed crash/restart recovery, reservation/workspace cleanup, recovery evidence |
+| 87 | IN PROGRESS | Provider continuity/economics: same-model healthy-key retry complete; accounting-safe cross-model fallback pending |
+| 88 | PLANNED | Dev security hardening |
+| 89 | PLANNED | Commercial Dev E2E journey and failure scenarios |
+| 90 | PLANNED | Dev Studio RC gate and immutable evidence bundle |
+
+Детали: `docs/sprints/81-90-dev-studio-v2.md`.
+
+### Реализовано к Sprint 87
+
+- Repository context больше не ограничен фиксированным набором manifest-файлов: bounded discovery читает реальные исходники и исключает vendor/build/cache каталоги.
+- Sandbox получил persistent workspace API `sync/patch/run/destroy`, отдельный production image, internal-only network и whitelist execution без arbitrary shell.
+- Backend readiness делает реальный health probe workspace API до запуска Dev Team.
+- Director формирует валидируемый DAG; task ID связан с фактическими `AgentStepRun.node_id`.
+- Developer поддерживает create/update/delete; update/delete требуют файл из snapshot и expected SHA.
+- Change-set больше лимита отклоняется целиком, а конфликтующие записи нескольких Development-задач блокируются.
+- Реальный change-set проверяется в preview workspace до создания approval и повторно непосредственно перед GitHub write.
+- Run UI показывает Director DAG, стоимость по ролям и verification evidence по workspace/branch/checks/applied files.
+- Dev stage умеет переключаться на healthy API key той же модели с exact-key degradation и одним settlement.
+- `dev_studio_recover` даёт operator-controlled fail-closed recovery stale execution без автоматического повторения provider/GitHub side effects.
+- `scripts/dev_studio_check.sh` — отдельный blocking gate Dev Studio v2; главный `release_check.sh` также поднимает настоящий sandbox и прогоняет критические regressions.
+
 ## Что реализовано к Sprint 75
 
 ### Agent Runtime
@@ -191,11 +222,11 @@
 
 ### Dev Studio safety
 
-- create/update only; delete не выполняется Dev runtime.
+- create/update/delete разрешены только через safe path contract; update/delete требуют snapshot SHA.
 - Safe paths, file limits, expected SHA и повторная проверка исходного состояния.
 - Exact proposed changes сохраняются в approval.
 - Unified diff доступен до подтверждения.
-- Sandbox до write; write только в `ai-workspace/run-*` branch.
+- Sandbox выполняется до approval и повторно до write; write только в `ai-workspace/run-*` branch.
 - QA & Security + Final Review после изменения ветки.
 - PR и merge привязаны к точному run/head/base/SHA; merge требует явного подтверждения.
 - Abandon не выдаётся за remote deletion: default branch остаётся неизменной, isolated branch сохраняется для аудита/ручного удаления.
@@ -212,6 +243,8 @@
 
 `scripts/release_check.sh` блокирует релиз на syntax/undefined-name defects, failing PostgreSQL tests, migration drift, economic/billing failures, Agent security/commercial/recovery failures, Dev Studio audit и frontend build/lint/runtime smoke.
 
+`scripts/dev_studio_check.sh` блокирует Dev Studio v2 release на workspace/sandbox/Director/change validation/recovery regressions и frontend build/lint.
+
 `scripts/chat_reliability_check.sh` — отдельный blocking gate стабильности чата и provider failover перед production update.
 
 `scripts/agent_runtime_drill.sh` выполняет restart drill worker/beat и повторные production audits.
@@ -220,23 +253,27 @@
 
 ## Обязательные runtime evidence / launch blockers
 
-Наличие кода Sprint 76–80 не отменяет следующие реальные проверки:
+Наличие кода Sprint 76–87 не отменяет следующие реальные проверки:
 
 1. `sudo bash scripts/chat_reliability_check.sh` проходит на текущем `main` и возвращает `CHAT RELIABILITY CHECK: PASS`.
 2. `sudo bash scripts/product_expansion_check.sh` проходит на текущем `main` и возвращает `PRODUCT EXPANSION CHECK: PASS`.
-3. `sudo bash scripts/update.sh --full` проходит полностью после targeted gates.
-4. PostgreSQL regression/security/commercial tests проходят на текущем коде.
-5. `agent_runtime_drill.sh` возвращает `AGENT RUNTIME DRILL: PASS` после реальных restart worker/beat.
-6. Production configuration/secrets complete.
-7. Real payment/refund/receipt flow verified.
-8. Backup restore/application rollback drill verified.
-9. Legal/provider human sign-offs complete.
-10. Live dedicated E2E account configured (`E2E_USERNAME` / `E2E_PASSWORD`) with small positive balance.
-11. `commercial_launch_check.sh` проходит live paid workspace AI + B2B API/billing E2E.
-12. `agent_release_candidate_check.sh` завершается `AGENT RELEASE CANDIDATE v1.0: PASS`.
-13. `web_search_diagnose` даёт production evidence хотя бы одного рабочего live-search provider и fallback policy.
-14. OpenAI image generate/edit smoke подтверждает real provider response, billing settlement и private media delivery.
+3. `sudo bash scripts/dev_studio_check.sh` проходит на текущем `main` и возвращает `DEV_STUDIO_V2_CHECK=PASS`.
+4. `sudo bash scripts/update.sh --full` проходит полностью после targeted gates.
+5. PostgreSQL regression/security/commercial tests проходят на текущем коде.
+6. `agent_runtime_drill.sh` возвращает `AGENT RUNTIME DRILL: PASS` после реальных restart worker/beat.
+7. Production configuration/secrets complete.
+8. Real payment/refund/receipt flow verified.
+9. Backup restore/application rollback drill verified.
+10. Legal/provider human sign-offs complete.
+11. Live dedicated E2E account configured (`E2E_USERNAME` / `E2E_PASSWORD`) with small positive balance.
+12. `commercial_launch_check.sh` проходит live paid workspace AI + B2B API/billing E2E.
+13. `agent_release_candidate_check.sh` завершается `AGENT RELEASE CANDIDATE v1.0: PASS`.
+14. `web_search_diagnose` даёт production evidence хотя бы одного рабочего live-search provider и fallback policy.
+15. OpenAI image generate/edit smoke подтверждает real provider response, billing settlement и private media delivery.
+16. Реальный Dev journey подтверждает Director plan → preview validation → approval → sandbox → isolated branch → QA/Final Review.
+17. Worker interruption drill подтверждает `dev_studio_recover --repair` без двойных списаний и повторных GitHub side effects.
+18. Key-pool failure drill подтверждает один customer settlement при успешном переключении на healthy ключ той же модели.
 
 ## Следующий шаг
 
-Код Sprint 80 завершён. Следующий этап — production-like `chat_reliability_check.sh`, затем `update.sh --full`; после реального PASS Sprint 80 получает runtime evidence. Остальные runtime/release gates 74–79 остаются обязательными для общего production-ready статуса.
+Текущая разработка — Sprint 85 и Sprint 87: добавить completeness-aware project test matrix и accounting-safe cross-model fallback для Dev stages. После этого — Sprint 88 security hardening, Sprint 89 commercial E2E и Sprint 90 RC gate. Production-ready статус не объявляется до фактического PASS runtime evidence выше.
