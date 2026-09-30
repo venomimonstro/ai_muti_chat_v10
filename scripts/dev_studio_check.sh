@@ -8,6 +8,7 @@ cd "$PROJECT_DIR"
 
 printf '\n=== DEV STUDIO V2 CHECK ===\n'
 
+bash -n scripts/dev_studio_release_candidate_check.sh
 python3 -m compileall -q \
   backend/apps/agents/dev_context.py \
   backend/apps/agents/dev_changes.py \
@@ -26,9 +27,10 @@ python3 -m compileall -q \
   backend/apps/agents/team_runtime.py \
   backend/apps/agents/team_runtime_v2.py \
   backend/apps/agents/management/commands/dev_studio_recover.py \
+  backend/apps/agents/management/commands/dev_studio_reconcile.py \
   backend/apps/agents/management/commands/dev_studio_runtime_audit.py \
   backend/apps/agents/management/commands/dev_studio_e2e_audit.py
-printf '[PASS] Python syntax\n'
+printf '[PASS] Shell/Python syntax\n'
 
 APP_DOMAIN=dev-check.example.test \
 ACME_EMAIL=ops@example.test \
@@ -58,6 +60,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_provider_retry.py \
     apps/agents/test_dev_model_fallback.py \
     apps/agents/test_dev_model_execution.py \
+    apps/agents/test_dev_settlement_integrity.py \
     apps/agents/test_team_runtime_v2_activation.py \
     apps/agents/test_dev_recovery.py \
     apps/agents/test_dev_security.py \
