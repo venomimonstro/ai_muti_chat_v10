@@ -16,7 +16,6 @@ mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 cd "$PROJECT_DIR"
 
-# Mirror the complete release output to a durable log while keeping it visible.
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 cleanup() {
@@ -100,8 +99,8 @@ docker compose --ansi never --env-file .env.example -f "$PROD_COMPOSE" config >/
 pass 3 'Compose syntax'
 
 step 4 'Build isolated test stack'
-COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test
-docker compose --ansi never -f "$TEST_COMPOSE" up -d postgres
+COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test sandbox
+docker compose --ansi never -f "$TEST_COMPOSE" up -d postgres sandbox
 pass 4 'Build isolated test stack'
 
 step 5 'Backend blocking lint'
@@ -168,6 +167,13 @@ pass 15 'Agent recovery and external connection integrity'
 
 step 16 'Dev Studio readiness'
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py dev_studio_audit
+run_pytest 'Dev Studio V2 runtime regressions' \
+  apps/agents/test_dev_context_discovery.py \
+  apps/agents/test_dev_plan.py \
+  apps/agents/test_dev_changes_v2.py \
+  apps/agents/test_dev_provider_retry.py \
+  apps/agents/test_sandbox.py \
+  apps/agents/test_sandbox_client_health.py
 pass 16 'Dev Studio readiness'
 
 step 17 'Agent Runtime billing integrity'
