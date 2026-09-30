@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.image_studio.models import ImageGeneration
+
 from .smm_models import SMMContentItem, SMMContentPlan, SMMPublicationAttempt
 
 
@@ -27,7 +29,7 @@ class SMMContentItemSerializer(serializers.ModelSerializer):
         scheduled_at = attrs.get("scheduled_at", getattr(instance, "scheduled_at", None))
         content = str(attrs.get("content", getattr(instance, "content", "")) or "").strip()
         media_source = attrs.get("media_source", getattr(instance, "media_source", SMMContentItem.MediaSource.NONE))
-        media_generation = attrs.get("media_generation_id", getattr(instance, "media_generation_id", None))
+        media_generation_id = attrs.get("media_generation_id", getattr(instance, "media_generation_id", None))
         media_url = str(attrs.get("media_url", getattr(instance, "media_url", "")) or "").strip()
         if plan and plan.owner_id != user.id:
             raise serializers.ValidationError({"plan": "Контент-план недоступен"})
@@ -35,9 +37,12 @@ class SMMContentItemSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"content": "Для публикации нужен текст поста"})
         if status == SMMContentItem.Status.SCHEDULED and not scheduled_at:
             raise serializers.ValidationError({"scheduled_at": "Укажите дату и время публикации"})
-        if media_generation is not None and media_generation.owner_id != user.id:
+        if media_generation_id is not None and not ImageGeneration.objects.filter(
+            pk=media_generation_id,
+            owner=user,
+        ).exists():
             raise serializers.ValidationError({"media_generation_id": "Изображение недоступно"})
-        if media_source == SMMContentItem.MediaSource.GENERATED and media_generation is None:
+        if media_source == SMMContentItem.MediaSource.GENERATED and media_generation_id is None:
             raise serializers.ValidationError({"media_generation_id": "Выберите готовую AI-генерацию"})
         if media_source == SMMContentItem.MediaSource.STOCK and not media_url:
             raise serializers.ValidationError({"media_url": "Выберите изображение фотостока"})
