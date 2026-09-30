@@ -13,8 +13,10 @@ python3 -m compileall -q \
   backend/apps/agents/dev_changes.py \
   backend/apps/agents/dev_execution.py \
   backend/apps/agents/dev_plan.py \
+  backend/apps/agents/dev_provider_retry.py \
   backend/apps/agents/sandbox_client.py \
   backend/apps/agents/sandbox_server.py \
+  backend/apps/agents/team_readiness.py \
   backend/apps/agents/team_runtime.py
 printf '[PASS] Python syntax\n'
 
@@ -41,7 +43,9 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_context_discovery.py \
     apps/agents/test_dev_plan.py \
     apps/agents/test_dev_changes_v2.py \
+    apps/agents/test_dev_provider_retry.py \
     apps/agents/test_sandbox.py \
+    apps/agents/test_sandbox_client_health.py \
     apps/agents/test_dev_execution_cancel.py \
     apps/agents/test_dev_cancellation.py \
     apps/agents/test_dev_member_budgets.py \
