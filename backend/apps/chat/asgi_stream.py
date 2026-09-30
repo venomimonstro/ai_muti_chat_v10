@@ -179,7 +179,34 @@ async def follow_generation_async(
                 },
             )
             return
-        if state in {Generation.State.FAILED, Generation.State.CANCELLED}:
+        if state == Generation.State.CANCELLED:
+            if snapshot["text"]:
+                yield sse(
+                    "snapshot",
+                    {
+                        "text": snapshot["text"],
+                        "state": state,
+                        "cost_rub": snapshot["cost_rub"],
+                        "reconnected": True,
+                    },
+                )
+            yield sse(
+                "cancelled",
+                {
+                    "code": snapshot["error_code"] or "client_cancelled",
+                    "state": state,
+                    "partial": bool(snapshot["text"]),
+                    "cost_rub": snapshot["cost_rub"],
+                    "reconnected": True,
+                    "message": (
+                        "Генерация остановлена. Списана только подтверждённая стоимость уже полученной части ответа."
+                        if _positive_cost(snapshot["cost_rub"])
+                        else "Запрос остановлен пользователем. Неподтверждённые расходы не списаны."
+                    ),
+                },
+            )
+            return
+        if state == Generation.State.FAILED:
             if snapshot["text"]:
                 yield sse(
                     "snapshot",
