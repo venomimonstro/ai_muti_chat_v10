@@ -1,3 +1,5 @@
+import uuid
+
 from django.core.exceptions import ValidationError
 
 from apps.github_integration.branching import create_repository_branch
@@ -6,7 +8,14 @@ from apps.github_integration.mutations import create_repository_file, delete_rep
 from apps.github_integration.services import write_repository_file
 
 from .dev_context import build_repository_context
-from .sandbox_client import patch_workspace, run_sandbox, run_workspace_checks, sandbox_enabled, sync_workspace
+from .sandbox_client import (
+    destroy_workspace,
+    patch_workspace,
+    run_sandbox,
+    run_workspace_checks,
+    sandbox_enabled,
+    sync_workspace,
+)
 
 
 MAX_EXECUTION_CHANGES = 12
@@ -36,6 +45,24 @@ def enrich_changes_with_snapshot(changes, repository_context):
                 raise ValidationError(f"Для {item['path']} отсутствует исходный SHA")
             item["expected_sha"] = expected_sha
         result.append(item)
+
+    # A real repository proposal must be executable before the user is asked to
+    # approve it. This is intentionally repeated again immediately before write
+    # in apply_approved_changes() to close the time-of-check/time-of-use gap.
+    if repository_context.get("repository"):
+        workspace_id = f"preview-{uuid.uuid4().hex[:24]}"
+        try:
+            validate_changes_in_sandbox(
+                result,
+                workspace_id=workspace_id,
+                base_files=repository_context.get("files") or [],
+            )
+        finally:
+            if sandbox_enabled():
+                try:
+                    destroy_workspace(workspace_id=workspace_id)
+                except Exception:
+                    pass
     return result
 
 
