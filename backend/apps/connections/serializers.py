@@ -20,28 +20,39 @@ class ExternalConnectionSerializer(serializers.ModelSerializer):
         return bool(obj.secret_encrypted)
 
     def validate_kind(self, value):
-        if value != ExternalConnection.Kind.WORDPRESS:
+        if value not in {ExternalConnection.Kind.WORDPRESS, ExternalConnection.Kind.VK}:
             raise serializers.ValidationError("Этот тип подключения пока не поддерживается")
         return value
 
-    def validate_base_url(self, value):
-        return normalize_wordpress_url(value)
-
     def validate(self, attrs):
         instance = self.instance
+        kind = attrs.get("kind") or getattr(instance, "kind", None)
         username = str(attrs.get("username", getattr(instance, "username", "")) or "").strip()
-        has_secret = bool(str(attrs.get("secret") or "").strip()) or bool(instance and instance.secret_encrypted)
-        if (attrs.get("kind") or getattr(instance, "kind", None)) == ExternalConnection.Kind.WORDPRESS:
+        secret = str(attrs.get("secret") or "").strip()
+        has_secret = bool(secret) or bool(instance and instance.secret_encrypted)
+        base_url = str(attrs.get("base_url", getattr(instance, "base_url", "")) or "").strip()
+
+        if kind == ExternalConnection.Kind.WORDPRESS:
+            if not base_url:
+                raise serializers.ValidationError({"base_url": "Укажите URL WordPress"})
+            attrs["base_url"] = normalize_wordpress_url(base_url)
             if not username:
                 raise serializers.ValidationError({"username": "Укажите пользователя WordPress"})
             if not has_secret:
                 raise serializers.ValidationError({"secret": "Укажите Application Password WordPress"})
+        elif kind == ExternalConnection.Kind.VK:
+            # VK credentials are normally stored by the OAuth callback. A placeholder
+            # connection is valid before authorization and must never require users
+            # to paste an access token into the browser.
+            attrs["base_url"] = base_url or "https://api.vk.com/method"
+            attrs["username"] = username
         return attrs
 
     def create(self, validated_data):
         secret = validated_data.pop("secret", "")
         connection = ExternalConnection(owner=self.context["request"].user, **validated_data)
-        connection.set_secret(secret)
+        if secret:
+            connection.set_secret(secret)
         connection.full_clean()
         connection.save()
         return connection
