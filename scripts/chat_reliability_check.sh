@@ -15,6 +15,11 @@ trap 'exit 130' INT TERM HUP
 echo '[chat-check] authoritative architecture contract'
 test -s docs/CHAT_ARCHITECTURE.md
 
+echo '[chat-check] frontend stream/cancel contract'
+grep -Fq '/messages/cancel/' frontend/lib/api.ts
+grep -Fq '"cancelled"' frontend/lib/api.ts
+grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
+
 echo '[chat-check] build isolated backend test image'
 COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test
 
@@ -46,6 +51,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_terminal_overrun_recovery.py \
   apps/chat/test_cooperative_cancel.py \
   apps/chat/test_durable_cancellation.py \
+  apps/chat/test_error_contract.py \
   apps/chat/test_web_search_reliability.py \
   apps/chat/test_public_error_codes.py \
   apps/chat/test_reconnect_fast_path.py \
