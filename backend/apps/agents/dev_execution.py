@@ -13,13 +13,17 @@ MAX_EXECUTION_CHANGES = 12
 
 
 def enrich_changes_with_snapshot(changes, repository_context):
+    if len(changes) > MAX_EXECUTION_CHANGES:
+        raise ValidationError(
+            f"Dev Studio предложил слишком много изменений за один запуск: максимум {MAX_EXECUTION_CHANGES}"
+        )
     visible = {
         str(item.get("path") or ""): item
         for item in (repository_context.get("files") or [])
         if item.get("path")
     }
     result = []
-    for change in changes[:MAX_EXECUTION_CHANGES]:
+    for change in changes:
         item = dict(change)
         if item["operation"] in {"update", "delete"}:
             source = visible.get(item["path"])
