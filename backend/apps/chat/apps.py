@@ -9,6 +9,7 @@ class ChatConfig(AppConfig):
         # UI-only organization models are registered here to keep inference models focused.
         from . import (
             billing_recovery,
+            cache_safety,
             cooperative_cancel,
             manual_selection_recovery,
             runtime_readiness,
