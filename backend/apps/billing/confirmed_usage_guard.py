@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 
 from django.db import transaction
 
@@ -12,6 +12,8 @@ from .pricing import calculate, calculate_from_snapshot
 from .reconciliation import record_cost_outcome
 
 ZERO = Decimal("0.0000")
+MONEY_STEP = Decimal("0.0001")
+PERCENT_STEP = Decimal("0.001")
 MAX_MARGIN_PERCENT = Decimal("9999.999")
 MIN_MARGIN_PERCENT = Decimal("-9999.999")
 
@@ -71,19 +73,21 @@ def install(services_module) -> None:
         if calculated_charge <= reservation.amount_rub:
             return False
 
-        actual = reservation.amount_rub
+        actual = reservation.amount_rub.quantize(MONEY_STEP)
         services_module.settle(reservation.id, actual)
 
         provider_cost = request_cost.provider_cost_rub or ZERO
         overhead_percent = Decimal(
             (request_cost.pricing_snapshot or {}).get("overhead_total_percent", "0")
         )
-        economic_cost = provider_cost * (
-            Decimal("1") + overhead_percent / Decimal("100")
-        )
-        gross_profit = actual - economic_cost
+        economic_cost = (
+            provider_cost * (Decimal("1") + overhead_percent / Decimal("100"))
+        ).quantize(MONEY_STEP, rounding=ROUND_UP)
+        gross_profit = (actual - economic_cost).quantize(MONEY_STEP)
         raw_margin = (gross_profit / actual * Decimal("100")) if actual else ZERO
-        gross_margin = min(MAX_MARGIN_PERCENT, max(MIN_MARGIN_PERCENT, raw_margin))
+        gross_margin = min(MAX_MARGIN_PERCENT, max(MIN_MARGIN_PERCENT, raw_margin)).quantize(
+            PERCENT_STEP
+        )
 
         RequestCost.objects.filter(pk=request_cost.pk).update(
             charged_rub=actual,
