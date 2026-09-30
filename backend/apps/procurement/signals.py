@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 STEP = Decimal("0.000001")
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter"}
 
 
 def _decimal(value, default="0"):
@@ -34,15 +35,15 @@ def _fx(snapshot):
 
 
 def _commercial_fail_closed():
-    """Whether the optional owner-side provider funding ledger is mandatory.
-
-    Client payments and provider procurement are separate concerns. A live YooKassa
-    checkout must not by itself require a manually maintained ProviderFundingAccount:
-    the client chat is already protected by model pricing, margin checks and the
-    customer wallet reservation/settlement path. Deployments that actively maintain
-    provider funding balances can opt into strict fail-closed behaviour explicitly.
-    """
+    """Whether the owner-side provider funding ledger is mandatory in runtime."""
     return bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
+
+
+def _is_test_echo_provider(provider):
+    return (
+        str(getattr(provider, "adapter_type", "")) == "echo"
+        and str(getattr(provider, "slug", "")) not in SPECIAL_EXTERNAL_PROVIDER_SLUGS
+    )
 
 
 def _provider_has_procurement(provider):
@@ -53,8 +54,7 @@ def _require_procurement(provider):
     configured = _provider_has_procurement(provider)
     if configured:
         return True
-    adapter_type = str(getattr(provider, "adapter_type", ""))
-    if adapter_type == "echo":
+    if _is_test_echo_provider(provider):
         return False
     if _commercial_fail_closed():
         raise ValidationError(
