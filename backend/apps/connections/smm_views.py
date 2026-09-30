@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from .models import ExternalConnection
-from .smm_models import SMMContentItem, SMMContentPlan
+from .smm_models import SMMContentItem, SMMContentPlan, SMMPublicationAttempt
 from .smm_serializers import SMMContentItemSerializer, SMMContentPlanSerializer, SMMPublicationAttemptSerializer
 from .smm_service import ensure_smm_agent, publish_item, start_plan_generation, sync_generated_plan
 
@@ -92,6 +95,18 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(plan_id=plan_id)
         return queryset
 
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        if instance.status == SMMContentItem.Status.PUBLISHED:
+            immutable = {"content", "scheduled_at", "status", "vk_attachment"}
+            if immutable.intersection(serializer.validated_data):
+                raise ValidationError({"detail": "Опубликованный пост нельзя изменять. Создайте новый пост."})
+        item = serializer.save()
+        try:
+            item.full_clean()
+        except DjangoValidationError as exc:
+            raise ValidationError({"detail": exc.messages}) from exc
+
     @action(detail=True, methods=["post"], url_path="publish")
     def publish(self, request, pk=None):
         item = self.get_object()
@@ -109,3 +124,44 @@ class SMMContentItemViewSet(viewsets.ModelViewSet):
                 "attempt": SMMPublicationAttemptSerializer(attempt).data,
             }
         )
+
+    @action(detail=True, methods=["post"], url_path="schedule")
+    @transaction.atomic
+    def schedule(self, request, pk=None):
+        item = self.get_object()
+        if item.status == SMMContentItem.Status.PUBLISHED:
+            raise ValidationError({"detail": "Пост уже опубликован"})
+        scheduled_at = request.data.get("scheduled_at") or item.scheduled_at
+        serializer = self.get_serializer(
+            item,
+            data={"scheduled_at": scheduled_at, "status": SMMContentItem.Status.SCHEDULED},
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+        try:
+            updated.full_clean()
+        except DjangoValidationError as exc:
+            raise ValidationError({"detail": exc.messages}) from exc
+        return Response(self.get_serializer(updated).data)
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        item = self.get_object()
+        if item.status == SMMContentItem.Status.PUBLISHED:
+            raise ValidationError({"detail": "Пост уже опубликован"})
+        item.status = SMMContentItem.Status.APPROVED
+        item.publish_error = ""
+        item.save(update_fields=["status", "publish_error", "updated_at"])
+        return Response(self.get_serializer(item).data)
+
+
+class SMMPublicationAttemptViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = SMMPublicationAttemptSerializer
+
+    def get_queryset(self):
+        queryset = SMMPublicationAttempt.objects.filter(item__plan__owner=self.request.user).select_related("item")
+        item_id = str(self.request.query_params.get("item") or "").strip()
+        if item_id:
+            queryset = queryset.filter(item_id=item_id)
+        return queryset
