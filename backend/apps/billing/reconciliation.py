@@ -2,8 +2,6 @@ from decimal import Decimal
 
 from django.utils import timezone
 
-from apps.ai_registry.models import Provider
-
 from .models import (
     BillingReconciliationItem,
     BillingReconciliationRun,
@@ -44,7 +42,22 @@ def _anomaly(
     )[0]
 
 
+def model_has_open_critical_cost_anomaly(model_slug: str) -> bool:
+    """Economic quarantine is model-scoped and independent from provider health."""
+    return CostAnomaly.objects.filter(
+        model_slug=str(model_slug or ""),
+        severity="critical",
+        status=CostAnomaly.Status.OPEN,
+    ).exists()
+
+
 def _trip_loss_circuit(request_cost, model):
+    """Quarantine only the lossmaking model through a critical cost anomaly.
+
+    Provider transport/auth health is a separate concern. Disabling an entire
+    provider because one model/price was under-reserved would unnecessarily take
+    healthy sibling models out of service and make the main chat unavailable.
+    """
     provider_cost = request_cost.provider_cost_rub
     charged = request_cost.charged_rub
     negative_margin = (
@@ -68,14 +81,13 @@ def _trip_loss_circuit(request_cost, model):
             "gross_margin_percent": str(request_cost.gross_margin_percent),
             "model": model.slug,
             "provider": model.provider.slug,
+            "scope": "model_economics",
         },
     )
-    Provider.objects.filter(pk=model.provider_id).update(
-        emergency_disabled=True,
-        health_state=Provider.HealthState.DISABLED,
+    RequestCost.objects.filter(pk=request_cost.pk).update(
+        reconciliation_status=RequestCost.ReconciliationStatus.UNDERCHARGED
     )
-    model.provider.emergency_disabled = True
-    model.provider.health_state = Provider.HealthState.DISABLED
+    request_cost.reconciliation_status = RequestCost.ReconciliationStatus.UNDERCHARGED
     return True
 
 
