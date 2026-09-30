@@ -9,6 +9,7 @@ from apps.b2b_api.models import APIUsage
 from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.services import release
 from apps.chat.models import CompareRun, CompareVariant, Generation, Message
+from apps.chat.partial_billing import settle_delivered_partial
 from apps.files.models import FileAsset, FileProcessingJob
 from apps.image_studio.models import ImageGeneration
 from apps.procurement.models import ProviderSpendReservation
@@ -41,31 +42,38 @@ def _recover_generation(pk):
     } or generation.created_at >= _cutoff():
         return False
 
-    request_cost = RequestCost.objects.filter(generation_id=generation.id).first()
-    closed = None
-    if generation.reservation_id:
-        closed = release(generation.reservation_id)
+    assistant = generation.assistant_message
+    request_cost = (
+        RequestCost.objects.select_for_update()
+        .filter(generation_id=generation.id)
+        .first()
+    )
+    provider_usage_confirmed = bool(
+        request_cost is not None
+        and request_cost.provider_cost_rub is not None
+        and (request_cost.input_tokens or request_cost.output_tokens)
+    )
 
-    # Keep the provider-funding ledger in sync with the customer ledger. If
-    # authoritative provider usage exists, re-fire the idempotent settlement
-    # signal. If it never arrived, release only the internal provider reserve.
-    if request_cost is not None:
-        provider_usage_confirmed = bool(
-            request_cost.provider_cost_rub is not None
-            and (request_cost.input_tokens or request_cost.output_tokens)
-        )
-        if provider_usage_confirmed:
-            request_cost.save(update_fields=["reconciliation_status"])
-        else:
+    if provider_usage_confirmed:
+        # A process can die after authoritative provider usage has been persisted
+        # but before the normal stream terminal commit. Reuse the exact same
+        # customer settlement path as stream cancellation: charge only confirmed
+        # usage, cap it by the pre-authorized reserve and return the remainder.
+        charge = settle_delivered_partial(generation, assistant.content)
+    else:
+        closed = release(generation.reservation_id) if generation.reservation_id else None
+        charge = closed.actual_rub if closed and closed.actual_rub is not None else ZERO
+        # No authoritative provider usage exists, therefore no provider spend may
+        # remain reserved for the abandoned request.
+        if request_cost is not None:
             _release_provider_prefix(f"chat:{request_cost.id}:")
 
-    assistant = generation.assistant_message
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["status"])
     generation.state = Generation.State.FAILED
     generation.error_code = "stale_operation_recovered"
     generation.completed_at = timezone.now()
-    generation.actual_cost_rub = (closed.actual_rub if closed and closed.actual_rub is not None else ZERO)
+    generation.actual_cost_rub = charge
     update_fields = ["state", "error_code", "completed_at", "actual_cost_rub"]
     if request_cost is not None and (
         request_cost.input_tokens or request_cost.output_tokens
