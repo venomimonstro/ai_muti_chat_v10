@@ -5,6 +5,8 @@ from django.utils import timezone
 from apps.accounts.models import Notification
 
 from .models import ExternalConnection
+from .smm_service import due_items, publish_item
+from .vk import check_vk
 from .wordpress import check_wordpress
 
 
@@ -38,20 +40,26 @@ def _notify(connection, *, recovered=False):
             "title": title,
             "body": body,
             "level": level,
-            "action_url": "/app/agents",
+            "action_url": "/app/integrations",
         },
     )
 
 
+def _connection_metadata(connection):
+    if connection.kind == ExternalConnection.Kind.WORDPRESS:
+        return check_wordpress(connection)
+    if connection.kind == ExternalConnection.Kind.VK:
+        profile = check_vk(connection)
+        return {
+            "user_id": profile.user_id,
+            "display_name": profile.display_name,
+            "groups": profile.groups,
+        }
+    raise ValidationError("Тип подключения не поддерживается")
+
+
 @shared_task(max_retries=0)
 def check_external_connections(limit=100):
-    """Periodically verify enabled outbound connections without exposing secrets.
-
-    Network calls are intentionally made outside a DB transaction. The final
-    update is conditional on the connection's updated_at snapshot so a user who
-    edits credentials while the check is in flight cannot have the fresh state
-    overwritten by a stale result.
-    """
     ids = list(
         ExternalConnection.objects.filter(enabled=True)
         .order_by("last_checked_at", "created_at")
@@ -69,12 +77,8 @@ def check_external_connections(limit=100):
         snapshot_updated_at = connection.updated_at
         previous_state = connection.health_state
         checked += 1
-
         try:
-            if connection.kind == ExternalConnection.Kind.WORDPRESS:
-                metadata = check_wordpress(connection)
-            else:
-                raise ValidationError("Тип подключения не поддерживается")
+            metadata = _connection_metadata(connection)
             now = timezone.now()
             updated = ExternalConnection.objects.filter(
                 pk=connection.id,
@@ -120,4 +124,28 @@ def check_external_connections(limit=100):
         "healthy": healthy,
         "degraded": degraded,
         "skipped_changed": skipped_changed,
+    }
+
+
+@shared_task(max_retries=0)
+def publish_due_smm_posts(limit=50):
+    published = 0
+    failed = 0
+    skipped = 0
+    items = due_items(limit=limit)
+    for item in items:
+        key = f"scheduled:{item.id}:{item.scheduled_at.isoformat()}"
+        try:
+            attempt = publish_item(item, idempotency_key=key)
+            if attempt.state == attempt.State.COMPLETED:
+                published += 1
+            else:
+                skipped += 1
+        except Exception:
+            failed += 1
+    return {
+        "checked": len(items),
+        "published": published,
+        "failed": failed,
+        "skipped": skipped,
     }
