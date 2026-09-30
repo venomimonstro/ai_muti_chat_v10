@@ -26,7 +26,9 @@ WORKSPACE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,96}$")
 COMMANDS = {
     "python-compile": ["python", "-m", "compileall", "-q", "."],
     "pytest": ["python", "-m", "pytest", "-q", "--disable-warnings", "--maxfail=1"],
+    "pytest-backend": ["python", "-m", "pytest", "-q", "--disable-warnings", "--maxfail=1", "backend"],
     "django-check": ["python", "manage.py", "check"],
+    "django-check-backend": ["python", "backend/manage.py", "check"],
     "npm-test": ["npm", "test", "--if-present"],
     "npm-build": ["npm", "run", "build", "--if-present"],
     "npm-lint": ["npm", "run", "lint", "--if-present"],
@@ -283,7 +285,7 @@ def _workspace_destroy(payload):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIWorkspaceSandbox/2.0"
+    server_version = "AIWorkspaceSandbox/2.1"
 
     def _json(self, status, payload):
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
