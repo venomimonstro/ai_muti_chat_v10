@@ -77,12 +77,15 @@ class ProviderClientActivationTests(APITestCase):
             effective_from=timezone.now(),
         )
 
-    def test_activation_exposes_model_to_client_catalog(self):
-        response = self.client.post(
+    def _activate(self):
+        return self.client.post(
             f"/api/v1/admin/providers/{self.provider.slug}/activate-models/",
             {"model_ids": ["activation-upstream"]},
             format="json",
         )
+
+    def test_activation_exposes_model_to_client_catalog(self):
+        response = self._activate()
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(len(response.data["activated"]), 1)
         self.assertEqual(response.data["blocked"], [])
@@ -97,13 +100,28 @@ class ProviderClientActivationTests(APITestCase):
         slugs = [item["slug"] for item in models.data]
         self.assertIn(self.model.slug, slugs)
 
+    def test_activation_does_not_require_model_version_metadata(self):
+        self.model.current_version = None
+        self.model.save(update_fields=["current_version"])
+        response = self._activate()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["activated"]), 1)
+        self.assertEqual(response.data["blocked"], [])
+        self.model.refresh_from_db()
+        self.assertTrue(self.model.enabled)
+
+    @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+    def test_production_activation_requires_procurement_balance(self):
+        response = self._activate()
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["code"], "provider_procurement_not_ready")
+        self.assertIn("закупочный баланс", response.data["detail"].lower())
+        self.model.refresh_from_db()
+        self.assertFalse(self.model.enabled)
+
     def test_activation_reports_model_without_safe_price(self):
         PriceVersion.objects.filter(model_slug=self.model.slug).update(active=False)
-        response = self.client.post(
-            f"/api/v1/admin/providers/{self.provider.slug}/activate-models/",
-            {"model_ids": ["activation-upstream"]},
-            format="json",
-        )
+        response = self._activate()
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["activated"], [])
         self.assertEqual(len(response.data["blocked"]), 1)
