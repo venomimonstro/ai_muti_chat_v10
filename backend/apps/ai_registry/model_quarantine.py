@@ -22,6 +22,34 @@ MODEL_SCOPED_ERROR_CODES = {
 MODEL_SCOPE = "model"
 
 
+class _QuarantinedModelAdapter:
+    """Local fail-fast adapter used only for stale in-flight customer routes."""
+
+    def __init__(self, *, model_slug: str, error_code: str):
+        self._ai_workspace_model_slug = model_slug
+        self._ai_workspace_probe_mode = False
+        self.error_code = error_code or "model_not_found"
+
+    def _raise(self):
+        raise ProviderError(
+            "Model is quarantined after a confirmed upstream model failure",
+            code=self.error_code,
+            retryable=False,
+        )
+
+    def stream(self, **_kwargs):
+        self._raise()
+
+    def generate(self, **_kwargs):
+        self._raise()
+
+    def health_check(self):
+        self._raise()
+
+    def capabilities(self):
+        return set()
+
+
 def is_model_scoped_error(error: ProviderError) -> bool:
     code = str(getattr(error, "code", "") or "").strip().casefold()
     if code in MODEL_SCOPED_ERROR_CODES:
@@ -151,7 +179,9 @@ def recover_quarantined_models(*, limit: int = 8) -> dict:
         adapter = None
         started = time.monotonic()
         try:
-            adapter = dispatch.adapter_for(model)
+            # Recovery is the only path allowed to bypass customer quarantine and
+            # touch the upstream model again.
+            adapter = dispatch.adapter_for(model, allow_probe=True)
             adapter.generate(
                 model=model.upstream_model,
                 messages=[{"role": "user", "content": "Ответь только: OK"}],
@@ -188,6 +218,12 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
     if not getattr(raw_adapter_for, "_ai_workspace_model_identity", False):
         def adapter_for(model, *args, **kwargs):
             probe_mode = bool(kwargs.get("allow_probe", False))
+            if not probe_mode and not model_runtime_available(model):
+                status = quarantine_status(model)
+                return _QuarantinedModelAdapter(
+                    model_slug=str(model.slug),
+                    error_code=str(status.get("error_code") or "model_not_found"),
+                )
             adapter = raw_adapter_for(model, *args, **kwargs)
             try:
                 adapter._ai_workspace_model_slug = str(model.slug)
