@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -5,18 +6,45 @@ from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.billing.pricing import active_price, quote, require_margin
+from apps.procurement.services import account_available_native, credential_is_configured, default_account
 
 from .openrouter_pricing import sync_openrouter_prices
 from .services import audit
 from .views import AdminAPIView
 
 
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter"}
+
+
+def _is_test_echo(provider):
+    return (
+        provider.adapter_type == Provider.AdapterType.ECHO
+        and provider.slug not in SPECIAL_EXTERNAL_PROVIDER_SLUGS
+    )
+
+
+def _procurement_blocker(provider):
+    if _is_test_echo(provider) or not bool(
+        getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False)
+    ):
+        return ""
+    account = default_account(provider)
+    if account is None:
+        return "Не записан закупочный баланс API для этого провайдера"
+    if not credential_is_configured(account):
+        return "Закупочный аккаунт не связан с рабочим API-ключом"
+    if account_available_native(account) <= 0:
+        return "Закупочный баланс API исчерпан"
+    return ""
+
+
 class ProviderClientActivationView(AdminAPIView):
     """Make selected provider models actually usable by client chat.
 
-    Activation is fail-closed: a model is exposed to clients only when the
-    provider has a working credential, the exact upstream model/version exists,
-    and both input/output pricing pass the configured margin floor.
+    Activation is fail-closed: a model is exposed only when the provider has a
+    verified credential, an upstream model id, commercially safe pricing, and —
+    in production — positive purchased provider capacity. ModelVersion is
+    governance metadata and never blocks an otherwise valid upstream model.
     """
 
     @transaction.atomic
@@ -49,6 +77,12 @@ class ProviderClientActivationView(AdminAPIView):
         if provider.emergency_disabled:
             return Response(
                 {"detail": "Провайдер аварийно отключён", "code": "provider_emergency_disabled"},
+                status=409,
+            )
+        procurement_blocker = _procurement_blocker(provider)
+        if procurement_blocker:
+            return Response(
+                {"detail": procurement_blocker, "code": "provider_procurement_not_ready"},
                 status=409,
             )
 
@@ -96,8 +130,6 @@ class ProviderClientActivationView(AdminAPIView):
             else:
                 if not model.upstream_model.strip():
                     reasons.append("Не указан upstream model ID")
-                if not model.current_version_id:
-                    reasons.append("Нет активной версии модели")
                 try:
                     price = active_price(model.slug)
                     require_margin(
@@ -145,8 +177,6 @@ class ProviderClientActivationView(AdminAPIView):
                 update_fields.append("enabled")
             # A verified healthy pool key is stronger evidence than a stale
             # provider-level circuit state left over from an earlier failure.
-            # Reset the circuit when exposing verified models to clients so
-            # AUTO Router does not immediately reject the provider as unavailable.
             if healthy_pool_key:
                 provider.health_state = Provider.HealthState.HEALTHY
                 provider.consecutive_failures = 0
