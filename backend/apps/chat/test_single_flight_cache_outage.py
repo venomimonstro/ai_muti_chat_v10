@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from types import SimpleNamespace
 import uuid
 
@@ -11,41 +12,55 @@ from .models import Conversation, Generation, Message
 
 
 @pytest.mark.django_db(transaction=True)
-def test_prepare_falls_back_to_database_lock_when_cache_is_down(monkeypatch):
+def test_prepare_uses_database_single_flight_without_cache_dependency(monkeypatch):
     user = User.objects.create_user(
-        username="cache-fallback",
-        email="cache-fallback@example.test",
+        username="db-single-flight",
+        email="db-single-flight@example.test",
         password="password123!",
     )
-    conversation = Conversation.objects.create(owner=user, title="Cache fallback")
+    conversation = Conversation.objects.create(owner=user, title="DB single flight")
     calls = []
+    locks = []
 
     def raw_prepare(**kwargs):
         calls.append(kwargs["idempotency_key"])
         return "prepared", True
 
+    @contextmanager
+    def fake_lock(conversation_id):
+        locks.append(("enter", str(conversation_id)))
+        try:
+            yield
+        finally:
+            locks.append(("exit", str(conversation_id)))
+
     module = SimpleNamespace(prepare=raw_prepare)
+    monkeypatch.setattr(single_flight, "_conversation_lock", fake_lock)
     single_flight.install(module)
-    monkeypatch.setattr(single_flight, "_cache_lock_acquire", lambda _key: None)
 
     result = module.prepare(
         user=user,
         conversation=conversation,
-        content="Проверка без Redis",
+        content="Проверка без зависимости от Redis",
         client_message_id=uuid.uuid4(),
-        idempotency_key="cache-down-prepare",
+        idempotency_key="db-single-flight-prepare",
         file_ids=[],
     )
 
     assert result == ("prepared", True)
-    assert calls == ["cache-down-prepare"]
+    assert calls == ["db-single-flight-prepare"]
+    assert locks == [
+        ("enter", str(conversation.id)),
+        ("exit", str(conversation.id)),
+    ]
+    assert not hasattr(single_flight, "cache")
 
 
 @pytest.mark.django_db(transaction=True)
-def test_database_fallback_still_blocks_second_active_generation(monkeypatch):
+def test_single_flight_blocks_second_active_generation_before_provider_prepare():
     user = User.objects.create_user(
-        username="cache-fallback-active",
-        email="cache-fallback-active@example.test",
+        username="single-flight-active",
+        email="single-flight-active@example.test",
         password="password123!",
     )
     conversation = Conversation.objects.create(owner=user, title="Active generation")
@@ -70,7 +85,6 @@ def test_database_fallback_still_blocks_second_active_generation(monkeypatch):
 
     module = SimpleNamespace(prepare=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")))
     single_flight.install(module)
-    monkeypatch.setattr(single_flight, "_cache_lock_acquire", lambda _key: None)
 
     with pytest.raises(ValidationError, match="Предыдущий ответ ещё формируется"):
         module.prepare(
