@@ -31,9 +31,22 @@ abort_release() {
   exit 130
 }
 
+failure_excerpt() {
+  local excerpt
+  excerpt="$(grep -nE 'FAILED|ERROR|Traceback|AssertionError|\[FAIL\]|E +[A-Za-z_]+|F +[A-Za-z_]+|error:' "$LOG_FILE" 2>/dev/null | tail -n 80 || true)"
+  if [[ -n "$excerpt" ]]; then
+    printf '[DIAG] Последние диагностические строки:\n%s\n' "$excerpt" >&2
+  else
+    printf '[DIAG] Явный marker ошибки не найден; последние 60 строк этапа:\n' >&2
+    tail -n 60 "$LOG_FILE" >&2 || true
+  fi
+}
+
 on_error() {
   local code=$?
+  trap - ERR
   printf '\n[FAIL] %s (exit code %s)\n' "$CURRENT_STEP" "$code" >&2
+  failure_excerpt
   printf '[INFO] Full log: %s\n' "$LOG_FILE" >&2
   return "$code"
 }
