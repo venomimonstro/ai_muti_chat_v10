@@ -1,9 +1,7 @@
-from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from apps.ai_registry.models import AIModel
-from apps.ai_registry.reliability import provider_available
-from apps.billing.pricing import active_price, quote, require_margin
+from apps.ai_registry.reliability import model_client_ready
 from apps.projects.access import accessible_projects
 
 from .branches import visible_messages
@@ -149,29 +147,17 @@ class ConversationSerializer(serializers.ModelSerializer):
         queryset = AIModel.objects.filter(enabled=True).select_related(
             "provider", "current_version"
         ).order_by("provider__priority", "display_name")
-        for model in queryset:
-            if not model.upstream_model.strip():
-                continue
-            if not provider_available(model.provider):
-                continue
-            try:
-                price = active_price(model.slug)
-                require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
-                require_margin(quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug))
-            except Exception:
-                continue
-            return model
-        return None
+        return next((model for model in queryset if model_client_ready(model)), None)
 
     def create(self, validated_data):
-        mode = validated_data.get("routing_mode", Conversation.RoutingMode.MANUAL)
+        mode = validated_data.get("routing_mode", Conversation.RoutingMode.AUTO)
         selected = validated_data.get("selected_model")
         if mode == Conversation.RoutingMode.MANUAL:
             if not selected or selected == "echo-v1":
                 model = self._default_client_model()
                 if model is None:
                     raise serializers.ValidationError(
-                        {"selected_model": "Нет доступной модели. Выберите AUTO или другую нейросеть."}
+                        {"selected_model": "Сейчас нет доступных моделей. Попробуйте AUTO позже."}
                     )
                 validated_data["selected_model"] = model.slug
         else:
@@ -181,6 +167,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     def validate_selected_model(self, value):
         routing_mode = self.initial_data.get("routing_mode") if hasattr(self, "initial_data") else None
         if routing_mode in {
+            Conversation.RoutingMode.AUTO,
             Conversation.RoutingMode.ECONOMY,
             Conversation.RoutingMode.BALANCED,
             Conversation.RoutingMode.MAXIMUM,
@@ -192,18 +179,10 @@ class ConversationSerializer(serializers.ModelSerializer):
             )
         except AIModel.DoesNotExist as exc:
             raise serializers.ValidationError("Модель не найдена") from exc
-        if not model.upstream_model.strip():
-            raise serializers.ValidationError("Модель ещё не готова к работе")
-        if not provider_available(model.provider):
-            raise serializers.ValidationError("Модель временно недоступна. Выберите другую модель или AUTO.")
-        try:
-            price = active_price(model.slug)
-            require_margin(quote(price, 1_000_000, 0, provider_slug=model.provider.slug, model_slug=model.slug))
-            require_margin(quote(price, 0, 1_000_000, provider_slug=model.provider.slug, model_slug=model.slug))
-        except DjangoValidationError as exc:
+        if not model_client_ready(model):
             raise serializers.ValidationError(
-                "Для модели не настроена безопасная коммерческая цена"
-            ) from exc
+                "Модель сейчас недоступна. Выберите другую модель или AUTO."
+            )
         return value
 
     def validate_project(self, value):
