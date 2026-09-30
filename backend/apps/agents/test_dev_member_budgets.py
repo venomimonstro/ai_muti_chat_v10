@@ -58,9 +58,7 @@ def test_dev_stage_does_not_call_provider_when_member_period_budget_is_exhausted
             "apps.agents.team_runtime.effective_remaining_budget",
             return_value=(Decimal("0"), budget_snapshot),
         ),
-        patch("apps.agents.team_runtime.reserve") as reserve_customer,
-        patch("apps.agents.team_runtime.reserve_agent_provider_spend") as reserve_provider,
-        patch("apps.agents.team_runtime.adapter_for") as adapter,
+        patch("apps.agents.team_runtime.execute_with_model_fallback") as execute_fallback,
     ):
         text, total, terminal = _run_llm_stage(
             run=run,
@@ -79,6 +77,4 @@ def test_dev_stage_does_not_call_provider_when_member_period_budget_is_exhausted
     run.refresh_from_db()
     assert run.state == AgentRun.State.BUDGET_EXCEEDED
     assert run.error_code == "agent_period_budget_exceeded"
-    reserve_customer.assert_not_called()
-    reserve_provider.assert_not_called()
-    adapter.assert_not_called()
+    execute_fallback.assert_not_called()
