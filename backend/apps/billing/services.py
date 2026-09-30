@@ -213,7 +213,13 @@ def settle(reservation_id, actual: Decimal):
 
 
 def _consume_generation_reservation_after_provider_delivery(reservation, wallet):
-    """Recover interrupted customer settlement from confirmed provider usage."""
+    """Recover interrupted customer settlement from confirmed provider usage.
+
+    Provider-confirmed usage must never be turned into a full customer refund merely
+    because the final calculated retail charge exceeded the amount authorized before
+    the request. The customer is still protected from debt: settlement is capped at
+    the original reservation and any overrun becomes an explicit platform-side loss.
+    """
     key = str(reservation.idempotency_key or "")
     if not key.startswith("generation:"):
         return False
@@ -254,13 +260,7 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
             request_cost.output_tokens,
         )
 
-    # Never turn an upstream usage anomaly into customer debt. If authoritative
-    # usage exceeds the amount pre-authorized before the provider call, release
-    # the customer's full reserve; procurement/anomaly accounting handles the loss.
-    if calculated_charge > reservation.amount_rub:
-        return False
-    actual = max(calculated_charge, MONEY_ZERO)
-
+    actual = min(max(calculated_charge, MONEY_ZERO), reservation.amount_rub)
     settle(reservation.id, actual)
 
     provider_cost = request_cost.provider_cost_rub or MONEY_ZERO
