@@ -81,3 +81,9 @@ class AgentConnectionBinding(models.Model):
     def clean(self):
         if self.agent_id and self.connection_id and self.agent.owner_id != self.connection.owner_id:
             raise ValidationError("Агент и подключение должны принадлежать одному пользователю")
+
+
+# Import extension models so Django registers them under the connections app.
+# Kept at the end to avoid a circular import while SMM models reference
+# ExternalConnection by string relation.
+from .smm_models import SMMContentItem, SMMContentPlan, SMMPublicationAttempt  # noqa: E402,F401
