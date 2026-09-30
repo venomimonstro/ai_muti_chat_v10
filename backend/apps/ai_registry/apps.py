@@ -14,6 +14,7 @@ class AIRegistryConfig(AppConfig):
             auto_continuity,
             dispatch,
             manual_continuity,
+            model_quarantine,
             reliability,
             router,
             routing_pools,
@@ -23,5 +24,11 @@ class AIRegistryConfig(AppConfig):
         adapters.adapter_for = dispatch.adapter_for
         reliability.adapter_for = dispatch.adapter_for
         routing_pools.install_router_pool_resolver(router)
+        model_quarantine.install(
+            dispatch_module=dispatch,
+            adapters_module=adapters,
+            reliability_module=reliability,
+            router_module=router,
+        )
         manual_continuity.install(router)
         auto_continuity.install(router)
