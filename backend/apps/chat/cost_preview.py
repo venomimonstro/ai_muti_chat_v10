@@ -23,9 +23,20 @@ PUBLIC_SYSTEM_LEVELS = {
 }
 
 
+def _actual_system_level(model, conversation):
+    identity = f"{model.slug} {model.display_name} {model.upstream_model}".casefold()
+    if "max" in identity:
+        return "System Max"
+    if "pro" in identity:
+        return "System Pro"
+    if "lite" in identity or "gigachat-2" in identity or "gigachat" in identity:
+        return "System Lite"
+    return PUBLIC_SYSTEM_LEVELS.get(conversation.routing_mode, "System Pro")
+
+
 def _public_model(model, conversation):
     if model.provider.slug == "gigachat":
-        level = PUBLIC_SYSTEM_LEVELS.get(conversation.routing_mode, "System Pro")
+        level = _actual_system_level(model, conversation)
         return level, level
     return model.slug, model.display_name
 
