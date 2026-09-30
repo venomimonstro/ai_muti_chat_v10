@@ -3,12 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 
 from apps.agents.models import Agent, AgentRun
 from apps.agents.run_views import create_single_agent_run
@@ -20,7 +19,7 @@ from .vk import publish_wall_post
 
 
 SMM_AGENT_NAME = "SMM-специалист VK"
-ACTIVE_RUN_STATES = {
+ACTIVE_GENERATION_STATES = {
     AgentRun.State.QUEUED,
     AgentRun.State.PLANNING,
     AgentRun.State.RUNNING,
@@ -36,49 +35,42 @@ def ensure_smm_agent(*, owner, connection):
     agent = Agent.objects.filter(
         owner=owner,
         name=SMM_AGENT_NAME,
-        status__in=[Agent.Status.ACTIVE, Agent.Status.PAUSED, Agent.Status.DRAFT],
-    ).order_by("created_at").first()
-    defaults = {
-        "role": "SMM-специалист ВКонтакте",
-        "objective": (
-            "Планировать и готовить контент для сообщества ВКонтакте: изучать бизнес и аудиторию, "
-            "создавать контент-планы и тексты постов, предлагать визуалы и CTA."
-        ),
-        "instructions": (
-            "Не выдумывай факты о компании. Для актуальных сведений используй web, если он доступен. "
-            "Публикация во внешнюю сеть выполняется только отдельным инструментом платформы. "
-            "Для контент-плана возвращай строго JSON по схеме из задачи запуска."
-        ),
-        "autonomy": Agent.Autonomy.SEMI_AUTONOMOUS,
-        "status": Agent.Status.ACTIVE,
-        "system_level": "balanced",
-        "tool_policy": {
-            "web": True,
-            "browser": True,
-            "files": True,
-            "vk": True,
-            "image_generation": True,
-            "stock_search": True,
-            "publish": False,
-        },
-        "memory_policy": {"enabled": True, "scope": "project_and_user"},
-        "max_cost_rub_per_run": 20,
-        "max_cost_rub_per_day": 100,
-        "max_cost_rub_per_month": 1500,
-        "max_steps": 30,
-        "max_tool_calls": 30,
-        "max_handoffs": 5,
-        "max_retries_per_step": 2,
-        "max_runtime_seconds": 900,
-    }
+        status__in=[Agent.Status.ACTIVE, Agent.Status.DRAFT, Agent.Status.PAUSED],
+    ).first()
     if agent is None:
-        agent = Agent(owner=owner, name=SMM_AGENT_NAME, **defaults)
-    else:
-        for field, value in defaults.items():
-            setattr(agent, field, value)
-    agent.full_clean()
-    agent.save()
-    binding, _ = AgentConnectionBinding.objects.get_or_create(
+        agent = Agent.objects.create(
+            owner=owner,
+            name=SMM_AGENT_NAME,
+            role="SMM-специалист ВКонтакте",
+            objective=(
+                "Планировать и готовить контент для сообщества ВКонтакте: изучать бизнес и аудиторию, "
+                "создавать контент-планы и тексты постов, предлагать визуалы и CTA."
+            ),
+            instructions=(
+                "Не выдумывай факты о компании. Для актуальных сведений используй web, если он доступен. "
+                "Публикация во внешнюю сеть выполняется только отдельным инструментом платформы. "
+                "Для контент-плана возвращай строго JSON по схеме из задачи запуска."
+            ),
+            autonomy=Agent.Autonomy.SEMI_AUTONOMOUS,
+            status=Agent.Status.ACTIVE,
+            system_level="balanced",
+            tool_policy={
+                "web": True,
+                "browser": True,
+                "vk": True,
+                "image_generation": True,
+                "stock_images": True,
+            },
+            max_cost_rub_per_run=20,
+            max_cost_rub_per_day=100,
+            max_cost_rub_per_month=1500,
+            max_steps=30,
+            max_tool_calls=30,
+        )
+    elif agent.status != Agent.Status.ACTIVE:
+        agent.status = Agent.Status.ACTIVE
+        agent.save(update_fields=["status", "updated_at"])
+    binding, _created = AgentConnectionBinding.objects.get_or_create(
         agent=agent,
         connection=connection,
         purpose="publish",
@@ -102,22 +94,15 @@ Tone of voice: {plan.tone or 'экспертный, понятный, живой
 
 Верни ТОЛЬКО валидный JSON-массив, без markdown и пояснений. Каждый объект:
 {{"title":"...","topic":"...","objective":"...","content":"полный текст поста","cta":"...","hashtags":["#тег"],"scheduled_at":"YYYY-MM-DDTHH:MM:SS+03:00","media_prompt":"описание изображения без текста на картинке"}}
-Требования: даты внутри периода; не более одной публикации в день; без повторов; факты не выдумывать; текст готов к публикации; CTA уместный, не навязчивый.
+Требования: даты внутри периода; без повторов; факты не выдумывать; текст готов к публикации; CTA уместный, не навязчивый.
 """
 
 
 def start_plan_generation(plan: SMMContentPlan, *, post_count: int = 12):
-    if plan.connection.health_state != ExternalConnection.Health.HEALTHY or not plan.connection.enabled:
-        raise ValidationError("VK-подключение не прошло проверку")
-    if not str((plan.connection.metadata or {}).get("selected_group_id") or "").strip():
-        raise ValidationError("Сначала выберите сообщество VK")
     if plan.generation_run_id:
         run = plan.generation_run
-        if run.state in ACTIVE_RUN_STATES:
+        if run.state in ACTIVE_GENERATION_STATES:
             return run
-    active = AgentRun.objects.filter(owner=plan.owner, agent=plan.agent, state__in=ACTIVE_RUN_STATES).order_by("-created_at").first()
-    if active is not None:
-        raise ValidationError("SMM-специалист уже выполняет другую задачу")
     run = create_single_agent_run(
         owner=plan.owner,
         agent=plan.agent,
@@ -132,9 +117,6 @@ def start_plan_generation(plan: SMMContentPlan, *, post_count: int = 12):
 
 def _extract_json_array(text: str):
     text = str(text or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
     try:
         payload = json.loads(text)
         if isinstance(payload, list):
@@ -154,15 +136,18 @@ def _extract_json_array(text: str):
 
 
 def _schedule_from_value(value, plan):
-    parsed = parse_datetime(str(value or "").strip())
-    if parsed is None:
-        return None
-    if timezone.is_naive(parsed):
-        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
-    local_day = timezone.localtime(parsed).date()
-    if not (plan.period_start <= local_day <= plan.period_end):
-        return None
-    return parsed
+    raw = str(value or "").strip()
+    scheduled = None
+    if raw:
+        try:
+            scheduled = datetime.fromisoformat(raw)
+            if timezone.is_naive(scheduled):
+                scheduled = timezone.make_aware(scheduled)
+        except ValueError:
+            scheduled = None
+    if scheduled and plan.period_start <= timezone.localtime(scheduled).date() <= plan.period_end:
+        return scheduled
+    return None
 
 
 @transaction.atomic
@@ -273,7 +258,8 @@ def _claim_publication(item_id, key):
             attempt = existing
         else:
             try:
-                attempt = SMMPublicationAttempt.objects.create(item=item, idempotency_key=key)
+                with transaction.atomic():
+                    attempt = SMMPublicationAttempt.objects.create(item=item, idempotency_key=key)
             except IntegrityError:
                 attempt = SMMPublicationAttempt.objects.select_for_update().get(idempotency_key=key)
                 if attempt.item_id != item.id:
