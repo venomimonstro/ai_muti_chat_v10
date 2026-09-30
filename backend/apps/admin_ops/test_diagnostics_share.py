@@ -23,6 +23,7 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
         slug="diagnostics-provider",
         name="Diagnostics Provider",
         enabled=True,
+        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
         health_state=Provider.HealthState.DEGRADED,
     )
     key = ProviderApiKey(
