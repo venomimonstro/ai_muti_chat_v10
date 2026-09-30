@@ -191,6 +191,24 @@ def test_exact_adapter_prevents_concurrent_request_from_degrading_wrong_key():
 
 
 @pytest.mark.django_db
+def test_unmatched_runtime_credential_never_degrades_unrelated_db_key():
+    provider = _provider()
+    stored = _key(provider, "stored-spare", "stored-secret", priority=10)
+    ProviderApiKey.objects.filter(pk=stored.pk).update(last_used_at=timezone.now())
+    adapter = SimpleNamespace(api_key="env-secret-not-stored")
+    error = ProviderError("bad env credential", code="authentication_error", retryable=False)
+
+    record_failure(provider, error, adapter=adapter)
+
+    stored.refresh_from_db()
+    provider.refresh_from_db()
+    assert stored.health_state == ProviderApiKey.HealthState.HEALTHY
+    assert stored.last_error_code == ""
+    assert provider.health_state == Provider.HealthState.OPEN
+    assert provider.circuit_opened_until is None
+
+
+@pytest.mark.django_db
 def test_credit_exhaustion_persistently_blocks_provider_without_spare_key(monkeypatch):
     monkeypatch.setenv("CHAT_RELIABILITY_PROVIDER_KEY", "legacy-credit-key")
     provider = _provider(credential_env="CHAT_RELIABILITY_PROVIDER_KEY")
