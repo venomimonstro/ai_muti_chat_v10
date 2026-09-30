@@ -31,6 +31,16 @@ function existingModelControl(){
  return document.querySelector<HTMLSelectElement>(".headerControls .selectControl:first-child select");
 }
 
+function pendingStreamIdempotencyKey(conversationId:string|null|undefined){
+ if(typeof window==="undefined"||!conversationId)return"";
+ try{
+  const raw=localStorage.getItem(`aiws:pending-stream:${conversationId}`);
+  if(!raw)return"";
+  const parsed=JSON.parse(raw) as {idempotencyKey?:unknown};
+  return typeof parsed.idempotencyKey==="string"?parsed.idempotencyKey:"";
+ }catch{return""}
+}
+
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools,modelValue,models,onModelChange,conversationId,ensureConversation,onAttachImage,sourceImageId}:ComposerProps){
  const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState("auto:balanced");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[imageStudioOpen,setImageStudioOpen]=useState(false);const submitGate=useRef(false);const gateTimer=useRef<number|null>(null);
  const trimmed=value.trim();const tooLong=value.length>MAX_MESSAGE_CHARS;const nearLimit=value.length>90000;
@@ -55,7 +65,14 @@ export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenToo
   return()=>{cancelled=true;hidden?.removeEventListener("change",syncValue)};
  },[modelValue,models]);
  const submit=()=>{if(!trimmed||tooLong||offline||sending||selectedModelUnavailable||submitGate.current)return;submitGate.current=true;setSlow(false);onSend();gateTimer.current=window.setTimeout(()=>{submitGate.current=false;gateTimer.current=null},10000)};
- const stop=()=>{setSlow(false);onStop()};
+ const stop=()=>{
+  setSlow(false);
+  const key=pendingStreamIdempotencyKey(conversationId);
+  if(conversationId&&key){
+   void api(`/conversations/${conversationId}/messages/cancel/`,{method:"POST",headers:{"Idempotency-Key":key},body:JSON.stringify({idempotency_key:key})}).catch(()=>undefined);
+  }
+  onStop();
+ };
  const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();submit();}};
  const changeModel=(next:string)=>{setControlValue(next);if(onModelChange){onModelChange(next);return;}const select=existingModelControl();if(!select)return;select.value=next;select.dispatchEvent(new Event("change",{bubbles:true}))};
  return <><div className="composerZone">{selectedModelUnavailable&&<div className="modelUnavailableNotice" role="alert"><Icon name="warning" size={15}/><span>Выбранная модель сейчас недоступна. Выберите AUTO или другую доступную модель.</span></div>}<div className={`composerShell ${focused?"focused":""} ${tooLong?"invalid":""}`}>
