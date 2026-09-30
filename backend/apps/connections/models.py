@@ -16,6 +16,7 @@ def _cipher():
 class ExternalConnection(models.Model):
     class Kind(models.TextChoices):
         WORDPRESS = "wordpress", "WordPress"
+        VK = "vk", "ВКонтакте"
 
     class Health(models.TextChoices):
         UNKNOWN = "unknown", "Не проверено"
