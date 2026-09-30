@@ -3,7 +3,7 @@
 import styles from "./DevVerificationPanel.module.css";
 
 type Check={ok?:boolean;command?:string;returncode?:number;output?:string;error?:string};
-type Change={path:string;operation:string;reason?:string};
+type Change={path:string;operation:string;reason?:string;risk_flags?:string[]};
 type Sandbox={ok?:boolean;command?:string;checks?:Check[];output?:string;evidenceLevel?:string;snapshotComplete?:boolean;repositoryEvidenceLevel?:string};
 
 type Props={
@@ -17,6 +17,13 @@ const evidenceLabel:Record<string,string>={
  structural:"Структурная проверка",
  syntax_bounded_snapshot:"Синтаксис · bounded snapshot",
  syntax_complete_snapshot:"Синтаксис · полный snapshot",
+};
+const riskLabel:Record<string,string>={
+ dependency_manifest:"зависимости",
+ deployment:"deployment",
+ database_migration:"миграция БД",
+ security_or_money_sensitive:"security/деньги",
+ destructive_delete:"удаление",
 };
 
 function toSandbox(raw?:Record<string,unknown>):Sandbox|null{
@@ -44,6 +51,6 @@ export default function DevVerificationPanel({branch,workspaceId,sandbox:rawSand
   {sandbox&&sandbox.evidenceLevel==="syntax_bounded_snapshot"&&<div className={styles.structural}><span>!</span><div><strong>Проверена не вся кодовая база</strong><p>Syntax checks выполнены на bounded snapshot. Это не равно полному project test suite; Dev Studio не выдаёт такой PASS за полную проверку проекта.</p></div></div>}
   {checks.length>0&&<div className={styles.checks}>{checks.map((check,index)=><details className={check.ok?styles.checkPassed:styles.checkFailed} key={`${check.command}-${index}`} open={!check.ok}><summary><span>{check.ok?"✓":"×"}</span><strong>{check.command}</strong><em>{check.ok?"PASS":"FAIL"}</em></summary>{(check.output||check.error)&&<pre>{(check.output||check.error||"").slice(-8000)}</pre>}</details>)}</div>}
   {!checks.length&&sandbox?.command&&<div className={styles.structural}><span>✓</span><div><strong>{sandbox.command}</strong><p>{sandbox.output||"Проверка завершена."}</p></div></div>}
-  {appliedChanges.length>0&&<div className={styles.files}><h3>Изменения</h3>{appliedChanges.map((change,index)=><div className={styles.file} key={`${change.path}-${index}`}><code>{change.path}</code><span>{change.operation}</span></div>)}</div>}
+  {appliedChanges.length>0&&<div className={styles.files}><h3>Изменения</h3>{appliedChanges.map((change,index)=><div className={styles.file} key={`${change.path}-${index}`}><code>{change.path}</code><span>{change.operation}{change.risk_flags?.length?` · ${change.risk_flags.map(flag=>riskLabel[flag]||flag).join(", ")}`:""}</span></div>)}</div>}
  </section>;
 }
