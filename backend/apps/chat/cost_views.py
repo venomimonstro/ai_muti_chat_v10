@@ -17,6 +17,7 @@ from .asgi_stream import follow_generation_async, managed_run_async
 from .cost_preview import chat_cost_preview
 from .managed_stream import managed_run
 from .models import Conversation, Generation
+from .paid_search_billing import public_search_charge
 from .preflight_terminal import classify_preflight_exception
 from .product_identity import (
     create_identity_generation,
@@ -63,6 +64,10 @@ def _serialize_preview(value):
     return {
         "estimated_min_rub": str(value["estimated_min_rub"]),
         "estimated_max_rub": str(value["estimated_max_rub"]),
+        "estimated_llm_max_rub": str(
+            value.get("estimated_llm_max_rub", value["estimated_max_rub"])
+        ),
+        "estimated_search_max_rub": str(value.get("estimated_search_max_rub", 0)),
         "confirmation_required": value["confirmation_required"],
         "confirmation_threshold_rub": str(value["confirmation_threshold_rub"]),
         "selected_model": value["selected_model"],
@@ -90,13 +95,16 @@ def _confirmed_ceiling(request):
 
 
 def _confirmation_payload(*, generation, required_max, detail):
+    search = public_search_charge(generation)
     return {
         "code": COST_CONFIRMATION_CHANGED,
         "detail": detail,
         "estimated_min_rub": "0",
-        "estimated_max_rub": str(required_max),
+        "estimated_max_rub": str(required_max + search),
+        "estimated_llm_max_rub": str(required_max),
+        "estimated_search_max_rub": str(search),
         "confirmation_required": True,
-        "confirmation_threshold_rub": str(required_max),
+        "confirmation_threshold_rub": str(required_max + search),
         "selected_model": generation.routed_model or generation.model,
         "models": [],
         "spend_guard": {},
@@ -138,11 +146,18 @@ def _held_confirmation_response(request, generation):
     confirmed = request.data.get("confirm_cost") is True
     ceiling = _confirmed_ceiling(request) if confirmed else None
     required = reservation.amount_rub
-    if not confirmed or ceiling is None or ceiling < required:
+    search_reservation = BalanceReservation.objects.filter(
+        idempotency_key=f"web-search:{generation.id}",
+        state=BalanceReservation.State.ACTIVE,
+    ).only("amount_rub").first()
+    required_total = required + (
+        search_reservation.amount_rub if search_reservation is not None else Decimal("0")
+    )
+    if not confirmed or ceiling is None or ceiling < required_total:
         return Response(
             _confirmation_payload(
                 generation=generation,
-                required_max=required,
+                required_max=required_total,
                 detail=(
                     "Фактический preflight требует подтверждения новой максимальной суммы. "
                     "Сумма только зарезервирована и не списана."
@@ -344,10 +359,6 @@ class ConfirmedConversationStreamView(APIView):
                 getattr(request.user, "pk", None),
                 conversation_id,
             )
-            # preflight_terminal already persists a terminal Generation whenever
-            # the transaction got far enough to create one. In production ASGI,
-            # follow that durable row immediately so the same request receives the
-            # normal safe terminal SSE instead of a raw 500 + reconnect cycle.
             failed_generation = _existing_generation(request.user, key)
             raw_request = getattr(request, "_request", None)
             if failed_generation is not None and isinstance(raw_request, ASGIRequest):
@@ -356,11 +367,17 @@ class ConfirmedConversationStreamView(APIView):
 
         if created and generation.reservation_id:
             reservation = BalanceReservation.objects.only("amount_rub").get(pk=generation.reservation_id)
+            search_reservation = BalanceReservation.objects.filter(
+                idempotency_key=f"web-search:{generation.id}",
+                state=BalanceReservation.State.ACTIVE,
+            ).only("amount_rub").first()
+            actual_max = reservation.amount_rub + (
+                search_reservation.amount_rub if search_reservation is not None else Decimal("0")
+            )
             threshold = Decimal(str(preview["confirmation_threshold_rub"]))
-            requires_real_confirmation = reservation.amount_rub >= threshold
+            requires_real_confirmation = actual_max >= threshold
             allowed = ceiling if confirmed else None
-            if requires_real_confirmation and (allowed is None or reservation.amount_rub > allowed):
-                actual_max = reservation.amount_rub
+            if requires_real_confirmation and (allowed is None or actual_max > allowed):
                 generation.error_code = COST_CONFIRMATION_CHANGED
                 generation.save(update_fields=["error_code"])
                 payload = _serialize_preview(preview)
@@ -372,6 +389,10 @@ class ConfirmedConversationStreamView(APIView):
                             "Новая сумма только зарезервирована; подтвердите её, и тот же запрос продолжит работу."
                         ),
                         "estimated_max_rub": str(actual_max),
+                        "estimated_llm_max_rub": str(reservation.amount_rub),
+                        "estimated_search_max_rub": str(
+                            search_reservation.amount_rub if search_reservation is not None else Decimal("0")
+                        ),
                         "confirmation_required": True,
                     }
                 )
