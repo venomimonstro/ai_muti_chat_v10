@@ -1,4 +1,23 @@
 from django.apps import AppConfig
+from django.conf import settings
+from django.core.checks import Error, register
+
+
+@register()
+def chat_production_configuration_check(app_configs, **kwargs):
+    """Fail production checks when cross-process chat coordination is not shared."""
+    if settings.DEBUG:
+        return []
+    backend = str((settings.CACHES.get("default") or {}).get("BACKEND") or "").casefold()
+    if "locmem" in backend:
+        return [
+            Error(
+                "Production chat requires a shared cache (Redis); LocMem breaks cross-worker locks/recovery.",
+                hint="Set CACHE_URL to the password-protected production Redis database.",
+                id="chat.E001",
+            )
+        ]
+    return []
 
 
 class ChatConfig(AppConfig):
