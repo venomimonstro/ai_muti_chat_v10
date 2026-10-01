@@ -2,6 +2,23 @@ import os
 
 from django.apps import AppConfig
 from django.conf import settings
+from django.core.checks import Error, register
+
+
+@register()
+def procurement_production_configuration_check(app_configs, **kwargs):
+    """Commercial production must never bypass the provider funding ledger."""
+    if settings.DEBUG:
+        return []
+    if not bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False)):
+        return [
+            Error(
+                "Production procurement is permissive; provider funding can be bypassed.",
+                hint="Set PROCUREMENT_RUNTIME_FAIL_CLOSED=1 in .env.production.",
+                id="procurement.E001",
+            )
+        ]
+    return []
 
 
 class ProcurementConfig(AppConfig):
