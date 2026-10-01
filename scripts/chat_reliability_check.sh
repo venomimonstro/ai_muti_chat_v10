@@ -21,6 +21,7 @@ grep -Fq '"cancelled"' frontend/lib/api.ts
 grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
 grep -Fq 'stream_first_event_timeout' frontend/lib/api.ts
 grep -Fq 'reader.cancel("stream_first_event_timeout")' frontend/lib/api.ts
+grep -Fq 'const completedSnapshot = event === "snapshot" && String(parsed.state ?? "") === "completed";' frontend/lib/api.ts
 grep -Fq 'research_progress' frontend/lib/api.ts
 grep -Fq 'WorkspaceExperience' frontend/app/app/page.tsx
 grep -Fq 'ActivityTrace' frontend/app/workspace/WorkspaceExperience.tsx
@@ -68,6 +69,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_execution_readiness_after_provider_reserve.py \
+  apps/chat/test_execution_fence.py \
   apps/chat/test_procurement_execution_reservation.py \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
