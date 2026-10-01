@@ -77,6 +77,9 @@ export function ModelPicker({value,models,disabled=false,onChange}:Props){
    if(typeof document!=="undefined"&&document.visibilityState==="hidden")return;
    try{const rows=await api<AIModel[]>("/models/");if(active)setCatalog(rows.filter(item=>item.available));}catch{}
   };
+  // Recover immediately when the parent bootstrap model request was the one that
+  // failed. Waiting for the 30s polling interval made a healthy chat look broken.
+  void refresh();
   const timer=window.setInterval(()=>void refresh(),30000);
   const wake=()=>void refresh();
   window.addEventListener("online",wake);
