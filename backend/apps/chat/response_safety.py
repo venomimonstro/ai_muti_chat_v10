@@ -5,7 +5,7 @@ import sys
 from apps.ai_registry.adapters import ProviderError
 
 
-EMPTY_RESPONSE_CODE = "empty_response"
+EMPTY_RESPONSE_CODE = "provider_empty_response"
 _raw_adapter_for = None
 _raw_record_failure = None
 
