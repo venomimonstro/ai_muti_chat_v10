@@ -193,14 +193,21 @@ def install(streaming_module) -> None:
         # record_failure attributes the error to the exact adapter/key first. If that
         # makes the reserved credential non-routable and provider usage has not been
         # confirmed, atomically move the existing reserve to the next HEALTHY funded
-        # account. The next same-model retry will then use that exact account.
+        # account. A non-retryable auth/quota error applies to the failed credential;
+        # after a successful rebind one same-model retry through the new credential is
+        # safe and desirable.
+        rebound = False
         if adapter is not None:
             try:
-                _rebind_failed_provider_reservation(_generation_id.get(), provider)
+                rebound = _rebind_failed_provider_reservation(
+                    _generation_id.get(), provider
+                )
             except Exception:
                 # Rebinding is an availability optimization, never a reason to hide
                 # the original provider failure or corrupt its health attribution.
-                pass
+                rebound = False
+        if rebound and hasattr(error, "retryable"):
+            error.retryable = True
         return result
 
     def run(generation, *args, **kwargs):
