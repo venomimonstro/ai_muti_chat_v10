@@ -130,6 +130,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_preflight_reservation_cleanup.py \
   apps/chat/test_money_safety_django.py \
   apps/admin_ops/test_provider_client_activation.py \
+  apps/admin_ops/test_provider_key_inference_gate.py \
   apps/admin_ops/test_stale_recovery_economics.py \
   apps/admin_ops/test_stale_recovery_active_attempt.py \
   apps/admin_ops/test_model_quarantine_diagnostics.py \
