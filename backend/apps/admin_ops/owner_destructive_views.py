@@ -5,6 +5,7 @@ from rest_framework.response import Response
 
 from apps.ai_registry.models import Provider, ProviderApiKey
 from apps.procurement.models import ProviderFundingAccount
+from apps.procurement.services import account_available_native
 
 from .procurement_ledger_views import ProcurementLedgerView
 from .provider_key_views import _wake_provider_recovery
@@ -69,9 +70,88 @@ class OwnerProviderKeyDetailView(ProviderKeyDetailView):
 
 
 class OwnerProcurementLedgerView(ProcurementLedgerView):
-    """Owner procurement ledger with the same immutable FIFO protections as the base ledger."""
+    """Owner procurement ledger plus fail-closed provider recovery triggers.
 
-    # Do not special-case consumed purchase deletion here. The base implementation
-    # rejects edit/cancel/delete once ProviderSpendAllocation exists, preserving
-    # the purchase document and its FIFO/economic audit trail.
-    pass
+    Funding mutations must never make a provider customer-ready by themselves. They
+    only make a recovery attempt possible; the provider returns to HEALTHY after the
+    regular background health + tiny inference proof succeeds.
+    """
+
+    @transaction.atomic
+    def post(self, request):
+        action = str(request.data.get("action") or "purchase_key").strip()
+        provider_id = None
+        default_changed = False
+
+        if action == "set_default":
+            account = (
+                ProviderFundingAccount.objects.select_related("provider")
+                .filter(pk=request.data.get("account_id"))
+                .first()
+            )
+            if account is not None:
+                provider_id = account.provider_id
+                current_default = (
+                    ProviderFundingAccount.objects.filter(
+                        provider_id=provider_id,
+                        is_default=True,
+                    )
+                    .values_list("id", flat=True)
+                    .first()
+                )
+                default_changed = current_default != account.id
+        elif action == "purchase_key":
+            key = (
+                ProviderApiKey.objects.select_related("provider")
+                .filter(pk=request.data.get("api_key_id"))
+                .first()
+            )
+            if key is not None:
+                provider_id = key.provider_id
+
+        response = super().post(request)
+        if response.status_code >= 400 or provider_id is None:
+            return response
+
+        provider = Provider.objects.select_for_update().get(pk=provider_id)
+        if provider.emergency_disabled:
+            # Emergency breaker is owner-controlled and must never be cleared by a
+            # purchase/default-account change.
+            return response
+
+        should_probe = False
+        if action == "set_default" and default_changed:
+            # The authoritative credential changed. Even a previously HEALTHY
+            # provider must prove inference with the newly selected account before
+            # customer traffic can use it.
+            if provider.health_state != Provider.HealthState.UNKNOWN:
+                provider.health_state = Provider.HealthState.UNKNOWN
+                provider.save(update_fields=["health_state"])
+            should_probe = True
+        elif action == "purchase_key" and provider.health_state != Provider.HealthState.HEALTHY:
+            # Only funding of the authoritative/default account can resolve a
+            # procurement outage. Funding a spare account must not disturb routing.
+            account_id = None
+            if isinstance(getattr(response, "data", None), dict):
+                account_id = response.data.get("account_id")
+            funded_account = (
+                ProviderFundingAccount.objects.filter(pk=account_id).first()
+                if account_id
+                else None
+            )
+            if (
+                funded_account is not None
+                and funded_account.is_default
+                and account_available_native(funded_account) > 0
+            ):
+                provider.health_state = Provider.HealthState.UNKNOWN
+                provider.save(update_fields=["health_state"])
+                should_probe = True
+
+        if (
+            should_probe
+            and provider.enabled
+            and provider.models.filter(enabled=True).exists()
+        ):
+            transaction.on_commit(_wake_provider_recovery)
+        return response
