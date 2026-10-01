@@ -1,0 +1,56 @@
+"""Final customer-catalog readiness guard.
+
+Provider readiness proves a credential/account exists and has a positive balance.
+That is necessary but not sufficient for the model picker: an account can contain a
+microscopic remainder that cannot fund even the smallest inference. Customer-facing
+catalogs must not advertise such a model as "ready".
+"""
+
+import sys
+
+
+def minimum_inference_fundable(model) -> bool:
+    try:
+        from apps.billing.pricing import active_price, quote, require_margin
+        from apps.procurement.readiness import quote_has_procurement_capacity
+
+        price = active_price(model.slug)
+        # Small but non-zero inference. Request-level routing still performs the
+        # authoritative exact-context check; this only prevents obviously unusable
+        # models from appearing in the picker.
+        value = require_margin(
+            quote(
+                price,
+                32,
+                8,
+                provider_slug=model.provider.slug,
+                model_slug=model.slug,
+            )
+        )
+        return quote_has_procurement_capacity(model.provider, value)
+    except Exception:
+        return False
+
+
+def install(reliability_module) -> None:
+    raw_ready = reliability_module.model_client_ready
+    if getattr(raw_ready, "_ai_workspace_minimum_funding", False):
+        return
+
+    def model_client_ready(model):
+        return bool(raw_ready(model) and minimum_inference_fundable(model))
+
+    model_client_ready._ai_workspace_minimum_funding = True
+    model_client_ready._raw_model_client_ready = raw_ready
+    reliability_module.model_client_ready = model_client_ready
+
+    # These modules import the readiness callable by value before AppConfig.ready().
+    # Keep every customer-visible/manual-selection surface on the same predicate.
+    for module_name in (
+        "apps.ai_registry.views",
+        "apps.ai_registry.serializers",
+        "apps.chat.serializers",
+    ):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "model_client_ready"):
+            module.model_client_ready = model_client_ready
