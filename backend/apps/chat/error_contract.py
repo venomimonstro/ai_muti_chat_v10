@@ -22,9 +22,8 @@ def install(streaming_module) -> None:
     """Keep user-visible failure text aligned with actual billing semantics.
 
     A stream that already delivered text is materially different from a request
-    that failed before any output. The generic provider message historically said
-    "money was not charged" for both cases, which can be false when upstream usage
-    was already confirmed and settled by the billing recovery hook.
+    that failed before any output. Internal provider/runtime error codes stay in
+    GenerationAttempt/diagnostics and are never sent to the customer transport.
     """
     raw_run = streaming_module.run
     if getattr(raw_run, "_ai_workspace_error_contract", False):
@@ -34,12 +33,12 @@ def install(streaming_module) -> None:
         for chunk in raw_run(generation, *args, **kwargs):
             payload = _parse_error(chunk)
             if payload is not None and bool(payload.get("partial")):
-                upstream_code = str(payload.get("code") or "")
-                payload["cause_code"] = upstream_code
+                payload.pop("cause_code", None)
                 payload["code"] = "partial_response_interrupted"
+                payload["support_code"] = "partial_response_interrupted"
                 payload["message"] = (
                     "Ответ прервался после получения части текста. Полученная часть сохранена. "
-                    "Если провайдер подтвердил расход, списана только подтверждённая стоимость; "
+                    "Если AI подтвердил расход, списана только подтверждённая стоимость; "
                     "неподтверждённая часть резерва возвращена."
                 )
                 yield streaming_module.sse("error", payload)
