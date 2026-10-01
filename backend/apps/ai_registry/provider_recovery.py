@@ -19,6 +19,12 @@ def install(reliability_module) -> None:
     broken. Healthy providers keep the cheap periodic health check; UNKNOWN,
     DEGRADED and OPEN providers must additionally complete a tiny inference outside
     customer traffic before they are marked HEALTHY again.
+
+    Recovery is deliberately batched. If one sweep quarantines every model it probed
+    but other unquarantined models remain, the provider stays non-routable until a
+    later sweep proves one of those remaining models. A real customer therefore never
+    becomes the first inference probe merely because the provider has more models than
+    one recovery batch.
     """
     raw_check = reliability_module.check_provider
     if getattr(raw_check, "_ai_workspace_inference_recovery", False):
@@ -33,13 +39,13 @@ def install(reliability_module) -> None:
 
         provider = reliability_module._normalize_special_external_provider(provider)
         recovering = provider.health_state != Provider.HealthState.HEALTHY
-        models = list(
+        all_models = list(
             AIModel.objects.filter(provider=provider, enabled=True)
             .exclude(upstream_model="")
             .select_related("provider", "current_version")
-            .order_by("slug")[:MAX_RECOVERY_MODELS]
+            .order_by("slug")
         )
-        if not models:
+        if not all_models:
             error = ProviderError("Provider has no enabled models", code="no_models", retryable=False)
             reliability_module.record_failure(provider, error, adapter=None)
             ProviderHealthSnapshot.objects.create(
@@ -49,9 +55,11 @@ def install(reliability_module) -> None:
 
         from . import dispatch, model_quarantine
 
+        # The health endpoint verifies the credential/provider itself. Probe mode
+        # intentionally bypasses model quarantine for this metadata-level check.
         health_adapter = None
         try:
-            health_adapter = dispatch.adapter_for(models[0], allow_probe=True)
+            health_adapter = dispatch.adapter_for(all_models[0], allow_probe=True)
             health = health_adapter.health_check()
         except ProviderError as exc:
             reliability_module.record_failure(provider, exc, adapter=health_adapter)
@@ -89,11 +97,36 @@ def install(reliability_module) -> None:
             )
             return health
 
+        # Already quarantined models are recovered by the dedicated model watcher.
+        # They must not consume this provider-recovery batch repeatedly and starve a
+        # healthy sibling that has not yet been proved.
+        probe_models = [
+            model for model in all_models if model_quarantine.model_runtime_available(model)
+        ]
+        batch = probe_models[:MAX_RECOVERY_MODELS]
+
+        # Provider credentials can be healthy while every configured model is under
+        # model-level quarantine. In that case it is safe to restore provider health:
+        # model_client_ready() still hides every quarantined model from customers.
+        if not batch:
+            reliability_module.record_success(provider, health.latency_ms, adapter=health_adapter)
+            ProviderHealthSnapshot.objects.create(
+                provider=provider,
+                healthy=True,
+                latency_ms=health.latency_ms,
+                error_code="all_models_quarantined",
+            )
+            return AdapterHealth(
+                healthy=True,
+                latency_ms=health.latency_ms,
+                error_code="all_models_quarantined",
+            )
+
         # Recovery must prove the paid inference path, not merely /models or another
         # metadata endpoint. Model-scoped failures are isolated and another enabled
         # sibling is tried before declaring the whole provider unusable.
         model_failures = 0
-        for model in models:
+        for model in batch:
             adapter = None
             started = time.monotonic()
             try:
@@ -146,11 +179,31 @@ def install(reliability_module) -> None:
             )
             return AdapterHealth(healthy=True, latency_ms=latency_ms)
 
-        # The credential/provider endpoint is healthy, but every configured model id
-        # is quarantined. Keep provider health separate from model configuration so
-        # sibling models can be fixed/recovered independently without opening a false
-        # provider outage. The public catalog remains empty because quarantine is
-        # fail-closed at model_client_ready().
+        # Every model in this batch failed for model-scoped reasons. If an untested,
+        # unquarantined sibling still exists, keep the provider out of customer
+        # traffic and let the next background sweep prove that sibling. Do not call
+        # record_failure(): the provider/key itself just passed its health check.
+        remaining = [
+            model for model in all_models if model_quarantine.model_runtime_available(model)
+        ]
+        if remaining:
+            provider.last_checked_at = timezone.now()
+            provider.save(update_fields=["last_checked_at"])
+            ProviderHealthSnapshot.objects.create(
+                provider=provider,
+                healthy=False,
+                latency_ms=health.latency_ms,
+                error_code="recovery_batch_pending",
+            )
+            return AdapterHealth(
+                healthy=False,
+                latency_ms=health.latency_ms,
+                error_code="recovery_batch_pending",
+            )
+
+        # Credential/provider endpoint is healthy and all configured model ids have
+        # now been quarantined. Provider health remains separate from model health;
+        # customer catalog stays empty until the dedicated model recovery proves one.
         reliability_module.record_success(provider, health.latency_ms, adapter=health_adapter)
         ProviderHealthSnapshot.objects.create(
             provider=provider,
