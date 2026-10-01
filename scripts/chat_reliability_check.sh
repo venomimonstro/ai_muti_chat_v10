@@ -32,6 +32,7 @@ grep -Fq 'event==="activity"' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
+grep -Fq 'void refresh();' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'const PRE_SEND_GATE_MS=15000;' frontend/app/workspace/Composer.tsx
 grep -Fq 'const noModelsAvailable=explicitModelControl&&' frontend/app/workspace/Composer.tsx
 grep -Fq 'система автоматически использует рабочую резервную модель' frontend/app/workspace/Composer.tsx
