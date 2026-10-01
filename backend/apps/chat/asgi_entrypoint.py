@@ -5,7 +5,6 @@ from functools import wraps
 from django.core.exceptions import ValidationError
 from django.http import StreamingHttpResponse
 from rest_framework import status
-from rest_framework.exceptions import ValidationError as APIValidationError
 from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel
@@ -55,7 +54,7 @@ def install(view_module, streaming_module) -> None:
         identity_answer = view_module.direct_identity_answer(content, file_ids)
         try:
             if identity_answer is not None:
-                generation, created = view_module.create_identity_generation(
+                generation, _created = view_module.create_identity_generation(
                     user=request.user,
                     conversation=conversation,
                     content=content,
@@ -81,7 +80,10 @@ def install(view_module, streaming_module) -> None:
                 else:
                     stream = managed_stream.managed_run(generation)
         except (ValidationError, AIModel.DoesNotExist) as exc:
-            raise APIValidationError({"detail": str(exc)}) from exc
+            # Preserve the long-standing HTTP contract used by the frontend and
+            # non-streaming endpoint. Transport modernization must not silently
+            # change validation semantics into a different DRF exception shape.
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         response = StreamingHttpResponse(
             stream, content_type="text/event-stream; charset=utf-8"
