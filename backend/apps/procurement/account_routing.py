@@ -45,12 +45,6 @@ def account_credential_ready(
     *,
     allow_probe: bool = False,
 ) -> bool:
-    """Return whether this exact funding account has a usable credential.
-
-    Customer traffic accepts HEALTHY DB credentials only. Background recovery may
-    additionally prove UNKNOWN/DEGRADED credentials. Environment credentials have no
-    per-key health row, so provider-level health remains their guardrail.
-    """
     if not account.active:
         return False
     if account.api_key_id:
@@ -96,16 +90,17 @@ def runtime_funding_accounts(
     require_balance: bool = True,
     lock: bool = False,
 ):
-    """Return deterministic request-safe funding candidates.
-
-    HEALTHY credentials are always preferred. The administrator's default account is
-    the preferred account *inside the same health tier*, followed by explicit account
-    priority. A depleted/broken default therefore cannot hide a paid healthy backup.
-    """
     queryset = ProviderFundingAccount.objects.filter(provider=provider, active=True)
     if lock:
+        # api_key is nullable. PostgreSQL rejects SELECT FOR UPDATE when a nullable
+        # select_related() OUTER JOIN is part of the locked query, so lock only the
+        # funding-account table and fetch the credential lazily afterwards.
         queryset = queryset.select_for_update()
-    accounts = list(queryset.select_related("api_key").order_by("priority", "created_at", "id"))
+        accounts = list(queryset.order_by("priority", "created_at", "id"))
+    else:
+        accounts = list(
+            queryset.select_related("api_key").order_by("priority", "created_at", "id")
+        )
 
     def rank(account):
         if account.api_key_id:
@@ -117,7 +112,13 @@ def runtime_funding_accounts(
             }.get(state, 9)
         else:
             health_rank = 0
-        return (health_rank, 0 if account.is_default else 1, account.priority, account.created_at, str(account.id))
+        return (
+            health_rank,
+            0 if account.is_default else 1,
+            account.priority,
+            account.created_at,
+            str(account.id),
+        )
 
     accounts.sort(key=rank)
     return [
@@ -168,12 +169,6 @@ def reserve_provider_spend(
     source_key,
     currency: str = "",
 ):
-    """Reserve purchased capacity on one concrete healthy funding account.
-
-    The provider row serializes account selection for this provider so two concurrent
-    requests cannot both observe the same last units as free. The reservation is the
-    durable identity later used by Chat to select the matching API credential.
-    """
     from apps.ai_registry.models import Provider
 
     amount = _d(amount_native).quantize(NATIVE_STEP, rounding=ROUND_UP)
@@ -219,7 +214,6 @@ def reserve_provider_spend(
 
 
 def install(*, services_module, signals_module, reliability_module) -> None:
-    """Install multi-account procurement without changing public service APIs."""
     services_module.reserve_provider_spend = reserve_provider_spend
     signals_module.reserve_provider_spend = reserve_provider_spend
 
@@ -236,9 +230,6 @@ def install(*, services_module, signals_module, reliability_module) -> None:
 
     reliability_module._procurement_ready = procurement_ready
 
-    # Modules that imported reserve_provider_spend by value before ProcurementConfig
-    # ready() must follow the same account selector. Later imports naturally get the
-    # patched service function.
     for module_name in (
         "apps.agents.accounting",
         "apps.procurement.chat_signals",
