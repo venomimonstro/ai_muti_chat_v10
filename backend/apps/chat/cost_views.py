@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
@@ -16,6 +17,7 @@ from .asgi_stream import follow_generation_async, managed_run_async
 from .cost_preview import chat_cost_preview
 from .managed_stream import managed_run
 from .models import Conversation, Generation
+from .preflight_terminal import classify_preflight_exception
 from .product_identity import (
     create_identity_generation,
     direct_identity_answer,
@@ -25,8 +27,25 @@ from .product_identity import (
 from .serializers import SendMessageSerializer
 from .streaming import _validate_replayed_generation, prepare
 
-
+logger = logging.getLogger(__name__)
 COST_CONFIRMATION_CHANGED = "cost_confirmation_changed"
+
+
+SAFE_PREFLIGHT_DETAIL = (
+    "Не удалось безопасно подготовить запрос. Деньги не списаны. "
+    "Повторите запрос; если ошибка сохранится, система диагностики уже содержит техническую причину."
+)
+
+
+def _safe_preflight_response(exc):
+    return Response(
+        {
+            "code": "preflight_failed",
+            "support_code": classify_preflight_exception(exc),
+            "detail": SAFE_PREFLIGHT_DETAIL,
+        },
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 def _conversation(user, conversation_id):
@@ -193,6 +212,13 @@ class ChatCostPreviewView(APIView):
             )
         except (ValidationError, AIModel.DoesNotExist) as exc:
             raise APIValidationError({"detail": getattr(exc, "messages", [str(exc)])}) from exc
+        except Exception as exc:
+            logger.exception(
+                "Chat cost preview failed owner_id=%s conversation_id=%s",
+                getattr(request.user, "pk", None),
+                conversation_id,
+            )
+            return _safe_preflight_response(exc)
         return Response(_serialize_preview(value))
 
 
@@ -211,11 +237,6 @@ class ConfirmedConversationStreamView(APIView):
         client_message_id = serializer.validated_data["client_message_id"]
         file_ids = serializer.validated_data.get("file_ids") or []
 
-        # Reconnect/resume must never depend on a fresh provider route, price
-        # preview or spend check. The original idempotent generation already owns
-        # its reservation and durable state. Re-running preflight during a provider
-        # incident can otherwise prevent the client from recovering an answer that
-        # is already running or completed in the database.
         existing = _existing_generation(request.user, key)
         if existing is not None:
             try:
@@ -265,6 +286,13 @@ class ConfirmedConversationStreamView(APIView):
             )
         except (ValidationError, AIModel.DoesNotExist) as exc:
             raise APIValidationError({"detail": getattr(exc, "messages", [str(exc)])}) from exc
+        except Exception as exc:
+            logger.exception(
+                "Chat stream preview failed owner_id=%s conversation_id=%s",
+                getattr(request.user, "pk", None),
+                conversation_id,
+            )
+            return _safe_preflight_response(exc)
 
         if preview.get("blocked_by_spend_guard"):
             payload = _serialize_preview(preview)
@@ -310,6 +338,21 @@ class ConfirmedConversationStreamView(APIView):
                 {"detail": getattr(exc, "messages", [str(exc)])},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except Exception as exc:
+            logger.exception(
+                "Chat prepare failed owner_id=%s conversation_id=%s",
+                getattr(request.user, "pk", None),
+                conversation_id,
+            )
+            # preflight_terminal already persists a terminal Generation whenever
+            # the transaction got far enough to create one. In production ASGI,
+            # follow that durable row immediately so the same request receives the
+            # normal safe terminal SSE instead of a raw 500 + reconnect cycle.
+            failed_generation = _existing_generation(request.user, key)
+            raw_request = getattr(request, "_request", None)
+            if failed_generation is not None and isinstance(raw_request, ASGIRequest):
+                return _stream_response(follow_generation_async(failed_generation))
+            return _safe_preflight_response(exc)
 
         if created and generation.reservation_id:
             reservation = BalanceReservation.objects.only("amount_rub").get(pk=generation.reservation_id)
