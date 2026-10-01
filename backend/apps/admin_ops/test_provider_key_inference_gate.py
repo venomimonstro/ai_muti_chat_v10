@@ -38,6 +38,17 @@ class ProviderKeyInferenceGateTests(APITestCase):
             capabilities=["text", "streaming"],
         )
 
+    def _healthy_key(self, label, secret):
+        key = ProviderApiKey(
+            provider=self.provider,
+            label=label,
+            enabled=True,
+            health_state=ProviderApiKey.HealthState.HEALTHY,
+        )
+        key.set_secret(secret)
+        key.save()
+        return key
+
     @staticmethod
     def _mark_key_healthy(_provider, key):
         key.health_state = ProviderApiKey.HealthState.HEALTHY
@@ -70,6 +81,27 @@ class ProviderKeyInferenceGateTests(APITestCase):
                 health_state=ProviderApiKey.HealthState.HEALTHY,
             ).exists()
         )
+
+        models = self.client.get("/api/v1/models/")
+        self.assertEqual(models.status_code, 200, models.data)
+        self.assertNotIn(self.model.slug, [item["slug"] for item in models.data])
+
+    def test_deleting_key_with_healthy_spare_does_not_re_admit_open_provider(self):
+        doomed = self._healthy_key("Primary", "primary-secret")
+        spare = self._healthy_key("Spare", "spare-secret")
+
+        response = self.client.delete(
+            f"/api/v1/admin/providers/{self.provider.slug}/keys/{doomed.id}/"
+        )
+        self.assertEqual(response.status_code, 204)
+
+        self.provider.refresh_from_db()
+        spare.refresh_from_db()
+        self.assertFalse(ProviderApiKey.objects.filter(pk=doomed.pk).exists())
+        self.assertTrue(spare.enabled)
+        self.assertEqual(spare.health_state, ProviderApiKey.HealthState.HEALTHY)
+        self.assertEqual(self.provider.health_state, Provider.HealthState.OPEN)
+        self.assertEqual(self.provider.consecutive_failures, 5)
 
         models = self.client.get("/api/v1/models/")
         self.assertEqual(models.status_code, 200, models.data)
