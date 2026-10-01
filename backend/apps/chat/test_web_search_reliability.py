@@ -3,7 +3,6 @@ import pytest
 from apps.ai_registry.web_tools import WebToolError
 
 from . import web_context
-from .live_tools import needs_web_search
 
 
 def _snapshot(input_limit=6000):
@@ -18,9 +17,17 @@ def _snapshot(input_limit=6000):
 
 
 def test_current_and_decision_queries_require_web_search():
-    assert needs_web_search("Какие последние новости рынка сегодня?") is True
-    assert needs_web_search("Что лучше открыть в Москве с бюджетом 500000 рублей?") is True
-    assert needs_web_search("Объясни теорему Пифагора") is False
+    assert web_context.needs_web_search("Какие последние новости рынка сегодня?") is True
+    assert web_context.needs_web_search("Что лучше открыть в Москве с бюджетом 500000 рублей?") is True
+    assert web_context.needs_web_search("Объясни теорему Пифагора") is False
+
+
+def test_volatile_facts_require_web_even_without_explicit_currentness_words():
+    assert web_context.needs_web_search("Кто президент России?") is True
+    assert web_context.needs_web_search("Кто CEO OpenAI?") is True
+    assert web_context.needs_web_search("Какой курс доллара к рублю?") is True
+    assert web_context.needs_web_search("Какая ключевая ставка ЦБ?") is True
+    assert web_context.needs_web_search("Какая версия Python рекомендуется для нового проекта?") is True
 
 
 def test_required_web_search_failure_forbids_fabricated_current_facts(monkeypatch):
