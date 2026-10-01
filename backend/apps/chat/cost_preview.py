@@ -42,7 +42,14 @@ def _public_model(model, conversation):
 
 
 def _context_overhead_tokens(conversation):
-    """Upper-bound non-prompt context that prepare() may add before calling a provider."""
+    """Upper-bound non-recent context that prepare() may add before provider execution.
+
+    ``route.estimated_input_tokens`` already includes the current prompt and recent
+    conversation history. Only context that the router does *not* account for belongs
+    here: rolling summary/older history, project retrieval, memory and a small system
+    envelope. Keeping this boundary explicit prevents preview from charging the same
+    recent messages twice.
+    """
     total = int(getattr(settings, "SMART_CONTEXT_OLD_MESSAGE_TOKENS", 1200))
     total += int(getattr(settings, "SMART_CONTEXT_SUMMARY_TOKENS", 1200))
     if conversation.project_id:
@@ -55,13 +62,11 @@ def _context_overhead_tokens(conversation):
 
 
 def _existing_history_tokens(conversation):
-    """Bound the preview to the same recent-window model as smart context.
+    """Return the bounded recent-history footprint for diagnostics/tests.
 
-    Older conversation material is already represented by the explicit summary and
-    old-message budgets in ``_context_overhead_tokens``. Re-reading every historical
-    message here both double-counted context and made cost preview grow linearly with
-    the lifetime of a chat. A long-lived conversation must remain as cheap and fast to
-    preview as a new one.
+    The router already includes this recent window in ``estimated_input_tokens``.
+    This helper remains useful for observability and regression tests, but its result
+    must not be added to the preview quote a second time.
     """
     recent_turns = max(1, int(getattr(settings, "SMART_CONTEXT_RECENT_TURNS", 6)))
     recent_message_limit = recent_turns * 2
@@ -96,8 +101,11 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
     if not candidates:
         raise ValidationError("Нет доступной модели для этого запроса")
 
+    # ``route.estimated_input_tokens`` already contains the current prompt and recent
+    # messages. Add only smart-context overhead omitted by the router plus explicit
+    # vision reserve. Previously recent history was added again here, inflating cost
+    # previews and triggering unnecessary confirmations / false low-balance UX.
     extra_input = _context_overhead_tokens(conversation)
-    extra_input += _existing_history_tokens(conversation)
     extra_input += len(vision_assets) * VISION_RESERVE_TOKENS_PER_IMAGE
     rows = []
     maximum = Decimal("0")
