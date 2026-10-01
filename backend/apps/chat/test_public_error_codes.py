@@ -20,6 +20,7 @@ from .streaming import sse
         "openrouter_402",
         "gigachat_quota_exhausted",
         "provider_unavailable",
+        "candidate_not_ready",
     ],
 )
 def test_provider_errors_are_hidden_from_customer(internal_code):
