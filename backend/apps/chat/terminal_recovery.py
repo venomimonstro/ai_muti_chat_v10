@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import sys
 
@@ -18,6 +19,38 @@ def _event_name(chunk):
     if not isinstance(chunk, str) or not chunk.startswith("event: "):
         return ""
     return chunk.splitlines()[0][7:].strip()
+
+
+def _event_payload(chunk):
+    if not isinstance(chunk, str):
+        return {}
+    for line in chunk.splitlines():
+        if line.startswith("data: "):
+            try:
+                payload = json.loads(line[6:])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+            return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _persist_delivered_text(generation_id, delivered_text):
+    text = str(delivered_text or "")
+    if not text:
+        return
+    with transaction.atomic():
+        generation = (
+            Generation.objects.select_for_update()
+            .select_related("assistant_message")
+            .get(pk=generation_id)
+        )
+        assistant = generation.assistant_message
+        # Only persist text that this wrapper observed in SSE delta events. Never
+        # manufacture or recover hidden provider text that was not delivered.
+        if len(text) >= len(assistant.content or ""):
+            assistant.content = text
+            assistant.status = Message.Status.STREAMING
+            assistant.save(update_fields=["content", "status"])
 
 
 def _confirmed_overrun_payload(generation_id):
@@ -133,8 +166,16 @@ def install(streaming_module) -> None:
         return
 
     def run(generation, *args, **kwargs):
+        delivered_text = str(getattr(generation.assistant_message, "content", "") or "")
         for chunk in raw_run(generation, *args, **kwargs):
-            if _event_name(chunk) == "error":
+            event = _event_name(chunk)
+            if event == "delta":
+                delivered_text += str(_event_payload(chunk).get("text") or "")
+            elif event == "error":
+                # The core stream deliberately fails closed on reserve overrun. Before
+                # proving and recovering that narrow state, persist the exact text the
+                # client already received so short (< FLUSH_CHARS) answers are not lost.
+                _persist_delivered_text(generation.id, delivered_text)
                 payload = _confirmed_overrun_payload(generation.id)
                 if payload is not None:
                     _post_complete(streaming_module, generation.id)
