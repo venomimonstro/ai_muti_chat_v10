@@ -45,6 +45,10 @@ class ProcurementConfig(AppConfig):
             signals,
         )
 
+        # YandexGPT is always a commercial external provider. A legacy/manual row
+        # carrying the historical Echo default must never bypass provider funding.
+        signals.SPECIAL_EXTERNAL_PROVIDER_SLUGS.add("yandexgpt")
+
         # Price/model identity becomes immutable once provider usage is durable. The
         # save guard locks RequestCost itself, closing a real PostgreSQL MVCC race
         # between fallback routing and provider-delivery settlement.
