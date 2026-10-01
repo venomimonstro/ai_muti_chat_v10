@@ -42,6 +42,9 @@ def install(dispatch_module) -> None:
             )
         config = provider.auth_config or {}
         folder_id = str(config.get("folder_id") or os.getenv("YANDEX_CLOUD_FOLDER_ID", "")).strip()
+        auth_scheme = str(
+            config.get("auth_scheme") or os.getenv("YANDEXGPT_AUTH_SCHEME", "bearer")
+        ).strip()
         adapter = YandexGPTAdapter(
             api_key=api_key,
             folder_id=folder_id,
@@ -49,6 +52,7 @@ def install(dispatch_module) -> None:
             or str(config.get("base_url") or "").strip()
             or os.getenv("YANDEXGPT_API_BASE_URL", DEFAULT_BASE_URL),
             probe_model=model.upstream_model or "yandexgpt/latest",
+            auth_scheme=auth_scheme,
         )
         return dispatch_module._bind_runtime_identity(
             adapter,
