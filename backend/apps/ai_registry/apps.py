@@ -16,6 +16,7 @@ class AIRegistryConfig(AppConfig):
             http_errors,
             manual_continuity,
             model_quarantine,
+            provider_recovery,
             reliability,
             router,
             routing_pools,
@@ -32,5 +33,9 @@ class AIRegistryConfig(AppConfig):
             reliability_module=reliability,
             router_module=router,
         )
+        # Recovery of an UNKNOWN/DEGRADED/OPEN provider is stricter than routine
+        # health monitoring: the paid inference path must actually answer before
+        # customer traffic can see the provider again.
+        provider_recovery.install(reliability)
         manual_continuity.install(router)
         auto_continuity.install(router)
