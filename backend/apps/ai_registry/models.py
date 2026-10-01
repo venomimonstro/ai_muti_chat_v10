@@ -22,6 +22,7 @@ class Provider(models.Model):
         OPENAI_RESPONSES = "openai_responses", "OpenAI Responses API"
         ANTHROPIC_MESSAGES = "anthropic_messages", "Anthropic Messages API"
         DEEPSEEK_CHAT = "deepseek_chat", "DeepSeek Chat API"
+        YANDEXGPT_CHAT = "yandexgpt_chat", "YandexGPT OpenAI-compatible API"
         GEMINI_GENERATE_CONTENT = "gemini_generate_content", "Google Gemini API"
         XAI_CHAT = "xai_chat", "xAI Chat Completions API"
 
@@ -87,12 +88,10 @@ class Provider(models.Model):
             return ""
 
     def select_api_key(self, *, exclude_key_ids=None):
-        """Return ``(secret, key_id)`` using health-aware pool rotation.
+        """Legacy administrative selector; customer runtime uses dispatch.select_runtime_api_key.
 
-        A healthy key linked to the active default funding account is authoritative:
-        provider spend accounting and the runtime credential must refer to the same
-        purchased balance. Failed keys may still be excluded per request, allowing
-        safe rotation to a spare credential without reusing the bad key.
+        Keep compatibility for management/recovery code. Customer traffic is fail-closed
+        in dispatch.py and can use only a verified HEALTHY credential.
         """
         excluded = {str(item) for item in (exclude_key_ids or []) if item}
         preferred = None
@@ -258,124 +257,22 @@ class AIModel(models.Model):
 
 class ModelVersion(models.Model):
     class Stage(models.TextChoices):
-        CANDIDATE = "candidate", "Кандидат"
+        TEST = "test", "Тест"
         CANARY = "canary", "Canary"
-        ACTIVE = "active", "Активна"
-        RETIRED = "retired", "Выведена"
-
-    IMMUTABLE_FIELDS = ("model_id", "version", "exact_api_id", "capabilities", "routing_tags", "context_window", "max_output_tokens")
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    model = models.ForeignKey(AIModel, on_delete=models.PROTECT, related_name="versions")
-    version = models.SlugField(max_length=100)
-    exact_api_id = models.CharField(max_length=160)
-    capabilities = models.JSONField(default=list, blank=True)
-    routing_tags = models.JSONField(default=list, blank=True)
-    context_window = models.PositiveIntegerField(default=8192)
-    max_output_tokens = models.PositiveIntegerField(default=2048)
-    stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.CANDIDATE)
-    release_notes = models.TextField(blank=True)
-    eval_run_id = models.UUIDField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    activated_at = models.DateTimeField(null=True, blank=True)
-    retired_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["model__slug", "-created_at"]
-        constraints = [
-            models.UniqueConstraint(fields=["model", "version"], name="unique_model_registry_version"),
-            models.UniqueConstraint(fields=["model"], condition=models.Q(stage="active"), name="unique_active_version_per_model"),
-        ]
-
-    def save(self, *args, **kwargs):
-        if self.pk:
-            previous = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
-            changed = previous and any(previous[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS)
-            if changed:
-                raise ValidationError("Конфигурация ModelVersion неизменяема; создайте новую версию")
-        super().save(*args, **kwargs)
-
-
-class ModelVersionTransition(models.Model):
-    class Action(models.TextChoices):
-        PROMOTE = "promote", "Продвижение"
-        ROLLBACK = "rollback", "Откат"
+        ACTIVE = "active", "Активная"
+        DEPRECATED = "deprecated", "Устаревшая"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    model = models.ForeignKey(AIModel, on_delete=models.PROTECT, related_name="version_transitions")
-    from_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, null=True, blank=True, related_name="transitions_from")
-    to_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, related_name="transitions_to")
-    action = models.CharField(max_length=16, choices=Action.choices)
-    eval_run_id = models.UUIDField(null=True, blank=True)
-    reason = models.CharField(max_length=500, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-
-
-class ProviderHealthSnapshot(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    provider = models.ForeignKey(Provider, on_delete=models.CASCADE, related_name="health_snapshots")
-    healthy = models.BooleanField()
-    latency_ms = models.PositiveIntegerField(null=True, blank=True)
-    error_code = models.CharField(max_length=80, blank=True)
-    checked_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-checked_at"]
-        indexes = [models.Index(fields=["provider", "-checked_at"])]
-
-
-class ReliabilityIncident(models.Model):
-    class State(models.TextChoices):
-        OPEN = "open", "Открыт"
-        RECOVERED = "recovered", "Восстановлен"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    correlation_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
-    provider = models.ForeignKey(Provider, on_delete=models.PROTECT, related_name="incidents")
-    state = models.CharField(max_length=16, choices=State.choices, default=State.OPEN)
-    error_code = models.CharField(max_length=80)
-    details = models.JSONField(default=dict, blank=True)
-    opened_at = models.DateTimeField(auto_now_add=True)
-    recovered_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["-opened_at"]
-
-
-class RoutingPolicyVersion(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    version = models.SlugField(max_length=80, unique=True)
-    active = models.BooleanField(default=False)
-    mode_weights = models.JSONField(default=dict)
-    thresholds = models.JSONField(default=dict)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-        constraints = [models.UniqueConstraint(fields=["active"], condition=models.Q(active=True), name="unique_active_routing_policy")]
-
-
-class RoutingTierAssignment(models.Model):
-    class Tier(models.TextChoices):
-        SIMPLE = "economy", "Простой"
-        MEDIUM = "balanced", "Средний"
-        COMPLEX = "maximum", "Сложный"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tier = models.CharField(max_length=16, choices=Tier.choices)
-    model = models.ForeignKey(AIModel, on_delete=models.CASCADE, related_name="routing_tiers")
-    priority = models.PositiveIntegerField(default=100)
+    model = models.ForeignKey(AIModel, on_delete=models.CASCADE, related_name="versions")
+    version = models.CharField(max_length=80)
+    upstream_id = models.CharField(max_length=160)
+    stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.TEST)
+    traffic_percent = models.PositiveSmallIntegerField(default=0)
     enabled = models.BooleanField(default=True)
+    max_error_rate = models.DecimalField(max_digits=6, decimal_places=5, default="0.05000")
+    max_p95_latency_ms = models.PositiveIntegerField(default=15000)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["tier", "priority", "model__display_name"]
-        constraints = [
-            models.UniqueConstraint(fields=["tier", "model"], name="unique_model_per_routing_tier")
-        ]
-
-    def __str__(self):
-        return f"{self.get_tier_display()} · {self.model.display_name}"
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["model", "version"], name="unique_model_version")]
