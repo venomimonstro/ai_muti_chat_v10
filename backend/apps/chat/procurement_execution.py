@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 
-from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.models import Provider
 from apps.billing.models import RequestCost
 from apps.procurement.account_routing import account_credential_ready
 from apps.procurement.models import ProviderSpendReservation
@@ -59,9 +59,6 @@ def _provider_execution_ready(provider: Provider, *, reservation=None) -> bool:
     }:
         return False
     if reservation is not None:
-        # The reservation already owns purchased capacity; only the exact credential
-        # bound to that account must still be healthy. Do not switch to another key
-        # after money has been reserved from this account.
         return account_credential_ready(reservation.account, allow_probe=False)
     from apps.ai_registry.dispatch import runtime_credential_ready
 
@@ -69,20 +66,14 @@ def _provider_execution_ready(provider: Provider, *, reservation=None) -> bool:
 
 
 def install(streaming_module) -> None:
-    """Bind one chat Generation to its exact purchased API account.
-
-    RequestCost/procurement signals choose and reserve a concrete funding account
-    before provider traffic. This layer makes execution consume the matching API key.
-    Same-provider model fallback may atomically replace the reservation first; the
-    next adapter call then automatically follows the new reservation account.
-    """
+    """Bind one chat Generation to its exact purchased API account."""
     if getattr(streaming_module.run, "_ai_workspace_procurement_execution", False):
         return
 
     raw_run = streaming_module.run
     raw_provider_available = streaming_module.provider_available
     raw_snapshot_capacity = streaming_module._snapshot_capacity
-    raw_adapter_for = streaming_module.adapter_for
+    raw_adapter_for = getattr(streaming_module, "adapter_for", None)
 
     def provider_available(provider):
         generation_id = _generation_id.get()
@@ -94,9 +85,6 @@ def install(streaming_module) -> None:
 
     def snapshot_capacity(model, route_price):
         generation_id = _generation_id.get()
-        # Do not require the fallback PriceVersion to equal the currently reserved
-        # PriceVersion. The atomic RequestCost switch releases the old reservation
-        # and creates the replacement before adapter_for()/provider traffic.
         if generation_id and _request_owns_provider_reservation(
             generation_id,
             model.provider,
@@ -126,12 +114,13 @@ def install(streaming_module) -> None:
     provider_available._raw_provider_available = raw_provider_available
     snapshot_capacity._ai_workspace_procurement_execution = True
     snapshot_capacity._raw_snapshot_capacity = raw_snapshot_capacity
-    adapter_for._ai_workspace_procurement_execution = True
-    adapter_for._raw_adapter_for = raw_adapter_for
     run._ai_workspace_procurement_execution = True
     run._raw_run = raw_run
 
     streaming_module.provider_available = provider_available
     streaming_module._snapshot_capacity = snapshot_capacity
-    streaming_module.adapter_for = adapter_for
+    if raw_adapter_for is not None:
+        adapter_for._ai_workspace_procurement_execution = True
+        adapter_for._raw_adapter_for = raw_adapter_for
+        streaming_module.adapter_for = adapter_for
     streaming_module.run = run
