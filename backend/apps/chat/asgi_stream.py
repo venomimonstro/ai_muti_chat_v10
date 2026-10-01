@@ -1,12 +1,14 @@
 import asyncio
 import json
 import logging
+import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, InvalidOperation
 
 from django.db import close_old_connections
 
-from .managed_stream import managed_run
+from .managed_stream import _finalize_unhandled_failure, managed_run
 from .models import Generation
 from .streaming import sse
 
@@ -14,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HEARTBEAT_SECONDS = 10.0
 FOLLOW_POLL_SECONDS = 1.0
+STREAM_EXECUTOR_WORKERS = max(
+    4,
+    min(int(os.getenv("CHAT_STREAM_EXECUTOR_WORKERS", "64")), 256),
+)
+_STREAM_EXECUTOR = ThreadPoolExecutor(
+    max_workers=STREAM_EXECUTOR_WORKERS,
+    thread_name_prefix="chat-stream",
+)
 
 _PROVIDER_ERROR_MARKERS = (
     "provider_",
@@ -41,6 +51,12 @@ _PROVIDER_ERROR_CODES = {
     "organization_spend_limit_exceeded",
     "project_spend_limit_exceeded",
 }
+_PUBLIC_ERROR_CODES = {
+    "AI-102",
+    "AI-103",
+    "generation_in_progress",
+    "partial_response_interrupted",
+}
 
 
 def _is_provider_error(code):
@@ -55,8 +71,21 @@ def _positive_cost(value) -> bool:
         return False
 
 
+def _internal_failure_message(payload):
+    if _positive_cost(payload.get("cost_rub")):
+        return (
+            f"Ответ прервался после подтверждённого расхода AI. Списана только подтверждённая "
+            f"стоимость {payload['cost_rub']} ₽; остаток резерва возвращён. Ответ сохранён — "
+            "можно повторить запрос."
+        )
+    return (
+        "Не удалось завершить ответ из-за внутреннего сбоя соединения. Запрос сохранён, "
+        "неподтверждённые расходы не списаны. Повторите запрос."
+    )
+
+
 def _public_chunk(chunk):
-    """Hide provider/key/quota internals without contradicting authoritative billing."""
+    """Hide provider/key/runtime internals without contradicting authoritative billing."""
     if not isinstance(chunk, str) or not chunk.startswith("event: error\n"):
         return chunk
     try:
@@ -65,14 +94,12 @@ def _public_chunk(chunk):
     except Exception:
         return chunk
     code = str(payload.get("code") or "")
-    if code == "generation_in_progress":
+    if code in {"generation_in_progress", "partial_response_interrupted", "AI-102", "AI-103"}:
         return chunk
     if _is_provider_error(code):
         payload["code"] = "AI-102"
         payload["support_code"] = "AI-102"
         if _positive_cost(payload.get("cost_rub")):
-            # managed_stream has already reconciled confirmed provider usage. Do not
-            # overwrite that truth with the generic no-charge transport message.
             payload["message"] = (
                 f"Ответ прервался после подтверждённого расхода AI. Списана только подтверждённая "
                 f"стоимость {payload['cost_rub']} ₽; остаток резерва возвращён. Повторите запрос — "
@@ -84,7 +111,14 @@ def _public_chunk(chunk):
                 "Повторите запрос — система автоматически выберет доступный AI-канал."
             )
         return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
-    return chunk
+
+    # Any non-public runtime code is an implementation detail. Exposing it makes the
+    # client depend on internal class names and leaks operational structure.
+    payload["cause_code"] = code
+    payload["code"] = "AI-103"
+    payload["support_code"] = "AI-103"
+    payload["message"] = _internal_failure_message(payload)
+    return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
 def _enqueue(loop, queue, item, detached):
@@ -152,6 +186,33 @@ def _generation_snapshot(generation_id):
         close_old_connections()
 
 
+def _public_failed_snapshot(snapshot):
+    internal_code = str(snapshot.get("error_code") or "")
+    if _is_provider_error(internal_code):
+        public_code = "AI-102"
+    elif internal_code in _PUBLIC_ERROR_CODES:
+        public_code = internal_code
+    else:
+        public_code = "AI-103"
+    charged = _positive_cost(snapshot.get("cost_rub"))
+    if charged:
+        message = (
+            f"Запрос прервался после подтверждённого расхода AI. Списана только подтверждённая "
+            f"стоимость {snapshot['cost_rub']} ₽; остаток резерва возвращён."
+        )
+    elif public_code == "AI-102":
+        message = (
+            "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списаны. "
+            "Повторите запрос."
+        )
+    else:
+        message = (
+            "Запрос завершился с внутренней ошибкой после восстановления соединения. "
+            "Неподтверждённые расходы не списаны. Повторите запрос."
+        )
+    return public_code, message
+
+
 async def follow_generation_async(
     generation,
     *,
@@ -217,20 +278,7 @@ async def follow_generation_async(
                         "reconnected": True,
                     },
                 )
-            public_code = "AI-102" if _is_provider_error(snapshot["error_code"]) else (snapshot["error_code"] or "generation_failed")
-            charged = _positive_cost(snapshot["cost_rub"])
-            if charged:
-                message = (
-                    f"Запрос прервался после подтверждённого расхода AI. Списана только подтверждённая "
-                    f"стоимость {snapshot['cost_rub']} ₽; остаток резерва возвращён."
-                )
-            elif public_code == "AI-102":
-                message = (
-                    "Сервис временно не смог завершить ответ. Деньги за незавершённый запрос не списаны. "
-                    "Повторите запрос."
-                )
-            else:
-                message = "Запрос завершился с ошибкой после восстановления соединения. Деньги без подтверждённого расхода не списаны."
+            public_code, message = _public_failed_snapshot(snapshot)
             yield sse(
                 "error",
                 {
@@ -260,20 +308,28 @@ async def follow_generation_async(
 async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS):
     """Native ASGI iterator with heartbeat and durable disconnect behaviour.
 
-    The queue is intentionally unbounded: one generation is capped by the model
-    output-token limit, while avoiding a producer deadlock when a browser/proxy
-    disappears between provider chunks.
+    Synchronous provider adapters execute on one bounded process-wide pool. This
+    prevents one OS thread per chat from exhausting a worker under burst traffic.
+    Queued generations keep their durable reservation/idempotency and begin as pool
+    capacity becomes available; browser disconnects never create a second provider call.
     """
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
     detached = threading.Event()
-    worker = threading.Thread(
-        target=_produce,
-        args=(generation, loop, queue, detached),
-        name=f"chat-stream-{generation.id}",
-        daemon=True,
-    )
-    worker.start()
+    try:
+        _STREAM_EXECUTOR.submit(_produce, generation, loop, queue, detached)
+    except RuntimeError:
+        # Executor shutdown/race is an internal runtime failure, never a user cancel.
+        _finalize_unhandled_failure(generation)
+        yield sse(
+            "error",
+            {
+                "code": "AI-103",
+                "support_code": "AI-103",
+                "message": "Не удалось запустить обработку ответа. Запрос сохранён, неподтверждённые расходы не списаны.",
+            },
+        )
+        return
 
     try:
         while True:
@@ -282,9 +338,16 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                     queue.get(), timeout=max(0.05, float(heartbeat_seconds))
                 )
             except asyncio.TimeoutError:
+                # Report the durable state rather than claiming RUNNING while the
+                # bounded worker pool may still have the generation queued.
+                try:
+                    snapshot = await asyncio.to_thread(_generation_snapshot, generation.id)
+                    heartbeat_state = snapshot["state"]
+                except Exception:
+                    heartbeat_state = "running"
                 yield sse(
                     "heartbeat",
-                    {"generation_id": str(generation.id), "state": "running"},
+                    {"generation_id": str(generation.id), "state": heartbeat_state},
                 )
                 continue
 
