@@ -1,7 +1,7 @@
 import traceback
 import uuid
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from apps.accounts.models import User
@@ -154,4 +154,4 @@ class Command(BaseCommand):
 
         self.stdout.write(f"CHECKED={len(users)} FAILURES={failures}")
         if failures:
-            self.stderr.write("CLIENT_CHAT_PREFLIGHT_BROKEN")
+            raise CommandError(f"CLIENT_CHAT_PREFLIGHT_BROKEN failures={failures}")
