@@ -19,6 +19,7 @@ class AIRegistryConfig(AppConfig):
             provider_recovery,
             reliability,
             router,
+            router_guardrails,
             router_intelligence,
             routing_pools,
             search_intelligence,
@@ -32,9 +33,12 @@ class AIRegistryConfig(AppConfig):
         search_intelligence.install(web_tools)
         routing_pools.install_router_pool_resolver(router)
         # Router v3 keeps reasoning complexity independent from web/tool usage.
-        # Continuity is installed afterwards so fallback uses the same preferred
-        # tier as the primary AUTO decision.
+        # v3.3 guardrails then cover semantic edge cases that are easy to
+        # underestimate with taxonomy keywords alone. Continuity is installed
+        # afterwards so fallback uses the same preferred tier as the primary AUTO
+        # decision.
         router_intelligence.install(router)
+        router_guardrails.install(router)
         model_quarantine.install(
             dispatch_module=dispatch,
             adapters_module=adapters,
