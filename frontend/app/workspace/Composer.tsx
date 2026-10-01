@@ -74,7 +74,7 @@ export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenToo
   onStop();
  };
  const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();submit();}};
- const changeModel=(next:string)=>{if(!explicitModelControl)return;setControlValue(next);onModelChange(next)};
+ const changeModel=(next:string)=>{if(!explicitModelControl)return;setControlValue(next);onModelChange?.(next)};
  const blockedTitle=noModelsAvailable?"Сейчас нет доступных AI-моделей. Система перепроверит подключения автоматически.":selectedModelUnavailable?"Сначала выберите доступную модель":offline?"Отправка станет доступна после восстановления сети":tooLong?"Сообщение превышает лимит 100 000 символов":"Отправить · Enter";
  return <><div className="composerZone">{selectedModelUnavailable&&<div className="modelUnavailableNotice" role="alert"><Icon name="warning" size={15}/><span>Выбранная модель сейчас недоступна. Выберите AUTO или другую доступную модель.</span></div>}{noModelsAvailable&&<div className="modelUnavailableNotice" role="status"><Icon name="warning" size={15}/><span>AI временно недоступен. Проверяем подключения автоматически — отправка включится после восстановления рабочей модели.</span></div>}<div className={`composerShell ${focused?"focused":""} ${tooLong?"invalid":""}`}>
    <textarea ref={ref} value={value} maxLength={MAX_MESSAGE_CHARS+5000} onChange={e=>setValue(e.target.value)} onFocus={()=>setFocused(true)} onBlur={()=>setFocused(false)} onKeyDown={key} placeholder="Напишите сообщение…" rows={1} aria-label="Сообщение" aria-invalid={tooLong}/>
