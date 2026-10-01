@@ -27,9 +27,10 @@ def normalize_model_id(value: str, *, folder_id: str = "") -> str:
 class YandexGPTAdapter(DeepSeekChatAdapter):
     """Yandex Cloud OpenAI-compatible chat adapter.
 
+    Yandex AI Studio exposes an OpenAI-compatible Chat Completions API, but service
+    account API keys use ``Authorization: Api-Key ...`` rather than Bearer auth.
     Credential selection, funding-account pinning and health admission are handled by
-    the shared dispatch layer. This adapter only translates the model id and performs
-    the OpenAI-compatible chat-completions call.
+    the shared dispatch layer.
     """
 
     def __init__(
@@ -43,6 +44,13 @@ class YandexGPTAdapter(DeepSeekChatAdapter):
         super().__init__(api_key=api_key, base_url=base_url or DEFAULT_BASE_URL)
         self.folder_id = str(folder_id or "").strip()
         self.probe_model = str(probe_model or DEFAULT_MODEL).strip()
+
+    @property
+    def headers(self):
+        return {
+            "Authorization": f"Api-Key {self.api_key}",
+            "Content-Type": "application/json",
+        }
 
     def _model(self, value: str) -> str:
         return normalize_model_id(value, folder_id=self.folder_id)
