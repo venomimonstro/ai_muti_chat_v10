@@ -20,9 +20,15 @@ def test_all_chat_entrypoints_use_final_terminal_recovery_runtime():
     assert managed_stream.run is streaming.run
     assert _chain_has_marker(streaming.run, "_ai_workspace_terminal_recovery")
     assert _chain_has_marker(streaming.run, "_ai_workspace_procurement_execution")
+    assert _chain_has_marker(streaming.run, "_ai_workspace_delivery_checkpoint_context")
     assert getattr(streaming.run, "_raw_run", None) is not None
     assert getattr(streaming.provider_available, "_ai_workspace_procurement_execution", False) is True
     assert getattr(streaming._snapshot_capacity, "_ai_workspace_procurement_execution", False) is True
+    assert _chain_has_marker(
+        streaming.adapter_for,
+        "_ai_workspace_delivery_checkpoint",
+        raw_attr="_raw_adapter_for",
+    )
 
 
 def test_all_prepare_entrypoints_use_terminal_safe_single_flight_runtime():
