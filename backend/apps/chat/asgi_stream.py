@@ -94,8 +94,9 @@ def _public_chunk(chunk):
     except Exception:
         return chunk
     code = str(payload.get("code") or "")
+    payload.pop("cause_code", None)
     if code in {"generation_in_progress", "partial_response_interrupted", "AI-102", "AI-103"}:
-        return chunk
+        return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
     if _is_provider_error(code):
         payload["code"] = "AI-102"
         payload["support_code"] = "AI-102"
@@ -112,9 +113,6 @@ def _public_chunk(chunk):
             )
         return f"event: error\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
-    # Any non-public runtime code is an implementation detail. Exposing it makes the
-    # client depend on internal class names and leaks operational structure.
-    payload["cause_code"] = code
     payload["code"] = "AI-103"
     payload["support_code"] = "AI-103"
     payload["message"] = _internal_failure_message(payload)
@@ -133,13 +131,6 @@ def _enqueue(loop, queue, item, detached):
 
 
 def _produce(generation, loop, queue, detached):
-    """Consume the existing synchronous provider stream outside the ASGI loop.
-
-    A browser disconnect must not close managed_run(): the provider request may
-    already be in flight. We keep consuming it to a durable Generation state and
-    only detach delivery to the vanished client. Reconnect then recovers the same
-    generation through its idempotency key.
-    """
     close_old_connections()
     stream = managed_run(generation)
     try:
@@ -148,10 +139,7 @@ def _produce(generation, loop, queue, detached):
                 continue
             _enqueue(loop, queue, ("chunk", chunk), detached)
     except BaseException as exc:  # pragma: no cover - defensive last-resort guard
-        logger.exception(
-            "ASGI chat stream worker crashed generation_id=%s",
-            generation.id,
-        )
+        logger.exception("ASGI chat stream worker crashed generation_id=%s", generation.id)
         if not detached.is_set():
             _enqueue(loop, queue, ("error", exc), detached)
     finally:
@@ -219,12 +207,6 @@ async def follow_generation_async(
     heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
     poll_seconds=FOLLOW_POLL_SECONDS,
 ):
-    """Follow an already-running idempotent generation after transport reconnect.
-
-    The original provider request remains the single writer. This follower only
-    observes durable DB state, so reconnects cannot double-call a provider or
-    reserve/charge the user twice.
-    """
     heartbeat_deadline = asyncio.get_running_loop().time()
     while True:
         snapshot = await asyncio.to_thread(_generation_snapshot, generation.id)
@@ -254,7 +236,7 @@ async def follow_generation_async(
             yield sse(
                 "cancelled",
                 {
-                    "code": snapshot["error_code"] or "client_cancelled",
+                    "code": "client_cancelled",
                     "state": state,
                     "partial": bool(snapshot["text"]),
                     "cost_rub": snapshot["cost_rub"],
@@ -310,8 +292,6 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
 
     Synchronous provider adapters execute on one bounded process-wide pool. This
     prevents one OS thread per chat from exhausting a worker under burst traffic.
-    Queued generations keep their durable reservation/idempotency and begin as pool
-    capacity becomes available; browser disconnects never create a second provider call.
     """
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
@@ -319,7 +299,6 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
     try:
         _STREAM_EXECUTOR.submit(_produce, generation, loop, queue, detached)
     except RuntimeError:
-        # Executor shutdown/race is an internal runtime failure, never a user cancel.
         _finalize_unhandled_failure(generation)
         yield sse(
             "error",
@@ -338,8 +317,6 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                     queue.get(), timeout=max(0.05, float(heartbeat_seconds))
                 )
             except asyncio.TimeoutError:
-                # Report the durable state rather than claiming RUNNING while the
-                # bounded worker pool may still have the generation queued.
                 try:
                     snapshot = await asyncio.to_thread(_generation_snapshot, generation.id)
                     heartbeat_state = snapshot["state"]
