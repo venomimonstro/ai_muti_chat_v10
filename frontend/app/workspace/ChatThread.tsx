@@ -10,13 +10,29 @@ import {MessageCard} from "./MessageCard";
 const INITIAL_RENDER_LIMIT=60;
 const RENDER_STEP=40;
 const isOptimistic=(message:ChatMessage)=>message.id.startsWith("local-user-")||message.id.startsWith("local-ai-");
+const isOptimisticUser=(message:ChatMessage)=>message.id.startsWith("local-user-");
+const isOptimisticAssistant=(message:ChatMessage)=>message.id.startsWith("local-ai-");
 const nearInTime=(a:ChatMessage,b:ChatMessage)=>Math.abs(new Date(a.created_at).getTime()-new Date(b.created_at).getTime())<=15000;
 
 function displayMessages(messages:ChatMessage[]){
  const seenIds=new Set<string>();
  const unique=messages.filter(message=>{if(seenIds.has(message.id))return false;seenIds.add(message.id);return true;});
  const persisted=unique.filter(message=>!isOptimistic(message));
+ const preacceptedGhosts=new Set<string>();
+ // Workspace adds an optimistic user+assistant pair before cost preview / backend
+ // prepare. Until the first real delta arrives, that pair is not proof that the
+ // server accepted the turn. Hide the pair while the assistant is still empty so
+ // preview/validation/network rejection cannot leave a fake sent message and an
+ // eternal blank assistant in the thread. Routing/progress text remains visible in
+ // the composer status area; on the first delta both bubbles appear immediately.
+ for(let index=0;index<unique.length-1;index+=1){
+  const user=unique[index];const assistant=unique[index+1];
+  if(isOptimisticUser(user)&&isOptimisticAssistant(assistant)&&assistant.status==="streaming"&&!assistant.content){
+   preacceptedGhosts.add(user.id);preacceptedGhosts.add(assistant.id);
+  }
+ }
  return unique.filter(message=>{
+  if(preacceptedGhosts.has(message.id))return false;
   if(!isOptimistic(message))return true;
   return !persisted.some(server=>{
    if(server.role!==message.role||!nearInTime(server,message))return false;
