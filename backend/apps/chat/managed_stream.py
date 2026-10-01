@@ -261,15 +261,24 @@ def _publicize_sse_chunk(generation, chunk):
 
 
 def managed_run(generation, *, adapter=None):
+    passive_follower = False
     try:
         for chunk in run(generation, adapter=adapter):
+            payload = _parse_error_chunk(chunk)
+            if payload and str(payload.get("code") or "") == "generation_in_progress":
+                # Another request already owns this Generation. This stream is only
+                # a follower and must never terminalize or settle the producer's work.
+                passive_follower = True
             chunk = _rewrite_error_chunk_if_needed(generation, chunk)
             yield _publicize_sse_chunk(generation, chunk)
     except GeneratorExit:
-        _finalize_unhandled_disconnect(generation)
+        if not passive_follower:
+            _finalize_unhandled_disconnect(generation)
         raise
     except BaseException:
-        _finalize_unhandled_failure(generation)
+        if not passive_follower:
+            _finalize_unhandled_failure(generation)
         raise
     else:
-        _finalize_incomplete_stream(generation)
+        if not passive_follower:
+            _finalize_incomplete_stream(generation)
