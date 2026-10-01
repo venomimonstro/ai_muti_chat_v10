@@ -13,6 +13,10 @@ app.conf.beat_schedule = {
         "task": "apps.admin_ops.tasks.system_heartbeat_task",
         "schedule": 60.0,
     },
+    "chat-service-health-watch": {
+        "task": "apps.chat.tasks.chat_service_health_watch_task",
+        "schedule": 60.0,
+    },
     "recover-quarantined-ai-models": {
         "task": "apps.ai_registry.tasks.model_quarantine_watch_task",
         "schedule": 300.0,
