@@ -14,23 +14,20 @@ from apps.procurement.services import account_available_native
 from .procurement_execution import install
 
 
-@pytest.mark.django_db(transaction=True)
-@override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
-def test_execution_uses_only_its_own_provider_reservation_when_free_balance_is_zero():
+def _external_provider_with_funding(*, slug, funded_native):
     provider = Provider.objects.create(
-        slug="reservation-aware-provider",
-        name="Reservation aware provider",
+        slug=slug,
+        name=slug,
         adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
         enabled=True,
         health_state=Provider.HealthState.HEALTHY,
     )
     key = ProviderApiKey(provider=provider, label="primary", enabled=True)
-    key.set_secret("sk-reservation-aware")
+    key.set_secret(f"sk-{slug}")
     key.health_state = ProviderApiKey.HealthState.HEALTHY
     key.save()
     Provider.objects.filter(pk=provider.pk).update(health_state=Provider.HealthState.HEALTHY)
     provider.refresh_from_db()
-
     account = ProviderFundingAccount.objects.create(
         provider=provider,
         api_key=key,
@@ -38,12 +35,16 @@ def test_execution_uses_only_its_own_provider_reservation_when_free_balance_is_z
         currency="USD",
         active=True,
         is_default=True,
-        funded_native=Decimal("1.000000"),
+        funded_native=Decimal(str(funded_native)),
     )
+    return provider, account
+
+
+def _model_and_price(provider, *, slug):
     model = AIModel.objects.create(
         provider=provider,
-        slug="reservation-aware-model",
-        display_name="Reservation aware model",
+        slug=slug,
+        display_name=slug,
         upstream_model="provider-model-id",
         enabled=True,
     )
@@ -57,6 +58,17 @@ def test_execution_uses_only_its_own_provider_reservation_when_free_balance_is_z
         markup_percent=Decimal("100"),
         effective_from=timezone.now(),
     )
+    return model, price
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+def test_execution_uses_only_its_own_provider_reservation_when_free_balance_is_zero():
+    provider, account = _external_provider_with_funding(
+        slug="reservation-aware-provider",
+        funded_native="1.000000",
+    )
+    model, price = _model_and_price(provider, slug="reservation-aware-model")
     generation_id = uuid4()
     request_cost = RequestCost.objects.create(
         generation_id=generation_id,
@@ -93,35 +105,29 @@ def test_execution_uses_only_its_own_provider_reservation_when_free_balance_is_z
 
 
 @pytest.mark.django_db(transaction=True)
-def test_execution_does_not_treat_another_generation_reservation_as_its_own():
-    provider = Provider.objects.create(
+@override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+def test_execution_never_borrows_another_generation_provider_reservation():
+    provider, account = _external_provider_with_funding(
         slug="reservation-isolation-provider",
-        name="Reservation isolation provider",
-        adapter_type=Provider.AdapterType.ECHO,
-        enabled=True,
-        health_state=Provider.HealthState.HEALTHY,
+        funded_native="1.000000",
     )
-    model = AIModel.objects.create(
-        provider=provider,
-        slug="reservation-isolation-model",
-        display_name="Reservation isolation model",
-        upstream_model="echo",
-        enabled=True,
-    )
-    price = PriceVersion.objects.create(
-        model_slug=model.slug,
-        input_rub_per_million=Decimal("1"),
-        output_rub_per_million=Decimal("2"),
-        effective_from=timezone.now(),
-    )
+    model, price = _model_and_price(provider, slug="reservation-isolation-model")
     first_generation = uuid4()
-    RequestCost.objects.create(
+    first_cost = RequestCost.objects.create(
         generation_id=first_generation,
         price_version=price,
-        estimated_rub=Decimal("1.0000"),
+        estimated_rub=Decimal("2.0000"),
+        expected_provider_cost_rub=Decimal("1.0000"),
+        pricing_snapshot={"fx_rate": "1"},
     )
-    second_generation = uuid4()
+    account.refresh_from_db()
+    assert account_available_native(account) == Decimal("0.000000")
+    assert ProviderSpendReservation.objects.filter(
+        source_key=f"chat:{first_cost.id}:{price.id}",
+        state=ProviderSpendReservation.State.ACTIVE,
+    ).exists()
 
+    second_generation = uuid4()
     observed = {}
     module = SimpleNamespace()
     module.provider_available = lambda _provider: False
