@@ -9,6 +9,7 @@ type Props={value:string;models:AIModel[];disabled?:boolean;onChange:(value:stri
 type PickerSection="auto"|"model";
 type RoutingTier="economy"|"balanced"|"maximum";
 
+const MODEL_CATALOG_EVENT="aiws:model-catalog";
 const modes=[
  {value:"auto:auto",label:"AUTO",hint:"Сам определит сложность и выберет подходящую модель",icon:"spark" as const},
  {value:"auto:economy",label:"Простой",hint:"Быстро и экономно",icon:"zap" as const},
@@ -27,13 +28,14 @@ function normalizedProvider(model:AIModel){const raw=(model.provider||"").trim()
 function providerLabelByKey(key:string){return PROVIDERS[key]?.label??(key==="other"?"Другие модели":key)}
 function modelLabel(model:AIModel){let label=(model.display_name||model.slug).trim();const provider=providerLabelByKey(normalizedProvider(model));for(const prefix of [`${provider} · `,`${provider}: `,`${provider} - `]){if(label.toLowerCase().startsWith(prefix.toLowerCase())){label=label.slice(prefix.length).trim();break}}if(normalizedProvider(model)==="llm-system"){const haystack=`${model.slug} ${model.display_name} ${model.exact_api_id}`.toLowerCase();if(haystack.includes("max"))return "System Max";if(haystack.includes("pro"))return "System Pro";return "System Lite"}return label||model.slug}
 function tierForMode(value:string):RoutingTier|null{if(value==="auto:economy")return"economy";if(value==="auto:balanced")return"balanced";if(value==="auto:maximum")return"maximum";return null}
+function broadcastCatalogState(state:"ready"|"error",available:boolean){if(typeof window==="undefined")return;window.dispatchEvent(new CustomEvent(MODEL_CATALOG_EVENT,{detail:{state,available}}))}
 
 export function ModelPicker({value,models,disabled=false,onChange}:Props){
  const[open,setOpen]=useState(false);const[catalog,setCatalog]=useState<AIModel[]>(()=>models.filter(item=>item.available));const root=useRef<HTMLDivElement|null>(null);const autoFallbackRef=useRef("");const initialSection:PickerSection=value.startsWith("model:")?"model":"auto";const[section,setSection]=useState<PickerSection>(initialSection);
- useEffect(()=>{setCatalog(models.filter(item=>item.available));},[models]);
+ useEffect(()=>{const rows=models.filter(item=>item.available);setCatalog(rows);if(models.length>0)broadcastCatalogState("ready",rows.length>0)},[models]);
  // Header picker is the active WorkspaceV2 catalog owner. It refreshes itself because
  // the Composer in the current render path does not receive model-control props.
- useEffect(()=>{let active=true;const refresh=async()=>{if(typeof document!=="undefined"&&document.visibilityState==="hidden")return;try{const rows=await api<AIModel[]>("/models/");if(active)setCatalog(rows.filter(item=>item.available));}catch{}};void refresh();const timer=window.setInterval(()=>void refresh(),30000);const wake=()=>void refresh();window.addEventListener("online",wake);window.addEventListener("focus",wake);return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",wake);window.removeEventListener("focus",wake)}},[]);
+ useEffect(()=>{let active=true;const refresh=async()=>{if(typeof document!=="undefined"&&document.visibilityState==="hidden")return;try{const rows=await api<AIModel[]>("/models/");if(active){const ready=rows.filter(item=>item.available);setCatalog(ready);broadcastCatalogState("ready",ready.length>0)}}catch{if(active)broadcastCatalogState("error",catalog.length>0)}};void refresh();const timer=window.setInterval(()=>void refresh(),30000);const wake=()=>void refresh();window.addEventListener("online",wake);window.addEventListener("focus",wake);return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",wake);window.removeEventListener("focus",wake)}},[]);
  const tiersConfigured=useMemo(()=>catalog.some(item=>item.routing_tiers_configured===true),[catalog]);
  const tierAvailable=(tier:RoutingTier)=>!tiersConfigured||catalog.some(item=>(item.routing_tiers??[]).includes(tier));
  const visibleModes=useMemo(()=>modes.filter(item=>{const tier=tierForMode(item.value);return tier===null||tierAvailable(tier)}),[catalog,tiersConfigured]);
