@@ -24,17 +24,65 @@ echo '============================================================'
 bash scripts/update.sh --full
 
 echo '============================================================'
-echo '[2/5] Production configuration + readiness'
+echo '[2/5] Production configuration + runtime dependencies'
 echo '============================================================'
 # Run Django system checks against the actual production environment. This catches
 # unsafe local cache/procurement settings that an isolated test stack cannot prove.
 compose exec -T backend python manage.py check
 compose exec -T backend python - <<'PY'
+import json
+import os
+import time
+import urllib.parse
 import urllib.request
+from datetime import datetime, timezone as dt_timezone
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+import django
+django.setup()
+
+from django.core.cache import cache
+from apps.admin_ops.tasks import WORKER_HEARTBEAT_KEY
+
 with urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=8) as response:
     if response.status != 200:
         raise SystemExit(f'readiness HTTP {response.status}')
 print('CHAT_PRODUCTION_READINESS_OK')
+
+# Provider/model recovery, stale-generation cleanup and billing safety depend on
+# Celery beat + worker. Wait for a fresh heartbeat after the deployment rather than
+# letting a dead background plane pass the chat release gate.
+deadline = time.monotonic() + 75
+heartbeat = None
+while time.monotonic() < deadline:
+    heartbeat = cache.get(WORKER_HEARTBEAT_KEY)
+    if heartbeat:
+        try:
+            parsed = datetime.fromisoformat(str(heartbeat))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt_timezone.utc)
+            age = (datetime.now(dt_timezone.utc) - parsed.astimezone(dt_timezone.utc)).total_seconds()
+            if 0 <= age <= 180:
+                print(f'CHAT_WORKER_HEARTBEAT_OK age_seconds={age:.1f}')
+                break
+        except (TypeError, ValueError):
+            pass
+    time.sleep(5)
+else:
+    raise SystemExit(f'CHAT_WORKER_HEARTBEAT_STALE value={heartbeat!r}')
+
+# SearXNG is the required fresh-information path for the customer chat. A process
+# being up is not enough: prove that a real JSON search currently returns results.
+base = os.getenv('WEB_SEARCH_BASE_URL', 'http://searxng:8080').rstrip('/')
+query = urllib.parse.urlencode({'q': 'OpenAI', 'format': 'json'})
+with urllib.request.urlopen(f'{base}/search?{query}', timeout=10) as response:
+    if response.status != 200:
+        raise SystemExit(f'CHAT_SEARCH_HTTP_{response.status}')
+    payload = json.loads(response.read().decode('utf-8'))
+results = payload.get('results') if isinstance(payload, dict) else None
+if not isinstance(results, list) or not results:
+    raise SystemExit('CHAT_SEARCH_NO_RESULTS')
+print(f'CHAT_SEARCH_OK results={len(results)}')
 PY
 
 echo '============================================================'
@@ -70,7 +118,7 @@ if [[ -n "$E2E_USERNAME" && -n "$E2E_PASSWORD" && -n "$APP_DOMAIN" ]]; then
   echo 'CHAT_CUSTOMER_E2E_OK'
 else
   echo '[WARN] E2E_USERNAME/E2E_PASSWORD не настроены: внешний browser/HTTP smoke пропущен.'
-  echo '[INFO] Внутренний production customer preflight и live inference уже обязательны и пройдены.'
+  echo '[INFO] Production config, worker recovery, fresh search, AUTO customer preflight и live inference уже обязательны и пройдены.'
 fi
 
 echo '============================================================'
