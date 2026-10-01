@@ -6,8 +6,10 @@ from django.core.exceptions import ValidationError
 
 from apps.ai_registry.models import AIModel
 
+from .durable_follow import follow_existing_generation
 from .live_tools import needs_web_search
 from .managed_stream import managed_run
+from .models import Generation
 from .preflight_terminal import classify_preflight_exception
 from .streaming import prepare, sse
 
@@ -89,8 +91,8 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
     """Open SSE immediately and expose verifiable work stages, never chain-of-thought.
 
     ``prepare`` remains the authoritative transaction for routing/context/billing.
-    Running it lazily after the first SSE yield removes the previous silent wait
-    without duplicating or weakening any money/reliability logic.
+    Idempotent reconnects attach to an existing durable Generation instead of
+    starting a second provider call or surfacing ``generation_in_progress``.
     """
     content = str(payload.get("content") or "")
     search_expected = needs_web_search(content)
@@ -108,7 +110,7 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         )
 
     try:
-        generation, _created = prepare(
+        generation, created = prepare(
             user=user,
             conversation=conversation,
             idempotency_key=idempotency_key,
@@ -117,9 +119,6 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
     except GeneratorExit:
         raise
     except Exception as exc:
-        # prepare() already terminalizes a durable Generation when one exists. The
-        # transport layer must never turn an internal DB/search/billing exception
-        # into a silent broken SSE connection or expose raw provider/internal text.
         if not isinstance(exc, (ValidationError, AIModel.DoesNotExist)):
             logger.exception(
                 "Chat preflight failed owner_id=%s conversation_id=%s",
@@ -131,6 +130,17 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
             "routing", "failed", "Не удалось безопасно подготовить запрос."
         )
         yield sse("error", payload_out)
+        return
+
+    generation.refresh_from_db(fields=["state"])
+    if not created and generation.state != Generation.State.QUEUED:
+        yield from _status_events(
+            "answer",
+            "reconnecting",
+            "Продолжаю уже запущенный ответ без повторного запроса к AI…",
+            generation_id=str(generation.id),
+        )
+        yield from follow_existing_generation(generation)
         return
 
     context = generation.context_snapshot or {}
@@ -195,8 +205,12 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
 
     answer_started = False
     completed = False
+    follow_existing = False
     try:
         for chunk in managed_run(generation):
+            if isinstance(chunk, str) and "generation_in_progress" in chunk:
+                follow_existing = True
+                break
             if not answer_started and isinstance(chunk, str) and chunk.startswith("event: delta\n"):
                 answer_started = True
                 yield from _status_events(
@@ -211,5 +225,14 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         logger.exception("Chat activity stream failed generation_id=%s", generation.id)
         raise
     else:
+        if follow_existing:
+            yield from _status_events(
+                "answer",
+                "reconnecting",
+                "Подключаюсь к уже выполняющемуся ответу…",
+                generation_id=str(generation.id),
+            )
+            yield from follow_existing_generation(generation)
+            return
         if completed:
             yield from _status_events("answer", "completed", "Готово.")
