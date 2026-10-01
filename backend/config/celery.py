@@ -7,53 +7,26 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.runtime_settings")
 app = Celery("ai_workspace")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
+
+# CELERY_BEAT_SCHEDULE in settings.py is the authoritative baseline. Only add truly
+# new schedules here or override an existing key deliberately. Using a second name for
+# the same task creates duplicate broker traffic/worker load even when the task itself
+# has a distributed lock.
 app.conf.beat_schedule = {
     **(app.conf.beat_schedule or {}),
-    "system-worker-heartbeat": {
-        "task": "apps.admin_ops.tasks.system_heartbeat_task",
-        "schedule": 60.0,
-    },
     "chat-service-health-watch": {
         "task": "apps.chat.tasks.chat_service_health_watch_task",
         "schedule": 60.0,
     },
-    "recover-quarantined-ai-models": {
-        "task": "apps.ai_registry.tasks.model_quarantine_watch_task",
-        "schedule": 300.0,
-    },
+    # Keep the existing recovery key/cadence. recover_stale_operations_task already
+    # performs quarantined-model recovery, so no second model-recovery beat job exists.
     "recover-stale-operations": {
         "task": "apps.admin_ops.tasks.recover_stale_operations_task",
         "schedule": 300.0,
     },
-    "reconcile-payments-refunds": {
-        "task": "apps.admin_ops.tasks.payment_reconciliation_task",
-        "schedule": 300.0,
-    },
-    "economic-safety-watch": {
-        "task": "apps.admin_ops.tasks.economic_safety_watch_task",
-        "schedule": 300.0,
-    },
-    "billing-ledger-integrity-watch": {
-        "task": "apps.admin_ops.tasks.billing_integrity_watch_task",
-        "schedule": 900.0,
-    },
-    "official-ai-pricing-daily": {
-        "task": "apps.admin_ops.tasks.official_pricing_sync_task",
-        "schedule": 86400.0,
-    },
-    "detect-abuse-hourly": {
-        "task": "apps.admin_ops.tasks.detect_abuse_task",
-        "schedule": 3600.0,
-    },
-    "support-sla-watch": {
-        "task": "apps.admin_ops.tasks.support_sla_watch_task",
-        "schedule": 900.0,
-    },
-    "dispatch-autonomous-agents": {
-        "task": "apps.agents.tasks.dispatch_due_agent_schedules",
-        "schedule": 60.0,
-    },
-    "check-external-connections": {
+    # External connections need a faster product-facing health cadence than the old
+    # six-hour baseline. Override the SAME key instead of scheduling the same task twice.
+    "external-connection-health-watch": {
         "task": "apps.connections.tasks.check_external_connections",
         "schedule": 300.0,
     },
