@@ -1,3 +1,4 @@
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from .models import FileAsset, FileChunk
 from .semantic_embeddings import MODEL_VERSION, embed_passage, embed_query
 
 WORD_RE = re.compile(r"[a-zа-яё0-9]{2,}", re.IGNORECASE)
+logger = logging.getLogger(__name__)
 INJECTION_PATTERNS = (
     (
         "instruction_override",
@@ -106,6 +108,7 @@ def detect_prompt_injection(value: str) -> tuple[str, list[str]]:
 
 def prepare_chunk(chunk: FileChunk, asset: FileAsset) -> FileChunk:
     import hashlib
+
     from django.utils import timezone
 
     chunk.file = asset
@@ -158,10 +161,18 @@ def retrieve_project_chunks(*, user, project_id, query: str, limit: int = 4):
     queryset = authorized_chunks(user, project_id).exclude(
         injection_risk=FileChunk.InjectionRisk.BLOCKED
     )
-    query_embedding = embed_query(query)
+    if not queryset.exists():
+        return []
+    try:
+        query_embedding = embed_query(query)
+    except Exception:
+        # Semantic infrastructure is auxiliary. Authorized lexical retrieval and
+        # explicitly attached document context remain usable during its outage.
+        logger.warning("Semantic file retrieval unavailable; using lexical retrieval", exc_info=True)
+        query_embedding = None
     scan_limit = settings.SMART_CONTEXT_RETRIEVAL_SCAN_LIMIT
 
-    if connection.vendor == "postgresql":
+    if connection.vendor == "postgresql" and query_embedding is not None:
         semantic_candidates = list(
             queryset.filter(embedding_model=MODEL_VERSION)
             .exclude(embedding__isnull=True)
@@ -187,7 +198,7 @@ def retrieve_project_chunks(*, user, project_id, query: str, limit: int = 4):
             and hasattr(chunk, "vector_distance")
         ):
             vector = max(0.0, 1.0 - float(chunk.vector_distance))
-        elif chunk.embedding_model == MODEL_VERSION:
+        elif chunk.embedding_model == MODEL_VERSION and query_embedding is not None:
             vector = cosine_similarity(chunk.embedding, query_embedding)
         else:
             vector = 0.0

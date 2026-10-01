@@ -112,7 +112,7 @@ def test_partial_response_contract_is_preserved_but_private():
 
 
 def test_reconnect_reports_confirmed_partial_charge_truthfully():
-    generation = SimpleNamespace(id="00000000-0000-0000-0000-000000000001")
+    generation = SimpleNamespace(id="00000000-0000-0000-0000-000000000001", state=Generation.State.RUNNING)
     snapshot = {
         "state": Generation.State.FAILED,
         "error_code": "timeout",
@@ -136,7 +136,7 @@ def test_reconnect_reports_confirmed_partial_charge_truthfully():
 
 
 def test_reconnect_hides_internal_runtime_failure_code():
-    generation = SimpleNamespace(id="00000000-0000-0000-0000-000000000002")
+    generation = SimpleNamespace(id="00000000-0000-0000-0000-000000000002", state=Generation.State.RUNNING)
     snapshot = {
         "state": Generation.State.FAILED,
         "error_code": "stream_runtime_failed",

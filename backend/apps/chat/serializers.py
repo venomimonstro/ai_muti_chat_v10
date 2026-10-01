@@ -8,7 +8,6 @@ from .branches import visible_messages
 from .models import Conversation, ConversationDraft, Message
 from .public_errors import public_error_code
 
-
 PUBLIC_SYSTEM_LEVELS = {
     Conversation.RoutingMode.ECONOMY: "System Lite",
     Conversation.RoutingMode.BALANCED: "System Pro",
@@ -72,7 +71,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ("id", "branch", "role", "content", "status", "generation", "created_at")
+        fields = ("id", "branch", "role", "content", "status", "generation", "client_message_id", "created_at")
 
     def get_generation(self, obj):
         try:

@@ -9,7 +9,6 @@ from django.core.exceptions import ValidationError
 from apps.accounts.services import enforce_spend_limits
 from apps.billing.models import Wallet
 
-
 _current_user: ContextVar[object | None] = ContextVar(
     "chat_customer_capacity_user",
     default=None,
@@ -18,6 +17,7 @@ _customer_rejections: ContextVar[int] = ContextVar(
     "chat_customer_capacity_rejections",
     default=0,
 )
+_preview_mode: ContextVar[bool] = ContextVar("chat_capacity_preview", default=False)
 
 
 def _charge(value) -> Decimal:
@@ -40,6 +40,10 @@ def customer_can_reserve(user, amount) -> bool:
     wallet, _ = Wallet.objects.get_or_create(user=user)
     if wallet.available_rub < charge:
         return False
+    if _preview_mode.get():
+        # Preview must return its explicit spend-guard warning/409 contract, not
+        # hide every model and misreport a configured spending limit as no funds.
+        return True
     try:
         enforce_spend_limits(wallet, charge)
     except ValidationError:
@@ -126,6 +130,7 @@ def install(*, streaming_module, cost_preview_module) -> None:
     if not getattr(raw_preview, "_ai_workspace_customer_capacity", False):
 
         def chat_cost_preview(*args, **kwargs):
+            token_preview = _preview_mode.set(True)
             token_user = _current_user.set(kwargs.get("user"))
             token_rejections = _customer_rejections.set(0)
             try:
@@ -133,6 +138,7 @@ def install(*, streaming_module, cost_preview_module) -> None:
             except ValidationError as exc:
                 raise _friendly_capacity_error(exc) from exc
             finally:
+                _preview_mode.reset(token_preview)
                 _customer_rejections.reset(token_rejections)
                 _current_user.reset(token_user)
 

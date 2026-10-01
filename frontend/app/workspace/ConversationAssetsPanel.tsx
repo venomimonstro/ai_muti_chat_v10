@@ -11,7 +11,7 @@ type LinkItem={url:string;title:string;message_id:string|null;source:string};
 type AssetsResponse={counts:{images:number;files:number;links:number};images:ImageItem[];files:FileItem[];links:LinkItem[]};
 type SearchResponse={query:string;results:SearchResult[]};
 const statusLabel:Record<string,string>={uploaded:"Загружается",quarantine:"Проверяется",parsing:"Обрабатывается",ready:"Готов",partial:"Обработан частично",failed:"Ошибка",deleting:"Удаляется",deleted:"Удалён"};
-const API_BASE=process.env.NEXT_PUBLIC_API_URL??"http://localhost:8000/api/v1";
+const API_BASE=process.env.NEXT_PUBLIC_API_URL??"/api/v1";
 
 export function ConversationAssetsPanel({conversationId}:{conversationId:string}){
  const[open,setOpen]=useState(false);const[kind,setKind]=useState<Kind>("messages");const[query,setQuery]=useState("");const[data,setData]=useState<AssetsResponse|null>(null);const[messages,setMessages]=useState<SearchResult[]>([]);const[busy,setBusy]=useState(false);const[error,setError]=useState("");

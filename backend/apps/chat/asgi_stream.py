@@ -219,6 +219,8 @@ async def follow_generation_async(
     heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS,
     poll_seconds=FOLLOW_POLL_SECONDS,
 ):
+    yield sse("generation", {"id": str(generation.id), "state": generation.state, "reconnected": True})
+    last_text = None
     heartbeat_deadline = asyncio.get_running_loop().time()
     while True:
         snapshot = await asyncio.to_thread(_generation_snapshot, generation.id)
@@ -285,6 +287,9 @@ async def follow_generation_async(
             )
             return
 
+        if snapshot["text"] and snapshot["text"] != last_text:
+            last_text = snapshot["text"]
+            yield sse("snapshot", {"text": last_text, "state": state, "cost_rub": snapshot["cost_rub"], "reconnected": True})
         now = asyncio.get_running_loop().time()
         if now >= heartbeat_deadline:
             yield sse(
@@ -345,7 +350,7 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                 kind, value = await asyncio.wait_for(
                     queue.get(), timeout=max(0.05, float(heartbeat_seconds))
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 try:
                     snapshot = await asyncio.to_thread(_generation_snapshot, generation.id)
                     heartbeat_state = snapshot["state"]

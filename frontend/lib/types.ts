@@ -96,6 +96,8 @@ export type GenerationMeta = {
 
 export type ChatMessage = {
   id: string;
+  client_message_id?: string | null;
+  pending_generation_id?: string;
   branch: string | null;
   role: "user" | "assistant" | "system";
   content: string;
@@ -225,4 +227,116 @@ export type Notification = {
   action_url: string;
   read_at: string | null;
   created_at: string;
+};
+
+export type Preference = {
+  low_balance_threshold_rub: string;
+  daily_spend_limit_rub: string | null;
+  monthly_spend_limit_rub: string | null;
+  product_notifications: boolean;
+  billing_notifications: boolean;
+  compact_sidebar: boolean;
+  memory_enabled: boolean;
+  auto_memory_enabled: boolean;
+  auto_memory_default_scope: "global" | "project" | "conversation";
+  auto_memory_available: boolean;
+  updated_at: string;
+};
+
+export type MemoryItem = {
+  id: string;
+  project: string | null;
+  conversation: string | null;
+  scope: "global" | "project" | "conversation";
+  memory_type: "fact" | "preference" | "instruction" | "decision";
+  content: string;
+  importance_score: string;
+  confidence_score: string;
+  trust_level: string;
+  source_kind: string;
+  status: "active" | "archived" | "superseded" | "deleted";
+  pinned: boolean;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MemoryCandidate = {
+  id: string;
+  project: string | null;
+  conversation: string;
+  source_message: string;
+  suggested_scope: "global" | "project" | "conversation";
+  memory_type: "fact" | "preference" | "instruction" | "decision";
+  content: string;
+  subject_key: string;
+  confidence_score: string;
+  trust_level: string;
+  source_kind: string;
+  extraction_version: string;
+  reason: string;
+  status: "pending" | "conflict" | "duplicate" | "accepted" | "rejected" | "dismissed";
+  duplicate_content: string | null;
+  conflict_content: string | null;
+  accepted_item: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+};
+
+export type SearchResult = {
+  type: "conversation" | "message" | "project" | "file";
+  id: string;
+  conversation_id?: string;
+  project_id?: string;
+  title: string;
+  excerpt: string;
+  role?: "user" | "assistant" | "system";
+  created_at: string;
+  score: number;
+  match: "keyword" | "semantic" | "hybrid";
+  navigation: {
+    conversation_id?: string;
+    message_id?: string;
+    project_id?: string;
+    file_id?: string;
+    anchor?: string;
+  };
+  signals?: {lexical: number; semantic: number};
+};
+
+export type ImageModel = {
+  slug: string;
+  display_name: string;
+  provider: string;
+  supported_sizes: string[];
+  supported_qualities: string[];
+  max_images: number;
+};
+
+export type ImageGeneration = {
+  id: string;
+  model: string;
+  model_name: string;
+  provider: string;
+  prompt: string;
+  size: string;
+  quality: string;
+  requested_count: number;
+  actual_count: number;
+  state: "queued" | "running" | "completed" | "failed";
+  estimated_cost_rub: string;
+  actual_cost_rub: string | null;
+  error_code: string;
+  created_at: string;
+  completed_at: string | null;
+  images: Array<{
+    id: string;
+    position: number;
+    mime_type: string;
+    size_bytes: number;
+    sha256: string;
+    revised_prompt: string;
+    source_url: string;
+    created_at: string;
+  }>;
 };

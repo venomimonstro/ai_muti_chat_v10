@@ -1,8 +1,11 @@
+import asyncio
 import logging
+import time
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.core.handlers.asgi import ASGIRequest
+from django.db import close_old_connections, transaction
 from django.db.models import Q
 from django.http import StreamingHttpResponse
 from rest_framework import status
@@ -27,7 +30,7 @@ from .product_identity import (
     identity_sse,
 )
 from .serializers import SendMessageSerializer
-from .streaming import _validate_replayed_generation, prepare
+from .streaming import _validate_replayed_generation, prepare, sse
 
 logger = logging.getLogger(__name__)
 COST_CONFIRMATION_CHANGED = "cost_confirmation_changed"
@@ -182,7 +185,67 @@ def _held_confirmation_response(request, generation):
         error_code=COST_CONFIRMATION_CHANGED,
     ).update(error_code="")
     generation.error_code = ""
+    _authorize_customer_stream(generation)
     return _stream_response(_customer_stream(request, generation, created=False))
+
+
+@transaction.atomic
+def _authorize_customer_stream(generation):
+    # prepare() publishes QUEUED before routing/search/reservations finish. The
+    # HTTP cost ceiling check must also complete before a reconnect may execute it.
+    locked = Generation.objects.select_for_update().get(pk=generation.pk)
+    if locked.state == Generation.State.QUEUED and not locked.error_code:
+        context = dict(locked.context_snapshot or {})
+        context["customer_stream_authorized"] = True
+        locked.context_snapshot = context
+        locked.save(update_fields=["context_snapshot"])
+        generation.context_snapshot = context
+
+
+def _preparing_snapshot(generation_id):
+    close_old_connections()
+    try:
+        return Generation.objects.only("state", "error_code", "context_snapshot").get(pk=generation_id)
+    finally:
+        close_old_connections()
+
+
+def _wait_for_authorized_stream(generation):
+    yield sse("generation", {"id": str(generation.id), "state": generation.state, "reconnected": True})
+    while True:
+        current = _preparing_snapshot(generation.id)
+        if current.state != Generation.State.QUEUED:
+            yield from follow_existing_generation(current)
+            return
+        if current.error_code == COST_CONFIRMATION_CHANGED:
+            # Close this read-only follower so the browser reopens the same key and
+            # receives the normal HTTP 409 cost-confirmation contract.
+            yield sse("heartbeat", {"state": "awaiting_confirmation"})
+            return
+        if (current.context_snapshot or {}).get("customer_stream_authorized"):
+            yield from managed_run(current)
+            return
+        yield sse("heartbeat", {"state": "preparing"})
+        time.sleep(0.5)
+
+
+async def _wait_for_authorized_stream_async(generation):
+    yield sse("generation", {"id": str(generation.id), "state": generation.state, "reconnected": True})
+    while True:
+        current = await asyncio.to_thread(_preparing_snapshot, generation.id)
+        if current.state != Generation.State.QUEUED:
+            async for chunk in follow_generation_async(current):
+                yield chunk
+            return
+        if current.error_code == COST_CONFIRMATION_CHANGED:
+            yield sse("heartbeat", {"state": "awaiting_confirmation"})
+            return
+        if (current.context_snapshot or {}).get("customer_stream_authorized"):
+            async for chunk in managed_run_async(current):
+                yield chunk
+            return
+        yield sse("heartbeat", {"state": "preparing"})
+        await asyncio.sleep(0.5)
 
 
 def _customer_stream(request, generation, *, created):
@@ -195,6 +258,13 @@ def _customer_stream(request, generation, *, created):
     provider/billing path.
     """
     raw_request = getattr(request, "_request", None)
+    awaiting_authorization = (
+        not created
+        and generation.state == Generation.State.QUEUED
+        and not (generation.context_snapshot or {}).get("customer_stream_authorized")
+    )
+    if awaiting_authorization:
+        return _wait_for_authorized_stream_async(generation) if isinstance(raw_request, ASGIRequest) else _wait_for_authorized_stream(generation)
     follow = not created and generation.state != Generation.State.QUEUED
     if isinstance(raw_request, ASGIRequest):
         return follow_generation_async(generation) if follow else managed_run_async(generation)
@@ -433,6 +503,7 @@ class ConfirmedConversationStreamView(APIView):
                 )
                 return Response(payload, status=status.HTTP_409_CONFLICT)
 
+        _authorize_customer_stream(generation)
         return _stream_response(
             _customer_stream(request, generation, created=created)
         )

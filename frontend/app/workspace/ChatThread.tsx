@@ -2,6 +2,7 @@
 
 import {useCallback,useEffect,useMemo,useRef,useState} from "react";
 import {api} from "../../lib/api";
+import {mergeChatMessages} from "../../lib/chat-state";
 import type {ChatMessage,Conversation} from "../../lib/types";
 import {ConversationAssetsPanel} from "./ConversationAssetsPanel";
 import {ErrorBoundary} from "./ErrorBoundary";
@@ -15,14 +16,13 @@ const SERVER_GENERATION_EVENT="aiws:server-generation-active";
 const isOptimistic=(message:ChatMessage)=>message.id.startsWith("local-user-")||message.id.startsWith("local-ai-");
 const isOptimisticUser=(message:ChatMessage)=>message.id.startsWith("local-user-");
 const isOptimisticAssistant=(message:ChatMessage)=>message.id.startsWith("local-ai-");
-const nearInTime=(a:ChatMessage,b:ChatMessage)=>Math.abs(new Date(a.created_at).getTime()-new Date(b.created_at).getTime())<=15000;
 
 type WorkspacePage={conversation:Conversation;has_more:boolean;next_before:string|null};
 
 function displayMessages(messages:ChatMessage[]){
  const seenIds=new Set<string>();
  const unique=messages.filter(message=>{if(seenIds.has(message.id))return false;seenIds.add(message.id);return true;});
- const persisted=unique.filter(message=>!isOptimistic(message));
+
  const preacceptedGhosts=new Set<string>();
  // Workspace adds an optimistic user+assistant pair before cost preview / backend
  // prepare. Until the first real delta arrives, that pair is not proof that the
@@ -36,16 +36,7 @@ function displayMessages(messages:ChatMessage[]){
    preacceptedGhosts.add(user.id);preacceptedGhosts.add(assistant.id);
   }
  }
- return unique.filter(message=>{
-  if(preacceptedGhosts.has(message.id))return false;
-  if(!isOptimistic(message))return true;
-  return !persisted.some(server=>{
-   if(server.role!==message.role||!nearInTime(server,message))return false;
-   if(server.content===message.content)return true;
-   if(message.role==="assistant"&&server.content&&message.content)return server.content.startsWith(message.content)||message.content.startsWith(server.content);
-   return false;
-  });
- });
+ return mergeChatMessages(unique,[]).filter(message=>!preacceptedGhosts.has(message.id));
 }
 
 function serverGenerationInFlight(conversation:Conversation|null){

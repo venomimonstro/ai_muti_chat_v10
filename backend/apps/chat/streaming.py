@@ -11,7 +11,12 @@ from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError, adapter_for
 from apps.ai_registry.models import AIModel
-from apps.ai_registry.reliability import candidate_models, provider_available, record_failure, record_success
+from apps.ai_registry.reliability import (
+    candidate_models,
+    provider_available,
+    record_failure,
+    record_success,
+)
 from apps.ai_registry.router import select_route
 from apps.billing.models import RequestCost
 from apps.billing.pricing import (
@@ -24,13 +29,18 @@ from apps.billing.pricing import (
 )
 from apps.billing.reconciliation import record_cost_outcome
 from apps.billing.services import release, reserve, settle
-from apps.memory_store.services import extract_memory_candidates, process_explicit_command, record_memory_usage
+from apps.memory_store.services import (
+    extract_memory_candidates,
+    process_explicit_command,
+    record_memory_usage,
+)
 from apps.procurement.readiness import quote_has_procurement_capacity
 from apps.workspace_search.embeddings import index_message
 
 from .attachment_context import enrich_snapshot_with_attachments
 from .attachments import attachment_metadata, resolve_chat_attachments
 from .branches import ensure_active_branch
+from .cancellation import cancel_requested
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 from .partial_billing import settle_delivered_partial
@@ -577,6 +587,8 @@ def run(generation, *, adapter=None):
                         messages=history,
                         max_output_tokens=max_output_tokens,
                     ):
+                        if cancel_requested(generation):
+                            raise GeneratorExit
                         if event.kind == "delta":
                             emitted = True
                             full_text += event.text_delta

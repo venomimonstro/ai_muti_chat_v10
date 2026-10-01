@@ -34,7 +34,7 @@ class SMMContentPlan(models.Model):
     class Meta:
         app_label = "connections"
         ordering = ["-updated_at"]
-        indexes = [models.Index(fields=["owner", "status"]), models.Index(fields=["connection", "period_start"])]
+        indexes = [models.Index(fields=["owner", "status"], name="connections_owner_i_5ab4a5_idx"), models.Index(fields=["connection", "period_start"], name="connections_connect_b14428_idx")]
 
     def clean(self):
         if self.period_end < self.period_start:
@@ -90,7 +90,7 @@ class SMMContentItem(models.Model):
     class Meta:
         app_label = "connections"
         ordering = ["scheduled_at", "sort_order", "created_at"]
-        indexes = [models.Index(fields=["plan", "status"])]
+        indexes = [models.Index(fields=["plan", "status"], name="connections_plan_id_218d3c_idx")]
 
     def clean(self):
         if self.status in {self.Status.SCHEDULED, self.Status.PUBLISHING, self.Status.PUBLISHED} and not self.content.strip():

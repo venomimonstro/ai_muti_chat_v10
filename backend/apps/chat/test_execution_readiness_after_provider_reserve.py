@@ -23,7 +23,7 @@ class ExecutionReadinessAfterProviderReserveTests(TestCase):
         key.set_secret("sk-execution-funded")
         key.health_state = ProviderApiKey.HealthState.HEALTHY
         key.save()
-        ProviderFundingAccount.objects.create(
+        account = ProviderFundingAccount.objects.create(
             provider=provider,
             api_key=key,
             label="Primary funding",
@@ -45,7 +45,8 @@ class ExecutionReadinessAfterProviderReserveTests(TestCase):
         # Catalog/preflight readiness correctly sees no *new* free provider funds.
         self.assertFalse(provider_available(provider))
         # The already-funded in-flight request must still be allowed to call the API.
-        self.assertTrue(execution_model_ready(model))
+        self.assertFalse(execution_model_ready(model))
+        self.assertTrue(execution_model_ready(model, funding_account_id=account.pk))
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
     def test_execution_still_blocks_dead_provider_after_reservation(self):

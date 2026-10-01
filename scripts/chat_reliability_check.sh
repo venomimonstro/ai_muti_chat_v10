@@ -20,7 +20,7 @@ grep -Fq '/messages/cancel/' frontend/lib/api.ts
 grep -Fq '"cancelled"' frontend/lib/api.ts
 grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
 grep -Fq 'stream_first_event_timeout' frontend/lib/api.ts
-grep -Fq 'reader.cancel("stream_first_event_timeout")' frontend/lib/api.ts
+(cd frontend && npm run test:chat)
 grep -Fq 'const completedSnapshot = event === "snapshot" && String(parsed.state ?? "") === "completed";' frontend/lib/api.ts
 grep -Fq 'verifyPendingStream' frontend/lib/api.ts
 grep -Fq '/messages/status/?idempotency_key=' frontend/lib/api.ts
@@ -93,6 +93,10 @@ docker compose --ansi never -f "$TEST_COMPOSE" up -d postgres
 echo '[chat-check] run production chat reliability regressions'
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   pytest -q \
+  apps/ai_registry/test_stream_completion_integrity.py \
+  apps/ai_registry/test_credential_save_continuity.py \
+  apps/chat/test_preflight_reconnect_authorization.py \
+  apps/files/test_rag_outage_fallback.py \
   apps/ai_registry/test_chat_reliability.py \
   apps/ai_registry/test_unified_readiness.py \
   apps/ai_registry/test_client_readiness_wiring.py \

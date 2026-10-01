@@ -3,6 +3,8 @@ const TEST_USER_KEY = "aiws:test-user";
 const API_TIMEOUT_MS = 12000;
 const STREAM_OPEN_TIMEOUT_MS = 30000;
 const STREAM_FIRST_EVENT_TIMEOUT_MS = 20000;
+const STREAM_IDLE_TIMEOUT_MS = 30000;
+const streamGuards = new WeakMap<Response, () => void>();
 const PENDING_MISSING_GRACE_MS = 30000;
 const STREAM_RECONNECT_DELAYS_MS = [500, 1000, 1600, 2500, 4000, 6000, 8000];
 
@@ -89,6 +91,7 @@ function timeoutSignal(parent?: AbortSignal | null, timeoutMs = API_TIMEOUT_MS) 
   return {
     signal: controller.signal,
     timedOut: () => timedOut,
+    clearTimeout: () => window.clearTimeout(timer),
     cleanup: () => {
       window.clearTimeout(timer);
       parent?.removeEventListener("abort", abortFromParent);
@@ -96,16 +99,29 @@ function timeoutSignal(parent?: AbortSignal | null, timeoutMs = API_TIMEOUT_MS) 
   };
 }
 
-async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS) {
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS, keepAbortForBody = false) {
   const guard = timeoutSignal(init.signal, timeoutMs);
+  let held = false;
   try {
-    return await fetch(input, {...init, signal: guard.signal});
+    const response = await fetch(input, {...init, signal: guard.signal});
+    if (keepAbortForBody && response.body) {
+      guard.clearTimeout();
+      streamGuards.set(response, guard.cleanup);
+      held = true;
+    }
+    return response;
   } catch (reason) {
     if (guard.timedOut()) throw new ApiError("Сервер слишком долго не отвечает. Попробуйте ещё раз.", 504, {code: "frontend_api_timeout"});
     throw reason;
   } finally {
-    guard.cleanup();
+    if (!held) guard.cleanup();
   }
+}
+
+function releaseStreamResponse(response: Response) {
+  streamGuards.get(response)?.();
+  streamGuards.delete(response);
+  void response.body?.cancel().catch(() => undefined);
 }
 
 export async function ensureCsrf() {
@@ -349,11 +365,13 @@ export async function streamMessage(
   };
   signal.addEventListener("abort", cancelBackend, {once: true});
   if (signal.aborted) {
+    signal.removeEventListener("abort", cancelBackend);
     cancelBackend();
     await cancelPromise;
     throw signal.reason ?? new DOMException("Aborted", "AbortError");
   }
 
+  try {
   if (likelyNeedsResearch(payload.content)) {
     activity(onEvent, "route", "running", "Определяю сложность запроса и готовлю актуальный поиск…");
     onEvent({event: "routing", data: {explanation: "Проверяю актуальные данные и внешние источники…"}});
@@ -394,7 +412,7 @@ export async function streamMessage(
           ? {confirmed_max_rub: pending.confirmedMaxRub}
           : {}),
       }),
-    }, STREAM_OPEN_TIMEOUT_MS);
+    }, STREAM_OPEN_TIMEOUT_MS, true);
   };
 
   const openResponse = async () => {
@@ -402,6 +420,7 @@ export async function streamMessage(
     let response = await send(Boolean(pending.confirmedCost));
 
     if (response.status === 403 && !signal.aborted) {
+      releaseStreamResponse(response);
       csrfToken = "";
       await ensureCsrf();
       response = await send(Boolean(pending.confirmedCost));
@@ -413,6 +432,8 @@ export async function streamMessage(
         details = (await response.json()) as CostConfirmationError;
       } catch {
         details = null;
+      } finally {
+        releaseStreamResponse(response);
       }
       if (!details || !["cost_confirmation_required", "cost_confirmation_changed"].includes(String(details.code ?? ""))) {
         throw new ApiError(errorText(details), 409, details);
@@ -434,6 +455,8 @@ export async function streamMessage(
         details = (await response.json()) as CostConfirmationError;
       } catch {
         details = null;
+      } finally {
+        releaseStreamResponse(response);
       }
       throw new ApiError(
         "Стоимость запроса продолжает изменяться. Деньги не списаны — повторите отправку после обновления маршрута.",
@@ -453,6 +476,8 @@ export async function streamMessage(
         message = errorText(errorPayload);
       } catch {
         // Response without JSON body.
+      } finally {
+        releaseStreamResponse(response);
       }
       throw new ApiError(message, response.status, errorPayload);
     }
@@ -469,32 +494,38 @@ export async function streamMessage(
     let receivedFirstDelta = false;
 
     const readChunk = async () => {
-      if (receivedFirstEvent) return reader.read();
       let timer: number | null = null;
+      const code = receivedFirstEvent ? "stream_idle_timeout" : "stream_first_event_timeout";
+      const abort = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+      signal.addEventListener("abort", abort, {once: true});
       try {
+        if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
         return await Promise.race([
           reader.read(),
           new Promise<never>((_resolve, reject) => {
             timer = window.setTimeout(() => {
-              void reader.cancel("stream_first_event_timeout").catch(()=>undefined);
+              void reader.cancel(code).catch(()=>undefined);
               reject(new ApiError(
                 "Ответ не начал поступать вовремя. Восстанавливаю тот же запрос без повторного списания.",
                 504,
-                {code: "stream_first_event_timeout"},
+                {code},
               ));
-            }, STREAM_FIRST_EVENT_TIMEOUT_MS);
+            }, receivedFirstEvent ? STREAM_IDLE_TIMEOUT_MS : STREAM_FIRST_EVENT_TIMEOUT_MS);
           }),
         ]);
       } finally {
         if (timer !== null) window.clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
       }
     };
 
+    try {
     while (true) {
       const {done, value} = await readChunk();
+      if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
       if (value?.length) receivedFirstEvent = true;
       buffer += decoder.decode(value, {stream: !done});
-      const blocks = buffer.split("\n\n");
+      const blocks = buffer.split(/\r?\n\r?\n/);
       buffer = blocks.pop() ?? "";
       for (const block of blocks) {
         let event = "message";
@@ -556,13 +587,19 @@ export async function streamMessage(
         } else if (event === "error") {
           activity(onEvent, "error", "failed", String(parsed.message ?? "Не удалось получить ответ"));
         }
-        onEvent({event, data: parsed});
+        onEvent({event, data: event === "generation" ? {...parsed, client_message_id: pending.payload.client_message_id} : parsed});
+        if (terminal) return "completed";
       }
       if (done) {
         if (terminal) return "completed";
         if (inProgress) return "retry";
         return "retry";
       }
+    }
+    } finally {
+      void reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+      releaseStreamResponse(response);
     }
   };
 
@@ -600,4 +637,7 @@ export async function streamMessage(
   throw lastError instanceof Error
     ? lastError
     : new ApiError("Не удалось восстановить соединение с чатом. Запрос сохранён — обновите чат через несколько секунд.", 503);
+  } finally {
+    signal.removeEventListener("abort", cancelBackend);
+  }
 }

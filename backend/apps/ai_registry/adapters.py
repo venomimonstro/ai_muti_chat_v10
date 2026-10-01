@@ -272,6 +272,23 @@ class AnthropicMessagesAdapter(HTTPAdapter):
         return {"text", "streaming", "vision", "tools"}
 
 
+def _chat_completion_event(request_id, usage, finished):
+    """EOF alone proves neither a complete answer nor a zero upstream bill."""
+    if not finished:
+        raise ProviderError("Provider stream ended before completion", code="invalid_stream", retryable=True)
+    try:
+        raw_input = usage["prompt_tokens"]
+        raw_output = usage["completion_tokens"]
+        if isinstance(raw_input, bool) or isinstance(raw_output, bool):
+            raise ValueError("Boolean token usage")
+        input_tokens, output_tokens = int(raw_input), int(raw_output)
+        if input_tokens <= 0 or output_tokens < 0 or input_tokens != raw_input or output_tokens != raw_output:
+            raise ValueError("Invalid token usage")
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ProviderError("Provider did not confirm token usage", code="provider_usage_missing", retryable=False) from exc
+    return ProviderStreamEvent(kind="completed", provider_request_id=request_id, input_tokens=input_tokens, output_tokens=output_tokens)
+
+
 class DeepSeekChatAdapter(HTTPAdapter):
     def __init__(self, *, api_key: str, base_url: str = "https://api.deepseek.com"):
         if not api_key:
@@ -289,6 +306,7 @@ class DeepSeekChatAdapter(HTTPAdapter):
         payload = {"model": model, "messages": [{"role": item["role"], "content": _text_only(item["content"])} for item in messages], "max_tokens": max_output_tokens, "stream": True, "stream_options": {"include_usage": True}}
         request_id = ""
         usage = {}
+        finished = False
         try:
             with httpx.stream("POST", f"{self.base_url}/chat/completions", headers=self.headers, json=payload, timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS) as response:
                 response.raise_for_status()
@@ -296,17 +314,21 @@ class DeepSeekChatAdapter(HTTPAdapter):
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
-                    if not data or data == "[DONE]":
+                    if data == "[DONE]":
+                        finished = True
+                        break
+                    if not data:
                         continue
                     event = json.loads(data)
                     request_id = event.get("id", request_id)
                     usage = event.get("usage") or usage
                     choices = event.get("choices") or []
+                    finished = finished or any(choice.get("finish_reason") is not None for choice in choices)
                     if choices:
                         text = (choices[0].get("delta") or {}).get("content") or ""
                         if text:
                             yield ProviderStreamEvent(kind="delta", text_delta=text)
-                yield ProviderStreamEvent(kind="completed", provider_request_id=request_id, input_tokens=usage.get("prompt_tokens", 0), output_tokens=usage.get("completion_tokens", 0))
+                yield _chat_completion_event(request_id, usage, finished)
         except httpx.HTTPError as exc:
             raise _http_error(exc) from exc
         except json.JSONDecodeError as exc:
@@ -330,6 +352,7 @@ class XAIChatAdapter(DeepSeekChatAdapter):
         payload = {"model": model, "messages": [{"role": item["role"], "content": _openai_chat_content(item["content"])} for item in messages], "max_tokens": max_output_tokens, "stream": True, "stream_options": {"include_usage": True}}
         request_id = ""
         usage = {}
+        finished = False
         try:
             with httpx.stream("POST", f"{self.base_url}/chat/completions", headers=self.headers, json=payload, timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS) as response:
                 response.raise_for_status()
@@ -337,17 +360,21 @@ class XAIChatAdapter(DeepSeekChatAdapter):
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
-                    if not data or data == "[DONE]":
+                    if data == "[DONE]":
+                        finished = True
+                        break
+                    if not data:
                         continue
                     event = json.loads(data)
                     request_id = event.get("id", request_id)
                     usage = event.get("usage") or usage
                     choices = event.get("choices") or []
+                    finished = finished or any(choice.get("finish_reason") is not None for choice in choices)
                     if choices:
                         text = (choices[0].get("delta") or {}).get("content") or ""
                         if text:
                             yield ProviderStreamEvent(kind="delta", text_delta=text)
-                yield ProviderStreamEvent(kind="completed", provider_request_id=request_id, input_tokens=usage.get("prompt_tokens", 0), output_tokens=usage.get("completion_tokens", 0))
+                yield _chat_completion_event(request_id, usage, finished)
         except httpx.HTTPError as exc:
             raise _http_error(exc) from exc
         except json.JSONDecodeError as exc:
@@ -365,6 +392,7 @@ class OpenRouterChatAdapter(XAIChatAdapter):
         payload = {"model": model, "messages": [{"role": item["role"], "content": _openai_chat_content(item["content"])} for item in messages], "max_tokens": max_output_tokens, "stream": True, "stream_options": {"include_usage": True}}
         request_id = ""
         usage = {}
+        finished = False
         saw_event = False
         try:
             with httpx.stream("POST", f"{self.base_url}/chat/completions", headers=self.headers, json=payload, timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS) as response:
@@ -373,7 +401,10 @@ class OpenRouterChatAdapter(XAIChatAdapter):
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
-                    if not data or data == "[DONE]":
+                    if data == "[DONE]":
+                        finished = True
+                        break
+                    if not data:
                         continue
                     event = json.loads(data)
                     saw_event = True
@@ -382,13 +413,14 @@ class OpenRouterChatAdapter(XAIChatAdapter):
                     request_id = event.get("id", request_id)
                     usage = event.get("usage") or usage
                     choices = event.get("choices") or []
+                    finished = finished or any(choice.get("finish_reason") is not None for choice in choices)
                     if choices:
                         text = (choices[0].get("delta") or {}).get("content") or ""
                         if text:
                             yield ProviderStreamEvent(kind="delta", text_delta=text)
                 if not saw_event:
                     raise ProviderError("OpenRouter stream ended without events", code="openrouter_empty_stream", retryable=True)
-                yield ProviderStreamEvent(kind="completed", provider_request_id=request_id, input_tokens=usage.get("prompt_tokens", 0), output_tokens=usage.get("completion_tokens", 0))
+                yield _chat_completion_event(request_id, usage, finished)
         except httpx.HTTPStatusError as exc:
             try:
                 payload = exc.response.json()

@@ -7,8 +7,15 @@ from urllib.parse import urlparse
 import httpx
 from django.conf import settings
 
-from .adapters import AdapterHealth, ProviderError, ProviderResult, ProviderStreamEvent, _collect, _text_only
-
+from .adapters import (
+    AdapterHealth,
+    ProviderError,
+    ProviderResult,
+    ProviderStreamEvent,
+    _chat_completion_event,
+    _collect,
+    _text_only,
+)
 
 OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 DEFAULT_API_BASE_URL = "https://api.giga.chat/v1"
@@ -188,6 +195,7 @@ class GigaChatAPIAdapter:
         }
         request_id = ""
         usage = {}
+        finished = False
         with httpx.stream(
             "POST",
             f"{self.base_url}/chat/completions",
@@ -208,7 +216,10 @@ class GigaChatAPIAdapter:
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
-                if not data or data == "[DONE]":
+                if data == "[DONE]":
+                    finished = True
+                    break
+                if not data:
                     continue
                 try:
                     event = json.loads(data)
@@ -217,17 +228,13 @@ class GigaChatAPIAdapter:
                 request_id = str(event.get("id") or request_id)
                 usage = event.get("usage") or usage
                 choices = event.get("choices") or []
+                finished = finished or any(choice.get("finish_reason") is not None for choice in choices)
                 if choices:
                     delta = choices[0].get("delta") or {}
                     text = delta.get("content") or ""
                     if text:
                         yield ProviderStreamEvent(kind="delta", text_delta=text)
-        yield ProviderStreamEvent(
-            kind="completed",
-            provider_request_id=request_id,
-            input_tokens=int(usage.get("prompt_tokens") or 0),
-            output_tokens=int(usage.get("completion_tokens") or 0),
-        )
+        yield _chat_completion_event(request_id, usage, finished)
 
     def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
         try:

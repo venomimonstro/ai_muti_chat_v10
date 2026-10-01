@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -125,7 +127,7 @@ def test_running_generation_can_be_cancelled_by_generation_id_after_page_reload(
     assert ChatCancellationMarker.objects.filter(
         owner=user,
         generation_id=generation.id,
-        idempotency_key=generation.idempotency_key,
+        idempotency_hash=hashlib.sha256(generation.idempotency_key.encode()).hexdigest(),
     ).exists()
 
 

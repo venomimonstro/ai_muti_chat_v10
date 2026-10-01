@@ -38,6 +38,9 @@ def _finalize_cancel(generation, *, clear_content: bool, queued_only: bool = Fal
     if clear_content:
         assistant.content = ""
     charge = settle_delivered_partial(locked, assistant.content)
+    BalanceReservation.objects.filter(
+        pk=locked.reservation_id, state=BalanceReservation.State.RELEASED, actual_rub__isnull=True
+    ).update(actual_rub=0)
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["content", "status"])
     now = timezone.now()
@@ -83,6 +86,10 @@ def _sync_authoritative_actual(generation):
     generation.refresh_from_db(fields=["state", "actual_cost_rub", "reservation_id"])
     if not generation.reservation_id:
         return generation.actual_cost_rub or 0
+    if generation.state == Generation.State.CANCELLED:
+        BalanceReservation.objects.filter(
+            pk=generation.reservation_id, state=BalanceReservation.State.RELEASED, actual_rub__isnull=True
+        ).update(actual_rub=0)
     actual = (
         BalanceReservation.objects.filter(pk=generation.reservation_id)
         .values_list("actual_rub", flat=True)
@@ -124,6 +131,10 @@ def install(streaming_module) -> None:
 
     def run(generation, *args, **kwargs):
         try:
+            generation.refresh_from_db(fields=["state"])
+            if generation.state == Generation.State.CANCELLED:
+                yield _cancelled_event(generation)
+                return
             if cancel_requested(generation):
                 try:
                     if _cancel_before_provider(generation):
@@ -134,18 +145,29 @@ def install(streaming_module) -> None:
 
             iterator = raw_run(generation, *args, **kwargs)
             try:
-                for chunk in iterator:
+                while True:
                     if cancel_requested(generation):
                         if _terminal_now(generation):
                             clear_cancel(generation)
-                            yield chunk
-                            continue
+                            if generation.state == Generation.State.CANCELLED:
+                                yield _cancelled_event(generation)
+                            return
                         iterator.close()
                         try:
-                            if _cancel_during_stream(generation):
+                            finalized = _cancel_during_stream(generation)
+                            generation.refresh_from_db(fields=["state"])
+                            if finalized or generation.state == Generation.State.CANCELLED:
                                 yield _cancelled_event(generation)
                         finally:
                             clear_cancel(generation)
+                        return
+                    try:
+                        chunk = next(iterator)
+                    except StopIteration:
+                        if cancel_requested(generation):
+                            generation.refresh_from_db(fields=["state"])
+                            if generation.state == Generation.State.CANCELLED:
+                                yield _cancelled_event(generation)
                         return
                     yield chunk
             finally:

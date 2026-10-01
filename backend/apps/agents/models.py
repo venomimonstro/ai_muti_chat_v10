@@ -44,8 +44,8 @@ class Agent(models.Model):
     class Meta:
         ordering = ["-updated_at"]
         indexes = [
-            models.Index(fields=["owner", "status"]),
-            models.Index(fields=["project", "status"]),
+            models.Index(fields=["owner", "status"], name="agents_agen_owner_i_715d33_idx"),
+            models.Index(fields=["project", "status"], name="agents_agen_project_26194c_idx"),
         ]
 
     def clean(self):
@@ -172,7 +172,7 @@ class AgentRun(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["owner", "state", "created_at"])]
+        indexes = [models.Index(fields=["owner", "state", "created_at"], name="agents_agen_owner_i_15437f_idx")]
         constraints = [
             models.CheckConstraint(
                 condition=(models.Q(agent__isnull=False, team__isnull=True) | models.Q(agent__isnull=True, team__isnull=False)),
