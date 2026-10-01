@@ -238,6 +238,24 @@ function likelyNeedsResearch(value: string) {
   return /(сегодня|сейчас|текущ|актуальн|курс|доллар|евро|рубл|цена|стоим|сколько стоит|билет|авиа|рейс|расписан|новост|погода|время|интернет|источник|найди|проверь|202[4-9]|203\d)/i.test(text);
 }
 
+function activity(
+  onEvent: (event: StreamEvent) => void,
+  step: string,
+  state: "running" | "streaming" | "completed" | "warning" | "failed",
+  message: string,
+  sourceCount?: number,
+) {
+  onEvent({
+    event: "activity",
+    data: {
+      step,
+      state,
+      message,
+      ...(typeof sourceCount === "number" ? {source_count: sourceCount} : {}),
+    },
+  });
+}
+
 async function previewChatCost(conversationId: string, payload: StreamPayload, signal?: AbortSignal) {
   return api<ChatCostPreview>(`/conversations/${conversationId}/messages/preview/`, {
     method: "POST",
@@ -308,8 +326,10 @@ export async function streamMessage(
   }
 
   if (likelyNeedsResearch(payload.content)) {
+    activity(onEvent, "route", "running", "Определяю сложность запроса и готовлю актуальный поиск…");
     onEvent({event: "routing", data: {explanation: "Проверяю актуальные данные и внешние источники…"}});
   } else {
+    activity(onEvent, "route", "running", "Определяю сложность запроса и выбираю подходящую модель…");
     onEvent({event: "routing", data: {explanation: "Подготавливаю контекст и выбираю подходящий режим ответа…"}});
   }
 
@@ -421,6 +441,7 @@ export async function streamMessage(
     let terminal = false;
     let inProgress = false;
     let receivedFirstEvent = false;
+    let receivedFirstDelta = false;
 
     const readChunk = async () => {
       if (receivedFirstEvent) return reader.read();
@@ -470,11 +491,42 @@ export async function streamMessage(
           parsed.message = publicStreamError(parsed.code, parsed.message);
         }
         if (event === "heartbeat") continue;
-        if (event === "research_progress" && typeof parsed.message === "string") {
+
+        if (event === "generation") {
+          activity(onEvent, "provider", "running", "Маршрут готов. Подключаю AI-модель…");
+        } else if (event === "routing") {
+          activity(onEvent, "route", "completed", String(parsed.explanation ?? "Маршрут выбран"));
+        } else if (event === "research_progress" && typeof parsed.message === "string") {
+          const phase = String(parsed.phase ?? "research");
+          if (phase === "sources_ready") {
+            activity(onEvent, "search", "completed", parsed.message, typeof parsed.source_count === "number" ? parsed.source_count : undefined);
+          } else if (phase === "search_unavailable") {
+            activity(onEvent, "search", "warning", parsed.message);
+          } else {
+            activity(onEvent, "synthesis", "running", parsed.message);
+          }
           onEvent({event: "routing", data: {explanation: parsed.message}});
         } else if (event === "web_search" && parsed.status === "completed") {
           const sources = Array.isArray(parsed.sources) ? parsed.sources.length : 0;
+          activity(onEvent, "search", "completed", sources > 0 ? `Проверил актуальные источники: ${sources}` : "Проверил внешние данные", sources);
           onEvent({event: "routing", data: {explanation: sources > 0 ? `Проверил источники: ${sources}. Формирую ответ…` : "Проверил внешние данные. Формирую ответ…"}});
+        } else if (event === "recovery") {
+          activity(
+            onEvent,
+            "recovery",
+            "warning",
+            parsed.action === "fallback" ? "Основной маршрут недоступен. Подключаю резервную модель…" : "Повторяю запрос к провайдеру…",
+          );
+        } else if (event === "delta" && !receivedFirstDelta) {
+          receivedFirstDelta = true;
+          activity(onEvent, "provider", "completed", "AI-модель отвечает");
+          activity(onEvent, "answer", "streaming", "Формирую ответ…");
+        } else if (["snapshot", "completed"].includes(event)) {
+          activity(onEvent, "answer", "completed", "Ответ готов");
+        } else if (event === "cancelled") {
+          activity(onEvent, "answer", "warning", "Ответ остановлен");
+        } else if (event === "error") {
+          activity(onEvent, "error", "failed", String(parsed.message ?? "Не удалось получить ответ"));
         }
         onEvent({event, data: parsed});
       }
@@ -509,6 +561,7 @@ export async function streamMessage(
     }
 
     if (attempt >= STREAM_RECONNECT_DELAYS_MS.length) break;
+    activity(onEvent, "connection", "warning", "Соединение прервалось. Восстанавливаю тот же ответ без повторного списания…");
     onEvent({
       event: "routing",
       data: {explanation: "Соединение прервалось. Восстанавливаю тот же ответ без повторного списания…"},
