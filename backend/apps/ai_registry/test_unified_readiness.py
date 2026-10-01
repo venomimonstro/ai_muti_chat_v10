@@ -25,11 +25,16 @@ class UnifiedReadinessTests(TestCase):
         key.save()
         return provider, key
 
-    def test_expired_transient_open_circuit_is_half_open_probeable(self):
+    def test_expired_transient_open_circuit_still_blocks_customer_traffic(self):
         provider, _key = self._provider_with_key(health=Provider.HealthState.OPEN)
         provider.circuit_opened_until = timezone.now() - timedelta(seconds=1)
         provider.save(update_fields=["circuit_opened_until"])
-        self.assertTrue(provider_available(provider))
+        # Only the background health watcher may probe and re-admit this channel.
+        self.assertFalse(provider_available(provider))
+
+    def test_unknown_provider_never_uses_customer_as_health_probe(self):
+        provider, _key = self._provider_with_key(health=Provider.HealthState.UNKNOWN)
+        self.assertFalse(provider_available(provider))
 
     def test_persistent_open_circuit_remains_blocked(self):
         provider, _key = self._provider_with_key(health=Provider.HealthState.OPEN)
