@@ -9,6 +9,7 @@ from apps.b2b_api.models import APIUsage
 from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.services import release
 from apps.chat.models import CompareRun, CompareVariant, Generation, GenerationAttempt, Message
+from apps.chat.paid_search_billing import recover_search_reservations
 from apps.chat.partial_billing import settle_delivered_partial
 from apps.files.models import FileAsset, FileProcessingJob
 from apps.image_studio.models import ImageGeneration
@@ -274,4 +275,7 @@ def recover_stale_operations():
                 continue
         result[name] = count
     result["api_usages"] = recover_stale_api_usages()
+    result["web_search_reservations"] = recover_search_reservations(
+        older_than_seconds=settings.OPERATION_STALE_TIMEOUT_SECONDS
+    )
     return result
