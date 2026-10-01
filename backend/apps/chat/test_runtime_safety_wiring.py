@@ -8,9 +8,34 @@ from apps.ai_registry.adapters import ProviderError
 from . import runtime_readiness, streaming
 
 
+def _chain_has_marker(callable_obj, marker, raw_attr):
+    current = callable_obj
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, marker, False):
+            return True
+        current = getattr(current, raw_attr, None)
+    return False
+
+
 def test_chat_runtime_guards_are_installed():
     assert getattr(streaming.prepare, "_ai_workspace_single_flight", False) is True
-    assert getattr(streaming.adapter_for, "_ai_workspace_runtime_readiness", False) is True
+    assert _chain_has_marker(
+        streaming.adapter_for,
+        "_ai_workspace_runtime_readiness",
+        "_raw_adapter_for",
+    )
+    assert _chain_has_marker(
+        streaming.record_failure,
+        "_ai_workspace_runtime_readiness",
+        "_raw_record_failure",
+    )
+    assert _chain_has_marker(
+        streaming.record_failure,
+        "_ai_workspace_procurement_execution",
+        "_raw_record_failure",
+    )
     assert getattr(streaming.run, "_ai_workspace_terminal_recovery", False) is True
 
 
