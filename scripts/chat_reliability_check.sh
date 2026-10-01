@@ -73,6 +73,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_provider_recovery_probe.py \
   apps/ai_registry/test_http_error_classification.py \
   apps/ai_registry/test_model_quarantine.py \
+  apps/ai_registry/test_model_quarantine_recovery_lock.py \
   apps/ai_registry/test_router.py \
   apps/ai_registry/test_router_v2.py \
   apps/ai_registry/test_router_intelligence_v3.py \
