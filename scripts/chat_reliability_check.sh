@@ -33,9 +33,19 @@ grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/Workspa
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ModelPicker value={selectorValue} models={models}' frontend/app/workspace/WorkspaceV2.tsx
-grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
-grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
-grep -Fq 'broadcastCatalogState("ready",ready.length>0)' frontend/app/workspace/ModelPicker.tsx
+# Composer is the only polling owner. ModelPicker must render the exact catalog
+# snapshot passed to it, otherwise UI availability can diverge inside one render.
+grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/Composer.tsx
+grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/Composer.tsx
+if grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx; then
+  echo '[FAIL] ModelPicker performs a second /models/ poll instead of using Composer catalog state'
+  exit 1
+fi
+if grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx; then
+  echo '[FAIL] ModelPicker still owns an independent catalog refresh timer'
+  exit 1
+fi
+grep -Fq 'ModelPicker is deliberately presentation-only' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'MODEL_CATALOG_EVENT="aiws:model-catalog"' frontend/app/workspace/Composer.tsx
 grep -Fq 'workspaceModelsAvailable===false' frontend/app/workspace/Composer.tsx
 grep -Fq 'routing_tiers_configured' frontend/app/workspace/ModelPicker.tsx
@@ -120,6 +130,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_cooperative_cancel.py \
   apps/chat/test_durable_cancellation.py \
   apps/chat/test_reconnect_claim_race.py \
+  apps/chat/test_running_reconnect_follow.py \
   apps/chat/test_single_flight_cache_outage.py \
   apps/chat/test_error_contract.py \
   apps/chat/test_web_search_reliability.py \
