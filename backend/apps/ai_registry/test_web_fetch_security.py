@@ -1,8 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from django.test import override_settings
-
 from . import web_fetch_security
 
 
