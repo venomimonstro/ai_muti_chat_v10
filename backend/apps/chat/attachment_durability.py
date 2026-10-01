@@ -69,6 +69,7 @@ def install(streaming_module) -> None:
         "apps.chat.views",
         "apps.chat.cost_views",
         "apps.chat.activity_stream",
+        "apps.chat.message_actions",
     ):
         module = sys.modules.get(module_name)
         if module is not None and hasattr(module, "prepare"):
