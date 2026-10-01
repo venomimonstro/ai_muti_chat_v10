@@ -6,6 +6,7 @@ from apps.projects.access import accessible_projects
 
 from .branches import visible_messages
 from .models import Conversation, ConversationDraft, Message
+from .public_errors import public_error_code
 
 
 PUBLIC_SYSTEM_LEVELS = {
@@ -90,7 +91,10 @@ class MessageSerializer(serializers.ModelSerializer):
             "cost_rub": generation.actual_cost_rub,
             "input_tokens": generation.input_tokens,
             "output_tokens": generation.output_tokens,
-            "error_code": generation.error_code,
+            # Never leak provider/key/runtime internals through conversation history.
+            # Technical root cause stays in GenerationAttempt/Diagnostics Center;
+            # customer clients receive the same small support-code contract as SSE.
+            "error_code": public_error_code(generation.error_code),
             "correlation_id": generation.correlation_id,
             "completed_at": generation.completed_at,
             "context": {
