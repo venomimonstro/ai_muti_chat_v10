@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+import logging
+
+from apps.billing.services import release
+
+logger = logging.getLogger(__name__)
+
+
+def install(*, streaming_module, paid_search_module) -> None:
+    """Do not charge the customer for paid search that never reaches the model.
+
+    The upstream search provider can successfully return results while context-budget
+    enforcement later decides that none of those results can be inserted into the LLM
+    request. Procurement spend is already real and remains recorded, but the customer
+    must not be charged for a tool whose data was not delivered into the answer path.
+    """
+    raw_enrich = streaming_module.enrich_snapshot_with_web
+    if getattr(raw_enrich, "_ai_workspace_search_delivery_billing", False):
+        return
+
+    def enrich(snapshot: dict, query: str, *, required: bool):
+        result = raw_enrich(snapshot, query, required=required)
+        usage = dict(paid_search_module._usage.get() or {})
+        reservation_id = str(usage.get("customer_reservation_id") or "").strip()
+        web_state = result.get("web_search") if isinstance(result, dict) else None
+        delivered = bool(isinstance(web_state, dict) and web_state.get("used"))
+        if reservation_id and not delivered:
+            try:
+                release(reservation_id)
+            except Exception:
+                logger.exception(
+                    "Failed to release undelivered paid-search reservation id=%s",
+                    reservation_id,
+                )
+            else:
+                # Prevent the paid-search wrapper from treating this released reserve
+                # as a deliverable tool charge later in prepare()/terminal hooks.
+                usage.pop("customer_reservation_id", None)
+                usage["customer_charge_rub"] = "0"
+                usage["customer_refunded_reason"] = "search_context_not_delivered"
+                paid_search_module._usage.set(usage)
+                result["web_search"] = {
+                    **(web_state or {}),
+                    "customer_charge_rub": "0",
+                    "customer_refunded_reason": "search_context_not_delivered",
+                }
+        return result
+
+    enrich._ai_workspace_search_delivery_billing = True
+    enrich._raw_enrich = raw_enrich
+    streaming_module.enrich_snapshot_with_web = enrich
