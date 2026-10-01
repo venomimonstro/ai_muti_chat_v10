@@ -116,7 +116,15 @@ def install(web_tools_module) -> None:
 
     raw_provider_order = web_tools_module._search_provider_order
 
-    def execute_endpoint(base_url: str, query: str, *, limit: int, intent: dict, time_range: str = ""):
+    def execute_endpoint(
+        base_url: str,
+        query: str,
+        *,
+        limit: int,
+        intent: dict,
+        time_range: str = "",
+        category: str = "",
+    ):
         web_tools_module._assert_search_provider_url(base_url)
         timeout = float(os.getenv("WEB_TOOL_TIMEOUT_SECONDS", "12"))
         max_results = max(1, min(limit, int(os.getenv("WEB_SEARCH_MAX_RESULTS", "8"))))
@@ -126,7 +134,7 @@ def install(web_tools_module) -> None:
             "format": "json",
             "language": "auto",
             "safesearch": 1,
-            "categories": intent["category"],
+            "categories": category or intent["category"],
         }
         if time_range:
             params["time_range"] = time_range
@@ -134,7 +142,7 @@ def install(web_tools_module) -> None:
             response = httpx.get(
                 f"{base_url}/search",
                 params=params,
-                headers={"User-Agent": "AIWorkspace-WebTool/3.1", "Accept": "application/json"},
+                headers={"User-Agent": "AIWorkspace-WebTool/3.2", "Accept": "application/json"},
                 timeout=timeout,
                 follow_redirects=False,
             )
@@ -174,15 +182,17 @@ def install(web_tools_module) -> None:
         errors = []
         for base_url in urls:
             try:
-                # Freshness is preferred, never mandatory. Some upstream engines
-                # ignore time_range, so an empty fresh pass retries the same free
-                # endpoint without the filter before moving to the next endpoint.
+                # Three free passes before paid fallback:
+                # 1) preferred freshness/category,
+                # 2) same category without a strict time window,
+                # 3) general metasearch if specialised news engines are empty.
                 results = execute_endpoint(
                     base_url,
                     query,
                     limit=limit,
                     intent=intent,
                     time_range=intent["time_range"],
+                    category=intent["category"],
                 )
                 if not results and intent["time_range"]:
                     results = execute_endpoint(
@@ -191,6 +201,16 @@ def install(web_tools_module) -> None:
                         limit=limit,
                         intent=intent,
                         time_range="",
+                        category=intent["category"],
+                    )
+                if not results and intent["category"] != "general":
+                    results = execute_endpoint(
+                        base_url,
+                        query,
+                        limit=limit,
+                        intent=intent,
+                        time_range="",
+                        category="general",
                     )
                 if results:
                     return results
