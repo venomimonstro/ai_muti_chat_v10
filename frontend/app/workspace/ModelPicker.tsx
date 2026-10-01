@@ -32,7 +32,12 @@ function broadcastCatalogState(state:"ready"|"error",available:boolean){if(typeo
 
 export function ModelPicker({value,models,disabled=false,onChange}:Props){
  const initialCatalog=models.filter(item=>item.available);const[open,setOpen]=useState(false);const[catalog,setCatalog]=useState<AIModel[]>(()=>initialCatalog);const catalogAvailableRef=useRef(initialCatalog.length>0);const root=useRef<HTMLDivElement|null>(null);const autoFallbackRef=useRef("");const initialSection:PickerSection=value.startsWith("model:")?"model":"auto";const[section,setSection]=useState<PickerSection>(initialSection);
- useEffect(()=>{const rows=models.filter(item=>item.available);setCatalog(rows);catalogAvailableRef.current=rows.length>0;broadcastCatalogState("ready",rows.length>0)},[models]);
+ // Parent bootstrap uses Promise.allSettled. An empty prop can therefore mean either
+ // "the server confirmed zero ready models" or simply "/models/ temporarily failed".
+ // Never broadcast a hard outage from that ambiguous bootstrap value. A positive prop
+ // is safe to adopt immediately; a hard ready=false is emitted only by this component's
+ // own successful /models/ refresh below.
+ useEffect(()=>{const rows=models.filter(item=>item.available);if(rows.length>0){setCatalog(rows);catalogAvailableRef.current=true;broadcastCatalogState("ready",true)}},[models]);
  // ModelPicker is the single live catalog owner in WorkspaceV2. Composer consumes
  // only the readiness event, so availability cannot diverge between two pollers.
  // A transient refresh error preserves the last confirmed catalog instead of
