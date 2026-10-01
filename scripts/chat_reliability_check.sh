@@ -79,6 +79,8 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
+  apps/chat/test_cost_preview_history_bound.py \
+  apps/chat/test_cost_preview_no_double_history.py \
   apps/chat/test_cost_confirmation_resume.py \
   apps/chat/test_cost_view_failure_contract.py \
   apps/chat/test_manual_selection_race.py \
@@ -92,6 +94,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_error_contract.py \
   apps/chat/test_web_search_reliability.py \
   apps/chat/test_public_error_codes.py \
+  apps/chat/test_public_history_error_contract.py \
   apps/chat/test_reconnect_fast_path.py \
   apps/chat/test_managed_stream_continuity.py \
   apps/chat/test_provider_exhaustion_failover.py \
