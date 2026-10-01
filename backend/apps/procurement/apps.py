@@ -45,6 +45,11 @@ class ProcurementConfig(AppConfig):
             signals,
         )
 
+        # Price/model identity becomes immutable once provider usage is durable. The
+        # save guard locks RequestCost itself, closing a real PostgreSQL MVCC race
+        # between fallback routing and provider-delivery settlement.
+        request_cost_guard.install()
+
         # Multiple paid API accounts for one provider are a runtime pool, not merely
         # admin metadata. Reserve one concrete healthy account per request and keep
         # provider readiness on the same account-selection contract.
