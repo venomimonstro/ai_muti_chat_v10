@@ -55,10 +55,26 @@ class YandexGPTRuntimeTests(SimpleTestCase):
         self.assertEqual(returned.text, "OK")
         self.assertEqual(generate.call_args.kwargs["model"], "gpt://folder-123/yandexgpt/latest")
 
-    def test_service_account_api_key_uses_yandex_authorization_scheme(self):
+    def test_openai_compatible_endpoint_uses_bearer_by_default(self):
         adapter = YandexGPTAdapter(api_key="secret", folder_id="folder-123")
+        self.assertEqual(adapter.headers["Authorization"], "Bearer secret")
+
+    def test_standard_yandex_api_key_scheme_can_be_selected_explicitly(self):
+        adapter = YandexGPTAdapter(
+            api_key="secret",
+            folder_id="folder-123",
+            auth_scheme="api-key",
+        )
         self.assertEqual(adapter.headers["Authorization"], "Api-Key secret")
-        self.assertNotIn("Bearer", adapter.headers["Authorization"])
+
+    def test_invalid_auth_scheme_is_fail_closed(self):
+        with self.assertRaises(ProviderError) as ctx:
+            YandexGPTAdapter(
+                api_key="secret",
+                folder_id="folder-123",
+                auth_scheme="basic",
+            )
+        self.assertEqual(ctx.exception.code, "yandex_auth_scheme_invalid")
 
     def test_yandexgpt_is_never_treated_as_internal_echo_provider(self):
         provider = SimpleNamespace(
