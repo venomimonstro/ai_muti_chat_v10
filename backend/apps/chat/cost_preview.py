@@ -13,6 +13,7 @@ from apps.procurement.readiness import quote_has_procurement_capacity
 
 from .attachments import resolve_chat_attachments
 from .models import Conversation, Message
+from .paid_search_billing import expected_search_charge
 
 MAX_OUTPUT_TOKENS = max(512, min(8192, int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "4096"))))
 VISION_RESERVE_TOKENS_PER_IMAGE = 2048
@@ -101,14 +102,10 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
     if not candidates:
         raise ValidationError("Нет доступной модели для этого запроса")
 
-    # ``route.estimated_input_tokens`` already contains the current prompt and recent
-    # messages. Add only smart-context overhead omitted by the router plus explicit
-    # vision reserve. Previously recent history was added again here, inflating cost
-    # previews and triggering unnecessary confirmations / false low-balance UX.
     extra_input = _context_overhead_tokens(conversation)
     extra_input += len(vision_assets) * VISION_RESERVE_TOKENS_PER_IMAGE
     rows = []
-    maximum = Decimal("0")
+    llm_maximum = Decimal("0")
     minimum = None
     selected_model = None
     for model in candidates:
@@ -132,7 +129,7 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         if selected_model is None:
             selected_model = model
         charge = value.user_charge_rub
-        maximum = max(maximum, charge)
+        llm_maximum = max(llm_maximum, charge)
         minimum = charge if minimum is None else min(minimum, charge)
         public_slug, public_name = _public_model(model, conversation)
         rows.append(
@@ -146,6 +143,11 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
     if selected_model is None or not rows:
         raise ValidationError("Сейчас нет модели с доступным API-балансом для этого запроса")
 
+    # SearXNG is free and remains the normal first search path. The paid Yandex call
+    # is therefore an upper-bound tool cost, not a guaranteed/minimum charge. Include
+    # it in confirmation/spend-guard so the exact customer ceiling is never exceeded.
+    search_maximum = expected_search_charge(content)
+    maximum = llm_maximum + search_maximum
     threshold = Decimal(str(getattr(settings, "CHAT_CONFIRM_THRESHOLD_RUB", "20.00")))
     wallet, _ = Wallet.objects.get_or_create(user=user)
     guard = spend_guard_snapshot(wallet)
@@ -155,6 +157,8 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
     return {
         "estimated_min_rub": minimum or Decimal("0"),
         "estimated_max_rub": maximum,
+        "estimated_llm_max_rub": llm_maximum,
+        "estimated_search_max_rub": search_maximum,
         "confirmation_required": maximum >= threshold,
         "confirmation_threshold_rub": threshold,
         "selected_model": selected_slug,
