@@ -257,11 +257,24 @@ function activity(
 }
 
 async function previewChatCost(conversationId: string, payload: StreamPayload, signal?: AbortSignal) {
-  return api<ChatCostPreview>(`/conversations/${conversationId}/messages/preview/`, {
+  const request = () => api<ChatCostPreview>(`/conversations/${conversationId}/messages/preview/`, {
     method: "POST",
     signal,
     body: JSON.stringify(payload),
   });
+  try {
+    return await request();
+  } catch (reason) {
+    if (reason instanceof ApiError && reason.status === 403 && !signal?.aborted) {
+      // api() already invalidates the cached token on 403. Fetch a fresh token and
+      // retry this read-only commercial preview exactly once. No reservation or
+      // provider call exists at this stage, so the retry cannot double-charge.
+      csrfToken = "";
+      await ensureCsrf();
+      return request();
+    }
+    throw reason;
+  }
 }
 
 async function requestStreamCancellation(conversationId: string, idempotencyKey: string) {
