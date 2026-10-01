@@ -57,12 +57,29 @@ def _preview_payload(preview):
     }
 
 
-def _cost_guard(request, *, user, conversation, content):
+def _generation_file_ids_for_user_message(message):
+    snapshot = (
+        Generation.objects.filter(user_message=message)
+        .values_list("context_snapshot", flat=True)
+        .first()
+        or {}
+    )
+    rows = snapshot.get("attached_files")
+    if rows is None:
+        rows = snapshot.get("vision_assets", [])
+    return [
+        str(item.get("file_id"))
+        for item in rows
+        if isinstance(item, dict) and item.get("file_id")
+    ]
+
+
+def _cost_guard(request, *, user, conversation, content, file_ids=None):
     preview = chat_cost_preview(
         user=user,
         conversation=conversation,
         content=content,
-        file_ids=[],
+        file_ids=file_ids or [],
     )
     if preview.get("blocked_by_spend_guard"):
         payload = _preview_payload(preview)
@@ -219,11 +236,13 @@ class EditMessageView(OwnedConversationAction):
                             {"detail": "Редактировать можно только своё пользовательское сообщение"},
                             status=404,
                         )
+                    file_ids = _generation_file_ids_for_user_message(message)
                     blocked = _cost_guard(
                         request,
                         user=request.user,
                         conversation=conversation,
                         content=content,
+                        file_ids=file_ids,
                     )
                     if blocked is not None:
                         return blocked
@@ -239,7 +258,7 @@ class EditMessageView(OwnedConversationAction):
                         content=content,
                         client_message_id=client_message_id,
                         idempotency_key=key,
-                        file_ids=[],
+                        file_ids=file_ids,
                     )
             _run_prepared_generation(generation, created)
         except ValidationError as exc:
@@ -291,11 +310,13 @@ class RegenerateMessageView(OwnedConversationAction):
                     if source is None:
                         return Response({"detail": "Исходный запрос не найден"}, status=400)
                     source_content = source.content
+                    file_ids = _generation_file_ids_for_user_message(source)
                     blocked = _cost_guard(
                         request,
                         user=request.user,
                         conversation=conversation,
                         content=source_content,
+                        file_ids=file_ids,
                     )
                     if blocked is not None:
                         return blocked
@@ -311,7 +332,7 @@ class RegenerateMessageView(OwnedConversationAction):
                         content=source_content,
                         client_message_id=client_message_id,
                         idempotency_key=key,
-                        file_ids=[],
+                        file_ids=file_ids,
                     )
             _run_prepared_generation(generation, created)
         except ValidationError as exc:
