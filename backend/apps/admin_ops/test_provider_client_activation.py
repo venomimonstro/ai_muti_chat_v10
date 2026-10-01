@@ -89,6 +89,7 @@ class ProviderClientActivationTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(len(response.data["activated"]), 1)
         self.assertEqual(response.data["blocked"], [])
+        self.assertFalse(response.data["verification_pending"])
 
         self.model.refresh_from_db()
         self.provider.refresh_from_db()
@@ -109,6 +110,30 @@ class ProviderClientActivationTests(APITestCase):
         self.assertEqual(response.data["blocked"], [])
         self.model.refresh_from_db()
         self.assertTrue(self.model.enabled)
+
+    def test_activation_never_clears_existing_open_circuit_from_key_flag(self):
+        self.provider.health_state = Provider.HealthState.OPEN
+        self.provider.consecutive_failures = 7
+        self.provider.circuit_opened_until = None
+        self.provider.save(
+            update_fields=["health_state", "consecutive_failures", "circuit_opened_until"]
+        )
+
+        response = self._activate()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["activated"]), 1)
+        self.assertTrue(response.data["verification_pending"])
+
+        self.provider.refresh_from_db()
+        self.model.refresh_from_db()
+        self.assertTrue(self.provider.enabled)
+        self.assertTrue(self.model.enabled)
+        self.assertEqual(self.provider.health_state, Provider.HealthState.OPEN)
+        self.assertEqual(self.provider.consecutive_failures, 7)
+
+        models = self.client.get("/api/v1/models/")
+        self.assertEqual(models.status_code, 200, models.data)
+        self.assertNotIn(self.model.slug, [item["slug"] for item in models.data])
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
     def test_production_activation_requires_procurement_balance(self):
