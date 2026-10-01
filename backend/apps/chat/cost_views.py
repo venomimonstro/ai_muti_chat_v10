@@ -4,7 +4,6 @@ from django.core.exceptions import ValidationError
 from django.core.handlers.asgi import ASGIRequest
 from django.db.models import Q
 from django.http import StreamingHttpResponse
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import ValidationError as APIValidationError
 from rest_framework.response import Response
@@ -12,12 +11,11 @@ from rest_framework.views import APIView
 
 from apps.ai_registry.models import AIModel
 from apps.billing.models import BalanceReservation
-from apps.billing.services import release
 
 from .asgi_stream import follow_generation_async, managed_run_async
 from .cost_preview import chat_cost_preview
 from .managed_stream import managed_run
-from .models import Conversation, Generation, Message
+from .models import Conversation, Generation
 from .product_identity import (
     create_identity_generation,
     direct_identity_answer,
@@ -26,6 +24,9 @@ from .product_identity import (
 )
 from .serializers import SendMessageSerializer
 from .streaming import _validate_replayed_generation, prepare
+
+
+COST_CONFIRMATION_CHANGED = "cost_confirmation_changed"
 
 
 def _conversation(user, conversation_id):
@@ -69,16 +70,75 @@ def _confirmed_ceiling(request):
     return value
 
 
-def _fail_pre_provider_generation(generation, code):
-    if generation.reservation_id:
-        release(generation.reservation_id)
-    assistant = generation.assistant_message
-    assistant.status = Message.Status.FAILED
-    assistant.save(update_fields=["status"])
-    generation.state = Generation.State.FAILED
-    generation.error_code = code
-    generation.completed_at = timezone.now()
-    generation.save(update_fields=["state", "error_code", "completed_at"])
+def _confirmation_payload(*, generation, required_max, detail):
+    return {
+        "code": COST_CONFIRMATION_CHANGED,
+        "detail": detail,
+        "estimated_min_rub": "0",
+        "estimated_max_rub": str(required_max),
+        "confirmation_required": True,
+        "confirmation_threshold_rub": str(required_max),
+        "selected_model": generation.routed_model or generation.model,
+        "models": [],
+        "spend_guard": {},
+        "blocked_by_spend_guard": False,
+        "spend_guard_message": "",
+    }
+
+
+def _held_confirmation_response(request, generation):
+    """Resume or re-confirm a durable pre-provider Generation.
+
+    ``prepare()`` has already built the exact context, candidate route and customer /
+    provider reservations. Re-running preflight under the same idempotency key would
+    either duplicate messages or replay the old FAILED state. Keeping the original
+    QUEUED Generation is both safer and cheaper: after confirmation the exact same
+    request continues once, with no second reserve and no second user message.
+    """
+    if generation.state != Generation.State.QUEUED or generation.error_code != COST_CONFIRMATION_CHANGED:
+        return None
+    reservation = (
+        BalanceReservation.objects.filter(pk=generation.reservation_id)
+        .only("amount_rub", "state")
+        .first()
+        if generation.reservation_id
+        else None
+    )
+    if reservation is None or reservation.state != BalanceReservation.State.ACTIVE:
+        generation.state = Generation.State.FAILED
+        generation.error_code = "cost_confirmation_expired"
+        generation.save(update_fields=["state", "error_code"])
+        return Response(
+            {
+                "code": "cost_confirmation_expired",
+                "detail": "Резерв подтверждения уже закрыт. Отправьте сообщение ещё раз — деньги повторно не списывались.",
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    confirmed = request.data.get("confirm_cost") is True
+    ceiling = _confirmed_ceiling(request) if confirmed else None
+    required = reservation.amount_rub
+    if not confirmed or ceiling is None or ceiling < required:
+        return Response(
+            _confirmation_payload(
+                generation=generation,
+                required_max=required,
+                detail=(
+                    "Фактический preflight требует подтверждения новой максимальной суммы. "
+                    "Сумма только зарезервирована и не списана."
+                ),
+            ),
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    Generation.objects.filter(
+        pk=generation.pk,
+        state=Generation.State.QUEUED,
+        error_code=COST_CONFIRMATION_CHANGED,
+    ).update(error_code="")
+    generation.error_code = ""
+    return _stream_response(_customer_stream(request, generation, created=False))
 
 
 def _customer_stream(request, generation, *, created):
@@ -171,6 +231,9 @@ class ConfirmedConversationStreamView(APIView):
                     {"detail": getattr(exc, "messages", [str(exc)])},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            held = _held_confirmation_response(request, existing)
+            if held is not None:
+                return held
             return _stream_response(
                 _customer_stream(request, existing, created=False)
             )
@@ -255,14 +318,15 @@ class ConfirmedConversationStreamView(APIView):
             allowed = ceiling if confirmed else None
             if requires_real_confirmation and (allowed is None or reservation.amount_rub > allowed):
                 actual_max = reservation.amount_rub
-                _fail_pre_provider_generation(generation, "cost_confirmation_changed")
+                generation.error_code = COST_CONFIRMATION_CHANGED
+                generation.save(update_fields=["error_code"])
                 payload = _serialize_preview(preview)
                 payload.update(
                     {
-                        "code": "cost_confirmation_changed",
+                        "code": COST_CONFIRMATION_CHANGED,
                         "detail": (
                             "Фактический preflight оказался дороже предварительной оценки. "
-                            "Деньги не списаны; подтвердите новую сумму и отправьте запрос ещё раз."
+                            "Новая сумма только зарезервирована; подтвердите её, и тот же запрос продолжит работу."
                         ),
                         "estimated_max_rub": str(actual_max),
                         "confirmation_required": True,
