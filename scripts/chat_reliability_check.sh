@@ -43,10 +43,13 @@ grep -Fq 'aria-label="Повторить запрос"' frontend/app/workspace/M
 grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'ModelPicker is the single live catalog owner' frontend/app/workspace/ModelPicker.tsx
-# A temporary /models/ refresh failure must retain the last confirmed catalog.
-# Otherwise a stale React closure can falsely disable an otherwise healthy chat.
+# A temporary /models/ refresh failure must retain the last confirmed catalog and an
+# ambiguous empty parent bootstrap must never hard-disable AUTO before ModelPicker has
+# itself successfully queried /models/.
 grep -Fq 'catalogAvailableRef=useRef(initialCatalog.length>0)' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'broadcastCatalogState("error",catalogAvailableRef.current)' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'Never broadcast a hard outage from that ambiguous bootstrap value' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'if(rows.length>0){setCatalog(rows);catalogAvailableRef.current=true;broadcastCatalogState("ready",true)}' frontend/app/workspace/ModelPicker.tsx
 if grep -Fq 'broadcastCatalogState("error",catalog.length>0)' frontend/app/workspace/ModelPicker.tsx; then
   echo '[FAIL] ModelPicker uses stale catalog closure on refresh errors'
   exit 1
@@ -147,6 +150,8 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_cost_preview_no_double_history.py \
   apps/chat/test_cost_confirmation_resume.py \
   apps/chat/test_cost_view_failure_contract.py \
+  apps/chat/test_durable_preflight_stream.py \
+  apps/chat/test_attachment_durability.py \
   apps/chat/test_manual_selection_race.py \
   apps/chat/test_quarantine_race_failover.py \
   apps/chat/test_terminal_overrun_recovery.py \
