@@ -7,6 +7,7 @@ from apps.ai_registry.models import Provider, ProviderApiKey
 from apps.procurement.models import ProviderFundingAccount
 
 from .procurement_ledger_views import ProcurementLedgerView
+from .provider_key_views import _wake_provider_recovery
 from .provider_views import ProviderKeyDetailView
 from .services import audit
 
@@ -39,11 +40,18 @@ class OwnerProviderKeyDetailView(ProviderKeyDetailView):
             enabled=True,
             health_state=ProviderApiKey.HealthState.HEALTHY,
         ).exists()
-        provider.health_state = (
-            Provider.HealthState.HEALTHY if has_healthy else Provider.HealthState.UNKNOWN
-        )
-        provider.last_checked_at = timezone.now()
-        provider.save(update_fields=["health_state", "last_checked_at"])
+
+        # Credential maintenance must never promote an unhealthy provider to
+        # customer-ready. If no verified credential remains, move to UNKNOWN. If a
+        # healthy spare remains, preserve the current provider circuit state and let
+        # the background health + inference probe be the only recovery authority.
+        if not has_healthy:
+            provider.health_state = Provider.HealthState.UNKNOWN
+            provider.save(update_fields=["health_state"])
+        elif provider.health_state != Provider.HealthState.HEALTHY:
+            if provider.enabled and provider.models.filter(enabled=True).exists():
+                transaction.on_commit(_wake_provider_recovery)
+
         audit(
             request,
             "provider.key.owner_deleted",
@@ -53,6 +61,8 @@ class OwnerProviderKeyDetailView(ProviderKeyDetailView):
                 "provider": provider.slug,
                 "key_id": str(key_id),
                 "detached_accounts": len(accounts),
+                "provider_health": provider.health_state,
+                "healthy_spare_remaining": has_healthy,
             },
         )
         return Response(status=204)
