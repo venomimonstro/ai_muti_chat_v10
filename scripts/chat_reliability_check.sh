@@ -63,12 +63,14 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
+  apps/chat/test_cost_confirmation_resume.py \
   apps/chat/test_manual_selection_race.py \
   apps/chat/test_quarantine_race_failover.py \
   apps/chat/test_terminal_overrun_recovery.py \
   apps/chat/test_empty_response_failover.py \
   apps/chat/test_cooperative_cancel.py \
   apps/chat/test_durable_cancellation.py \
+  apps/chat/test_reconnect_claim_race.py \
   apps/chat/test_single_flight_cache_outage.py \
   apps/chat/test_error_contract.py \
   apps/chat/test_web_search_reliability.py \
