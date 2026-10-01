@@ -11,6 +11,8 @@ class ChatConfig(AppConfig):
             asgi_stream,
             billing_recovery,
             cache_safety,
+            context,
+            context_safety,
             conversation_snapshot,
             cooperative_cancel,
             cost_preview,
@@ -39,6 +41,10 @@ class ChatConfig(AppConfig):
         # Current public facts such as office holders, exchange rates and software
         # versions require web grounding even if the user does not say "today".
         freshness_policy.install(live_tools, web_context)
+        # Memory, summaries, retrieved history and files are reference data, never
+        # system instructions. Keep a strict trusted allowlist before web enrichment
+        # adds its own separately marked untrusted context.
+        context_safety.install(context_module=context, streaming_module=streaming)
 
         # Install guards before terminal recovery. Customer traffic must never probe a
         # stale provider/model candidate, one conversation must never create two
