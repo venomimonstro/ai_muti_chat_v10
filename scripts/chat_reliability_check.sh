@@ -111,6 +111,10 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/procurement/test_runtime_account_failover.py \
   apps/chat/test_default_auto_routing.py \
   apps/chat/test_activity_stream.py \
+  apps/chat/test_reasoning_trace.py \
+  apps/chat/test_search_trigger_policy.py \
+  apps/chat/test_search_runtime_wiring.py \
+  apps/chat/test_paid_search_customer_billing.py \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_customer_capacity.py \
