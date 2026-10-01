@@ -19,18 +19,33 @@ def _is_test_echo_provider(provider: Provider) -> bool:
     )
 
 
-def execution_model_ready(model: AIModel) -> bool:
+def _reserved_credential_ready(provider, funding_account_id) -> bool:
+    if not funding_account_id:
+        return runtime_credential_ready(provider)
+    try:
+        from apps.procurement.account_routing import account_credential_ready
+        from apps.procurement.models import ProviderFundingAccount
+
+        account = (
+            ProviderFundingAccount.objects.filter(
+                pk=funding_account_id,
+                provider=provider,
+                active=True,
+            )
+            .select_related("api_key")
+            .first()
+        )
+        return bool(account and account_credential_ready(account, allow_probe=False))
+    except Exception:
+        return False
+
+
+def execution_model_ready(model: AIModel, *, funding_account_id=None) -> bool:
     """Last-line readiness immediately before a provider call.
 
-    Commercial funding is intentionally *not* rechecked here. At this point the
-    streaming pipeline has already switched RequestCost to this model and the
-    procurement post-save hook has atomically reserved provider funds. Requiring
-    additional *free* provider balance now would let a request invalidate itself
-    when its own reservation consumes the remaining purchased balance.
-
-    The execution guard therefore checks only conditions that can legitimately
-    become stale after preflight/reservation: model publication/quarantine,
-    provider circuit state and the exact customer-safe runtime credential.
+    When a provider-spend reservation already exists, ``funding_account_id`` is its
+    durable credential identity. The balance is not rechecked because those funds are
+    already reserved for this Generation; only exact credential health is revalidated.
     """
     if not model.enabled or not str(model.upstream_model or "").strip():
         return False
@@ -48,21 +63,11 @@ def execution_model_ready(model: AIModel) -> bool:
         Provider.HealthState.DEGRADED,
     }:
         return False
-    return runtime_credential_ready(provider)
+    return _reserved_credential_ready(provider, funding_account_id)
 
 
 def install(streaming_module) -> None:
-    """Revalidate every routed model immediately before customer inference.
-
-    Routing snapshots are durable, while provider/key/model health can change after
-    prepare() and after the provider-spend reservation is created. Customer traffic
-    must never be used as a health probe for a stale candidate, but a request must
-    also never reject itself merely because its own valid procurement reservation
-    reduced the account's free balance to zero.
-
-    The local rejection is not a provider failure, so it must not degrade a healthy
-    provider/circuit merely because another request changed readiness in the meantime.
-    """
+    """Revalidate every routed model immediately before customer inference."""
     raw_adapter_for = streaming_module.adapter_for
     if getattr(raw_adapter_for, "_ai_workspace_runtime_readiness", False):
         return
@@ -74,7 +79,11 @@ def install(streaming_module) -> None:
             .filter(pk=model.pk)
             .first()
         )
-        if fresh is None or not execution_model_ready(fresh):
+        funding_account_id = kwargs.get("funding_account_id")
+        if fresh is None or not execution_model_ready(
+            fresh,
+            funding_account_id=funding_account_id,
+        ):
             raise ProviderError(
                 "Routed model is no longer execution-ready",
                 retryable=False,
@@ -95,7 +104,6 @@ def install(streaming_module) -> None:
     streaming_module.adapter_for = guarded_adapter_for
     streaming_module.record_failure = guarded_record_failure
 
-    # Keep modules that imported these callables by value aligned with the runtime guard.
     for module_name in ("apps.chat.services", "apps.chat.views", "apps.chat.managed_stream"):
         module = sys.modules.get(module_name)
         if module is not None:
