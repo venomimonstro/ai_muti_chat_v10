@@ -14,6 +14,7 @@ import "./dev-studio-flow.css";
 import "./workspace-billing-dialog.css";
 import "./client-chrome.css";
 import "./client-chrome-mobile-menu.css";
+import "./workspace-chat-premium.css";
 
 export const metadata: Metadata = {
   title: "AI Workspace — рабочее пространство",
