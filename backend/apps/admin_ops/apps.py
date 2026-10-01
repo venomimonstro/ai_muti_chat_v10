@@ -8,6 +8,7 @@ class AdminOpsConfig(AppConfig):
 
     def ready(self):
         from . import issue_models  # noqa: F401
-        from . import procurement_views, search_economics
+        from . import diagnostics_chat_service, diagnostics_views, procurement_views, search_economics
 
         search_economics.install(procurement_views)
+        diagnostics_chat_service.install(diagnostics_views)
