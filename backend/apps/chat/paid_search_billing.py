@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from contextvars import ContextVar
+from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import urlparse
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models.signals import post_save
+from django.utils import timezone
 
 from apps.ai_registry.models import Provider, ProviderApiKey
+from apps.billing.models import BalanceReservation
 from apps.billing.pricing import quote_flat, require_margin
 from apps.billing.services import release, reserve, settle
 from apps.procurement.services import (
@@ -21,6 +26,7 @@ from apps.procurement.services import (
     settle_provider_spend,
 )
 
+logger = logging.getLogger(__name__)
 SEARCH_PROVIDER_SLUG = "yandex-search"
 SEARCH_NATIVE_UNITS = Decimal("1")
 _ctx = ContextVar("chat_paid_search_context", default=None)
@@ -106,7 +112,9 @@ def _searx_adequate(results, limit: int) -> bool:
         for row in rows
         if getattr(row, "url", "")
     }
-    useful_snippets = sum(1 for row in rows if len(str(getattr(row, "snippet", "")).strip()) >= 60)
+    useful_snippets = sum(
+        1 for row in rows if len(str(getattr(row, "snippet", "")).strip()) >= 60
+    )
     return len(domains) >= 2 and useful_snippets >= max(1, len(rows) // 2)
 
 
@@ -114,8 +122,13 @@ def _mark_key(account, *, healthy: bool, error_code: str = ""):
     if not account.api_key_id:
         return
     fields = {
-        "health_state": ProviderApiKey.HealthState.HEALTHY if healthy else ProviderApiKey.HealthState.DEGRADED,
+        "health_state": (
+            ProviderApiKey.HealthState.HEALTHY
+            if healthy
+            else ProviderApiKey.HealthState.DEGRADED
+        ),
         "last_error_code": "" if healthy else str(error_code or "search_failed")[:80],
+        "last_checked_at": timezone.now(),
     }
     ProviderApiKey.objects.filter(pk=account.api_key_id).update(**fields)
 
@@ -132,6 +145,67 @@ def _search_quote(provider, unit_cost_rub):
             operation_type="web_search",
         )
     )
+
+
+def public_search_charge(generation) -> Decimal:
+    reservation = BalanceReservation.objects.filter(
+        idempotency_key=f"web-search:{generation.id}",
+        state=BalanceReservation.State.SETTLED,
+    ).only("actual_rub").first()
+    return Decimal(str(reservation.actual_rub or 0)) if reservation else Decimal("0")
+
+
+def _finish_customer_search_charge(generation):
+    reservation = BalanceReservation.objects.filter(
+        idempotency_key=f"web-search:{generation.id}"
+    ).first()
+    if reservation is None or reservation.state != BalanceReservation.State.ACTIVE:
+        return reservation
+    if generation.state == generation.State.COMPLETED:
+        return settle(reservation.id, reservation.amount_rub)
+    if generation.state in {generation.State.FAILED, generation.State.CANCELLED}:
+        return release(reservation.id)
+    return reservation
+
+
+def recover_search_reservations(*, older_than_seconds: int = 900, limit: int = 200) -> dict:
+    from apps.chat.models import Generation
+
+    cutoff = timezone.now() - timedelta(seconds=max(60, int(older_than_seconds)))
+    rows = list(
+        BalanceReservation.objects.filter(
+            state=BalanceReservation.State.ACTIVE,
+            idempotency_key__startswith="web-search:",
+            created_at__lt=cutoff,
+        ).order_by("created_at")[: max(1, min(int(limit), 1000))]
+    )
+    settled = 0
+    released = 0
+    deferred = 0
+    for reservation in rows:
+        generation_id = reservation.idempotency_key.split("web-search:", 1)[-1]
+        generation = Generation.objects.filter(pk=generation_id).first()
+        try:
+            if generation is None:
+                release(reservation.id)
+                released += 1
+            elif generation.state == Generation.State.COMPLETED:
+                settle(reservation.id, reservation.amount_rub)
+                settled += 1
+            elif generation.state in {Generation.State.FAILED, Generation.State.CANCELLED}:
+                release(reservation.id)
+                released += 1
+            else:
+                deferred += 1
+        except Exception:
+            logger.exception("Search reservation recovery failed reservation_id=%s", reservation.id)
+            deferred += 1
+    return {
+        "checked": len(rows),
+        "settled": settled,
+        "released": released,
+        "deferred": deferred,
+    }
 
 
 def install(*, streaming_module, web_tools_module) -> None:
@@ -156,10 +230,23 @@ def install(*, streaming_module, web_tools_module) -> None:
             config.update(
                 {
                     "api_key": secret,
-                    "folder_id": str(auth.get("folder_id") or config.get("folder_id") or "").strip(),
-                    "endpoint": str(auth.get("endpoint") or provider.api_base_url or config.get("endpoint") or "").strip(),
-                    "search_type": str(auth.get("search_type") or config.get("search_type") or "SEARCH_TYPE_RU").strip(),
-                    "region": str(auth.get("region") or config.get("region") or "225").strip(),
+                    "folder_id": str(
+                        auth.get("folder_id") or config.get("folder_id") or ""
+                    ).strip(),
+                    "endpoint": str(
+                        auth.get("endpoint")
+                        or provider.api_base_url
+                        or config.get("endpoint")
+                        or ""
+                    ).strip(),
+                    "search_type": str(
+                        auth.get("search_type")
+                        or config.get("search_type")
+                        or "SEARCH_TYPE_RU"
+                    ).strip(),
+                    "region": str(
+                        auth.get("region") or config.get("region") or "225"
+                    ).strip(),
                     "source": "funding_account",
                 }
             )
@@ -171,7 +258,9 @@ def install(*, streaming_module, web_tools_module) -> None:
     def billed_yandex(query: str, *, limit: int):
         context = _ctx.get()
         if not context:
-            raise web_tools_module.WebToolError("Paid search requires a billable chat context")
+            raise web_tools_module.WebToolError(
+                "Paid search requires a billable chat context"
+            )
         from apps.chat.models import Generation
 
         generation = Generation.objects.filter(
@@ -181,11 +270,11 @@ def install(*, streaming_module, web_tools_module) -> None:
             raise web_tools_module.WebToolError("Search generation context is unavailable")
         try:
             provider, account, unit_cost = _provider_and_account()
-            quote = _search_quote(provider, unit_cost)
+            search_quote = _search_quote(provider, unit_cost)
             with transaction.atomic():
                 customer_reservation = reserve(
                     context["user"],
-                    quote.user_charge_rub,
+                    search_quote.user_charge_rub,
                     f"web-search:{generation.id}",
                 )
                 provider_reservation = reserve_provider_spend(
@@ -194,7 +283,9 @@ def install(*, streaming_module, web_tools_module) -> None:
                     source_key=f"web-search:{generation.id}",
                 )
         except Exception as exc:
-            raise web_tools_module.WebToolError(f"Yandex Search billing unavailable: {exc}") from exc
+            raise web_tools_module.WebToolError(
+                f"Yandex Search billing unavailable: {exc}"
+            ) from exc
 
         try:
             results = raw_yandex(query, limit=limit)
@@ -214,26 +305,33 @@ def install(*, streaming_module, web_tools_module) -> None:
             _mark_key(account, healthy=False, error_code=code)
             raise
 
+        # The upstream search expense is real as soon as Yandex returns results, so
+        # procurement is settled immediately. The customer's search reservation stays
+        # ACTIVE until the answer reaches COMPLETED. If the LLM/preflight fails later,
+        # the customer is refunded and the platform bears the tool expense rather than
+        # charging for an answer that was never delivered.
         with transaction.atomic():
             spend = settle_provider_spend(
-                reservation_id=provider_reservation.id if provider_reservation else None,
+                reservation_id=(provider_reservation.id if provider_reservation else None),
                 actual_native=SEARCH_NATIVE_UNITS,
-                nominal_cost_rub=quote.provider_cost_rub,
-                customer_charge_rub=quote.user_charge_rub,
+                nominal_cost_rub=search_quote.provider_cost_rub,
+                customer_charge_rub=Decimal("0"),
                 source_type="web_search",
                 source_id=str(generation.id),
                 model_slug=SEARCH_PROVIDER_SLUG,
             )
-            settle(customer_reservation.id, quote.user_charge_rub)
         _mark_key(account, healthy=True)
         _usage.set(
             {
                 "provider": "yandex",
                 "paid": True,
-                "provider_cost_rub": str(spend.economic_cost_rub if spend else quote.economic_cost_rub),
-                "customer_charge_rub": str(quote.user_charge_rub),
+                "provider_cost_rub": str(
+                    spend.economic_cost_rub if spend else search_quote.economic_cost_rub
+                ),
+                "customer_charge_rub": str(search_quote.user_charge_rub),
                 "pricing_mode": "procurement_per_request",
                 "query_sha256": hashlib.sha256(str(query).encode("utf-8")).hexdigest(),
+                "customer_reservation_id": str(customer_reservation.id),
             }
         )
         return results
@@ -285,14 +383,23 @@ def install(*, streaming_module, web_tools_module) -> None:
                 }
             )
             return weak_free
-        raise web_tools_module.WebToolError("All web search providers failed: " + "; ".join(errors))
+        raise web_tools_module.WebToolError(
+            "All web search providers failed: " + "; ".join(errors)
+        )
 
     def enrich(snapshot: dict, query: str, *, required: bool):
         _usage.set(None)
         result = raw_enrich(snapshot, query, required=required)
-        usage = _usage.get()
+        usage = dict(_usage.get() or {})
         if usage and isinstance(result.get("web_search"), dict) and result["web_search"].get("used"):
+            reservation_id = usage.pop("customer_reservation_id", "")
             result["web_search"] = {**result["web_search"], **usage}
+            if reservation_id:
+                result["internal_search_billing"] = {
+                    "customer_reservation_id": reservation_id,
+                    "customer_charge_rub": usage.get("customer_charge_rub", "0"),
+                    "provider": usage.get("provider", ""),
+                }
         return result
 
     def prepare(*args, **kwargs):
@@ -302,11 +409,41 @@ def install(*, streaming_module, web_tools_module) -> None:
                 "idempotency_key": kwargs.get("idempotency_key"),
             }
         )
+        _usage.set(None)
         try:
             return raw_prepare(*args, **kwargs)
+        except BaseException:
+            usage = dict(_usage.get() or {})
+            reservation_id = usage.get("customer_reservation_id")
+            if reservation_id:
+                try:
+                    release(reservation_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to release paid-search customer reserve id=%s",
+                        reservation_id,
+                    )
+            raise
         finally:
             _ctx.reset(token)
             _usage.set(None)
+
+    def generation_saved(sender, instance, **kwargs):
+        if instance.state not in {
+            instance.State.COMPLETED,
+            instance.State.FAILED,
+            instance.State.CANCELLED,
+        }:
+            return
+        try:
+            _finish_customer_search_charge(instance)
+        except Exception:
+            # Terminal answer state must never be rolled back by a secondary billing
+            # hook. The periodic recovery task will retry the exact idempotent close.
+            logger.exception(
+                "Paid-search customer settlement failed generation_id=%s",
+                instance.id,
+            )
 
     def status():
         try:
@@ -319,7 +456,7 @@ def install(*, streaming_module, web_tools_module) -> None:
             available = "0"
             unit_cost = Decimal("0")
             markup = ""
-        base = {
+        return {
             "provider_order": ["searx", "yandex"] if _paid_ready() else ["searx"],
             "searx": web_tools_module.searx_search_status(),
             "yandex": {
@@ -329,10 +466,9 @@ def install(*, streaming_module, web_tools_module) -> None:
                 "available_requests": available,
                 "acquisition_cost_rub_per_request": str(unit_cost),
                 "markup_percent": markup,
-                "billing_policy": "separate_tool_charge_in_answer_total",
+                "billing_policy": "charge_only_when_answer_delivered",
             },
         }
-        return base
 
     prepare._ai_workspace_paid_search_billing = True
     web_tools_module._yandex_search_config = yandex_config
@@ -341,3 +477,12 @@ def install(*, streaming_module, web_tools_module) -> None:
     web_tools_module.web_search_status = status
     streaming_module.enrich_snapshot_with_web = enrich
     streaming_module.prepare = prepare
+
+    from apps.chat.models import Generation
+
+    post_save.connect(
+        generation_saved,
+        sender=Generation,
+        dispatch_uid="chat.paid_search_billing.generation_terminal",
+        weak=False,
+    )
