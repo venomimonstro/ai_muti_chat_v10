@@ -13,6 +13,7 @@ class ChatConfig(AppConfig):
             cooperative_cancel,
             error_contract,
             manual_selection_recovery,
+            preflight_terminal,
             runtime_readiness,
             serializers,
             signals,
@@ -30,6 +31,10 @@ class ChatConfig(AppConfig):
         manual_selection_recovery.install(serializers)
         runtime_readiness.install(streaming)
         single_flight.install(streaming)
+        # Keep preflight terminalization outside single-flight: failures inside the
+        # real prepare pipeline and bounded concurrency rejection share one durable
+        # terminal-state contract. If no Generation exists this wrapper is a no-op.
+        preflight_terminal.install(streaming)
         cooperative_cancel.install(streaming)
         terminal_recovery.install(streaming)
         # Keep this outermost so recovered terminal successes are never rewritten,
