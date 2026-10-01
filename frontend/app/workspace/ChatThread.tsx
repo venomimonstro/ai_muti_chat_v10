@@ -1,6 +1,7 @@
 "use client";
 
 import {useCallback,useEffect,useMemo,useRef,useState} from "react";
+import {api} from "../../lib/api";
 import type {ChatMessage,Conversation} from "../../lib/types";
 import {ConversationAssetsPanel} from "./ConversationAssetsPanel";
 import {ErrorBoundary} from "./ErrorBoundary";
@@ -9,10 +10,13 @@ import {MessageCard} from "./MessageCard";
 
 const INITIAL_RENDER_LIMIT=60;
 const RENDER_STEP=40;
+const RECOVERY_POLL_MS=2000;
 const isOptimistic=(message:ChatMessage)=>message.id.startsWith("local-user-")||message.id.startsWith("local-ai-");
 const isOptimisticUser=(message:ChatMessage)=>message.id.startsWith("local-user-");
 const isOptimisticAssistant=(message:ChatMessage)=>message.id.startsWith("local-ai-");
 const nearInTime=(a:ChatMessage,b:ChatMessage)=>Math.abs(new Date(a.created_at).getTime()-new Date(b.created_at).getTime())<=15000;
+
+type WorkspacePage={conversation:Conversation;has_more:boolean;next_before:string|null};
 
 function displayMessages(messages:ChatMessage[]){
  const seenIds=new Set<string>();
@@ -43,6 +47,15 @@ function displayMessages(messages:ChatMessage[]){
  });
 }
 
+function hasServerGenerationInFlight(conversation:Conversation|null){
+ if(!conversation)return false;
+ return conversation.messages.some(message=>{
+  if(isOptimistic(message)||message.role!=="assistant")return false;
+  const generationState=String(message.generation?.state??"");
+  return message.status==="streaming"||generationState==="queued"||generationState==="running";
+ });
+}
+
 export function ChatThread({conversation,hasMore,loadingOlder,onLoadOlder,onConversation,onStarter}:{conversation:Conversation|null;hasMore:boolean;loadingOlder:boolean;onLoadOlder:()=>void;onConversation:(value:Conversation)=>void;onStarter:(value:string)=>void}){
  const ref=useRef<HTMLElement|null>(null);const[away,setAway]=useState(false);const[renderLimit,setRenderLimit]=useState(INITIAL_RENDER_LIMIT);const previousCount=useRef(0);const pagingAnchor=useRef<{height:number;top:number}|null>(null);const conversationHandler=useRef(onConversation);
  conversationHandler.current=onConversation;
@@ -51,8 +64,14 @@ export function ChatThread({conversation,hasMore,loadingOlder,onLoadOlder,onConv
  const visibleMessages=useMemo(()=>messages.slice(Math.max(0,messages.length-renderLimit)),[messages,renderLimit]);
  const hiddenLoaded=Math.max(0,messages.length-visibleMessages.length);
  const messageCount=messages.length;const lastMessage=messageCount?messages[messageCount-1]:null;const lastContentLength=lastMessage?.content.length??0;
+ const recoveryNeeded=hasServerGenerationInFlight(conversation);
  useEffect(()=>{const el=ref.current;if(!el)return;if(pagingAnchor.current&&messageCount>previousCount.current){const anchor=pagingAnchor.current;pagingAnchor.current=null;requestAnimationFrame(()=>{el.scrollTop=anchor.top+(el.scrollHeight-anchor.height)});}else{const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<160;if(messageCount>=previousCount.current&&nearBottom)requestAnimationFrame(()=>{el.scrollTop=el.scrollHeight});}previousCount.current=messageCount;},[messageCount,lastContentLength]);
  useEffect(()=>{setRenderLimit(INITIAL_RENDER_LIMIT);const el=ref.current;if(el)requestAnimationFrame(()=>{el.scrollTop=el.scrollHeight});previousCount.current=messages.length;pagingAnchor.current=null;},[conversation?.id]);
+ // A browser reload detaches the SSE transport while the backend deliberately keeps
+ // the same Generation running. Poll only when the freshly loaded server snapshot
+ // contains an actual persisted in-flight assistant. Ordinary live SSE uses local
+ // optimistic messages and therefore does not create a competing poll loop.
+ useEffect(()=>{if(!conversation?.id||!recoveryNeeded)return;let active=true;let timer:number|null=null;const refresh=async()=>{if(!active)return;if(typeof document!=="undefined"&&document.visibilityState==="hidden"){timer=window.setTimeout(()=>void refresh(),RECOVERY_POLL_MS*2);return}try{const page=await api<WorkspacePage>(`/conversation-workspace/${conversation.id}/?limit=60`);if(!active)return;stableOnConversation(page.conversation);if(hasServerGenerationInFlight(page.conversation)){timer=window.setTimeout(()=>void refresh(),RECOVERY_POLL_MS)}}catch{if(active)timer=window.setTimeout(()=>void refresh(),RECOVERY_POLL_MS*2)}};timer=window.setTimeout(()=>void refresh(),500);return()=>{active=false;if(timer!==null)window.clearTimeout(timer)}},[conversation?.id,recoveryNeeded,stableOnConversation]);
  const loadOlder=()=>{const el=ref.current;if(el)pagingAnchor.current={height:el.scrollHeight,top:el.scrollTop};onLoadOlder();};
  if(!conversation||messages.length===0)return <section className="emptyChat"><div className="emptyMark"><Icon name="spark" size={23}/></div><h1>Чем помочь сегодня?</h1><p className="emptySubhead">Опишите задачу своими словами. Сервис сам подберёт подходящую модель и постарается не расходовать лишние токены.</p><div className="starterGrid"><button onClick={()=>onStarter("Разбери документ и выдели главное. Сначала дай краткое резюме, затем ключевые выводы и риски.")}><span className="starterIcon"><Icon name="folder" size={16}/></span><span className="starterCopy"><b>Разобрать документ</b><small>Резюме, выводы и важные детали</small></span></button><button onClick={()=>onStarter("Помоги написать сильный текст. Сначала уточни цель и аудиторию, если это необходимо.")}><span className="starterIcon"><Icon name="pencil" size={16}/></span><span className="starterCopy"><b>Написать текст</b><small>Структура, редактура и финальная версия</small></span></button><button onClick={()=>onStarter("Помоги написать и проверить код. Найди ошибки, предложи решение и объясни важные изменения.")}><span className="starterIcon"><Icon name="zap" size={16}/></span><span className="starterCopy"><b>Помочь с кодом</b><small>Разработка, аудит и исправление ошибок</small></span></button><button onClick={()=>onStarter("Найди актуальную информацию в интернете, сравни источники и укажи ссылки на ключевые факты.")}><span className="starterIcon"><Icon name="search" size={16}/></span><span className="starterCopy"><b>Найти информацию</b><small>Актуальные данные с источниками</small></span></button></div></section>;
  return <section ref={ref} className="threadViewport" onScroll={e=>{const el=e.currentTarget;setAway(el.scrollHeight-el.scrollTop-el.clientHeight>260)}}><div className="threadInner"><ConversationAssetsPanel conversationId={conversation.id}/>{hiddenLoaded>0&&<button className="olderButton" onClick={()=>setRenderLimit(limit=>limit+RENDER_STEP)}>Показать ещё {Math.min(RENDER_STEP,hiddenLoaded)} загруженных сообщений</button>}{hiddenLoaded===0&&hasMore&&<button className="olderButton" disabled={loadingOlder} onClick={loadOlder}>{loadingOlder?"Загружаем…":"Показать более ранние сообщения"}</button>}{visibleMessages.map(message=><ErrorBoundary key={message.id}><MessageCard conversationId={conversation.id} message={message} onConversation={stableOnConversation}/></ErrorBoundary>)}</div>{away&&<button className="jumpBottom" onClick={()=>{const el=ref.current;if(el)el.scrollTo({top:el.scrollHeight,behavior:"smooth"})}}><Icon name="arrowDown" size={16}/>К последнему</button>}</section>;
