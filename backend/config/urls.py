@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import admin
 from django.core.cache import cache
 from django.db import connection
@@ -19,6 +20,14 @@ def readiness(_request):
         cache.set("readiness-probe", "ready", timeout=10)
         if cache.get("readiness-probe") != "ready":
             raise RuntimeError("Cache readiness check failed")
+        if not settings.DEBUG:
+            cache_backend = str(
+                (settings.CACHES.get("default") or {}).get("BACKEND") or ""
+            ).casefold()
+            if "locmem" in cache_backend:
+                raise RuntimeError("Production requires shared cache")
+            if not bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False)):
+                raise RuntimeError("Production procurement must be fail-closed")
     except Exception:
         return JsonResponse({"status": "unavailable"}, status=503)
     return JsonResponse({"status": "ready"})
