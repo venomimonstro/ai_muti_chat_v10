@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+from decimal import Decimal
+
+from django.db import transaction
 
 from apps.ai_registry.models import Provider
 from apps.billing.models import RequestCost
-from apps.procurement.account_routing import account_credential_ready
-from apps.procurement.models import ProviderSpendReservation
+from apps.procurement.account_routing import account_credential_ready, runtime_funding_accounts
+from apps.procurement.models import ProviderFundingAccount, ProviderSpendReservation
 
 
 _generation_id: ContextVar[str | None] = ContextVar(
@@ -73,6 +76,72 @@ def _provider_execution_ready(provider: Provider, *, reservation=None) -> bool:
     return runtime_credential_ready(provider)
 
 
+@transaction.atomic
+def _rebind_failed_provider_reservation(generation_id, provider) -> bool:
+    """Move an active pre-usage reserve from a failed key to a healthy sibling.
+
+    ``ProviderSpendReservation.source_key`` is unique and represents one immutable
+    commercial operation. Creating a second reservation for the same RequestCost is
+    therefore intentionally impossible. Before any provider usage is confirmed it is
+    safe to move that *active* reservation to another funding account while preserving
+    source identity and amount. Both account balances and the reservation row are
+    locked so concurrent retries cannot reserve the same capacity twice.
+    """
+    if not generation_id:
+        return False
+    request_cost = _current_request_cost(generation_id)
+    if request_cost is None or request_cost.provider_cost_rub is not None:
+        return False
+    prefix = f"chat:{request_cost.id}:"
+    reservation = (
+        ProviderSpendReservation.objects.select_for_update()
+        .select_related("account", "account__api_key")
+        .filter(
+            source_key__startswith=prefix,
+            state=ProviderSpendReservation.State.ACTIVE,
+            account__provider=provider,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if reservation is None:
+        return False
+    if account_credential_ready(reservation.account, allow_probe=False):
+        return False
+
+    old_account_id = reservation.account_id
+    amount = reservation.amount_native
+    currency = str(reservation.account.currency or "").upper().strip()
+    # lock=True locks every active funding-account row for this provider before the
+    # in-Python readiness filter is applied, including the failed old account.
+    candidates = runtime_funding_accounts(
+        provider,
+        required_native=amount,
+        currency=currency,
+        allow_probe=False,
+        require_balance=True,
+        lock=True,
+    )
+    replacement = next(
+        (account for account in candidates if account.id != old_account_id),
+        None,
+    )
+    if replacement is None:
+        return False
+
+    old_account = ProviderFundingAccount.objects.get(pk=old_account_id)
+    replacement = ProviderFundingAccount.objects.get(pk=replacement.pk)
+    old_account.reserved_native = max(
+        Decimal("0"), old_account.reserved_native - amount
+    )
+    replacement.reserved_native += amount
+    old_account.save(update_fields=["reserved_native", "updated_at"])
+    replacement.save(update_fields=["reserved_native", "updated_at"])
+    reservation.account = replacement
+    reservation.save(update_fields=["account"])
+    return True
+
+
 def install(streaming_module) -> None:
     """Bind one chat Generation to its exact purchased API account."""
     if getattr(streaming_module.run, "_ai_workspace_procurement_execution", False):
@@ -120,7 +189,19 @@ def install(streaming_module) -> None:
             # provider/key health would poison unrelated customer traffic. The normal
             # stream loop records the GenerationAttempt and continues to fallback.
             return None
-        return raw_record_failure(provider, error, adapter=adapter)
+        result = raw_record_failure(provider, error, adapter=adapter)
+        # record_failure attributes the error to the exact adapter/key first. If that
+        # makes the reserved credential non-routable and provider usage has not been
+        # confirmed, atomically move the existing reserve to the next HEALTHY funded
+        # account. The next same-model retry will then use that exact account.
+        if adapter is not None:
+            try:
+                _rebind_failed_provider_reservation(_generation_id.get(), provider)
+            except Exception:
+                # Rebinding is an availability optimization, never a reason to hide
+                # the original provider failure or corrupt its health attribution.
+                pass
+        return result
 
     def run(generation, *args, **kwargs):
         token = _generation_id.set(str(generation.id))
