@@ -41,8 +41,14 @@ def install(procurement_views_module) -> None:
                 created_at__gte=start,
                 created_at__lt=end,
             )
+            search_probes = ProviderSpend.objects.filter(
+                source_type="web_search_probe",
+                created_at__gte=start,
+                created_at__lt=end,
+            )
             search_revenue = _sum(search_charges, "actual_rub")
             search_nominal_cost = _sum(search_spends, "nominal_cost_rub")
+            probe_cost = _sum(search_probes, "economic_cost_rub")
 
             summary = dict(response.data.get("summary") or {})
             old_revenue = Decimal(str(summary.get("revenue_rub") or "0"))
@@ -67,6 +73,8 @@ def install(procurement_views_module) -> None:
                     "web_search_revenue_rub": str(search_revenue),
                     "web_search_nominal_cost_rub": str(search_nominal_cost),
                     "web_search_paid_calls": search_spends.count(),
+                    "web_search_probe_calls": search_probes.count(),
+                    "web_search_probe_cost_rub": str(probe_cost),
                 }
             )
             response.data["summary"] = summary
@@ -92,7 +100,10 @@ def install(procurement_views_module) -> None:
                 state=CompareVariant.State.COMPLETED,
             ).count()
             source_count = chat_count + b2b_count + image_count + compare_count + search_spends.count()
-            spend_count = ProviderSpend.objects.filter(created_at__gte=start, created_at__lt=end).count()
+            spend_count = ProviderSpend.objects.filter(
+                created_at__gte=start,
+                created_at__lt=end,
+            ).exclude(source_type="web_search_probe").count()
             coverage = Decimal(spend_count) / Decimal(source_count) * 100 if source_count else Decimal("100")
             risk = dict(response.data.get("risk") or {})
             risk["unallocated_completed_operations"] = max(0, source_count - spend_count)
