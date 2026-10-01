@@ -5,6 +5,8 @@ from django.test import SimpleTestCase
 
 from apps.ai_registry.adapters import DeepSeekChatAdapter, ProviderError, ProviderResult
 from apps.ai_registry.client_readiness import provider_model_config_ready
+from apps.ai_registry.models import Provider
+from apps.ai_registry.reliability import _is_test_echo_provider
 from apps.ai_registry.yandexgpt_adapter import YandexGPTAdapter, normalize_model_id
 
 
@@ -52,3 +54,15 @@ class YandexGPTRuntimeTests(SimpleTestCase):
             )
         self.assertEqual(returned.text, "OK")
         self.assertEqual(generate.call_args.kwargs["model"], "gpt://folder-123/yandexgpt/latest")
+
+    def test_service_account_api_key_uses_yandex_authorization_scheme(self):
+        adapter = YandexGPTAdapter(api_key="secret", folder_id="folder-123")
+        self.assertEqual(adapter.headers["Authorization"], "Api-Key secret")
+        self.assertNotIn("Bearer", adapter.headers["Authorization"])
+
+    def test_yandexgpt_is_never_treated_as_internal_echo_provider(self):
+        provider = SimpleNamespace(
+            slug="yandexgpt",
+            adapter_type=Provider.AdapterType.ECHO,
+        )
+        self.assertFalse(_is_test_echo_provider(provider))
