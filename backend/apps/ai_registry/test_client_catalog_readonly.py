@@ -1,6 +1,6 @@
 from django.test import TestCase
 
-from .models import AIModel, Provider
+from .models import AIModel, Provider, RoutingTierAssignment
 from .serializers import AIModelSerializer
 from .views import AIModelViewSet
 
@@ -81,3 +81,33 @@ class ClientModelCatalogReadOnlyTests(TestCase):
                 enabled=True,
             )
             self.assertEqual(AIModelSerializer(model).data["display_name"], expected)
+
+    def test_catalog_serializes_admin_managed_tier_membership(self):
+        provider = Provider.objects.create(slug="tier-provider", name="Tier provider")
+        model = AIModel.objects.create(
+            provider=provider,
+            slug="tier-model",
+            display_name="Tier model",
+            upstream_model="tier-model",
+            enabled=True,
+        )
+        RoutingTierAssignment.objects.create(
+            tier=RoutingTierAssignment.Tier.SIMPLE,
+            model=model,
+            priority=10,
+            enabled=True,
+        )
+        RoutingTierAssignment.objects.create(
+            tier=RoutingTierAssignment.Tier.COMPLEX,
+            model=model,
+            priority=20,
+            enabled=False,
+        )
+
+        payload = AIModelSerializer(
+            model,
+            context={"routing_tiers_configured": True},
+        ).data
+
+        self.assertEqual(payload["routing_tiers"], [RoutingTierAssignment.Tier.SIMPLE])
+        self.assertTrue(payload["routing_tiers_configured"])
