@@ -56,6 +56,7 @@ class ChatConfig(AppConfig):
             run_claim_safety,
             runtime_readiness,
             search_cost_public,
+            search_policy_hardening,
             search_trigger_policy,
             serializers,
             signals,
@@ -77,6 +78,10 @@ class ChatConfig(AppConfig):
         # persist cost metadata into the Generation context. SearXNG remains the free
         # default and Yandex is selected only when policy/quality justifies it.
         paid_search_billing.install(streaming_module=streaming, web_tools_module=web_tools)
+        # Expensive Yandex traffic is strictly opt-in-first: explicit Yandex wording
+        # may use it first, otherwise SearXNG is tried before the paid fallback. Bad
+        # credentials are fail-closed and query-level empty results do not poison key health.
+        search_policy_hardening.install(paid_search_billing)
         # Memory, summaries, retrieved history and files are reference data, never
         # system instructions. Keep a strict trusted allowlist before web enrichment
         # adds its own separately marked untrusted context.
