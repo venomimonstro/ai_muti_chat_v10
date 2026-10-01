@@ -4,7 +4,7 @@ import logging
 from django.utils import timezone
 
 from apps.ai_registry.models import AIModel
-from apps.billing.models import BalanceReservation
+from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.services import release
 
 from .models import Generation, Message
@@ -63,6 +63,84 @@ def _sync_terminal_actual(generation):
         Generation.objects.filter(pk=generation.pk).update(actual_cost_rub=actual)
         generation.actual_cost_rub = actual
     return actual
+
+
+def _recover_confirmed_completed_response(generation):
+    """Recover a fully delivered provider response that failed only in final settlement.
+
+    This is intentionally narrow. Recovery is allowed only when the provider usage was
+    persisted, the customer reservation is already safely SETTLED, and the complete
+    assistant text is present. Network/provider failures with merely partial text never
+    satisfy these conditions and remain FAILED/PARTIAL.
+    """
+    generation.refresh_from_db(
+        fields=[
+            "state",
+            "error_code",
+            "reservation_id",
+            "actual_cost_rub",
+            "provider_request_id",
+            "input_tokens",
+            "output_tokens",
+            "routed_model",
+            "provider_slug",
+            "completed_at",
+        ]
+    )
+    if generation.state != Generation.State.FAILED or generation.error_code != "cost_or_internal_error":
+        return None
+    if not generation.reservation_id or not generation.provider_request_id:
+        return None
+    if not generation.routed_model or not generation.provider_slug:
+        return None
+
+    reservation = BalanceReservation.objects.filter(pk=generation.reservation_id).first()
+    if reservation is None or reservation.state != BalanceReservation.State.SETTLED:
+        return None
+    if reservation.actual_rub is None or reservation.actual_rub <= 0:
+        return None
+
+    request_cost = RequestCost.objects.filter(
+        generation_id=generation.id,
+        provider_cost_rub__isnull=False,
+    ).first()
+    if request_cost is None:
+        return None
+    if not (request_cost.input_tokens or request_cost.output_tokens):
+        return None
+
+    assistant = generation.assistant_message
+    assistant.refresh_from_db(fields=["content", "status"])
+    if not str(assistant.content or "").strip():
+        return None
+
+    now = timezone.now()
+    assistant.status = Message.Status.COMPLETED
+    assistant.save(update_fields=["status"])
+    Generation.objects.filter(pk=generation.pk, state=Generation.State.FAILED).update(
+        state=Generation.State.COMPLETED,
+        error_code="",
+        actual_cost_rub=reservation.actual_rub,
+        completed_at=now,
+    )
+    generation.state = Generation.State.COMPLETED
+    generation.error_code = ""
+    generation.actual_cost_rub = reservation.actual_rub
+    generation.completed_at = now
+    logger.warning(
+        "Recovered completed provider response after capped settlement generation_id=%s actual=%s",
+        generation.id,
+        reservation.actual_rub,
+    )
+    return {
+        "state": "completed",
+        "cost_rub": str(reservation.actual_rub),
+        "input_tokens": generation.input_tokens,
+        "output_tokens": generation.output_tokens,
+        "model": generation.routed_model,
+        "provider": generation.provider_slug,
+        "recovered": True,
+    }
 
 
 def _finalize_active_stream(generation, *, state, error_code, log_label):
@@ -269,6 +347,15 @@ def managed_run(generation, *, adapter=None):
                 # Another request already owns this Generation. This stream is only
                 # a follower and must never terminalize or settle the producer's work.
                 passive_follower = True
+            if payload and str(payload.get("code") or "") == "cost_or_internal_error":
+                recovered = _recover_confirmed_completed_response(generation)
+                if recovered is not None:
+                    completed_chunk = (
+                        f"event: completed\ndata: "
+                        f"{json.dumps(recovered, ensure_ascii=False, default=str)}\n\n"
+                    )
+                    yield _publicize_sse_chunk(generation, completed_chunk)
+                    continue
             chunk = _rewrite_error_chunk_if_needed(generation, chunk)
             yield _publicize_sse_chunk(generation, chunk)
     except GeneratorExit:
