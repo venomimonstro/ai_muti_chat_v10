@@ -111,7 +111,11 @@ services:
       timeout: 8s
       retries: 12
       start_period: 20s
-    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}, searxng: {condition: service_healthy}, sandbox: {condition: service_healthy}}
+    # Core chat availability depends only on its state/coordination stores. Search and
+    # Dev Studio sandbox are deliberately NOT hard startup dependencies: both have
+    # fail-closed feature-level readiness and may recover independently without taking
+    # the customer chat/API offline.
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
     networks: [private, sandbox_net, edge]
     init: true
     stop_grace_period: 30s
@@ -131,7 +135,8 @@ services:
       WEB_PAGE_TIMEOUT_SECONDS: ${WEB_PAGE_TIMEOUT_SECONDS:-3}
       WEB_PAGE_FETCH_RESULTS: ${WEB_PAGE_FETCH_RESULTS:-3}
     volumes: [media_data:/app/media, logs_data:/app/logs]
-    depends_on: {backend: {condition: service_healthy}, sandbox: {condition: service_healthy}, searxng: {condition: service_healthy}}
+    # Recovery/health/billing workers must remain alive when an optional tool is down.
+    depends_on: {backend: {condition: service_healthy}}
     networks: [private, sandbox_net, egress]
     init: true
     stop_grace_period: 45s
