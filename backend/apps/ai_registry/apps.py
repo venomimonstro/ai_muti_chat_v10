@@ -25,6 +25,7 @@ class AIRegistryConfig(AppConfig):
             routing_pools,
             search_intelligence,
             signals,
+            web_fetch_security,
             web_tools,
         )
 
@@ -32,6 +33,9 @@ class AIRegistryConfig(AppConfig):
         adapters.adapter_for = dispatch.adapter_for
         reliability.adapter_for = dispatch.adapter_for
         search_intelligence.install(web_tools)
+        # Search-provider snippets stay enabled, but arbitrary result-page fetching
+        # is fail-closed unless deployment explicitly provides a safe egress boundary.
+        web_fetch_security.install(web_tools)
         routing_pools.install_router_pool_resolver(router)
         # Router v3 keeps reasoning complexity independent from web/tool usage.
         # v3.3 guardrails then cover semantic edge cases that are easy to
