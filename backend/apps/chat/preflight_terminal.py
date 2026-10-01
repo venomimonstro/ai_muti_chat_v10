@@ -51,15 +51,7 @@ def classify_preflight_exception(exc: Exception) -> str:
 
 
 def _recover_preflight_reservation(generation):
-    """Make an early customer reserve discoverable and release it exactly once.
-
-    streaming.prepare() reserves with a deterministic ``generation:<uuid>`` key.
-    A failure can happen before the reservation id is copied onto Generation. If
-    the first best-effort release also failed, stale recovery would otherwise have
-    no direct link to those frozen funds. Persist the link first, then retry the
-    idempotent release. A later recovery sweep can finish the work if the database
-    itself is temporarily unavailable now.
-    """
+    """Make an early customer reserve discoverable and release it exactly once."""
     reservation = BalanceReservation.objects.filter(
         idempotency_key=f"generation:{generation.id}",
         state=BalanceReservation.State.ACTIVE,
@@ -157,7 +149,14 @@ def install(streaming_module) -> None:
     prepare._raw_prepare = raw_prepare
     streaming_module.prepare = prepare
 
-    for module_name in ("apps.chat.services", "apps.chat.views"):
+    # Keep every HTTP/activity entrypoint on the same final prepare chain even when
+    # an import happens earlier than expected (tests, management commands, preload).
+    for module_name in (
+        "apps.chat.services",
+        "apps.chat.views",
+        "apps.chat.cost_views",
+        "apps.chat.activity_stream",
+    ):
         module = sys.modules.get(module_name)
         if module is not None and hasattr(module, "prepare"):
             module.prepare = prepare
