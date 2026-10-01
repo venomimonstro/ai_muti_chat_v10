@@ -8,13 +8,13 @@ from .models import AIModel
 
 
 def _fallback_manual_route(router_module, policy, classification, conversation, input_tokens):
-    """Build a safe continuity route when the explicitly selected model vanished.
+    """Build continuity from the first model that can actually serve this request.
 
-    This path is intentionally narrow: it runs only when the stored manual model is
-    missing or administratively disabled. Provider outages for an existing model are
-    already handled by router._manual_route itself. We keep manual continuity outside
-    AUTO tier pools because an unavailable explicit choice must not make the chat
-    unusable merely because the classified tier is empty.
+    A stored manual choice can still exist in the database while being unusable for
+    the current request: its provider/key may be down, the model may be quarantined,
+    procurement capacity can be exhausted, or the request may require capabilities /
+    context that model cannot provide. In all of those cases the unavailable model's
+    historical price must not become the ceiling for the first working replacement.
     """
     thresholds = policy.thresholds or {}
     default_quality = float(thresholds.get("default_quality", 0.55))
@@ -40,10 +40,9 @@ def _fallback_manual_route(router_module, policy, classification, conversation, 
     if not eligible:
         raise ValidationError("Нет доступной модели для выполнения запроса")
 
-    # Prefer a model that can actually satisfy the current request; provider
-    # priority provides deterministic continuity. The selected fallback becomes
-    # the cost baseline so additional failover candidates cannot unexpectedly
-    # exceed the configured multiplier.
+    # The first actually eligible replacement is always allowed. Only *additional*
+    # fallbacks are constrained by the price multiplier, so continuity cannot be
+    # blocked merely because the unavailable requested model happened to be cheap.
     selected_row = eligible[0]
     baseline = Decimal(selected_row["estimated_cost_rub"])
     allowed = []
@@ -64,7 +63,7 @@ def _fallback_manual_route(router_module, policy, classification, conversation, 
         ordered_models=[lookup[row["model"]] for row in allowed],
         candidates=rows,
         explanation=(
-            f"Выбранная модель {requested} сейчас отключена или недоступна; "
+            f"Выбранная модель {requested} сейчас недоступна для этого запроса; "
             f"запрос автоматически направлен в {selected.display_name}."
         ),
         estimated_input_tokens=input_tokens,
@@ -80,12 +79,24 @@ def install(router_module) -> None:
 
     def manual_route(policy, classification, conversation, input_tokens):
         selected_slug = str(conversation.selected_model or "").strip()
-        exists_and_enabled = bool(
-            selected_slug
-            and AIModel.objects.filter(slug=selected_slug, enabled=True).exists()
+        selected = (
+            AIModel.objects.filter(slug=selected_slug, enabled=True)
+            .select_related("provider", "current_version", "fallback_model")
+            .first()
+            if selected_slug
+            else None
         )
-        if exists_and_enabled:
-            return raw_manual_route(policy, classification, conversation, input_tokens)
+        if selected is not None:
+            thresholds = policy.thresholds or {}
+            row = router_module._route_row(
+                selected,
+                classification,
+                input_tokens,
+                default_quality=float(thresholds.get("default_quality", 0.55)),
+                unknown_latency=int(thresholds.get("unknown_latency_ms", 1500)),
+            )
+            if row["status"] == "eligible":
+                return raw_manual_route(policy, classification, conversation, input_tokens)
         return _fallback_manual_route(
             router_module,
             policy,
