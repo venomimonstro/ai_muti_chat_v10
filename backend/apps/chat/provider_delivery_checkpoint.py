@@ -15,7 +15,7 @@ _CURRENT_GENERATION_ID = contextvars.ContextVar("chat_provider_delivery_generati
 _raw_adapter_for = None
 
 
-def _checkpoint(model, event):
+def _checkpoint(model, event, delivered_text: str | None = None):
     generation_id = _CURRENT_GENERATION_ID.get()
     if generation_id is None:
         return
@@ -59,14 +59,52 @@ def _checkpoint(model, event):
             update_fields=["provider_cost_rub", "input_tokens", "output_tokens"]
         )
 
+        # A short answer may never reach the normal FLUSH_CHARS persistence threshold.
+        # If the process dies after the upstream completed event but before the final
+        # Generation commit, stale recovery must still retain the exact text the user
+        # already received. Persist it in the same durable checkpoint as provider usage.
+        if delivered_text is not None:
+            from .models import Generation, Message
+
+            generation = (
+                Generation.objects.select_for_update()
+                .select_related("assistant_message")
+                .get(pk=generation_id)
+            )
+            assistant = generation.assistant_message
+            text = str(delivered_text)
+            if text and len(text) >= len(assistant.content or ""):
+                assistant.content = text
+                assistant.status = Message.Status.STREAMING
+                assistant.save(update_fields=["content", "status"])
+
+
+def _initial_assistant_text() -> str:
+    generation_id = _CURRENT_GENERATION_ID.get()
+    if generation_id is None:
+        return ""
+    try:
+        from .models import Generation
+
+        return str(
+            Generation.objects.select_related("assistant_message")
+            .only("assistant_message__content")
+            .get(pk=generation_id)
+            .assistant_message.content
+            or ""
+        )
+    except Exception:
+        # Usage checkpointing remains authoritative even when the optional text
+        # snapshot cannot be loaded. The normal stream still persists content.
+        return ""
+
 
 def install(streaming_module) -> None:
-    """Journal provider-confirmed usage before customer settlement.
+    """Journal provider-confirmed usage and final delivered text before settlement.
 
-    The customer can receive deltas before final billing. If the database/customer
-    settlement fails after the provider has completed, the durable RequestCost and
-    procurement spend are the proof used by release()/stale recovery to charge only
-    confirmed usage instead of incorrectly issuing a full refund.
+    The customer can receive deltas before final billing. If the process/database
+    path fails after the provider has completed, durable RequestCost proves upstream
+    spend while the assistant snapshot preserves even short (< FLUSH_CHARS) answers.
     """
     global _raw_adapter_for
 
@@ -84,9 +122,12 @@ def install(streaming_module) -> None:
             return getattr(self.inner, name)
 
         def stream(self, *args, **kwargs):
+            delivered_text = _initial_assistant_text()
             for event in self.inner.stream(*args, **kwargs):
-                if getattr(event, "kind", "") == "completed":
-                    _checkpoint(self.model, event)
+                if getattr(event, "kind", "") == "delta":
+                    delivered_text += str(getattr(event, "text_delta", "") or "")
+                elif getattr(event, "kind", "") == "completed":
+                    _checkpoint(self.model, event, delivered_text=delivered_text)
                 yield event
 
     def checkpoint_adapter_for(model, *args, **kwargs):
