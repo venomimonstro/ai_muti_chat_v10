@@ -10,12 +10,13 @@ def _payload(chunk):
     return json.loads(line[5:].strip())
 
 
-def test_partial_stream_failure_never_claims_zero_charge():
+def test_partial_stream_failure_never_claims_zero_charge_or_leaks_internal_cause():
     def raw_run(_generation):
         yield sse(
             "error",
             {
                 "code": "timeout",
+                "cause_code": "provider_timeout",
                 "partial": True,
                 "message": "Провайдер временно недоступен. Запрос сохранён, деньги не списаны.",
             },
@@ -29,7 +30,8 @@ def test_partial_stream_failure_never_claims_zero_charge():
     assert chunks[0].startswith("event: error")
     payload = _payload(chunks[0])
     assert payload["code"] == "partial_response_interrupted"
-    assert payload["cause_code"] == "timeout"
+    assert payload["support_code"] == "partial_response_interrupted"
+    assert "cause_code" not in payload
     assert payload["partial"] is True
     assert "подтверждённая стоимость" in payload["message"]
     assert "деньги не списаны" not in payload["message"]
