@@ -15,10 +15,12 @@ trap 'exit 130' INT TERM HUP
 echo '[chat-check] authoritative architecture contract'
 test -s docs/CHAT_ARCHITECTURE.md
 
-echo '[chat-check] frontend stream/cancel contract'
+echo '[chat-check] frontend stream/cancel/reconnect contract'
 grep -Fq '/messages/cancel/' frontend/lib/api.ts
 grep -Fq '"cancelled"' frontend/lib/api.ts
 grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
+grep -Fq 'stream_first_event_timeout' frontend/lib/api.ts
+grep -Fq 'reader.cancel("stream_first_event_timeout")' frontend/lib/api.ts
 
 echo '[chat-check] build isolated backend test image'
 COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test
@@ -48,6 +50,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_default_auto_routing.py \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
+  apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
   apps/chat/test_manual_selection_race.py \
   apps/chat/test_quarantine_race_failover.py \
