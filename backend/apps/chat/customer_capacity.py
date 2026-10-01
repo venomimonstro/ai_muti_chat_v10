@@ -141,6 +141,10 @@ def install(*, streaming_module, cost_preview_module) -> None:
         cost_preview_module.chat_cost_preview = chat_cost_preview
 
     # Rebind modules that may import these functions by value before AppConfig.ready().
+    # Do it only for the real production module; unit tests intentionally install the
+    # layer on lightweight stand-ins and must not mutate process-global Django views.
+    if getattr(streaming_module, "__name__", "") != "apps.chat.streaming":
+        return
     bindings = {
         "apps.chat.cost_views": {
             "chat_cost_preview": cost_preview_module.chat_cost_preview,
