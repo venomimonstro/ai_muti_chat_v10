@@ -15,7 +15,7 @@ trap 'exit 130' INT TERM HUP
 echo '[chat-check] authoritative architecture contract'
 test -s docs/CHAT_ARCHITECTURE.md
 
-echo '[chat-check] frontend stream/cancel/reconnect contract'
+echo '[chat-check] frontend stream/cancel/reconnect/activity contract'
 grep -Fq '/messages/cancel/' frontend/lib/api.ts
 grep -Fq '"cancelled"' frontend/lib/api.ts
 grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
@@ -24,6 +24,8 @@ grep -Fq 'reader.cancel("stream_first_event_timeout")' frontend/lib/api.ts
 grep -Fq 'research_progress' frontend/lib/api.ts
 grep -Fq 'WorkspaceExperience' frontend/app/app/page.tsx
 grep -Fq 'ActivityTrace' frontend/app/workspace/WorkspaceExperience.tsx
+grep -Fq 'event==="activity"' frontend/app/workspace/WorkspaceV2.tsx
+grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '/messages/status/' frontend/app/components/WorkspaceRuntimeGuard.tsx
 grep -Fq 'zero routing UI/state responsibilities' frontend/app/components/WorkspaceRuntimeGuard.tsx
 if grep -Fq 'dispatchRouting(source' frontend/app/components/WorkspaceRuntimeGuard.tsx; then
