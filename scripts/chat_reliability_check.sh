@@ -27,6 +27,8 @@ grep -Fq 'WorkspaceExperience' frontend/app/app/page.tsx
 grep -Fq 'ActivityTrace' frontend/app/workspace/WorkspaceExperience.tsx
 grep -Fq 'event==="activity"' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/WorkspaceV2.tsx
+grep -Fq 'const PRE_SEND_GATE_MS=15000;' frontend/app/workspace/Composer.tsx
+grep -Fq 'const noModelsAvailable=explicitModelControl&&' frontend/app/workspace/Composer.tsx
 grep -Fq '/messages/status/' frontend/app/components/WorkspaceRuntimeGuard.tsx
 grep -Fq 'zero routing UI/state responsibilities' frontend/app/components/WorkspaceRuntimeGuard.tsx
 if grep -Fq 'dispatchRouting(source' frontend/app/components/WorkspaceRuntimeGuard.tsx; then
@@ -69,6 +71,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_native_asgi_stream.py \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
+  apps/chat/test_retry_adapter_refresh.py \
   apps/chat/test_execution_readiness_after_provider_reserve.py \
   apps/chat/test_execution_fence.py \
   apps/chat/test_procurement_execution_reservation.py \
