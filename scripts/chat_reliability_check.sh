@@ -56,6 +56,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   pytest -q \
   apps/ai_registry/test_chat_reliability.py \
   apps/ai_registry/test_unified_readiness.py \
+  apps/ai_registry/test_client_readiness_wiring.py \
   apps/ai_registry/test_provider_key_selection.py \
   apps/ai_registry/test_dispatch_runtime.py \
   apps/ai_registry/test_special_provider_dispatch.py \
