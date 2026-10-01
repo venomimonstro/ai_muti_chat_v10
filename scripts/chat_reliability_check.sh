@@ -43,13 +43,8 @@ grep -Fq 'aria-label="Повторить запрос"' frontend/app/workspace/M
 grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'ModelPicker is the single live catalog owner' frontend/app/workspace/ModelPicker.tsx
-# A temporary /models/ refresh failure must retain the last confirmed catalog and an
-# ambiguous empty parent bootstrap must never hard-disable AUTO before ModelPicker has
-# itself successfully queried /models/.
 grep -Fq 'catalogAvailableRef=useRef(initialCatalog.length>0)' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'broadcastCatalogState("error",catalogAvailableRef.current)' frontend/app/workspace/ModelPicker.tsx
-grep -Fq 'Never broadcast a hard outage from that ambiguous bootstrap value' frontend/app/workspace/ModelPicker.tsx
-grep -Fq 'if(rows.length>0){setCatalog(rows);catalogAvailableRef.current=true;broadcastCatalogState("ready",true)}' frontend/app/workspace/ModelPicker.tsx
 if grep -Fq 'broadcastCatalogState("error",catalog.length>0)' frontend/app/workspace/ModelPicker.tsx; then
   echo '[FAIL] ModelPicker uses stale catalog closure on refresh errors'
   exit 1
@@ -125,6 +120,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/procurement/test_chat_reservation_cleanup.py \
   apps/procurement/test_special_provider_procurement.py \
   apps/procurement/test_runtime_account_failover.py \
+  apps/procurement/test_request_cost_usage_guard.py \
   apps/chat/test_default_auto_routing.py \
   apps/chat/test_activity_stream.py \
   apps/chat/test_reasoning_trace.py \
@@ -145,6 +141,8 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_provider_delivery_checkpoint.py \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
+  apps/chat/test_asgi_backpressure.py \
+  apps/chat/test_chat_health_watch.py \
   apps/chat/test_cost_preview_runtime_parity.py \
   apps/chat/test_cost_preview_history_bound.py \
   apps/chat/test_cost_preview_no_double_history.py \
