@@ -22,6 +22,9 @@ grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
 grep -Fq 'stream_first_event_timeout' frontend/lib/api.ts
 grep -Fq 'reader.cancel("stream_first_event_timeout")' frontend/lib/api.ts
 grep -Fq 'const completedSnapshot = event === "snapshot" && String(parsed.state ?? "") === "completed";' frontend/lib/api.ts
+grep -Fq 'verifyPendingStream' frontend/lib/api.ts
+grep -Fq '/messages/status/?idempotency_key=' frontend/lib/api.ts
+grep -Fq 'reason instanceof ApiError && reason.status === 403' frontend/lib/api.ts
 grep -Fq 'research_progress' frontend/lib/api.ts
 grep -Fq 'WorkspaceExperience' frontend/app/app/page.tsx
 grep -Fq 'ActivityTrace' frontend/app/workspace/WorkspaceExperience.tsx
@@ -78,6 +81,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
   apps/chat/test_cost_confirmation_resume.py \
+  apps/chat/test_cost_view_failure_contract.py \
   apps/chat/test_manual_selection_race.py \
   apps/chat/test_quarantine_race_failover.py \
   apps/chat/test_terminal_overrun_recovery.py \
