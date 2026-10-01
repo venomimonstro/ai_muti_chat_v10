@@ -51,6 +51,7 @@ class ChatConfig(AppConfig):
             procurement_execution,
             provider_delivery_checkpoint,
             public_error_wiring,
+            reasoning_policy,
             reasoning_trace,
             response_safety,
             run_claim_safety,
@@ -86,6 +87,10 @@ class ChatConfig(AppConfig):
         # system instructions. Keep a strict trusted allowlist before web enrichment
         # adds its own separately marked untrusted context.
         context_safety.install(context_module=context, streaming_module=streaming)
+        # Complex requests receive a stronger verification contract while hidden
+        # chain-of-thought remains private. streaming imported assemble_context by
+        # value, so install explicitly rebinds the real customer execution path.
+        reasoning_policy.install(context, streaming)
 
         # Install guards before terminal recovery. Customer traffic must never probe a
         # stale provider/model candidate, one conversation must never create two
