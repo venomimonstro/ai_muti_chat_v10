@@ -33,19 +33,19 @@ grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/Workspa
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ModelPicker value={selectorValue} models={models}' frontend/app/workspace/WorkspaceV2.tsx
-# Composer is the only polling owner. ModelPicker must render the exact catalog
-# snapshot passed to it, otherwise UI availability can diverge inside one render.
-grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/Composer.tsx
-grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/Composer.tsx
-if grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx; then
-  echo '[FAIL] ModelPicker performs a second /models/ poll instead of using Composer catalog state'
+# The visible ModelPicker is the single live /models/ owner. Composer consumes only
+# its readiness event and must not start a competing refresh loop.
+grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'ModelPicker is the single live catalog owner' frontend/app/workspace/ModelPicker.tsx
+if grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/Composer.tsx; then
+  echo '[FAIL] Composer performs a competing /models/ poll'
   exit 1
 fi
-if grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx; then
-  echo '[FAIL] ModelPicker still owns an independent catalog refresh timer'
+if grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/Composer.tsx; then
+  echo '[FAIL] Composer still owns an independent catalog refresh timer'
   exit 1
 fi
-grep -Fq 'ModelPicker is deliberately presentation-only' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'MODEL_CATALOG_EVENT="aiws:model-catalog"' frontend/app/workspace/Composer.tsx
 grep -Fq 'workspaceModelsAvailable===false' frontend/app/workspace/Composer.tsx
 grep -Fq 'routing_tiers_configured' frontend/app/workspace/ModelPicker.tsx
@@ -53,6 +53,11 @@ grep -Fq 'Уровни без рабочей модели автоматичес
 grep -Fq 'onSend:()=>void|Promise<void>;' frontend/app/workspace/Composer.tsx
 grep -Fq 'await Promise.resolve(onSend())' frontend/app/workspace/Composer.tsx
 grep -Fq 'система автоматически использует рабочую резервную модель' frontend/app/workspace/Composer.tsx
+grep -Fq 'streamMessage owns durable cancellation' frontend/app/workspace/Composer.tsx
+if grep -Fq '/messages/cancel/' frontend/app/workspace/Composer.tsx; then
+  echo '[FAIL] Composer sends a duplicate cancellation request; transport must own cancel'
+  exit 1
+fi
 if grep -Fq 'PRE_SEND_GATE_MS' frontend/app/workspace/Composer.tsx; then
   echo '[FAIL] composer still uses a timer-based submit latch instead of the real send lifecycle'
   exit 1
