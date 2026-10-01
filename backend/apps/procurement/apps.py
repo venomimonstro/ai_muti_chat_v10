@@ -36,7 +36,14 @@ class ProcurementConfig(AppConfig):
 
         from apps.ai_registry import reliability
 
-        from . import account_routing, chat_signals, recovery_signals, services, signals  # noqa: F401
+        from . import (  # noqa: F401
+            account_routing,
+            chat_signals,
+            recovery_signals,
+            request_cost_guard,
+            services,
+            signals,
+        )
 
         # Multiple paid API accounts for one provider are a runtime pool, not merely
         # admin metadata. Reserve one concrete healthy account per request and keep
