@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+from django.db import transaction
 from django.utils import timezone
 
 from apps.billing.models import BalanceReservation
@@ -18,20 +19,30 @@ TERMINAL_STATES = {
 }
 
 
-def _finalize_cancel(generation, *, clear_content: bool):
-    generation.refresh_from_db(fields=["state"])
-    if generation.state in TERMINAL_STATES:
+@transaction.atomic
+def _finalize_cancel(generation, *, clear_content: bool, queued_only: bool = False):
+    locked = (
+        Generation.objects.select_for_update(of=("self",))
+        .select_related("assistant_message")
+        .get(pk=generation.pk)
+    )
+    if locked.state in TERMINAL_STATES:
         return False
-    assistant = generation.assistant_message
-    assistant.refresh_from_db(fields=["content", "status"])
+    if queued_only and locked.state != Generation.State.QUEUED:
+        # The stream thread already owns the provider call. Leave the durable
+        # cancellation marker in place so that owner thread performs settlement
+        # and terminalization at the next cooperative checkpoint.
+        return False
+
+    assistant = locked.assistant_message
     if clear_content:
         assistant.content = ""
-    charge = settle_delivered_partial(generation, assistant.content)
+    charge = settle_delivered_partial(locked, assistant.content)
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["content", "status"])
     now = timezone.now()
     GenerationAttempt.objects.filter(
-        generation=generation,
+        generation=locked,
         state=GenerationAttempt.State.RUNNING,
     ).update(
         state=GenerationAttempt.State.SKIPPED,
@@ -39,28 +50,26 @@ def _finalize_cancel(generation, *, clear_content: bool):
         retryable=False,
         finished_at=now,
     )
-    generation.state = Generation.State.CANCELLED
-    generation.error_code = "client_cancelled"
-    generation.actual_cost_rub = charge
-    generation.completed_at = now
-    generation.save(
+    locked.state = Generation.State.CANCELLED
+    locked.error_code = "client_cancelled"
+    locked.actual_cost_rub = charge
+    locked.completed_at = now
+    locked.save(
         update_fields=["state", "error_code", "actual_cost_rub", "completed_at"]
     )
+    generation.state = locked.state
+    generation.error_code = locked.error_code
+    generation.actual_cost_rub = locked.actual_cost_rub
+    generation.completed_at = locked.completed_at
     return True
 
 
-def _cancel_before_provider(generation):
-    return _finalize_cancel(generation, clear_content=True)
+def _cancel_before_provider(generation, *, queued_only: bool = False):
+    return _finalize_cancel(generation, clear_content=True, queued_only=queued_only)
 
 
 def _cancel_during_stream(generation):
-    """Persist authoritative partial settlement before emitting ``cancelled``.
-
-    The old path only closed the provider iterator and emitted an SSE event. The
-    outer managed-stream finalizer then saw a still-RUNNING generation and changed
-    it to FAILED/stream_incomplete. A client-visible ``cancelled`` event must be a
-    durable terminal state, otherwise history, diagnostics and billing disagree.
-    """
+    """Persist authoritative partial settlement before emitting ``cancelled``."""
     return _finalize_cancel(generation, clear_content=False)
 
 
