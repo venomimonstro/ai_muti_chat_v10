@@ -1,11 +1,14 @@
 from contextlib import contextmanager
+from datetime import timedelta
 from types import SimpleNamespace
 import uuid
 
 import pytest
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.admin_ops import recovery as recovery_module
 
 from . import single_flight
 from .models import Conversation, Generation, Message
@@ -95,3 +98,71 @@ def test_single_flight_blocks_second_active_generation_before_provider_prepare()
             idempotency_key="second-request",
             file_ids=[],
         )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_single_flight_recovers_already_stale_generation_before_busy_error(monkeypatch):
+    user = User.objects.create_user(
+        username="single-flight-stale",
+        email="single-flight-stale@example.test",
+        password="password123!",
+    )
+    conversation = Conversation.objects.create(owner=user, title="Stale generation")
+    user_message = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.USER,
+        content="Зависший запрос",
+        client_message_id=uuid.uuid4(),
+    )
+    assistant = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.ASSISTANT,
+    )
+    stale = Generation.objects.create(
+        owner=user,
+        user_message=user_message,
+        assistant_message=assistant,
+        state=Generation.State.RUNNING,
+        model="system-pro",
+        idempotency_key="stale-running",
+    )
+    recovered = []
+    raw_calls = []
+
+    # Make the already-created row eligible for the same authoritative stale cutoff
+    # without waiting in the regression suite. The fake recovery represents the
+    # tested admin_ops authority and leaves single_flight responsible only for wiring.
+    monkeypatch.setattr(recovery_module, "_cutoff", lambda: timezone.now() + timedelta(seconds=1))
+
+    def fake_recover(pk):
+        recovered.append(pk)
+        Generation.objects.filter(pk=pk).update(
+            state=Generation.State.FAILED,
+            error_code="stale_operation_recovered",
+            completed_at=timezone.now(),
+        )
+        return True
+
+    monkeypatch.setattr(recovery_module, "_recover_generation", fake_recover)
+
+    def raw_prepare(**kwargs):
+        raw_calls.append(kwargs["idempotency_key"])
+        return "prepared-after-recovery", True
+
+    module = SimpleNamespace(prepare=raw_prepare)
+    single_flight.install(module)
+
+    result = module.prepare(
+        user=user,
+        conversation=conversation,
+        content="Новый запрос после восстановления",
+        client_message_id=uuid.uuid4(),
+        idempotency_key="after-stale-recovery",
+        file_ids=[],
+    )
+
+    assert result == ("prepared-after-recovery", True)
+    assert recovered == [stale.id]
+    assert raw_calls == ["after-stale-recovery"]
+    stale.refresh_from_db()
+    assert stale.state == Generation.State.FAILED
