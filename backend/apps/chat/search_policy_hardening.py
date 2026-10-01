@@ -10,20 +10,65 @@ EXPLICIT_YANDEX_MARKERS = (
     "яндекс поиск",
     "в яндексе",
 )
+LOCAL_RU_MARKERS = (
+    "в москве",
+    "в санкт-петербурге",
+    "в петербурге",
+    "в спб",
+    "в россии",
+    "в казани",
+    "в екатеринбурге",
+    "в новосибирске",
+    "в сочи",
+    "в перми",
+    "в уфе",
+    "в тюмени",
+    "в челябинске",
+    "в красноярске",
+    "рядом со мной",
+    "поблизости",
+)
+LOCAL_DECISION_MARKERS = (
+    "лучшие",
+    "топ ",
+    "рейтинг",
+    "отзыв",
+    "где купить",
+    "где найти",
+    "куда сходить",
+    "посоветуй",
+    "рекомендуй",
+    "стоматолог",
+    "клиник",
+    "врач",
+    "ресторан",
+    "отел",
+    "гостиниц",
+    "магазин",
+    "сервис",
+    "аптек",
+    "ваканси",
+)
 
 
-def _explicit_yandex(query: str) -> bool:
+def _yandex_first(query: str) -> bool:
     text = " ".join(str(query or "").casefold().split())
-    return any(marker in text for marker in EXPLICIT_YANDEX_MARKERS)
+    if any(marker in text for marker in EXPLICIT_YANDEX_MARKERS):
+        return True
+    # Local commercial/recommendation intent is exactly where generic metasearch
+    # quality is least reliable and Yandex's RU index/ranking adds material value.
+    # Fresh generic facts/news still use free SearXNG first to control API spend.
+    return any(marker in text for marker in LOCAL_RU_MARKERS) and any(
+        marker in text for marker in LOCAL_DECISION_MARKERS
+    )
 
 
 def install(paid_search_module) -> None:
     """Harden paid-search policy without touching the transport/billing pipeline.
 
     Rules:
-    - Yandex-first only when the customer explicitly asks for Yandex.
-      All other current/local/commercial queries try free SearXNG first and use
-      paid Yandex only when the free result is unavailable or objectively weak.
+    - Yandex-first for explicit Yandex requests and high-value local RU commercial /
+      recommendation intent. Generic current facts/news try free SearXNG first.
     - DEGRADED/DISABLED credentials never receive customer traffic.
     - Generic query-level search failures do not degrade the credential. Only
       confirmed auth/credit failures do; temporary/no-result errors stay local to
@@ -53,10 +98,7 @@ def install(paid_search_module) -> None:
             return None
         return raw_mark_key(account, healthy=False, error_code=code)
 
-    # paid_search_billing.search_web resolves these names from module globals at
-    # call time, so this layer changes policy without replacing its accounting or
-    # SSE/recovery behavior.
-    paid_search_module._premium_search = _explicit_yandex
+    paid_search_module._premium_search = _yandex_first
     paid_search_module._account_secret = account_secret
     paid_search_module._mark_key = mark_key
     paid_search_module._ai_workspace_search_policy_hardened = True
