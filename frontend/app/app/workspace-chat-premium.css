@@ -1,0 +1,55 @@
+/* Chat-specific premium layer. Loaded last so the active WorkspaceV2 keeps a
+   single calm visual contract without increasing component complexity. */
+.workspaceApp .composerZone{
+  padding:14px 22px max(16px,env(safe-area-inset-bottom));
+  background:linear-gradient(to bottom,rgba(255,255,255,0),rgba(255,255,255,.96) 18%,#fff 42%);
+}
+.workspaceApp .composerShell{
+  width:min(100%,860px);
+  border:1px solid #d7d7da;
+  border-radius:28px;
+  padding:14px 14px 10px;
+  background:rgba(255,255,255,.985);
+  box-shadow:0 14px 44px rgba(18,18,25,.09),0 2px 8px rgba(18,18,25,.04);
+}
+.workspaceApp .composerShell.focused{
+  border-color:#b8b4c7;
+  box-shadow:0 17px 52px rgba(18,18,25,.11),0 0 0 1px rgba(101,87,217,.035);
+  transform:translateY(-1px);
+}
+.workspaceApp .composerShell textarea{
+  min-height:88px;
+  max-height:320px;
+  padding:5px 7px 11px;
+  font-size:16px;
+  line-height:1.58;
+  letter-spacing:-.008em;
+  resize:none;
+}
+.workspaceApp .composerShell textarea::placeholder{color:#929297}
+.workspaceApp .composerBar{min-height:42px;padding-top:2px}
+.workspaceApp .composerLeft{gap:7px}
+.workspaceApp .composerIcon,.workspaceApp .sendButton{width:38px;height:38px}
+.workspaceApp .composerIcon{background:#f2f2f3;color:#505054}
+.workspaceApp .composerIcon:hover{background:#e9e9eb;color:#171719}
+.workspaceApp .sendButton{background:#1d1d1f;box-shadow:0 3px 10px rgba(0,0,0,.10)}
+.workspaceApp .sendButton:not(:disabled):hover{background:#080809;transform:translateY(-1px)}
+.workspaceApp .composerHint{
+  width:min(100%,860px);
+  margin:7px auto 0;
+  color:#a0a0a5;
+  font-size:10px;
+  line-height:1.35;
+}
+.workspaceApp .modelUnavailableNotice{width:min(100%,860px)}
+.workspaceApp .attachmentTray{width:min(100% - 36px,860px)}
+
+/* The work trace is part of the answer flow, not an alarming system banner. */
+.workspaceApp .topNotice.subtle{display:none}
+
+@media(max-width:700px){
+  .workspaceApp .composerZone{padding:10px 11px max(12px,env(safe-area-inset-bottom))}
+  .workspaceApp .composerShell{border-radius:23px;padding:11px 11px 8px}
+  .workspaceApp .composerShell textarea{min-height:72px;max-height:260px;font-size:16px;padding:4px 6px 8px}
+  .workspaceApp .composerHint{display:none}
+}
