@@ -1,10 +1,10 @@
 """Fail-safe provider adapter dispatch.
 
 Customer traffic and provider health probes deliberately use different credential
-selection rules. Customer requests may use only a verified HEALTHY credential and,
-when procurement is configured, the credential linked to the active default funding
-account. Health probes may additionally test UNKNOWN/DEGRADED credentials so recovery
-never depends on a real customer request.
+selection rules. Customer requests may use only a verified HEALTHY credential. When
+procurement is configured, a request can be pinned to the exact funding account that
+owns its provider-spend reservation, so API execution and purchasing ledger can never
+drift to different credentials.
 """
 
 import os
@@ -27,14 +27,68 @@ def _secret(key: ProviderApiKey | None, *, touch: bool):
     return value, key.pk
 
 
-def _default_funding_account(provider: Provider):
+def _funding_credential(
+    provider: Provider,
+    *,
+    allow_probe: bool,
+    touch: bool,
+    funding_account_id=None,
+):
+    """Return exact procurement credential, or ``None`` when procurement is absent.
+
+    ``("", key_id)`` means procurement exists but no customer-safe credential is
+    available. ``None`` means this provider has no active funding-account metadata and
+    legacy key-pool selection may be used for backward-compatible dev/test setups.
+    """
     try:
-        return (
-            provider.funding_accounts.filter(active=True, is_default=True)
-            .select_related("api_key")
-            .first()
+        from apps.procurement.account_routing import (
+            NATIVE_STEP,
+            account_credential_ready,
+            account_secret,
+            select_runtime_funding_account,
         )
+        from apps.procurement.models import ProviderFundingAccount
+
+        accounts_exist = ProviderFundingAccount.objects.filter(
+            provider=provider, active=True
+        ).exists()
+        if not accounts_exist:
+            return None
+
+        if funding_account_id:
+            account = (
+                ProviderFundingAccount.objects.filter(
+                    pk=funding_account_id,
+                    provider=provider,
+                    active=True,
+                )
+                .select_related("api_key")
+                .first()
+            )
+            if account is None:
+                return "", None
+            if not account_credential_ready(account, allow_probe=allow_probe):
+                return "", account.api_key_id
+        else:
+            account = select_runtime_funding_account(
+                provider,
+                required_native=NATIVE_STEP,
+                allow_probe=allow_probe,
+                require_balance=True,
+            )
+            if account is None:
+                return "", None
+
+        value, key_id = account_secret(account)
+        if value and touch and key_id:
+            ProviderApiKey.objects.filter(pk=key_id).update(last_used_at=timezone.now())
+        return value, key_id
     except Exception:
+        # If procurement tables are unavailable, an explicitly pinned account must
+        # fail closed. Generic legacy selection can continue only when no explicit
+        # account identity was requested.
+        if funding_account_id:
+            return "", None
         return None
 
 
@@ -43,31 +97,30 @@ def select_runtime_api_key(
     *,
     allow_probe: bool = False,
     touch: bool = True,
+    funding_account_id=None,
 ):
     """Return the credential permitted for this execution path.
 
-    In commercial mode a default funding account is authoritative. We never send a
-    request with another key while charging procurement against the default account.
-    This intentionally prefers cross-model/provider fallback over financially
-    ambiguous same-provider key rotation.
+    A concrete ``funding_account_id`` is authoritative for an already-reserved
+    commercial request. Without it, a healthy paid account is selected from the
+    runtime funding pool. Providers without procurement metadata retain the legacy
+    key pool for development/backward compatibility.
     """
+    funded = _funding_credential(
+        provider,
+        allow_probe=allow_probe,
+        touch=touch,
+        funding_account_id=funding_account_id,
+    )
+    if funded is not None:
+        return funded
+
     allowed_states = [ProviderApiKey.HealthState.HEALTHY]
     if allow_probe:
         allowed_states += [
             ProviderApiKey.HealthState.UNKNOWN,
             ProviderApiKey.HealthState.DEGRADED,
         ]
-
-    funding = _default_funding_account(provider)
-    if funding is not None:
-        if funding.api_key_id:
-            key = funding.api_key
-            if not key.enabled or key.health_state not in allowed_states:
-                return "", key.pk
-            return _secret(key, touch=touch)
-        if funding.credential_env:
-            return os.getenv(funding.credential_env, "").strip(), None
-        return "", None
 
     try:
         pool_exists = provider.api_keys.filter(enabled=True).exclude(
@@ -98,28 +151,52 @@ def select_runtime_api_key(
 
 
 def runtime_credential_ready(provider: Provider) -> bool:
-    value, _key_id = select_runtime_api_key(provider, allow_probe=False, touch=False)
+    value, _key_id = select_runtime_api_key(
+        provider, allow_probe=False, touch=False
+    )
     return bool(value)
 
 
-def _bind_runtime_identity(adapter, *, key_id, model, allow_probe):
-    """Attach non-secret execution identity used by health/reliability accounting."""
+def _bind_runtime_identity(
+    adapter,
+    *,
+    key_id,
+    model,
+    allow_probe,
+    funding_account_id=None,
+):
     try:
         adapter._ai_workspace_key_id = str(key_id) if key_id else ""
         adapter._ai_workspace_model_slug = str(model.slug)
         adapter._ai_workspace_probe_mode = bool(allow_probe)
+        adapter._ai_workspace_funding_account_id = (
+            str(funding_account_id) if funding_account_id else ""
+        )
     except Exception:
         pass
     return adapter
 
 
-def adapter_for(model, *, allow_probe: bool = False):
+def adapter_for(
+    model,
+    *,
+    allow_probe: bool = False,
+    funding_account_id=None,
+):
     provider = model.provider
-    api_key, key_id = select_runtime_api_key(provider, allow_probe=allow_probe)
+    api_key, key_id = select_runtime_api_key(
+        provider,
+        allow_probe=allow_probe,
+        funding_account_id=funding_account_id,
+    )
 
-    # Slug-specific production adapters are authoritative and deliberately run
-    # before adapter_type. This prevents legacy GigaChat/OpenRouter rows from
-    # silently returning Echo responses.
+    if funding_account_id and provider.adapter_type != Provider.AdapterType.ECHO and not api_key:
+        raise adapters.ProviderError(
+            "Reserved funding credential is no longer execution-ready",
+            code="candidate_not_ready",
+            retryable=False,
+        )
+
     if provider.slug == "gigachat":
         from .gigachat_adapter import GigaChatAPIAdapter
 
@@ -130,7 +207,11 @@ def adapter_for(model, *, allow_probe: bool = False):
             scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
         )
         return _bind_runtime_identity(
-            adapter, key_id=key_id, model=model, allow_probe=allow_probe
+            adapter,
+            key_id=key_id,
+            model=model,
+            allow_probe=allow_probe,
+            funding_account_id=funding_account_id,
         )
     if provider.slug == "openrouter":
         adapter = adapters.OpenRouterChatAdapter(
@@ -139,7 +220,11 @@ def adapter_for(model, *, allow_probe: bool = False):
             or os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1"),
         )
         return _bind_runtime_identity(
-            adapter, key_id=key_id, model=model, allow_probe=allow_probe
+            adapter,
+            key_id=key_id,
+            model=model,
+            allow_probe=allow_probe,
+            funding_account_id=funding_account_id,
         )
 
     if provider.adapter_type == Provider.AdapterType.ECHO:
@@ -148,6 +233,7 @@ def adapter_for(model, *, allow_probe: bool = False):
             key_id=None,
             model=model,
             allow_probe=allow_probe,
+            funding_account_id=funding_account_id,
         )
     if provider.adapter_type == Provider.AdapterType.OPENAI_RESPONSES:
         adapter = adapters.OpenAIResponsesAdapter(
@@ -186,5 +272,9 @@ def adapter_for(model, *, allow_probe: bool = False):
             retryable=False,
         )
     return _bind_runtime_identity(
-        adapter, key_id=key_id, model=model, allow_probe=allow_probe
+        adapter,
+        key_id=key_id,
+        model=model,
+        allow_probe=allow_probe,
+        funding_account_id=funding_account_id,
     )
