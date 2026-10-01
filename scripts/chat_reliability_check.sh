@@ -32,7 +32,11 @@ grep -Fq 'event==="activity"' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
-grep -Fq 'void refresh();' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'Composer is the single catalog refresh owner.' frontend/app/workspace/ModelPicker.tsx
+if grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx; then
+  echo '[FAIL] ModelPicker performs a second /models/ poll instead of using Composer catalog state'
+  exit 1
+fi
 grep -Fq 'routing_tiers_configured' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'Уровни без рабочей модели автоматически скрываются.' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'onSend:()=>void|Promise<void>;' frontend/app/workspace/Composer.tsx
