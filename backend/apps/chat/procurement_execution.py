@@ -13,6 +13,14 @@ _generation_id: ContextVar[str | None] = ContextVar(
     default=None,
 )
 
+# These failures describe the exact commercial execution candidate, not the
+# upstream provider as a whole. They must never degrade another healthy key when
+# adapter construction fails before a concrete credential identity is available.
+CANDIDATE_SCOPED_FAILURE_CODES = {
+    "candidate_not_ready",
+    "provider_funding_unavailable",
+}
+
 
 def _current_request_cost(generation_id):
     if not generation_id:
@@ -74,6 +82,7 @@ def install(streaming_module) -> None:
     raw_provider_available = streaming_module.provider_available
     raw_snapshot_capacity = streaming_module._snapshot_capacity
     raw_adapter_for = getattr(streaming_module, "adapter_for", None)
+    raw_record_failure = getattr(streaming_module, "record_failure", None)
 
     def provider_available(provider):
         generation_id = _generation_id.get()
@@ -103,6 +112,16 @@ def install(streaming_module) -> None:
                 kwargs["funding_account_id"] = reservation.account_id
         return raw_adapter_for(model, *args, **kwargs)
 
+    def record_failure(provider, error, adapter=None):
+        code = str(getattr(error, "code", "") or "").strip().casefold()
+        if adapter is None and code in CANDIDATE_SCOPED_FAILURE_CODES:
+            # The reserved account/credential changed after preflight. There is no
+            # verified failing provider credential to attribute this to, so mutating
+            # provider/key health would poison unrelated customer traffic. The normal
+            # stream loop records the GenerationAttempt and continues to fallback.
+            return None
+        return raw_record_failure(provider, error, adapter=adapter)
+
     def run(generation, *args, **kwargs):
         token = _generation_id.set(str(generation.id))
         try:
@@ -123,4 +142,8 @@ def install(streaming_module) -> None:
         adapter_for._ai_workspace_procurement_execution = True
         adapter_for._raw_adapter_for = raw_adapter_for
         streaming_module.adapter_for = adapter_for
+    if raw_record_failure is not None:
+        record_failure._ai_workspace_procurement_execution = True
+        record_failure._raw_record_failure = raw_record_failure
+        streaming_module.record_failure = record_failure
     streaming_module.run = run
