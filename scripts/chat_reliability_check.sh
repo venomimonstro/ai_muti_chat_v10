@@ -60,6 +60,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_execution_readiness_after_provider_reserve.py \
+  apps/chat/test_procurement_execution_reservation.py \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
