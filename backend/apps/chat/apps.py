@@ -31,6 +31,7 @@ class ChatConfig(AppConfig):
             activity_stream,
             asgi_backpressure,
             asgi_stream,
+            attachment_durability,
             billing_recovery,
             cache_safety,
             compare,
@@ -142,6 +143,10 @@ class ChatConfig(AppConfig):
         # real prepare pipeline and bounded concurrency rejection share one durable
         # terminal-state contract. If no Generation exists this wrapper is a no-op.
         preflight_terminal.install(streaming)
+        # If a post-acceptance preflight step fails, keep the exact validated file IDs
+        # in the durable Generation. Idempotent replay and Retry can then reproduce the
+        # original PDF/image request instead of silently dropping its attachments.
+        attachment_durability.install(streaming)
         cooperative_cancel.install(streaming)
         terminal_recovery.install(streaming)
         # Financially accurate public wording sits outside terminal recovery.
