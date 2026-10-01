@@ -4,6 +4,7 @@ import os
 import time
 
 from .models import Generation
+from .public_errors import public_error_code
 from .streaming import sse
 
 FOLLOW_POLL_SECONDS = max(0.2, float(os.getenv("CHAT_RECONNECT_POLL_SECONDS", "0.5")))
@@ -113,11 +114,12 @@ def follow_existing_generation(generation):
             return
 
         if state == Generation.State.FAILED:
+            code = public_error_code(row["error_code"]) or "AI-103"
             yield sse(
                 "error",
                 {
-                    "code": "AI-103",
-                    "support_code": row["error_code"] or "AI-103",
+                    "code": code,
+                    "support_code": code,
                     "partial": bool(text),
                     "cost_rub": row["cost_rub"],
                     "reconnected": True,
