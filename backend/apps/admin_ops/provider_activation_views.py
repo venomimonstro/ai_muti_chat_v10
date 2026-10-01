@@ -1,7 +1,6 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.utils import timezone
 from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
@@ -38,13 +37,27 @@ def _procurement_blocker(provider):
     return ""
 
 
-class ProviderClientActivationView(AdminAPIView):
-    """Make selected provider models actually usable by client chat.
+def _schedule_provider_verification():
+    """Best-effort immediate wake-up; periodic heartbeat remains authoritative."""
+    try:
+        from .tasks import provider_health_watch_task
 
-    Activation is fail-closed: a model is exposed only when the provider has a
+        provider_health_watch_task.delay()
+    except Exception:
+        # A broker outage must not roll back an otherwise valid admin configuration.
+        # The minute heartbeat will retry once the worker plane is healthy again.
+        pass
+
+
+class ProviderClientActivationView(AdminAPIView):
+    """Make selected provider models eligible for verified customer activation.
+
+    Activation is fail-closed: a model is configured only when the provider has a
     verified credential, an upstream model id, commercially safe pricing, and —
-    in production — positive purchased provider capacity. ModelVersion is
-    governance metadata and never blocks an otherwise valid upstream model.
+    in production — positive purchased provider capacity. This endpoint never
+    clears an OPEN/DEGRADED/UNKNOWN circuit merely because one credential row says
+    HEALTHY. A recovered provider must pass the background health + real inference
+    proof before model_client_ready() exposes it to customer traffic.
     """
 
     @transaction.atomic
@@ -170,26 +183,27 @@ class ProviderClientActivationView(AdminAPIView):
                 }
             )
 
+        verification_pending = False
         if activated:
             update_fields = []
             if not provider.enabled:
                 provider.enabled = True
                 update_fields.append("enabled")
-            # A verified healthy pool key is stronger evidence than a stale
-            # provider-level circuit state left over from an earlier failure.
-            if healthy_pool_key:
-                provider.health_state = Provider.HealthState.HEALTHY
+            # Enabling a previously disabled channel starts a new verification cycle.
+            # Preserve an existing HEALTHY state, but never promote OPEN/DEGRADED/
+            # UNKNOWN solely from a database credential flag.
+            if provider.health_state == Provider.HealthState.DISABLED:
+                provider.health_state = Provider.HealthState.UNKNOWN
                 provider.consecutive_failures = 0
                 provider.circuit_opened_until = None
-                provider.last_checked_at = timezone.now()
-                update_fields.extend([
-                    "health_state",
-                    "consecutive_failures",
-                    "circuit_opened_until",
-                    "last_checked_at",
-                ])
+                update_fields.extend(
+                    ["health_state", "consecutive_failures", "circuit_opened_until"]
+                )
             if update_fields:
                 provider.save(update_fields=list(dict.fromkeys(update_fields)))
+            verification_pending = provider.health_state != Provider.HealthState.HEALTHY
+            if verification_pending:
+                transaction.on_commit(_schedule_provider_verification)
 
         audit(
             request,
@@ -200,6 +214,7 @@ class ProviderClientActivationView(AdminAPIView):
                 "activated": [item["upstream_model"] for item in activated],
                 "blocked": blocked,
                 "pricing_sync": pricing_sync,
+                "verification_pending": verification_pending,
             },
         )
         return Response(
@@ -207,6 +222,7 @@ class ProviderClientActivationView(AdminAPIView):
                 "provider": provider.slug,
                 "provider_enabled": provider.enabled,
                 "provider_health": provider.health_state,
+                "verification_pending": verification_pending,
                 "activated": activated,
                 "blocked": blocked,
                 "pricing_sync": pricing_sync,
