@@ -49,15 +49,27 @@ PROVIDER_ERROR_MESSAGES = {
 }
 
 
-def _finalize_active_stream(generation, *, state, error_code, log_label):
-    """Close a still-active stream without losing confirmed provider usage.
+def _reservation_actual(generation):
+    if not generation.reservation_id:
+        return None
+    return BalanceReservation.objects.filter(pk=generation.reservation_id).values_list(
+        "actual_rub", flat=True
+    ).first()
 
-    The caller supplies the truthful terminal reason. Billing always follows the
-    same authoritative partial/confirmed-usage path, so a transport/runtime failure
-    cannot silently become a free upstream request.
-    """
+
+def _sync_terminal_actual(generation):
+    actual = _reservation_actual(generation)
+    if actual is not None and generation.actual_cost_rub != actual:
+        Generation.objects.filter(pk=generation.pk).update(actual_cost_rub=actual)
+        generation.actual_cost_rub = actual
+    return actual
+
+
+def _finalize_active_stream(generation, *, state, error_code, log_label):
+    """Close a still-active stream without losing confirmed provider usage."""
     generation.refresh_from_db(fields=["state", "reservation_id", "actual_cost_rub"])
     if generation.state not in {Generation.State.QUEUED, Generation.State.RUNNING}:
+        _sync_terminal_actual(generation)
         return
     assistant = generation.assistant_message
     assistant.refresh_from_db(fields=["content", "status"])
@@ -118,14 +130,6 @@ def _finalize_incomplete_stream(generation):
         error_code="stream_incomplete",
         log_label="incomplete-return",
     )
-
-
-def _reservation_actual(generation):
-    if not generation.reservation_id:
-        return None
-    return BalanceReservation.objects.filter(pk=generation.reservation_id).values_list(
-        "actual_rub", flat=True
-    ).first()
 
 
 def _parse_error_chunk(chunk):
@@ -193,7 +197,6 @@ def _generation_route_is_internal(generation):
 
 
 def _public_system_level(model_slug, *, fallback_mode="balanced"):
-    """Return the public tier of the model actually used, never provider branding."""
     slug = str(model_slug or "").strip()
     haystack = slug.casefold()
     if slug:
@@ -258,12 +261,6 @@ def _publicize_sse_chunk(generation, chunk):
 
 
 def managed_run(generation, *, adapter=None):
-    """Execute only the pre-priced route prepared by the billing/router pipeline.
-
-    Cross-model failover belongs to ``streaming.run`` where every candidate is
-    re-priced, customer balance is re-reserved and provider procurement is moved
-    before any external call. No out-of-route free provider request is permitted.
-    """
     try:
         for chunk in run(generation, adapter=adapter):
             chunk = _rewrite_error_chunk_if_needed(generation, chunk)
@@ -275,7 +272,4 @@ def managed_run(generation, *, adapter=None):
         _finalize_unhandled_failure(generation)
         raise
     else:
-        # A well-behaved runtime always persists COMPLETED/FAILED/CANCELLED before
-        # returning. If it silently stops while still active, fail closed instead of
-        # falsely reporting a user cancellation.
         _finalize_incomplete_stream(generation)
