@@ -25,8 +25,8 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             "--mode",
-            choices=["economy", "balanced", "maximum"],
-            default="economy",
+            choices=["auto", "economy", "balanced", "maximum"],
+            default="auto",
         )
         parser.add_argument(
             "--fresh",
