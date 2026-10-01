@@ -34,4 +34,15 @@ class ProcurementConfig(AppConfig):
         raw = os.getenv("PROCUREMENT_RUNTIME_FAIL_CLOSED", default).strip().casefold()
         settings.PROCUREMENT_RUNTIME_FAIL_CLOSED = raw not in {"0", "false", "no", "off"}
 
-        from . import chat_signals, recovery_signals, signals  # noqa: F401
+        from apps.ai_registry import reliability
+
+        from . import account_routing, chat_signals, recovery_signals, services, signals  # noqa: F401
+
+        # Multiple paid API accounts for one provider are a runtime pool, not merely
+        # admin metadata. Reserve one concrete healthy account per request and keep
+        # provider readiness on the same account-selection contract.
+        account_routing.install(
+            services_module=services,
+            signals_module=signals,
+            reliability_module=reliability,
+        )
