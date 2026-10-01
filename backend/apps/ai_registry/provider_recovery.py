@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import time
 
+from django.core.cache import cache
 from django.utils import timezone
 
 from .adapters import AdapterHealth, ProviderError
@@ -9,6 +11,14 @@ from .models import AIModel, Provider, ProviderHealthSnapshot
 
 MAX_RECOVERY_MODELS = 4
 RECOVERY_PROMPT = "Ответь только: OK"
+PROVIDER_RECOVERY_LOCK_SECONDS = max(
+    600,
+    min(int(os.getenv("AI_PROVIDER_RECOVERY_LOCK_SECONDS", "1200")), 3600),
+)
+
+
+def _probe_lock_key(provider: Provider) -> str:
+    return f"ai-registry:provider-recovery:{provider.pk}"
 
 
 def install(reliability_module) -> None:
@@ -25,12 +35,15 @@ def install(reliability_module) -> None:
     later sweep proves one of those remaining models. A real customer therefore never
     becomes the first inference probe merely because the provider has more models than
     one recovery batch.
+
+    A per-provider distributed lease prevents overlapping Celery sweeps from issuing
+    duplicate paid probes if a slow upstream outlives the outer watcher lease.
     """
     raw_check = reliability_module.check_provider
     if getattr(raw_check, "_ai_workspace_inference_recovery", False):
         return
 
-    def check_provider(provider: Provider):
+    def _check_provider_unlocked(provider: Provider):
         if not provider.enabled or provider.emergency_disabled:
             provider.health_state = Provider.HealthState.DISABLED
             provider.last_checked_at = timezone.now()
@@ -217,6 +230,22 @@ def install(reliability_module) -> None:
             error_code="all_models_quarantined" if model_failures else "",
         )
 
+    def check_provider(provider: Provider):
+        key = _probe_lock_key(provider)
+        if not cache.add(key, "1", timeout=PROVIDER_RECOVERY_LOCK_SECONDS):
+            # Another worker is already proving this exact channel. Do not mutate
+            # health from the follower and do not let customer traffic act as probe.
+            return AdapterHealth(
+                healthy=provider.health_state == Provider.HealthState.HEALTHY,
+                latency_ms=provider.last_latency_ms or 0,
+                error_code="probe_in_progress",
+            )
+        try:
+            return _check_provider_unlocked(provider)
+        finally:
+            cache.delete(key)
+
     check_provider._ai_workspace_inference_recovery = True
     check_provider._raw_check_provider = raw_check
+    check_provider._unlocked = _check_provider_unlocked
     reliability_module.check_provider = check_provider
