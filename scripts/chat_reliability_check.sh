@@ -33,18 +33,18 @@ grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/Workspa
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ModelPicker value={selectorValue} models={models}' frontend/app/workspace/WorkspaceV2.tsx
-# Failed/partial assistant messages must keep a one-click recovery action even when
-# no response text was produced. Otherwise a healthy backend recovery path looks like
-# a dead chat to the customer.
 grep -Fq 'const showActions=!editing&&(Boolean(message.content)||(message.role==="assistant"&&message.status!=="streaming"));' frontend/app/workspace/MessageCard.tsx
 grep -Fq 'aria-label="Повторить запрос"' frontend/app/workspace/MessageCard.tsx
-# The visible ModelPicker is the single live /models/ owner. Composer consumes only
-# its readiness event, so availability cannot diverge between two pollers.
+
 grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
-grep -Fq 'ModelPicker is the single live catalog owner' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'catalogAvailableRef=useRef(initialCatalog.length>0)' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'broadcastCatalogState("error",catalogAvailableRef.current)' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'label:"Авто"' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'label:"Простой"' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'label:"Средний"' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'label:"Сложный"' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'yandexgpt:{label:"YandexGPT"' frontend/app/workspace/ModelPicker.tsx
 if grep -Fq 'broadcastCatalogState("error",catalog.length>0)' frontend/app/workspace/ModelPicker.tsx; then
   echo '[FAIL] ModelPicker uses stale catalog closure on refresh errors'
   exit 1
@@ -60,7 +60,6 @@ fi
 grep -Fq 'MODEL_CATALOG_EVENT="aiws:model-catalog"' frontend/app/workspace/Composer.tsx
 grep -Fq 'workspaceModelsAvailable===false' frontend/app/workspace/Composer.tsx
 grep -Fq 'routing_tiers_configured' frontend/app/workspace/ModelPicker.tsx
-grep -Fq 'Уровни без рабочей модели автоматически скрываются.' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'onSend:()=>void|Promise<void>;' frontend/app/workspace/Composer.tsx
 grep -Fq 'await Promise.resolve(onSend())' frontend/app/workspace/Composer.tsx
 grep -Fq 'система автоматически использует рабочую резервную модель' frontend/app/workspace/Composer.tsx
@@ -100,6 +99,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_provider_key_selection.py \
   apps/ai_registry/test_dispatch_runtime.py \
   apps/ai_registry/test_special_provider_dispatch.py \
+  apps/ai_registry/test_yandexgpt_runtime.py \
   apps/ai_registry/test_provider_recovery_probe.py \
   apps/ai_registry/test_provider_recovery_lock.py \
   apps/ai_registry/test_http_error_classification.py \
