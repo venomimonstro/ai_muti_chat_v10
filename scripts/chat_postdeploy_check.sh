@@ -25,17 +25,15 @@ printf '[2/6] Client AUTO preflight: router + pricing + procurement + wallet res
 compose exec -T backend python manage.py chat_preflight_smoke --mode auto
 printf '[PASS] Client AUTO preflight\n'
 
-printf '[3/6] Explicit routing tiers that are configured...\n'
+printf '[3/6] Explicit routing tiers configured by admin...\n'
+CONFIGURED_TIERS="$(compose exec -T backend python manage.py shell -c "from apps.ai_registry.models import RoutingTierAssignment; print(' '.join(sorted(set(RoutingTierAssignment.objects.filter(enabled=True).values_list('tier',flat=True)))))" | tail -n 1)"
 for mode in economy balanced maximum; do
-  if compose exec -T backend python manage.py chat_preflight_smoke --mode "$mode" >/tmp/aiws-chat-${mode}.log 2>&1; then
-    cat /tmp/aiws-chat-${mode}.log
-    printf '[PASS] tier=%s\n' "$mode"
+  if [[ " ${CONFIGURED_TIERS} " == *" ${mode} "* ]]; then
+    compose exec -T backend python manage.py chat_preflight_smoke --mode "$mode"
+    printf '[PASS] configured tier=%s\n' "$mode"
   else
-    # A tier is allowed to be intentionally unconfigured. AUTO remains mandatory.
-    cat /tmp/aiws-chat-${mode}.log
-    printf '[INFO] tier=%s is not currently client-routable; verify admin tier assignment if this was not intentional.\n' "$mode"
+    printf '[INFO] tier=%s intentionally has no enabled admin assignment; skipped.\n' "$mode"
   fi
-  rm -f /tmp/aiws-chat-${mode}.log
 done
 
 printf '[4/6] Every customer-visible model must pass a minimal real inference...\n'
@@ -53,5 +51,5 @@ printf '[PASS] Billing/recovery integrity\n'
 
 printf '\n============================================================\n'
 printf 'PRODUCTION CHAT ACCEPTANCE: PASS\n'
-printf 'AUTO route, client billing preflight, live routable models and web search are operational.\n'
+printf 'AUTO route, configured tiers, client billing preflight, live routable models and web search are operational.\n'
 printf '============================================================\n'
