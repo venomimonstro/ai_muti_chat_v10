@@ -29,6 +29,7 @@
 - Production frontend build: успешно.
 - Django check: успешно. `makemigrations --check --dry-run`: No changes detected.
 - Ruff для изменённого runtime/новых regression tests, git diff --check, bash -n: успешно.
+- Сравнение с исходным коммитом в той же среде: **202 passed, 37 failed** до исправлений; **217 passed, 27 failed** после. Новых падающих test-case IDs в этом прогоне нет; добавлены 5 regression cases.
 - Полный набор `apps/chat` (кроме `test_context.py`, `test_web_context.py`): **217 passed, 27 failed**. Эти исключённые модули не проверены в этом прогоне. Отдельный целевой набор не заменяет общий gate.
 
 ## Что препятствует заключению о production-готовности
