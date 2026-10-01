@@ -12,6 +12,7 @@ class AIRegistryConfig(AppConfig):
         from . import (  # noqa: F401
             adapters,
             auto_continuity,
+            client_readiness,
             dispatch,
             http_errors,
             manual_continuity,
@@ -45,6 +46,11 @@ class AIRegistryConfig(AppConfig):
             reliability_module=reliability,
             router_module=router,
         )
+        # A positive provider balance is not enough for customer visibility when
+        # the remaining amount cannot fund even the smallest request. Apply this
+        # after quarantine so /models/, manual selection and the catalog share one
+        # final fail-closed predicate.
+        client_readiness.install(reliability)
         # Recovery of an UNKNOWN/DEGRADED/OPEN provider is stricter than routine
         # health monitoring: the paid inference path must actually answer before
         # customer traffic can see the provider again.
