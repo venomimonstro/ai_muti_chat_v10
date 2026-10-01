@@ -12,6 +12,7 @@ class ChatConfig(AppConfig):
             cache_safety,
             cooperative_cancel,
             error_contract,
+            execution_fence,
             freshness_policy,
             live_tools,
             managed_stream,
@@ -50,6 +51,10 @@ class ChatConfig(AppConfig):
         # customer answer. Reject it locally and continue the existing fallback chain
         # without degrading an otherwise healthy key/provider.
         response_safety.install(streaming)
+        # Recovery revokes the durable GenerationAttempt lease before touching money.
+        # A provider thread that wakes up afterwards is fenced locally and can no
+        # longer overwrite the recovered terminal state or settle twice.
+        execution_fence.install(streaming)
         single_flight.install(streaming)
         # Keep preflight terminalization outside single-flight: failures inside the
         # real prepare pipeline and bounded concurrency rejection share one durable
