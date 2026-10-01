@@ -1,3 +1,4 @@
+import json
 import uuid
 from decimal import Decimal
 
@@ -8,8 +9,9 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.ai_registry.models import AIModel, Provider
 from apps.billing.models import BalanceReservation, PriceVersion
-from apps.billing.services import credit
+from apps.billing.services import credit, settle
 
+from .cooperative_cancel import _cancelled_event
 from .models import Conversation, Generation, Message
 from .streaming import prepare, run
 
@@ -101,6 +103,33 @@ def test_stop_before_provider_call_cancels_without_external_request_or_charge():
     assert reservation.actual_rub == Decimal("0.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
     assert user.wallet.available_rub == Decimal("20.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_cancelled_event_uses_authoritative_settled_reservation_cost():
+    _user, _conversation, generation, _key = _fixture()
+    reservation = BalanceReservation.objects.get(pk=generation.reservation_id)
+    charge = min(Decimal("0.0100"), reservation.amount_rub)
+    assert charge > 0
+    settle(reservation.id, charge)
+
+    assistant = generation.assistant_message
+    assistant.content = "частичный ответ"
+    assistant.status = Message.Status.PARTIAL
+    assistant.save(update_fields=["content", "status"])
+    generation.state = Generation.State.CANCELLED
+    generation.error_code = "client_cancelled"
+    generation.actual_cost_rub = Decimal("0")
+    generation.completed_at = timezone.now()
+    generation.save(update_fields=["state", "error_code", "actual_cost_rub", "completed_at"])
+
+    chunk = _cancelled_event(generation)
+    payload = json.loads(next(line[6:] for line in chunk.splitlines() if line.startswith("data: ")))
+
+    generation.refresh_from_db()
+    assert generation.actual_cost_rub == charge
+    assert Decimal(str(payload["cost_rub"])) == charge
+    assert "подтверждённая стоимость" in payload["message"].lower()
 
 
 @pytest.mark.django_db(transaction=True)
