@@ -33,9 +33,16 @@ grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/Workspa
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'void refresh();' frontend/app/workspace/ModelPicker.tsx
-grep -Fq 'const PRE_SEND_GATE_MS=15000;' frontend/app/workspace/Composer.tsx
+grep -Fq 'routing_tiers_configured' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'Уровни без рабочей модели автоматически скрываются.' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'onSend:()=>void|Promise<void>;' frontend/app/workspace/Composer.tsx
+grep -Fq 'await Promise.resolve(onSend())' frontend/app/workspace/Composer.tsx
 grep -Fq 'const noModelsAvailable=explicitModelControl&&' frontend/app/workspace/Composer.tsx
 grep -Fq 'система автоматически использует рабочую резервную модель' frontend/app/workspace/Composer.tsx
+if grep -Fq 'PRE_SEND_GATE_MS' frontend/app/workspace/Composer.tsx; then
+  echo '[FAIL] composer still uses a timer-based submit latch instead of the real send lifecycle'
+  exit 1
+fi
 if grep -Fq 'sending||selectedModelUnavailable||noModelsAvailable' frontend/app/workspace/Composer.tsx \
   || grep -Fq 'tooLong||selectedModelUnavailable||noModelsAvailable' frontend/app/workspace/Composer.tsx; then
   echo '[FAIL] unavailable preferred manual model still blocks send instead of backend continuity fallback'
