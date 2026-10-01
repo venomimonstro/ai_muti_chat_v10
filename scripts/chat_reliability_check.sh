@@ -123,6 +123,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_search_trigger_policy.py \
   apps/chat/test_search_runtime_wiring.py \
   apps/chat/test_paid_search_customer_billing.py \
+  apps/chat/test_paid_search_key_readiness.py \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_customer_capacity.py \
