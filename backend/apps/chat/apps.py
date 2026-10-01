@@ -14,9 +14,11 @@ class ChatConfig(AppConfig):
             error_contract,
             freshness_policy,
             live_tools,
+            managed_stream,
             manual_selection_recovery,
             preflight_terminal,
             response_safety,
+            run_claim_safety,
             runtime_readiness,
             serializers,
             signals,
@@ -49,6 +51,9 @@ class ChatConfig(AppConfig):
         preflight_terminal.install(streaming)
         cooperative_cancel.install(streaming)
         terminal_recovery.install(streaming)
-        # Keep this outermost so recovered terminal successes are never rewritten,
-        # while genuine partial failures receive financially accurate public wording.
+        # Financially accurate public wording sits outside terminal recovery.
         error_contract.install(streaming)
+        # Transport claim safety is intentionally last: a simultaneous reconnect that
+        # loses the atomic QUEUED->RUNNING claim is a follower, not an incomplete run,
+        # and must never terminalize the real producer.
+        run_claim_safety.install(streaming, managed_stream)
