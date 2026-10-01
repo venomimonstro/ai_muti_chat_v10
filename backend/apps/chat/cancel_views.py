@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -11,13 +13,18 @@ from .models import Conversation, Generation
 
 
 class ConversationGenerationCancelView(APIView):
-    """Request cooperative cancellation of one idempotent chat generation.
+    """Request cooperative cancellation of one chat generation.
+
+    Normal live transport cancels by the original idempotency key. After a full page
+    reload the browser may no longer own that transport key, but the authenticated
+    conversation history safely exposes ``generation.id``. Therefore this endpoint
+    also accepts ``generation_id`` and derives the existing idempotency key only
+    after tenant + conversation ownership has been verified server-side.
 
     If the generation is still durably QUEUED, cancellation is settled immediately.
     If the stream thread has already claimed RUNNING, the durable marker is left in
     place and only that owner thread may close its provider iterator and settle the
-    partial result. This prevents the race where an HTTP Stop request terminalizes a
-    generation while the provider thread continues and later overwrites it.
+    partial result.
     """
 
     def post(self, request, conversation_id):
@@ -28,23 +35,46 @@ class ConversationGenerationCancelView(APIView):
         if conversation is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
+        raw_generation_id = str(request.data.get("generation_id") or "").strip()
         key = str(
             request.headers.get("Idempotency-Key")
             or request.data.get("idempotency_key")
             or ""
         ).strip()
-        if not key or len(key) > 160:
-            raise ValidationError({"detail": "Корректный Idempotency-Key обязателен"})
+        generation = None
 
-        generation = (
-            Generation.objects.filter(
-                owner=request.user,
-                idempotency_key=key,
-                user_message__conversation=conversation,
+        if raw_generation_id:
+            try:
+                generation_id = uuid.UUID(raw_generation_id)
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise ValidationError({"generation_id": "Некорректный Generation ID"}) from exc
+            generation = (
+                Generation.objects.filter(
+                    pk=generation_id,
+                    owner=request.user,
+                    user_message__conversation=conversation,
+                )
+                .select_related("assistant_message")
+                .first()
             )
-            .select_related("assistant_message")
-            .first()
-        )
+            if generation is None:
+                return Response(status=status.HTTP_404_NOT_FOUND)
+            key = generation.idempotency_key
+        else:
+            if not key or len(key) > 160:
+                raise ValidationError(
+                    {"detail": "Корректный Idempotency-Key или generation_id обязателен"}
+                )
+            generation = (
+                Generation.objects.filter(
+                    owner=request.user,
+                    idempotency_key=key,
+                    user_message__conversation=conversation,
+                )
+                .select_related("assistant_message")
+                .first()
+            )
+
         request_cancel(
             owner_id=request.user.id,
             idempotency_key=key,
