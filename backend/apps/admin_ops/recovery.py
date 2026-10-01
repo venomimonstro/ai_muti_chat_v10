@@ -8,7 +8,7 @@ from django.utils import timezone
 from apps.b2b_api.models import APIUsage
 from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.services import release
-from apps.chat.models import CompareRun, CompareVariant, Generation, Message
+from apps.chat.models import CompareRun, CompareVariant, Generation, GenerationAttempt, Message
 from apps.chat.partial_billing import settle_delivered_partial
 from apps.files.models import FileAsset, FileProcessingJob
 from apps.image_studio.models import ImageGeneration
@@ -36,10 +36,22 @@ def _recover_generation(pk):
     generation = (
         Generation.objects.select_for_update().select_related("assistant_message").get(pk=pk)
     )
+    cutoff = _cutoff()
     if generation.state not in {
         Generation.State.QUEUED,
         Generation.State.RUNNING,
-    } or generation.created_at >= _cutoff():
+    } or generation.created_at >= cutoff:
+        return False
+
+    # A multi-provider request can legitimately outlive the generation-level stale
+    # timeout while a *new* fallback attempt has just started. Never kill that fresh
+    # provider call merely because the original Generation row is old. Attempts are
+    # immutable enough to serve as the authoritative activity marker for this flow.
+    if GenerationAttempt.objects.filter(
+        generation=generation,
+        state=GenerationAttempt.State.RUNNING,
+        started_at__gte=cutoff,
+    ).exists():
         return False
 
     assistant = generation.assistant_message
