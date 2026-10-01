@@ -33,13 +33,8 @@ def _funding_credential(
     allow_probe: bool,
     touch: bool,
     funding_account_id=None,
+    require_funding_balance: bool = True,
 ):
-    """Return exact procurement credential, or ``None`` when procurement is absent.
-
-    ``("", key_id)`` means procurement exists but no customer-safe credential is
-    available. ``None`` means this provider has no active funding-account metadata and
-    legacy key-pool selection may be used for backward-compatible dev/test setups.
-    """
     try:
         from apps.procurement.account_routing import (
             NATIVE_STEP,
@@ -72,9 +67,9 @@ def _funding_credential(
         else:
             account = select_runtime_funding_account(
                 provider,
-                required_native=NATIVE_STEP,
+                required_native=NATIVE_STEP if require_funding_balance else 0,
                 allow_probe=allow_probe,
-                require_balance=True,
+                require_balance=require_funding_balance,
             )
             if account is None:
                 return "", None
@@ -84,9 +79,6 @@ def _funding_credential(
             ProviderApiKey.objects.filter(pk=key_id).update(last_used_at=timezone.now())
         return value, key_id
     except Exception:
-        # If procurement tables are unavailable, an explicitly pinned account must
-        # fail closed. Generic legacy selection can continue only when no explicit
-        # account identity was requested.
         if funding_account_id:
             return "", None
         return None
@@ -98,19 +90,14 @@ def select_runtime_api_key(
     allow_probe: bool = False,
     touch: bool = True,
     funding_account_id=None,
+    require_funding_balance: bool = True,
 ):
-    """Return the credential permitted for this execution path.
-
-    A concrete ``funding_account_id`` is authoritative for an already-reserved
-    commercial request. Without it, a healthy paid account is selected from the
-    runtime funding pool. Providers without procurement metadata retain the legacy
-    key pool for development/backward compatibility.
-    """
     funded = _funding_credential(
         provider,
         allow_probe=allow_probe,
         touch=touch,
         funding_account_id=funding_account_id,
+        require_funding_balance=require_funding_balance,
     )
     if funded is not None:
         return funded
@@ -152,7 +139,10 @@ def select_runtime_api_key(
 
 def runtime_credential_ready(provider: Provider) -> bool:
     value, _key_id = select_runtime_api_key(
-        provider, allow_probe=False, touch=False
+        provider,
+        allow_probe=False,
+        touch=False,
+        require_funding_balance=True,
     )
     return bool(value)
 
@@ -182,12 +172,14 @@ def adapter_for(
     *,
     allow_probe: bool = False,
     funding_account_id=None,
+    require_funding_balance: bool = True,
 ):
     provider = model.provider
     api_key, key_id = select_runtime_api_key(
         provider,
         allow_probe=allow_probe,
         funding_account_id=funding_account_id,
+        require_funding_balance=require_funding_balance,
     )
 
     if funding_account_id and provider.adapter_type != Provider.AdapterType.ECHO and not api_key:
