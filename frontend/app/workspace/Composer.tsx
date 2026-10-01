@@ -10,6 +10,7 @@ import {ModelPicker} from "./ModelPicker";
 const MAX_MESSAGE_CHARS=100000;
 const COMPOSER_MIN_HEIGHT=88;
 const COMPOSER_MAX_HEIGHT=320;
+const MODEL_CATALOG_EVENT="aiws:model-catalog";
 
 type ComposerProps={
  value:string;
@@ -34,7 +35,7 @@ function pendingStreamIdempotencyKey(conversationId:string|null|undefined){
 }
 
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools,modelValue,models,onModelChange,conversationId,ensureConversation,onAttachImage,sourceImageId}:ComposerProps){
- const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState(modelValue??"auto:auto");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[catalogState,setCatalogState]=useState<"loading"|"ready"|"error">(models!==undefined&&models.length>0?"ready":"loading");const[imageStudioOpen,setImageStudioOpen]=useState(false);const submitGate=useRef(false);
+ const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState(modelValue??"auto:auto");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[catalogState,setCatalogState]=useState<"loading"|"ready"|"error">(models!==undefined&&models.length>0?"ready":"loading");const[workspaceModelsAvailable,setWorkspaceModelsAvailable]=useState<boolean|null>(null);const[imageStudioOpen,setImageStudioOpen]=useState(false);const submitGate=useRef(false);
  const trimmed=value.trim();const tooLong=value.length>MAX_MESSAGE_CHARS;const nearLimit=value.length>90000;
  const explicitModelControl=modelValue!==undefined&&models!==undefined&&onModelChange!==undefined;
  const effectiveControlValue=explicitModelControl?(modelValue??"auto:auto"):controlValue;
@@ -44,11 +45,12 @@ export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenToo
  // An empty catalog blocks send only after /models/ has successfully confirmed it.
  // A transient catalog request failure must not disable an otherwise healthy AUTO /
  // continuity path; the backend is the final authority for execution readiness.
- const noModelsAvailable=explicitModelControl&&catalogState==="ready"&&controlModels.filter(item=>item.available).length===0;
+ const noModelsAvailable=explicitModelControl?(catalogState==="ready"&&controlModels.filter(item=>item.available).length===0):workspaceModelsAvailable===false;
  useEffect(()=>{const el=ref.current;if(!el)return;el.style.height="0px";const next=Math.min(Math.max(el.scrollHeight,COMPOSER_MIN_HEIGHT),COMPOSER_MAX_HEIGHT);el.style.height=`${next}px`;el.style.overflowY=el.scrollHeight>COMPOSER_MAX_HEIGHT?"auto":"hidden";},[value]);
  useEffect(()=>{if(!sending){setSlow(false);return;}const timer=window.setTimeout(()=>setSlow(true),30000);return()=>window.clearTimeout(timer)},[sending]);
  useEffect(()=>{if(!trimmed)submitGate.current=false},[trimmed]);
  useEffect(()=>{if(modelValue!==undefined)setControlValue(modelValue)},[modelValue]);
+ useEffect(()=>{const catalog=(event:Event)=>{const detail=(event as CustomEvent<{state?:string;available?:boolean}>).detail;if(detail?.state==="ready"&&typeof detail.available==="boolean")setWorkspaceModelsAvailable(detail.available)};window.addEventListener(MODEL_CATALOG_EVENT,catalog);return()=>window.removeEventListener(MODEL_CATALOG_EVENT,catalog)},[]);
  useEffect(()=>{
   if(!explicitModelControl){setCatalogState("ready");return;}
   let active=true;
