@@ -28,6 +28,7 @@ class ChatConfig(AppConfig):
         # UI-only organization models are registered here to keep inference models focused.
         from apps.ai_registry import web_tools
         from . import (
+            activity_stream,
             asgi_stream,
             billing_recovery,
             cache_safety,
@@ -50,9 +51,11 @@ class ChatConfig(AppConfig):
             procurement_execution,
             provider_delivery_checkpoint,
             public_error_wiring,
+            reasoning_trace,
             response_safety,
             run_claim_safety,
             runtime_readiness,
+            search_cost_public,
             search_trigger_policy,
             serializers,
             signals,
@@ -136,3 +139,10 @@ class ChatConfig(AppConfig):
         # whose durable attempt lease was revoked by stale recovery may not enter
         # retry/fallback and may not surface as a new provider failure.
         execution_fence.install_outer_guard(streaming, managed_stream)
+        # Public cost is the sum actually settled to the customer: LLM + paid tools.
+        search_cost_public.install(
+            serializers_module=serializers,
+            managed_stream_module=managed_stream,
+        )
+        # Show a concise verifiable execution trace, never hidden chain-of-thought.
+        reasoning_trace.install(activity_stream)
