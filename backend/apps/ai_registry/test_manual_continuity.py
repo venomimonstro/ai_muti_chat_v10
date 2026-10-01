@@ -11,7 +11,7 @@ from .models import AIModel, Provider
 from .router import select_route
 
 
-def _priced_model(provider, slug, *, enabled=True):
+def _priced_model(provider, slug, *, enabled=True, input_price="1", output_price="2"):
     model = AIModel.objects.create(
         provider=provider,
         slug=slug,
@@ -24,11 +24,11 @@ def _priced_model(provider, slug, *, enabled=True):
     )
     PriceVersion.objects.create(
         model_slug=slug,
-        input_rub_per_million=Decimal("1"),
-        output_rub_per_million=Decimal("2"),
+        input_rub_per_million=Decimal(input_price),
+        output_rub_per_million=Decimal(output_price),
         provider_currency="RUB",
-        input_price_per_million=Decimal("1"),
-        output_price_per_million=Decimal("2"),
+        input_price_per_million=Decimal(input_price),
+        output_price_per_million=Decimal(output_price),
         markup_percent=Decimal("100"),
         active=True,
         effective_from=timezone.now(),
@@ -94,3 +94,51 @@ def test_missing_manual_model_slug_also_uses_continuity_route():
     assert route.selected.pk == ready.pk
     assert route.ordered_models[0].pk == ready.pk
     assert "provider-model-that-no-longer-exists" in route.explanation
+
+
+@pytest.mark.django_db
+def test_unavailable_enabled_manual_primary_does_not_cap_first_working_fallback_by_old_price():
+    user = User.objects.create_user(
+        username="manual-continuity-expensive",
+        email="manual-continuity-expensive@example.test",
+        password="password123!",
+    )
+    unavailable_provider = Provider.objects.create(
+        slug="manual-unavailable-echo",
+        name="Unavailable manual provider",
+        adapter_type=Provider.AdapterType.ECHO,
+        health_state=Provider.HealthState.HEALTHY,
+        emergency_disabled=True,
+        priority=1,
+    )
+    ready_provider = Provider.objects.create(
+        slug="manual-expensive-ready-echo",
+        name="Ready expensive provider",
+        adapter_type=Provider.AdapterType.ECHO,
+        health_state=Provider.HealthState.HEALTHY,
+        priority=20,
+    )
+    primary = _priced_model(
+        unavailable_provider,
+        "manual-cheap-unavailable",
+        input_price="1",
+        output_price="1",
+    )
+    fallback = _priced_model(
+        ready_provider,
+        "manual-expensive-ready",
+        input_price="100",
+        output_price="100",
+    )
+    conversation = Conversation.objects.create(
+        owner=user,
+        title="Manual unavailable route",
+        routing_mode=Conversation.RoutingMode.MANUAL,
+        selected_model=primary.slug,
+    )
+
+    route = select_route(conversation=conversation, content="Ответь коротко")
+
+    assert route.selected.pk == fallback.pk
+    assert route.ordered_models[0].pk == fallback.pk
+    assert "автоматически направлен" in route.explanation
