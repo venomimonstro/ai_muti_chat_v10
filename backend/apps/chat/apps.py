@@ -29,6 +29,7 @@ class ChatConfig(AppConfig):
         from apps.ai_registry import web_tools
         from . import (
             activity_stream,
+            asgi_backpressure,
             asgi_stream,
             billing_recovery,
             cache_safety,
@@ -125,8 +126,8 @@ class ChatConfig(AppConfig):
         # without degrading an otherwise healthy key/provider.
         response_safety.install(streaming)
         # Once a provider has returned authoritative token usage, persist that usage
-        # before customer settlement. A DB/ledger failure after answer delivery can
-        # then never be mistaken for a zero-cost provider request/full refund.
+        # and even a short fully delivered answer before customer settlement. A crash
+        # after answer delivery can then never become a false refund or lost response.
         provider_delivery_checkpoint.install(streaming)
         # Recovery revokes the durable GenerationAttempt lease before touching money.
         # A provider thread that wakes up afterwards is fenced locally and can no
@@ -154,6 +155,9 @@ class ChatConfig(AppConfig):
         # whose durable attempt lease was revoked by stale recovery may not enter
         # retry/fallback and may not surface as a new provider failure.
         execution_fence.install_outer_guard(streaming, managed_stream)
+        # Slow clients must not turn fast provider streams into unbounded process
+        # memory. Apply transport backpressure after the business runtime is complete.
+        asgi_backpressure.install(asgi_stream)
         # Public cost is the sum actually settled to the customer: LLM + paid tools.
         search_cost_public.install(
             serializers_module=serializers,
