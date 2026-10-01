@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from apps.evals.models import EvalCase
 
 
-# AUTO Router v3 deliberately keeps classification local and deterministic.  A
+# AUTO Router v3 deliberately keeps classification local and deterministic. A
 # second LLM call here would add latency/cost and would itself need routing.
 # Search/freshness is a separate axis from reasoning complexity: a current FX
 # quote may need the web but does not need the most expensive reasoning model.
@@ -93,6 +94,24 @@ FRESHNESS_MARKERS = (
     "найди источник",
 )
 
+# If two rule groups have the same hit count, choose by product semantics, never
+# by lexicographical ordering of taxonomy strings.
+INTENT_PRIORITY = (
+    EvalCase.Taxonomy.DEBUGGING,
+    EvalCase.Taxonomy.CODING,
+    EvalCase.Taxonomy.SPREADSHEETS,
+    EvalCase.Taxonomy.RESEARCH,
+    EvalCase.Taxonomy.SEO,
+    EvalCase.Taxonomy.MARKETING,
+    EvalCase.Taxonomy.TRANSLATION,
+    EvalCase.Taxonomy.EXTRACTION,
+    EvalCase.Taxonomy.STRUCTURING,
+    EvalCase.Taxonomy.COPYWRITING,
+    EvalCase.Taxonomy.EDITING,
+    EvalCase.Taxonomy.REASONING,
+    EvalCase.Taxonomy.RUSSIAN_STYLE,
+)
+
 BASE_COMPLEXITY = {
     EvalCase.Taxonomy.QA: 0.25,
     EvalCase.Taxonomy.TRANSLATION: 0.14,
@@ -107,7 +126,8 @@ BASE_COMPLEXITY = {
     EvalCase.Taxonomy.DEBUGGING: 0.66,
     EvalCase.Taxonomy.SPREADSHEETS: 0.53,
     EvalCase.Taxonomy.RESEARCH: 0.58,
-    EvalCase.Taxonomy.REASONING: 0.60,
+    # A simple factual "почему" must not automatically buy the maximum tier.
+    EvalCase.Taxonomy.REASONING: 0.48,
     EvalCase.Taxonomy.LONG_DOCUMENTS: 0.74,
 }
 
@@ -120,12 +140,24 @@ def _bounded(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-def _complexity(base, text: str) -> tuple[float, dict]:
+def _resolved_intent(router_module, text: str, fallback: str):
+    hits = []
+    priority = {str(value): index for index, value in enumerate(INTENT_PRIORITY)}
+    for taxonomy, needles in router_module.RULES:
+        count = sum(str(needle).casefold() in text for needle in needles)
+        if count:
+            hits.append((count, str(taxonomy)))
+    if not hits:
+        return fallback, []
+    hits.sort(key=lambda item: (-item[0], priority.get(item[1], 10_000), item[1]))
+    return hits[0][1], hits[:3]
+
+
+def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
     signals = dict(base.signals or {})
     tokens = int(signals.get("content_tokens") or 0)
-    taxonomy = base.taxonomy
 
-    # The legacy classifier treats the word "api" as coding.  A conceptual
+    # The legacy classifier treats the word "api" as coding. A conceptual
     # question such as "что такое REST API" is ordinary Q&A unless the user asks
     # us to implement/debug something.
     coding_action = _has_any(text, CODE_ACTION_MARKERS)
@@ -154,8 +186,6 @@ def _complexity(base, text: str) -> tuple[float, dict]:
         score += 0.22
     if signals.get("needs_vision"):
         score += 0.12
-    if signals.get("has_project_files"):
-        score += 0.07
     if tokens >= 2500:
         score += 0.20
     elif tokens >= 1200:
@@ -165,7 +195,7 @@ def _complexity(base, text: str) -> tuple[float, dict]:
     if simple_intent and tokens < 700 and not hard_reasoning:
         score -= 0.10
 
-    # Freshness/search itself is intentionally not a complexity upgrade.  It is
+    # Freshness/search itself is intentionally not a complexity upgrade. It is
     # recorded as a tool requirement and handled by the web pipeline.
     score = _bounded(score)
     return score, {
@@ -173,7 +203,7 @@ def _complexity(base, text: str) -> tuple[float, dict]:
         "needs_tools": needs_freshness,
         "needs_freshness": needs_freshness,
         "complexity_score": round(score, 4),
-        "complexity_version": "router-v3",
+        "complexity_version": "router-v3.1",
         "hard_reasoning": hard_reasoning,
         "multistep_signals": multistep_hits,
         "coding_action": coding_action,
@@ -187,15 +217,20 @@ def install(router_module) -> None:
         return
 
     raw_classify = router_module.classify_task
+    raw_select_route = router_module.select_route
 
     def classify_task(content, conversation):
         base = raw_classify(content, conversation)
         normalized = re.sub(r"\s+", " ", str(content or "").casefold()).strip()
-        score, signals = _complexity(base, normalized)
-        taxonomy = signals.get("resolved_taxonomy") or base.taxonomy
+        taxonomy, matched = _resolved_intent(router_module, normalized, str(base.taxonomy))
+        score, signals = _complexity(base, normalized, taxonomy)
+        taxonomy = signals.get("resolved_taxonomy") or taxonomy
         confidence = float(base.confidence)
+        if matched:
+            confidence = min(0.98, 0.58 + float(matched[0][0]) * 0.12)
         if signals.get("conceptual_api"):
             confidence = max(0.72, confidence)
+        signals["matched_rules"] = matched
         return router_module.TaskClassification(
             taxonomy=taxonomy,
             confidence=min(0.99, confidence),
@@ -218,13 +253,104 @@ def install(router_module) -> None:
         if (
             score <= 0.28
             and tokens < 700
-            and not signals.get("has_project_files")
             and not signals.get("needs_vision")
         ):
             return "economy"
         return "balanced"
 
+    # Patch classification before raw_select_route is called: the base router
+    # resolves globals dynamically and therefore uses these v3 functions.
     classify_task._ai_workspace_router_v3 = True
     classify_task._raw_classify_task = raw_classify
     router_module.classify_task = classify_task
     router_module._auto_tier = auto_tier
+
+    def select_route(*, conversation, content):
+        route = raw_select_route(conversation=conversation, content=content)
+        if conversation.routing_mode == "manual":
+            return route
+
+        eligible = [
+            dict(item)
+            for item in route.candidates
+            if item.get("status") == "eligible" and item.get("score") is not None
+        ]
+        if len(eligible) <= 1:
+            return route
+
+        tier = (
+            auto_tier(route.classification)
+            if conversation.routing_mode == "auto"
+            else conversation.routing_mode
+        )
+        pool = router_module._tier_pool(route.policy.thresholds or {}, tier)
+        pool_rank = {slug: index for index, slug in enumerate(pool)}
+        # Admin membership is a hard constraint. Priority is only a stable
+        # tie-breaker; request-specific quality/cost/latency/health score wins.
+        eligible.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0),
+                pool_rank.get(str(item.get("model") or ""), 10_000),
+                str(item.get("model") or ""),
+            )
+        )
+        selected_row = eligible[0]
+        selected_slug = str(selected_row["model"])
+
+        models = {
+            item.slug: item
+            for item in router_module.AIModel.objects.filter(
+                slug__in=[str(row["model"]) for row in eligible], enabled=True
+            ).select_related("provider", "current_version")
+        }
+        selected = models.get(selected_slug)
+        if selected is None:
+            return route
+
+        selected_cost = Decimal(str(selected_row["estimated_cost_rub"]))
+        multiplier = Decimal(
+            str((route.policy.thresholds or {}).get("fallback_price_multiplier", 1.5))
+        )
+        allowed_slugs = []
+        by_slug = {}
+        for rank, item in enumerate(eligible, 1):
+            slug = str(item["model"])
+            allowed = rank == 1 or Decimal(str(item["estimated_cost_rub"])) <= selected_cost * multiplier
+            item["rank"] = rank
+            item["fallback_allowed"] = allowed
+            by_slug[slug] = item
+            if allowed and slug in models:
+                allowed_slugs.append(slug)
+
+        candidates = [by_slug.get(str(item.get("model") or ""), item) for item in route.candidates]
+        task_label = router_module.TASK_LABELS.get(
+            route.classification.taxonomy, route.classification.taxonomy
+        )
+        tier_label = router_module.MODE_LABELS.get(tier, tier)
+        if conversation.routing_mode == "auto":
+            explanation = (
+                f"AUTO определил уровень «{tier_label}» для задачи «{task_label}» и выбрал "
+                f"{selected.display_name} по качеству, стоимости, скорости и доступности; "
+                "при сбое будет использована следующая допустимая модель."
+            )
+        else:
+            explanation = (
+                f"Уровень «{tier_label}»: выбрана {selected.display_name} по качеству, стоимости, "
+                "скорости и доступности; при сбое будет использована резервная модель."
+            )
+
+        return router_module.RouteSelection(
+            policy=route.policy,
+            classification=route.classification,
+            selected=selected,
+            ordered_models=[models[slug] for slug in allowed_slugs],
+            candidates=candidates,
+            explanation=explanation,
+            estimated_input_tokens=route.estimated_input_tokens,
+            estimated_output_tokens=min(router_module.OUTPUT_TOKENS, selected.max_output_tokens),
+            estimated_cost_rub=selected_cost,
+        )
+
+    select_route._ai_workspace_router_v3 = True
+    select_route._raw_select_route = raw_select_route
+    router_module.select_route = select_route
