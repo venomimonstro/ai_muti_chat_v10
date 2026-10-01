@@ -130,3 +130,45 @@ def test_retry_below_held_ceiling_stays_409_and_does_not_start_stream(monkeypatc
     assert generation.state == Generation.State.QUEUED
     assert generation.error_code == "cost_confirmation_changed"
     assert reservation.state == BalanceReservation.State.ACTIVE
+
+
+@pytest.mark.django_db(transaction=True)
+def test_held_confirmation_reports_search_reserve_once(monkeypatch):
+    user = User.objects.create_user(
+        username="held-confirmation-search-user",
+        email="held-confirmation-search@example.test",
+        password="password123",
+    )
+    credit(user, Decimal("30"), "test", "held-confirmation-search")
+    conversation = Conversation.objects.create(owner=user, title="Held confirmation search")
+    generation, reservation, client_message_id = _held_generation(user, conversation)
+    search_reservation = reserve(
+        user,
+        Decimal("2.0000"),
+        f"web-search:{generation.id}",
+    )
+
+    def must_not_stream(*_args, **_kwargs):
+        raise AssertionError("provider stream must not start below the exact combined held reserve")
+
+    monkeypatch.setattr("apps.chat.cost_views._customer_stream", must_not_stream)
+    client = APIClient()
+    client.force_authenticate(user)
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/stream/",
+        {
+            "content": generation.user_message.content,
+            "client_message_id": str(client_message_id),
+            "confirm_cost": True,
+            "confirmed_max_rub": "6.9999",
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=generation.idempotency_key,
+    )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["code"] == "cost_confirmation_changed"
+    assert Decimal(payload["estimated_llm_max_rub"]) == reservation.amount_rub
+    assert Decimal(payload["estimated_search_max_rub"]) == search_reservation.amount_rub
+    assert Decimal(payload["estimated_max_rub"]) == reservation.amount_rub + search_reservation.amount_rub
