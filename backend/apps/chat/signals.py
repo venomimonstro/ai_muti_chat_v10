@@ -7,7 +7,7 @@ from django.utils import timezone
 from apps.ai_registry.models import Provider
 from apps.billing.models import CostAnomaly
 
-from .models import CompareVariant, Conversation, Message
+from .models import CompareVariant, Conversation, Generation, GenerationAttempt, Message
 
 
 def prompt_title(content: str, max_length: int = 72) -> str:
@@ -36,6 +36,38 @@ def touch_conversation_on_user_message(sender, instance, created, **kwargs):
         if not has_earlier_user_message:
             updates["title"] = prompt_title(instance.content)
     Conversation.objects.filter(pk=instance.conversation_id).update(**updates)
+
+
+@receiver(post_save, sender=Generation)
+def close_orphaned_attempts_on_terminal_generation(sender, instance, **kwargs):
+    """A terminal Generation may never retain a RUNNING provider attempt.
+
+    Normal provider failures explicitly close their attempt before terminalizing the
+    Generation. This signal is the defensive boundary for unexpected SDK/parser/runtime
+    exceptions and cooperative cancellation races. It does not touch provider health;
+    unclassified exceptions are not evidence that the upstream provider is unhealthy.
+    """
+    if instance.state not in {
+        Generation.State.COMPLETED,
+        Generation.State.FAILED,
+        Generation.State.CANCELLED,
+    }:
+        return
+    now = timezone.now()
+    error_code = (
+        str(instance.error_code or "generation_terminalized")[:80]
+        if instance.state != Generation.State.COMPLETED
+        else "orphaned_after_completion"
+    )
+    GenerationAttempt.objects.filter(
+        generation_id=instance.id,
+        state=GenerationAttempt.State.RUNNING,
+    ).update(
+        state=GenerationAttempt.State.FAILED,
+        error_code=error_code,
+        retryable=False,
+        finished_at=now,
+    )
 
 
 @receiver(post_save, sender=CompareVariant)
