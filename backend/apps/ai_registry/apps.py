@@ -27,9 +27,13 @@ class AIRegistryConfig(AppConfig):
             signals,
             web_fetch_security,
             web_tools,
+            yandex_runtime,
         )
 
         http_errors.install(adapters)
+        # Provider-specific dispatch is installed before quarantine/readiness so
+        # YandexGPT inherits the same fail-closed health/fallback semantics.
+        yandex_runtime.install(dispatch)
         adapters.adapter_for = dispatch.adapter_for
         reliability.adapter_for = dispatch.adapter_for
         search_intelligence.install(web_tools)
