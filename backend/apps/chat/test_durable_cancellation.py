@@ -1,10 +1,34 @@
 import pytest
+from django.urls import reverse
+from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 
 from . import cancellation
 from .models import Conversation, Generation, Message
 from .ux_models import ChatCancellationMarker
+
+
+def _generation(owner, conversation, *, key, state=Generation.State.RUNNING):
+    user_message = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.USER,
+        content="Останови этот запрос",
+        status=Message.Status.SAVED,
+    )
+    assistant_message = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.ASSISTANT,
+        status=Message.Status.STREAMING,
+    )
+    return Generation.objects.create(
+        owner=owner,
+        user_message=user_message,
+        assistant_message=assistant_message,
+        state=state,
+        model="system-pro",
+        idempotency_key=key,
+    )
 
 
 @pytest.mark.django_db(transaction=True)
@@ -31,25 +55,7 @@ def test_cancel_marker_survives_cache_failure_and_precedes_generation(monkeypatc
     )
     assert ChatCancellationMarker.objects.filter(owner=user).count() == 1
 
-    user_message = Message.objects.create(
-        conversation=conversation,
-        role=Message.Role.USER,
-        content="Останови этот запрос",
-        status=Message.Status.SAVED,
-    )
-    assistant_message = Message.objects.create(
-        conversation=conversation,
-        role=Message.Role.ASSISTANT,
-        status=Message.Status.SAVED,
-    )
-    generation = Generation.objects.create(
-        owner=user,
-        user_message=user_message,
-        assistant_message=assistant_message,
-        state=Generation.State.QUEUED,
-        model="system-pro",
-        idempotency_key=key,
-    )
+    generation = _generation(user, conversation, key=key, state=Generation.State.QUEUED)
 
     cancellation._DB_CHECKS.clear()
     assert cancellation.cancel_requested(generation) is True
@@ -85,25 +91,75 @@ def test_cancel_markers_are_tenant_scoped(monkeypatch):
     )
 
     conversation = Conversation.objects.create(owner=second, title="Other tenant")
-    user_message = Message.objects.create(
-        conversation=conversation,
-        role=Message.Role.USER,
-        content="Не должен быть отменён",
-        status=Message.Status.SAVED,
-    )
-    assistant_message = Message.objects.create(
-        conversation=conversation,
-        role=Message.Role.ASSISTANT,
-        status=Message.Status.SAVED,
-    )
-    generation = Generation.objects.create(
-        owner=second,
-        user_message=user_message,
-        assistant_message=assistant_message,
-        state=Generation.State.QUEUED,
-        model="system-pro",
-        idempotency_key=shared_key,
-    )
+    generation = _generation(second, conversation, key=shared_key, state=Generation.State.QUEUED)
 
     cancellation._DB_CHECKS.clear()
     assert cancellation.cancel_requested(generation) is False
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_generation_can_be_cancelled_by_generation_id_after_page_reload():
+    user = User.objects.create_user(
+        username="reload-cancel-owner",
+        email="reload-cancel-owner@example.test",
+        password="password123!",
+    )
+    conversation = Conversation.objects.create(owner=user, title="Reload cancel")
+    generation = _generation(
+        user,
+        conversation,
+        key="workspace:reload-cancel",
+        state=Generation.State.RUNNING,
+    )
+    client = APIClient()
+    client.force_authenticate(user=user)
+    response = client.post(
+        reverse("chat-generation-cancel", kwargs={"conversation_id": conversation.id}),
+        {"generation_id": str(generation.id)},
+        format="json",
+    )
+
+    assert response.status_code == 202
+    assert response.json()["generation_id"] == str(generation.id)
+    assert response.json()["state"] == Generation.State.RUNNING
+    assert ChatCancellationMarker.objects.filter(
+        owner=user,
+        generation_id=generation.id,
+        idempotency_key=generation.idempotency_key,
+    ).exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_generation_id_cancel_cannot_cross_tenants_or_conversations():
+    owner = User.objects.create_user(
+        username="reload-cancel-owner-2",
+        email="reload-cancel-owner-2@example.test",
+        password="password123!",
+    )
+    other = User.objects.create_user(
+        username="reload-cancel-other",
+        email="reload-cancel-other@example.test",
+        password="password123!",
+    )
+    owner_conversation = Conversation.objects.create(owner=owner, title="Owner chat")
+    other_conversation = Conversation.objects.create(owner=other, title="Other chat")
+    generation = _generation(
+        owner,
+        owner_conversation,
+        key="workspace:reload-cancel-owner",
+        state=Generation.State.RUNNING,
+    )
+
+    client = APIClient()
+    client.force_authenticate(user=other)
+    response = client.post(
+        reverse("chat-generation-cancel", kwargs={"conversation_id": other_conversation.id}),
+        {"generation_id": str(generation.id)},
+        format="json",
+    )
+
+    assert response.status_code == 404
+    assert not ChatCancellationMarker.objects.filter(
+        owner=other,
+        generation_id=generation.id,
+    ).exists()
