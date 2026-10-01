@@ -64,10 +64,13 @@ class ChatConfig(AppConfig):
         terminal_recovery.install(streaming)
         # Financially accurate public wording sits outside terminal recovery.
         error_contract.install(streaming)
-        # Transport claim safety is intentionally last: a simultaneous reconnect that
-        # loses the atomic QUEUED->RUNNING claim is a follower, not an incomplete run,
-        # and must never terminalize the real producer.
+        # Transport claim safety protects a simultaneous reconnect that loses the
+        # atomic QUEUED->RUNNING claim from terminalizing the real producer.
         run_claim_safety.install(streaming, managed_stream)
+        # The execution fence must be the final business-runtime wrapper: a worker
+        # whose durable attempt lease was revoked by stale recovery may not enter
+        # retry/fallback and may not surface as a new provider failure.
+        execution_fence.install_outer_guard(streaming, managed_stream)
 
         # Production runs under Uvicorn/ASGI. Import the request bridge only after all
         # routing/billing/recovery wrappers above are installed so it captures the
