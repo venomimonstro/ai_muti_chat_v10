@@ -18,12 +18,17 @@ DEFAULT_HEARTBEAT_SECONDS = 10.0
 FOLLOW_POLL_SECONDS = 1.0
 STREAM_EXECUTOR_WORKERS = max(
     4,
-    min(int(os.getenv("CHAT_STREAM_EXECUTOR_WORKERS", "64")), 256),
+    min(int(os.getenv("CHAT_STREAM_EXECUTOR_WORKERS", "16")), 128),
+)
+STREAM_MAX_INFLIGHT = max(
+    STREAM_EXECUTOR_WORKERS,
+    min(int(os.getenv("CHAT_STREAM_MAX_INFLIGHT", str(STREAM_EXECUTOR_WORKERS * 4))), 512),
 )
 _STREAM_EXECUTOR = ThreadPoolExecutor(
     max_workers=STREAM_EXECUTOR_WORKERS,
     thread_name_prefix="chat-stream",
 )
+_STREAM_SLOTS = threading.BoundedSemaphore(STREAM_MAX_INFLIGHT)
 
 _PROVIDER_ERROR_MARKERS = (
     "provider_",
@@ -146,6 +151,13 @@ def _produce(generation, loop, queue, detached):
         close_old_connections()
         if not detached.is_set():
             _enqueue(loop, queue, ("done", None), detached)
+
+
+def _produce_with_slot(generation, loop, queue, detached):
+    try:
+        _produce(generation, loop, queue, detached)
+    finally:
+        _STREAM_SLOTS.release()
 
 
 def _generation_snapshot(generation_id):
@@ -288,29 +300,42 @@ async def follow_generation_async(
 
 
 async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS):
-    """Native ASGI iterator with heartbeat and durable disconnect behaviour.
-
-    Synchronous provider adapters execute on one bounded process-wide pool. This
-    prevents one OS thread per chat from exhausting a worker under burst traffic.
-    """
+    """Native ASGI iterator with bounded provider execution and durable reconnect."""
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
     detached = threading.Event()
-    try:
-        _STREAM_EXECUTOR.submit(_produce, generation, loop, queue, detached)
-    except RuntimeError:
+
+    if not _STREAM_SLOTS.acquire(blocking=False):
         _finalize_unhandled_failure(generation)
         yield sse(
             "error",
             {
                 "code": "AI-103",
                 "support_code": "AI-103",
-                "message": "Не удалось запустить обработку ответа. Запрос сохранён, неподтверждённые расходы не списаны.",
+                "message": (
+                    "Сервис обрабатывает максимальное число AI-запросов. Текущий запрос безопасно "
+                    "остановлен, неподтверждённые расходы не списаны. Повторите через несколько секунд."
+                ),
             },
         )
         return
 
     try:
+        try:
+            _STREAM_EXECUTOR.submit(_produce_with_slot, generation, loop, queue, detached)
+        except RuntimeError:
+            _STREAM_SLOTS.release()
+            _finalize_unhandled_failure(generation)
+            yield sse(
+                "error",
+                {
+                    "code": "AI-103",
+                    "support_code": "AI-103",
+                    "message": "Не удалось запустить обработку ответа. Запрос сохранён, неподтверждённые расходы не списаны.",
+                },
+            )
+            return
+
         while True:
             try:
                 kind, value = await asyncio.wait_for(
