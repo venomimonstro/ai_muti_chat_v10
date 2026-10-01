@@ -8,6 +8,7 @@ class ChatConfig(AppConfig):
     def ready(self):
         # UI-only organization models are registered here to keep inference models focused.
         from . import (
+            asgi_stream,
             billing_recovery,
             cache_safety,
             cooperative_cancel,
@@ -21,6 +22,7 @@ class ChatConfig(AppConfig):
             manual_selection_recovery,
             preflight_terminal,
             procurement_execution,
+            public_error_wiring,
             response_safety,
             run_claim_safety,
             runtime_readiness,
@@ -73,6 +75,8 @@ class ChatConfig(AppConfig):
         terminal_recovery.install(streaming)
         # Financially accurate public wording sits outside terminal recovery.
         error_contract.install(streaming)
+        # Live/reconnect/history must classify the same internal failure identically.
+        public_error_wiring.install(asgi_stream)
         # Transport claim safety protects a simultaneous reconnect that loses the
         # atomic QUEUED->RUNNING claim from terminalizing the real producer.
         run_claim_safety.install(streaming, managed_stream)
