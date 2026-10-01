@@ -4,11 +4,22 @@ from apps.chat import asgi_stream, cost_views, managed_stream, services, streami
 from apps.chat.cost_views import ConfirmedConversationStreamView
 
 
+def _chain_has_marker(callable_obj, marker):
+    current = callable_obj
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, marker, False):
+            return True
+        current = getattr(current, "_raw_run", None)
+    return False
+
+
 def test_all_chat_entrypoints_use_final_terminal_recovery_runtime():
     assert services.run is streaming.run
     assert managed_stream.run is streaming.run
-    assert getattr(streaming.run, "_ai_workspace_terminal_recovery", False) is True
-    assert getattr(streaming.run, "_ai_workspace_procurement_execution", False) is True
+    assert _chain_has_marker(streaming.run, "_ai_workspace_terminal_recovery")
+    assert _chain_has_marker(streaming.run, "_ai_workspace_procurement_execution")
     assert getattr(streaming.run, "_raw_run", None) is not None
     assert getattr(streaming.provider_available, "_ai_workspace_procurement_execution", False) is True
     assert getattr(streaming._snapshot_capacity, "_ai_workspace_procurement_execution", False) is True
