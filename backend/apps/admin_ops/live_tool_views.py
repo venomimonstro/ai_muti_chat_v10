@@ -158,7 +158,7 @@ class LiveToolCheckView(AdminAPIView):
                     provider.health_state = Provider.HealthState.HEALTHY
                     provider.last_checked_at = timezone.now()
                     provider.save(update_fields=["health_state", "last_checked_at"])
-            except (web_tools.WebToolError, Exception) as exc:
+            except Exception as exc:
                 failed = True
                 result["yandex"] = {"ok": False, "error": str(exc)}
                 provider = _provider()
