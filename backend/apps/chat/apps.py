@@ -26,6 +26,7 @@ class ChatConfig(AppConfig):
 
     def ready(self):
         # UI-only organization models are registered here to keep inference models focused.
+        from apps.ai_registry import web_tools
         from . import (
             asgi_stream,
             billing_recovery,
@@ -44,6 +45,7 @@ class ChatConfig(AppConfig):
             live_tools,
             managed_stream,
             manual_selection_recovery,
+            paid_search_billing,
             preflight_terminal,
             procurement_execution,
             provider_delivery_checkpoint,
@@ -51,6 +53,7 @@ class ChatConfig(AppConfig):
             response_safety,
             run_claim_safety,
             runtime_readiness,
+            search_trigger_policy,
             serializers,
             signals,
             single_flight,
@@ -63,6 +66,14 @@ class ChatConfig(AppConfig):
         # Current public facts such as office holders, exchange rates and software
         # versions require web grounding even if the user does not say "today".
         freshness_policy.install(live_tools, web_context)
+        # Tighten the broad freshness trigger before paid search is wired. The word
+        # "сейчас" in an imperative must not create a billable web request by itself.
+        search_trigger_policy.install(live_tools, web_context)
+        # Yandex Search is a paid tool, not a free side effect. Bind the exact funded
+        # credential, reserve procurement/customer balances, settle one request, and
+        # persist cost metadata into the Generation context. SearXNG remains the free
+        # default and Yandex is selected only when policy/quality justifies it.
+        paid_search_billing.install(streaming_module=streaming, web_tools_module=web_tools)
         # Memory, summaries, retrieved history and files are reference data, never
         # system instructions. Keep a strict trusted allowlist before web enrichment
         # adds its own separately marked untrusted context.
