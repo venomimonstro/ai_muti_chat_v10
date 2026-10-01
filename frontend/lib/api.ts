@@ -492,7 +492,8 @@ export async function streamMessage(
           if (line.startsWith("data:")) data = line.slice(5).trim();
         }
         const parsed = JSON.parse(data) as Record<string, unknown>;
-        if (["snapshot", "completed", "cancelled"].includes(event)) {
+        const completedSnapshot = event === "snapshot" && String(parsed.state ?? "") === "completed";
+        if (completedSnapshot || event === "completed" || event === "cancelled") {
           terminal = true;
           clearPending(conversationId);
         } else if (event === "error" && parsed.code === "generation_in_progress") {
@@ -534,8 +535,10 @@ export async function streamMessage(
           receivedFirstDelta = true;
           activity(onEvent, "provider", "completed", "AI-модель отвечает");
           activity(onEvent, "answer", "streaming", "Формирую ответ…");
-        } else if (["snapshot", "completed"].includes(event)) {
+        } else if (event === "completed" || completedSnapshot) {
           activity(onEvent, "answer", "completed", "Ответ готов");
+        } else if (event === "snapshot") {
+          activity(onEvent, "answer", "warning", "Восстановлена сохранённая часть ответа…");
         } else if (event === "cancelled") {
           activity(onEvent, "answer", "warning", "Ответ остановлен");
         } else if (event === "error") {
