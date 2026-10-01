@@ -161,6 +161,8 @@ export type AIModel = {
   max_output_tokens: number;
   available: boolean;
   health_state: string;
+  routing_tiers?: Array<"economy" | "balanced" | "maximum">;
+  routing_tiers_configured?: boolean;
   price: {
     version: string;
     input_rub_per_million: string;
