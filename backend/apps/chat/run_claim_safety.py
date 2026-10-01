@@ -56,6 +56,7 @@ def install(streaming_module, managed_stream_module) -> None:
         "_ai_workspace_terminal_recovery",
         "_ai_workspace_error_contract",
         "_ai_workspace_cooperative_cancel",
+        "_ai_workspace_procurement_execution",
     ):
         if getattr(raw_run, marker, False):
             setattr(run, marker, True)
