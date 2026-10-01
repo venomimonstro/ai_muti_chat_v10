@@ -22,10 +22,10 @@ class ChatExecutionFenceTests(SimpleTestCase):
             installed_recover = recovery_module._recover_generation
         return module, raw_finish, installed_recover, recover
 
-    def test_completed_attempt_requires_live_running_lease(self):
+    def test_completed_attempt_requires_atomic_live_running_lease(self):
         module, raw_finish, _installed_recover, _raw_recover = self._install()
         queryset = MagicMock()
-        queryset.values_list.return_value.first.return_value = GenerationAttempt.State.FAILED
+        queryset.update.return_value = 0
         with patch.object(execution_fence.GenerationAttempt.objects, "filter", return_value=queryset):
             with self.assertRaises(execution_fence.GenerationExecutionFenced):
                 module._finish_attempt(
@@ -33,6 +33,38 @@ class ChatExecutionFenceTests(SimpleTestCase):
                     state=GenerationAttempt.State.COMPLETED,
                     started=0,
                 )
+        queryset.update.assert_called_once()
+        raw_finish.assert_not_called()
+
+    def test_failed_attempt_cannot_overwrite_recovery_revocation(self):
+        module, raw_finish, _installed_recover, _raw_recover = self._install()
+        queryset = MagicMock()
+        queryset.update.return_value = 0
+        error = SimpleNamespace(code="timeout", retryable=True)
+        with patch.object(execution_fence.GenerationAttempt.objects, "filter", return_value=queryset):
+            with self.assertRaises(execution_fence.GenerationExecutionFenced):
+                module._finish_attempt(
+                    SimpleNamespace(pk="attempt-2"),
+                    state=GenerationAttempt.State.FAILED,
+                    started=0,
+                    error=error,
+                )
+        queryset.update.assert_called_once()
+        raw_finish.assert_not_called()
+
+    def test_live_attempt_finishes_with_single_compare_and_swap(self):
+        module, raw_finish, _installed_recover, _raw_recover = self._install()
+        queryset = MagicMock()
+        queryset.update.return_value = 1
+        attempt = SimpleNamespace(pk="attempt-3")
+        with patch.object(execution_fence.GenerationAttempt.objects, "filter", return_value=queryset):
+            module._finish_attempt(
+                attempt,
+                state=GenerationAttempt.State.COMPLETED,
+                started=0,
+            )
+        self.assertEqual(attempt.state, GenerationAttempt.State.COMPLETED)
+        queryset.update.assert_called_once()
         raw_finish.assert_not_called()
 
     def test_outer_guard_swallows_revoked_worker_only_after_terminal_recovery(self):
