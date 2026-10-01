@@ -30,6 +30,11 @@ class AIRegistryConfig(AppConfig):
             yandex_runtime,
         )
 
+        # YandexGPT is a real external commercial provider even if an old/manual
+        # database row still carries the historical Echo default. It must never
+        # inherit the test-provider readiness bypass.
+        reliability.SPECIAL_EXTERNAL_PROVIDER_SLUGS.add("yandexgpt")
+
         http_errors.install(adapters)
         # Provider-specific dispatch is installed before quarantine/readiness so
         # YandexGPT inherits the same fail-closed health/fallback semantics.
