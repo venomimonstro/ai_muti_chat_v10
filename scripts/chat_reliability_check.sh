@@ -38,6 +38,14 @@ grep -Fq '<ModelPicker value={selectorValue} models={models}' frontend/app/works
 grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'ModelPicker is the single live catalog owner' frontend/app/workspace/ModelPicker.tsx
+# A temporary /models/ refresh failure must retain the last confirmed catalog.
+# Otherwise a stale React closure can falsely disable an otherwise healthy chat.
+grep -Fq 'catalogAvailableRef=useRef(initialCatalog.length>0)' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'broadcastCatalogState("error",catalogAvailableRef.current)' frontend/app/workspace/ModelPicker.tsx
+if grep -Fq 'broadcastCatalogState("error",catalog.length>0)' frontend/app/workspace/ModelPicker.tsx; then
+  echo '[FAIL] ModelPicker uses stale catalog closure on refresh errors'
+  exit 1
+fi
 if grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/Composer.tsx; then
   echo '[FAIL] Composer performs a competing /models/ poll'
   exit 1
