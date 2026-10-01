@@ -72,6 +72,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_manual_continuity.py \
   apps/ai_registry/test_auto_continuity.py \
   apps/ai_registry/test_search_intelligence_v3.py \
+  apps/ai_registry/test_web_fetch_security.py \
   apps/ai_registry/test_client_catalog_readonly.py \
   apps/billing/test_pricing_bridge.py \
   apps/billing/test_confirmed_usage_guard.py \
@@ -84,6 +85,8 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_customer_capacity.py \
   apps/chat/test_context_safety.py \
+  apps/chat/test_context_trust_boundary.py \
+  apps/chat/test_conversation_snapshot.py \
   apps/chat/test_execution_readiness_after_provider_reserve.py \
   apps/chat/test_execution_fence.py \
   apps/chat/test_procurement_execution_reservation.py \
