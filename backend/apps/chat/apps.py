@@ -11,6 +11,8 @@ class ChatConfig(AppConfig):
             billing_recovery,
             cache_safety,
             cooperative_cancel,
+            cost_preview,
+            customer_capacity,
             error_contract,
             execution_fence,
             freshness_policy,
@@ -47,6 +49,13 @@ class ChatConfig(AppConfig):
         # balance check and accidentally block itself. New fallback candidates remain
         # fail-closed until they can create their own provider reservation.
         procurement_execution.install(streaming)
+        # Preview and prepare must use the same customer-funding eligibility. A more
+        # expensive fallback must never make an affordable primary route unavailable;
+        # final transactional reserve() remains the authority for races.
+        customer_capacity.install(
+            streaming_module=streaming,
+            cost_preview_module=cost_preview,
+        )
         # A provider that formally completes without useful text is not a successful
         # customer answer. Reject it locally and continue the existing fallback chain
         # without degrading an otherwise healthy key/provider.
