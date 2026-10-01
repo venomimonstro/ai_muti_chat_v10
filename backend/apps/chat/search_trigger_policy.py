@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from django.utils import timezone
 
+from .freshness_policy import is_volatile_fact_query
+
 EXPLICIT_SEARCH = (
     "найди в интернете", "поищи в интернете", "проверь в интернете", "посмотри в интернете",
     "поиск в интернете", "найди в сети", "поищи в сети", "поиск яндекс", "в яндексе",
@@ -17,11 +19,13 @@ DYNAMIC_SUBJECTS = (
     "новост", "цена", "стоимость", "курс", "акци", "крипт", "биткоин", "рынок",
     "тариф", "закон", "налог", "штраф", "правил", "ваканси", "зарплат", "рейтинг",
     "отзыв", "наличи", "расписан", "рейс", "билет", "президент", "министр", "губернатор",
-    "мэр ", "ceo", "директор", "версия ", "релиз", "release",
+    "мэр ", "ceo", "директор", "версия ", "релиз", "release", "стоматолог", "клиник",
+    "ресторан", "отел", "гостиниц", "магазин", "сервис", "аптек", "врач", "больниц",
+    "школ", "курс обуч", "мероприят", "концерт", "кинотеатр", "доставк",
 )
 DECISION_MARKERS = (
     "что выбрать", "что лучше", "какой лучше", "посоветуй", "рекомендуй", "сравни",
-    "лучшие", "топ ", "рейтинг", "где купить", "куда сходить", "куда поехать",
+    "лучшие", "топ ", "рейтинг", "где купить", "где найти", "куда сходить", "куда поехать",
     "что открыть", "что запустить", "куда влож", "окупаем",
 )
 LOCAL_MARKERS = (
@@ -44,6 +48,12 @@ def search_required(query: str) -> bool:
     if any(marker in text for marker in EXPLICIT_SEARCH):
         return True
     if any(marker in text for marker in STRONG_FRESHNESS):
+        return True
+    # Facts whose truth can change without the user writing "today" (office
+    # holders, FX, current product/software state, laws/prices) always require a
+    # current source. This preserves the stronger freshness policy while removing
+    # the old false positive on the standalone word "сейчас".
+    if is_volatile_fact_query(text):
         return True
     current_year = timezone.localdate().year
     if any(int(year) >= current_year - 1 for year in YEAR_RE.findall(text)):
