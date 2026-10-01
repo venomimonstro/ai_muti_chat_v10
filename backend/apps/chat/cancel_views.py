@@ -13,14 +13,11 @@ from .models import Conversation, Generation
 class ConversationGenerationCancelView(APIView):
     """Request cooperative cancellation of one idempotent chat generation.
 
-    The endpoint is intentionally safe before Generation creation: the same
-    idempotency key is stored as a short-lived Redis + database cancellation marker,
-    closing the race where a user presses Stop while prepare() is still committing.
-
-    If the Generation already exists but is still QUEUED, no provider call can be in
-    flight yet. In that state cancellation is completed synchronously so a reserved
-    customer/provider balance is released immediately instead of waiting for stale
-    recovery. RUNNING generations continue to use cooperative cancellation.
+    If the generation is still durably QUEUED, cancellation is settled immediately.
+    If the stream thread has already claimed RUNNING, the durable marker is left in
+    place and only that owner thread may close its provider iterator and settle the
+    partial result. This prevents the race where an HTTP Stop request terminalizes a
+    generation while the provider thread continues and later overwrites it.
     """
 
     def post(self, request, conversation_id):
@@ -55,10 +52,11 @@ class ConversationGenerationCancelView(APIView):
         )
 
         if generation is not None and generation.state == Generation.State.QUEUED:
-            try:
-                _cancel_before_provider(generation)
-            finally:
+            finalized = _cancel_before_provider(generation, queued_only=True)
+            if finalized:
                 clear_cancel(generation)
+            # If queued_only lost the race to RUNNING, intentionally keep the
+            # marker. The stream owner will see it at the next cooperative poll.
             generation.refresh_from_db(fields=["state"])
 
         return Response(
