@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
@@ -20,6 +22,11 @@ MODEL_SCOPED_ERROR_CODES = {
     "openrouter_404",
 }
 MODEL_SCOPE = "model"
+MODEL_RECOVERY_LOCK_KEY = "ai-registry:model-quarantine-recovery"
+MODEL_RECOVERY_LOCK_SECONDS = max(
+    300,
+    min(int(os.getenv("AI_MODEL_RECOVERY_LOCK_SECONDS", "900")), 3600),
+)
 
 
 class _QuarantinedModelAdapter:
@@ -145,8 +152,7 @@ def quarantine_status(model: AIModel) -> dict:
     }
 
 
-def recover_quarantined_models(*, limit: int = 8) -> dict:
-    """Probe quarantined model ids outside customer traffic and recover on success."""
+def _recover_quarantined_models(*, limit: int = 8) -> dict:
     incidents = list(
         ReliabilityIncident.objects.filter(
             state=ReliabilityIncident.State.OPEN,
@@ -210,6 +216,31 @@ def recover_quarantined_models(*, limit: int = 8) -> dict:
         "still_quarantined": still,
         "skipped": skipped,
     }
+
+
+def recover_quarantined_models(*, limit: int = 8) -> dict:
+    """Probe quarantined model ids outside customer traffic and recover on success.
+
+    A distributed cache lease serializes paid recovery probes across Celery workers.
+    Beat runs every five minutes and one sweep may itself take several minutes when
+    upstreams time out; without this lease the same model could be probed twice and
+    race between OPEN/RECOVERED states. The TTL is deliberately finite so a crashed
+    worker cannot block self-healing forever.
+    """
+    if not cache.add(MODEL_RECOVERY_LOCK_KEY, "1", timeout=MODEL_RECOVERY_LOCK_SECONDS):
+        return {
+            "checked": 0,
+            "recovered": 0,
+            "still_quarantined": 0,
+            "skipped": 0,
+            "status": "skipped",
+            "reason": "already_running",
+        }
+    try:
+        result = _recover_quarantined_models(limit=limit)
+        return {**result, "status": "ok"}
+    finally:
+        cache.delete(MODEL_RECOVERY_LOCK_KEY)
 
 
 def install(*, dispatch_module, adapters_module, reliability_module, router_module) -> None:
