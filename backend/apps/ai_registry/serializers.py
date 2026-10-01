@@ -44,6 +44,8 @@ class AIModelSerializer(serializers.ModelSerializer):
     price = serializers.SerializerMethodField()
     model_version = serializers.SerializerMethodField()
     exact_api_id = serializers.SerializerMethodField()
+    routing_tiers = serializers.SerializerMethodField()
+    routing_tiers_configured = serializers.SerializerMethodField()
 
     class Meta:
         model = AIModel
@@ -60,6 +62,8 @@ class AIModelSerializer(serializers.ModelSerializer):
             "available",
             "health_state",
             "price",
+            "routing_tiers",
+            "routing_tiers_configured",
         )
 
     def get_provider(self, obj):
@@ -87,6 +91,15 @@ class AIModelSerializer(serializers.ModelSerializer):
         if obj.provider.slug == "gigachat":
             return None
         return obj.current_version.version if obj.current_version else None
+
+    def get_routing_tiers(self, obj):
+        assignments = getattr(obj, "client_routing_tiers", None)
+        if assignments is None:
+            assignments = obj.routing_tiers.filter(enabled=True).only("tier")
+        return [str(item.tier) for item in assignments]
+
+    def get_routing_tiers_configured(self, _obj):
+        return bool(self.context.get("routing_tiers_configured", False))
 
     def get_price(self, obj):
         if not model_client_ready(obj):
