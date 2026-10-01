@@ -20,10 +20,10 @@ from .procurement_breakdown_views import ProcurementBreakdownView
 from .procurement_views import ProcurementEconomicsView
 from .promo_credit_views import AdminPromoCreditView
 from .provider_activation_views import ProviderClientActivationView
+from .provider_key_views import SafeProviderKeyCollectionView
 from .provider_views import (
     ProviderCredentialView,
     ProviderDiscoveredModelsView,
-    ProviderKeyCollectionView,
     ProviderModelConfigView,
     SafeProviderBulkActionView,
 )
@@ -82,7 +82,7 @@ urlpatterns = [
     path("live-tools/check/", LiveToolCheckView.as_view(), name="admin-live-tools-check"),
     path("providers/", ProviderControlView.as_view(), name="admin-providers"),
     path("providers/<slug:provider_slug>/credentials/", ProviderCredentialView.as_view(), name="admin-provider-credentials"),
-    path("providers/<slug:provider_slug>/keys/", ProviderKeyCollectionView.as_view(), name="admin-provider-keys"),
+    path("providers/<slug:provider_slug>/keys/", SafeProviderKeyCollectionView.as_view(), name="admin-provider-keys"),
     path("providers/<slug:provider_slug>/keys/<uuid:key_id>/", OwnerProviderKeyDetailView.as_view(), name="admin-provider-key-detail"),
     path("providers/<slug:provider_slug>/discover-models/", ProviderDiscoveredModelsView.as_view(), name="admin-provider-discover-models"),
     path("providers/<slug:provider_slug>/activate-models/", ProviderClientActivationView.as_view(), name="admin-provider-activate-models"),
