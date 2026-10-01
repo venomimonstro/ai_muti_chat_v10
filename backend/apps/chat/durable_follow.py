@@ -37,7 +37,22 @@ def follow_existing_generation(generation):
     Replayed idempotent requests, browser refreshes and a second tab must attach to
     the existing Generation. The follower never mutates state, reservations or
     provider health; the original producer (or stale recovery) remains authoritative.
+
+    ``generation`` is always the first event. Besides making the reconnect protocol
+    equivalent to a fresh stream, this is the durable acceptance acknowledgement the
+    web client uses to clear a submitted draft. A connection that died before the
+    producer's original generation event therefore cannot resurrect an already-sent
+    prompt and tempt the user to submit it twice after reload.
     """
+    yield sse(
+        "generation",
+        {
+            "id": str(generation.id),
+            "state": generation.state,
+            "reconnected": True,
+        },
+    )
+
     last_text = None
     heartbeat_at = 0.0
     while True:
