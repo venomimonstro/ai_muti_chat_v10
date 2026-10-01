@@ -11,6 +11,7 @@ class ChatConfig(AppConfig):
             asgi_stream,
             billing_recovery,
             cache_safety,
+            conversation_snapshot,
             cooperative_cancel,
             cost_preview,
             customer_capacity,
@@ -66,6 +67,10 @@ class ChatConfig(AppConfig):
         # A provider thread that wakes up afterwards is fenced locally and can no
         # longer overwrite the recovered terminal state or settle twice.
         execution_fence.install(streaming)
+        # Refresh the HTTP-view Conversation object after preview/confirmation and
+        # immediately before the real transactional prepare. The raw prepare still
+        # owns the final select_for_update and route decision.
+        conversation_snapshot.install(streaming)
         single_flight.install(streaming)
         # Keep preflight terminalization outside single-flight: failures inside the
         # real prepare pipeline and bounded concurrency rejection share one durable
