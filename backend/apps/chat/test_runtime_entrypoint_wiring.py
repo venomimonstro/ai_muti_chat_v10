@@ -1,6 +1,15 @@
 from django.urls import resolve
 
-from apps.chat import activity_stream, asgi_stream, cost_views, managed_stream, services, streaming, views
+from apps.chat import (
+    activity_stream,
+    asgi_stream,
+    cost_views,
+    managed_stream,
+    message_actions,
+    services,
+    streaming,
+    views,
+)
 from apps.chat.cost_views import ConfirmedConversationStreamView
 
 
@@ -36,6 +45,12 @@ def test_all_prepare_entrypoints_use_terminal_safe_single_flight_runtime():
     assert views.prepare is streaming.prepare
     assert cost_views.prepare is streaming.prepare
     assert activity_stream.prepare is streaming.prepare
+    assert message_actions.prepare is streaming.prepare
+    assert _chain_has_marker(
+        streaming.prepare,
+        "_ai_workspace_attachment_durability",
+        raw_attr="_raw_prepare",
+    )
     assert _chain_has_marker(
         streaming.prepare,
         "_ai_workspace_preflight_terminal",
