@@ -35,33 +35,26 @@ function pendingStreamIdempotencyKey(conversationId:string|null|undefined){
 }
 
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools,modelValue,models,onModelChange,conversationId,ensureConversation,onAttachImage,sourceImageId}:ComposerProps){
- const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState(modelValue??"auto:auto");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[catalogState,setCatalogState]=useState<"loading"|"ready"|"error">(models!==undefined&&models.length>0?"ready":"loading");const[workspaceModelsAvailable,setWorkspaceModelsAvailable]=useState<boolean|null>(null);const[imageStudioOpen,setImageStudioOpen]=useState(false);const submitGate=useRef(false);
+ const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState(modelValue??"auto:auto");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[catalogState,setCatalogState]=useState<"loading"|"ready"|"error">("loading");const[workspaceModelsAvailable,setWorkspaceModelsAvailable]=useState<boolean|null>(null);const[imageStudioOpen,setImageStudioOpen]=useState(false);const submitGate=useRef(false);
  const trimmed=value.trim();const tooLong=value.length>MAX_MESSAGE_CHARS;const nearLimit=value.length>90000;
  const explicitModelControl=modelValue!==undefined&&models!==undefined&&onModelChange!==undefined;
  const effectiveControlValue=explicitModelControl?(modelValue??"auto:auto"):controlValue;
  const selectedManualSlug=explicitModelControl&&effectiveControlValue.startsWith("model:")?effectiveControlValue.slice(6):"";
  const selectedManualModel=selectedManualSlug?controlModels.find(item=>item.slug===selectedManualSlug):undefined;
  const selectedModelUnavailable=Boolean(selectedManualSlug&&(!selectedManualModel||!selectedManualModel.available));
- // An empty catalog blocks send only after /models/ has successfully confirmed it.
- // A transient catalog request failure must not disable an otherwise healthy AUTO /
- // continuity path; the backend is the final authority for execution readiness.
- const noModelsAvailable=explicitModelControl?(catalogState==="ready"&&controlModels.filter(item=>item.available).length===0):workspaceModelsAvailable===false;
+ // The visible ModelPicker owns /models/ refresh and broadcasts one authoritative
+ // client snapshot. A transient catalog error never blocks AUTO; backend readiness is
+ // still the final authority when the request is prepared.
+ const noModelsAvailable=workspaceModelsAvailable===false;
  useEffect(()=>{const el=ref.current;if(!el)return;el.style.height="0px";const next=Math.min(Math.max(el.scrollHeight,COMPOSER_MIN_HEIGHT),COMPOSER_MAX_HEIGHT);el.style.height=`${next}px`;el.style.overflowY=el.scrollHeight>COMPOSER_MAX_HEIGHT?"auto":"hidden";},[value]);
  useEffect(()=>{if(!sending){setSlow(false);return;}const timer=window.setTimeout(()=>setSlow(true),30000);return()=>window.clearTimeout(timer)},[sending]);
  useEffect(()=>{if(!trimmed)submitGate.current=false},[trimmed]);
  useEffect(()=>{if(modelValue!==undefined)setControlValue(modelValue)},[modelValue]);
- useEffect(()=>{const catalog=(event:Event)=>{const detail=(event as CustomEvent<{state?:string;available?:boolean}>).detail;if(detail?.state==="ready"&&typeof detail.available==="boolean")setWorkspaceModelsAvailable(detail.available)};window.addEventListener(MODEL_CATALOG_EVENT,catalog);return()=>window.removeEventListener(MODEL_CATALOG_EVENT,catalog)},[]);
- useEffect(()=>{
-  if(!explicitModelControl){setCatalogState("ready");return;}
-  let active=true;
-  if(models!==undefined){setControlModels(models);setCatalogState(models.length>0?"ready":"loading")}
-  const refresh=async()=>{if(typeof document!=="undefined"&&document.visibilityState==="hidden")return;try{const rows=await api<AIModel[]>("/models/");if(active){setControlModels(rows);setCatalogState("ready")}}catch{if(active)setCatalogState("error")}};
-  if(models===undefined||models.length===0)void refresh();
-  const timer=window.setInterval(()=>void refresh(),30000);const wake=()=>void refresh();window.addEventListener("online",wake);window.addEventListener("focus",wake);return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",wake);window.removeEventListener("focus",wake)};
- },[models,explicitModelControl]);
+ useEffect(()=>{if(models!==undefined)setControlModels(models)},[models]);
+ useEffect(()=>{const catalog=(event:Event)=>{const detail=(event as CustomEvent<{state?:string;available?:boolean}>).detail;if(detail?.state==="ready"){setCatalogState("ready");if(typeof detail.available==="boolean")setWorkspaceModelsAvailable(detail.available)}else if(detail?.state==="error"){setCatalogState("error")}};window.addEventListener(MODEL_CATALOG_EVENT,catalog);return()=>window.removeEventListener(MODEL_CATALOG_EVENT,catalog)},[]);
  // The lock follows the real send promise instead of a timer. This prevents both a
- // 15-second dead button after failed first-chat creation and a premature second
- // submit if a valid creation/stream opening takes unusually long.
+ // dead button after failed first-chat creation and a premature second submit while
+ // a valid creation/stream opening is still in progress.
  const submit=async()=>{if(!trimmed||tooLong||offline||sending||noModelsAvailable||submitGate.current)return;submitGate.current=true;setSlow(false);try{await Promise.resolve(onSend())}finally{submitGate.current=false}};
  const stop=()=>{setSlow(false);const key=pendingStreamIdempotencyKey(conversationId);if(conversationId&&key){void api(`/conversations/${conversationId}/messages/cancel/`,{method:"POST",headers:{"Idempotency-Key":key},body:JSON.stringify({idempotency_key:key})}).catch(()=>undefined)}onStop()};
  const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();void submit()}};
