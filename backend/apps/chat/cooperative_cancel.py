@@ -18,14 +18,16 @@ TERMINAL_STATES = {
 }
 
 
-def _cancel_before_provider(generation):
+def _finalize_cancel(generation, *, clear_content: bool):
     generation.refresh_from_db(fields=["state"])
     if generation.state in TERMINAL_STATES:
         return False
-    charge = settle_delivered_partial(generation, "")
     assistant = generation.assistant_message
-    assistant.content = ""
-    assistant.status = Message.Status.FAILED
+    assistant.refresh_from_db(fields=["content", "status"])
+    if clear_content:
+        assistant.content = ""
+    charge = settle_delivered_partial(generation, assistant.content)
+    assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["content", "status"])
     generation.state = Generation.State.CANCELLED
     generation.error_code = "client_cancelled"
@@ -35,6 +37,21 @@ def _cancel_before_provider(generation):
         update_fields=["state", "error_code", "actual_cost_rub", "completed_at"]
     )
     return True
+
+
+def _cancel_before_provider(generation):
+    return _finalize_cancel(generation, clear_content=True)
+
+
+def _cancel_during_stream(generation):
+    """Persist authoritative partial settlement before emitting ``cancelled``.
+
+    The old path only closed the provider iterator and emitted an SSE event. The
+    outer managed-stream finalizer then saw a still-RUNNING generation and changed
+    it to FAILED/stream_incomplete. A client-visible ``cancelled`` event must be a
+    durable terminal state, otherwise history, diagnostics and billing disagree.
+    """
+    return _finalize_cancel(generation, clear_content=False)
 
 
 def _terminal_now(generation) -> bool:
@@ -105,8 +122,11 @@ def install(streaming_module) -> None:
                             yield chunk
                             continue
                         iterator.close()
-                        clear_cancel(generation)
-                        yield _cancelled_event(generation)
+                        try:
+                            if _cancel_during_stream(generation):
+                                yield _cancelled_event(generation)
+                        finally:
+                            clear_cancel(generation)
                         return
                     yield chunk
             finally:
@@ -114,6 +134,7 @@ def install(streaming_module) -> None:
                     try:
                         if not _terminal_now(generation):
                             iterator.close()
+                            _cancel_during_stream(generation)
                     finally:
                         clear_cancel(generation)
         finally:
