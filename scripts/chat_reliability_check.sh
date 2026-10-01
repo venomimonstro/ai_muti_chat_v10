@@ -121,6 +121,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_execution_fence.py \
   apps/chat/test_procurement_execution_reservation.py \
   apps/chat/test_procurement_account_binding.py \
+  apps/chat/test_provider_delivery_checkpoint.py \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
@@ -131,6 +132,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_manual_selection_race.py \
   apps/chat/test_quarantine_race_failover.py \
   apps/chat/test_terminal_overrun_recovery.py \
+  apps/chat/test_terminal_attempt_cleanup.py \
   apps/chat/test_empty_response_failover.py \
   apps/chat/test_cooperative_cancel.py \
   apps/chat/test_durable_cancellation.py \
