@@ -16,6 +16,18 @@
         file_server
     }
 
+    # Chat is a long-lived SSE transport. Do not depend on reverse-proxy buffering
+    # heuristics: flush each provider/recovery/heartbeat event immediately so slow or
+    # mobile networks see progress and the frontend reconnect timer is not triggered by
+    # proxy-side batching.
+    @chatStream path_regexp chatStream ^/api/v1/conversations/[^/]+/messages/stream/$
+    handle @chatStream {
+        reverse_proxy backend:8000 {
+            header_up X-Forwarded-For {remote_host}
+            flush_interval -1
+        }
+    }
+
     handle /api/* {
         reverse_proxy backend:8000 {
             header_up X-Forwarded-For {remote_host}
