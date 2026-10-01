@@ -20,7 +20,6 @@ class ChatConfig(AppConfig):
             preflight_terminal,
             procurement_execution,
             response_safety,
-            retry_adapter,
             run_claim_safety,
             runtime_readiness,
             serializers,
@@ -52,10 +51,6 @@ class ChatConfig(AppConfig):
         # customer answer. Reject it locally and continue the existing fallback chain
         # without degrading an otherwise healthy key/provider.
         response_safety.install(streaming)
-        # Resolve the final adapter inside every retry attempt. A key degraded by the
-        # previous attempt must never be reused merely because the provider still has
-        # another healthy credential; dispatch gets a fresh chance to select it.
-        retry_adapter.install(streaming)
         # Recovery revokes the durable GenerationAttempt lease before touching money.
         # A provider thread that wakes up afterwards is fenced locally and can no
         # longer overwrite the recovered terminal state or settle twice.
@@ -73,3 +68,12 @@ class ChatConfig(AppConfig):
         # loses the atomic QUEUED->RUNNING claim is a follower, not an incomplete run,
         # and must never terminalize the real producer.
         run_claim_safety.install(streaming, managed_stream)
+
+        # Production runs under Uvicorn/ASGI. Import the request bridge only after all
+        # routing/billing/recovery wrappers above are installed so it captures the
+        # authoritative final synchronous pipeline, then expose that pipeline through
+        # a native async StreamingHttpResponse iterator instead of Django's sync-ASGI
+        # adaptation/buffering path.
+        from . import activity_stream, asgi_request_stream
+
+        asgi_request_stream.install(activity_stream)
