@@ -32,7 +32,7 @@ def test_late_readiness_rejects_stale_candidate_without_provider_call():
     fresh, model_type = _model_stub(model.pk)
 
     with patch.object(runtime_readiness, "AIModel", model_type), patch.object(
-        runtime_readiness, "model_client_ready", return_value=False
+        runtime_readiness, "execution_model_ready", return_value=False
     ):
         with pytest.raises(ProviderError) as caught:
             module.adapter_for(model)
@@ -56,7 +56,7 @@ def test_late_readiness_calls_real_adapter_only_after_fresh_check():
     fresh, model_type = _model_stub(model.pk)
 
     with patch.object(runtime_readiness, "AIModel", model_type), patch.object(
-        runtime_readiness, "model_client_ready", return_value=True
+        runtime_readiness, "execution_model_ready", return_value=True
     ):
         result = module.adapter_for(model)
 
