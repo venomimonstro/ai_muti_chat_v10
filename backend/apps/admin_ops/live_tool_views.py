@@ -2,12 +2,13 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.response import Response
 
+from apps.ai_registry import web_tools
 from apps.ai_registry.models import Provider, ProviderApiKey
-from apps.ai_registry.web_tools import WebToolError, search_web, yandex_search_status
 from apps.chat.live_tools import LiveToolError, current_time, current_weather
 
 from .services import audit
 from .views import AdminAPIView
+from .yandex_search_probe import probe_yandex_search
 
 
 YANDEX_SEARCH_SLUG = "yandex-search"
@@ -22,14 +23,18 @@ def _provider():
 
 def _payload():
     provider = _provider()
-    status = yandex_search_status()
+    full_status = web_tools.web_search_status()
+    status = dict((full_status or {}).get("yandex") or {})
     auth = provider.auth_config if provider else {}
     key = provider.api_keys.filter(enabled=True).order_by("priority", "created_at").first() if provider else None
     return {
         "yandex_search": {
             **status,
+            "provider_enabled": bool(provider and provider.enabled and not provider.emergency_disabled),
             "api_key_configured": bool(provider and provider.credential_configured()),
             "api_key_masked": key.masked if key else "",
+            "api_key_health": key.health_state if key else ProviderApiKey.HealthState.UNKNOWN,
+            "api_key_error": key.last_error_code if key else "",
             "folder_id": str((auth or {}).get("folder_id") or ""),
             "region": str((auth or {}).get("region") or "225"),
             "search_type": str((auth or {}).get("search_type") or "SEARCH_TYPE_RU"),
@@ -51,7 +56,7 @@ class LiveToolSettingsView(AdminAPIView):
             slug=YANDEX_SEARCH_SLUG,
             defaults={
                 "name": YANDEX_SEARCH_NAME,
-                "enabled": False,
+                "enabled": True,
                 "adapter_type": Provider.AdapterType.ECHO,
                 "api_base_url": YANDEX_SEARCH_ENDPOINT,
                 "priority": 9999,
@@ -82,8 +87,19 @@ class LiveToolSettingsView(AdminAPIView):
         provider.name = YANDEX_SEARCH_NAME
         provider.api_base_url = YANDEX_SEARCH_ENDPOINT
         provider.auth_config = auth
+        provider.enabled = True
+        provider.emergency_disabled = False
         provider.health_state = Provider.HealthState.UNKNOWN
-        provider.save(update_fields=["name", "api_base_url", "auth_config", "health_state"])
+        provider.save(
+            update_fields=[
+                "name",
+                "api_base_url",
+                "auth_config",
+                "enabled",
+                "emergency_disabled",
+                "health_state",
+            ]
+        )
 
         if api_key:
             key = provider.api_keys.filter(label=YANDEX_SEARCH_KEY_LABEL).first()
@@ -93,6 +109,7 @@ class LiveToolSettingsView(AdminAPIView):
             key.enabled = True
             key.health_state = ProviderApiKey.HealthState.UNKNOWN
             key.last_error_code = ""
+            key.last_checked_at = None
             key.save()
         elif not provider.credential_configured():
             return Response({"detail": "Вставьте API-ключ Yandex Search"}, status=400)
@@ -129,25 +146,19 @@ class LiveToolCheckView(AdminAPIView):
 
         if kind in {"all", "yandex"}:
             try:
-                if not yandex_search_status()["configured"]:
-                    raise WebToolError("Yandex Search API is not configured")
-                items = search_web("официальный сайт Яндекс", limit=3)
+                items = probe_yandex_search("официальный сайт Яндекс", limit=3)
                 result["yandex"] = {
                     "ok": True,
                     "result_count": len(items),
                     "first": {"title": items[0].title, "url": items[0].url} if items else None,
+                    "billing": "1 закупочный search-unit учтён как служебная проверка",
                 }
                 provider = _provider()
                 if provider:
                     provider.health_state = Provider.HealthState.HEALTHY
                     provider.last_checked_at = timezone.now()
                     provider.save(update_fields=["health_state", "last_checked_at"])
-                    provider.api_keys.filter(enabled=True).update(
-                        health_state=ProviderApiKey.HealthState.HEALTHY,
-                        last_error_code="",
-                        last_checked_at=timezone.now(),
-                    )
-            except WebToolError as exc:
+            except (web_tools.WebToolError, Exception) as exc:
                 failed = True
                 result["yandex"] = {"ok": False, "error": str(exc)}
                 provider = _provider()
@@ -155,11 +166,9 @@ class LiveToolCheckView(AdminAPIView):
                     provider.health_state = Provider.HealthState.DEGRADED
                     provider.last_checked_at = timezone.now()
                     provider.save(update_fields=["health_state", "last_checked_at"])
-                    provider.api_keys.filter(enabled=True).update(
-                        health_state=ProviderApiKey.HealthState.DEGRADED,
-                        last_error_code=str(exc)[:80],
-                        last_checked_at=timezone.now(),
-                    )
+                # Key health is intentionally not overwritten here. The probe itself
+                # degrades it only on confirmed auth/credit errors; configuration or
+                # funding problems are not credential failures.
 
         audit(request, "live_tools.check", "live_tools", metadata={"kind": kind, "failed": failed})
         return Response({"ok": not failed, "checks": result})
