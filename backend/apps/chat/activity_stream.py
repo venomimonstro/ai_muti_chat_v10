@@ -25,6 +25,20 @@ def _activity(step: str, state: str, message: str, **extra):
     )
 
 
+def _status_events(step: str, state: str, message: str, **extra):
+    """Structured activity plus a compatibility status for the current UI."""
+    yield _activity(step, state, message, **extra)
+    yield sse(
+        "routing",
+        {
+            "explanation": message,
+            "activity_step": step,
+            "activity_state": state,
+            **extra,
+        },
+    )
+
+
 def managed_request_stream(*, user, conversation, idempotency_key: str, payload: dict):
     """Open SSE immediately and expose verifiable work stages, never chain-of-thought.
 
@@ -35,13 +49,13 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
     content = str(payload.get("content") or "")
     search_expected = needs_web_search(content)
 
-    yield _activity(
+    yield from _status_events(
         "routing",
         "running",
         "Определяю тип задачи и выбираю подходящий маршрут…",
     )
     if search_expected:
-        yield _activity(
+        yield from _status_events(
             "search",
             "running",
             "Проверяю актуальную информацию в интернете…",
@@ -56,7 +70,9 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         )
     except (ValidationError, AIModel.DoesNotExist) as exc:
         message = " ".join(getattr(exc, "messages", []) or [str(exc)])
-        yield _activity("routing", "failed", "Не удалось подобрать доступный маршрут.")
+        yield from _status_events(
+            "routing", "failed", "Не удалось подобрать доступный маршрут."
+        )
         yield sse(
             "error",
             {
@@ -81,7 +97,7 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         "manual": "Выбранная модель",
     }.get(str(routing.get("mode") or ""), "AUTO")
     complexity = signals.get("complexity_score")
-    yield _activity(
+    yield from _status_events(
         "routing",
         "completed",
         f"Маршрут готов · {tier}.",
@@ -92,21 +108,21 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
     web = context.get("web_search") or {}
     sources = context.get("web_sources") or []
     if web.get("used"):
-        yield _activity(
+        yield from _status_events(
             "search",
             "completed",
             f"Нашёл актуальные источники: {len(sources)}. Сопоставляю данные…",
             source_count=len(sources),
         )
     elif web.get("required") and web.get("error"):
-        yield _activity(
+        yield from _status_events(
             "search",
             "warning",
             "Не удалось проверить актуальные источники. Ответ не будет выдавать непроверенные свежие данные за факт.",
             error=str(web.get("error"))[:180],
         )
     elif search_expected:
-        yield _activity(
+        yield from _status_events(
             "search",
             "completed",
             "Проверка актуальности завершена.",
@@ -114,13 +130,13 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         )
 
     if context.get("attached_files"):
-        yield _activity(
+        yield from _status_events(
             "context",
             "completed",
             f"Подготовил материалы из файлов: {len(context.get('attached_files') or [])}.",
         )
 
-    yield _activity(
+    yield from _status_events(
         "answer",
         "running",
         "Формирую ответ…",
@@ -132,7 +148,9 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         for chunk in managed_run(generation):
             if not answer_started and isinstance(chunk, str) and chunk.startswith("event: delta\n"):
                 answer_started = True
-                yield _activity("answer", "streaming", "Ответ готовится и уже поступает…")
+                yield from _status_events(
+                    "answer", "streaming", "Ответ готовится и уже поступает…"
+                )
             if isinstance(chunk, str) and chunk.startswith("event: completed\n"):
                 completed = True
             yield chunk
@@ -143,4 +161,4 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         raise
     else:
         if completed:
-            yield _activity("answer", "completed", "Готово.")
+            yield from _status_events("answer", "completed", "Готово.")
