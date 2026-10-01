@@ -71,12 +71,3 @@ class ChatConfig(AppConfig):
         # whose durable attempt lease was revoked by stale recovery may not enter
         # retry/fallback and may not surface as a new provider failure.
         execution_fence.install_outer_guard(streaming, managed_stream)
-
-        # Production runs under Uvicorn/ASGI. Import the request bridge only after all
-        # routing/billing/recovery wrappers above are installed so it captures the
-        # authoritative final synchronous pipeline, then expose that pipeline through
-        # a native async StreamingHttpResponse iterator instead of Django's sync-ASGI
-        # adaptation/buffering path.
-        from . import activity_stream, asgi_request_stream
-
-        asgi_request_stream.install(activity_stream)
