@@ -77,7 +77,7 @@ export function ChatThread({conversation,hasMore,loadingOlder,onLoadOlder,onConv
  const recoveredActiveMessage=serverGenerationInFlight(conversation);const recoveryNeeded=recoveredActiveMessage!==null;
  useEffect(()=>{const el=ref.current;if(!el)return;if(pagingAnchor.current&&messageCount>previousCount.current){const anchor=pagingAnchor.current;pagingAnchor.current=null;requestAnimationFrame(()=>{el.scrollTop=anchor.top+(el.scrollHeight-anchor.height)});}else{const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<160;if(messageCount>=previousCount.current&&nearBottom)requestAnimationFrame(()=>{el.scrollTop=el.scrollHeight});}previousCount.current=messageCount;},[messageCount,lastContentLength]);
  useEffect(()=>{setRenderLimit(INITIAL_RENDER_LIMIT);setCancellingRecovered(false);const el=ref.current;if(el)requestAnimationFrame(()=>{el.scrollTop=el.scrollHeight});previousCount.current=messages.length;pagingAnchor.current=null;},[conversation?.id]);
- useEffect(()=>{const id=conversation?.id;if(!id)return;broadcastServerGeneration(id,recoveryNeeded);return()=>broadcastServerGeneration(id,false)},[conversation?.id,recoveryNeeded]);
+ useEffect(()=>{const id=conversation?.id;if(!id)return;const timer=window.setTimeout(()=>broadcastServerGeneration(id,recoveryNeeded),0);return()=>{window.clearTimeout(timer);broadcastServerGeneration(id,false)}},[conversation?.id,recoveryNeeded]);
  // A browser reload detaches the SSE transport while the backend deliberately keeps
  // the same Generation running. Poll only when the freshly loaded server snapshot
  // contains an actual persisted in-flight assistant. Ordinary live SSE uses local
