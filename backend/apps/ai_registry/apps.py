@@ -21,12 +21,15 @@ class AIRegistryConfig(AppConfig):
             router,
             router_intelligence,
             routing_pools,
+            search_intelligence,
             signals,
+            web_tools,
         )
 
         http_errors.install(adapters)
         adapters.adapter_for = dispatch.adapter_for
         reliability.adapter_for = dispatch.adapter_for
+        search_intelligence.install(web_tools)
         routing_pools.install_router_pool_resolver(router)
         # Router v3 keeps reasoning complexity independent from web/tool usage.
         # Continuity is installed afterwards so fallback uses the same preferred
