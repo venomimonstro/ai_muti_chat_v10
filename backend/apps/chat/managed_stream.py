@@ -49,7 +49,13 @@ PROVIDER_ERROR_MESSAGES = {
 }
 
 
-def _finalize_unhandled_disconnect(generation):
+def _finalize_active_stream(generation, *, state, error_code, log_label):
+    """Close a still-active stream without losing confirmed provider usage.
+
+    The caller supplies the truthful terminal reason. Billing always follows the
+    same authoritative partial/confirmed-usage path, so a transport/runtime failure
+    cannot silently become a free upstream request.
+    """
     generation.refresh_from_db(fields=["state", "reservation_id", "actual_cost_rub"])
     if generation.state not in {Generation.State.QUEUED, Generation.State.RUNNING}:
         return
@@ -59,26 +65,58 @@ def _finalize_unhandled_disconnect(generation):
         charge = settle_delivered_partial(generation, assistant.content)
     except Exception:
         logger.exception(
-            "Managed stream cancellation settlement failed generation_id=%s",
+            "Managed stream %s settlement failed generation_id=%s",
+            log_label,
             generation.id,
         )
         try:
-            closed = release(generation.reservation_id)
-            charge = closed.actual_rub or 0
+            if generation.reservation_id:
+                closed = release(generation.reservation_id)
+                charge = closed.actual_rub or 0
+            else:
+                charge = 0
         except Exception:
             logger.exception(
-                "Managed stream reservation release failed generation_id=%s",
+                "Managed stream %s reservation release failed generation_id=%s",
+                log_label,
                 generation.id,
             )
-            charge = 0
+            charge = generation.actual_cost_rub or 0
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["status"])
-    generation.state = Generation.State.CANCELLED
-    generation.error_code = "client_cancelled"
+    generation.state = state
+    generation.error_code = error_code
     generation.actual_cost_rub = charge
     generation.completed_at = timezone.now()
     generation.save(
         update_fields=["state", "error_code", "actual_cost_rub", "completed_at"]
+    )
+
+
+def _finalize_unhandled_disconnect(generation):
+    _finalize_active_stream(
+        generation,
+        state=Generation.State.CANCELLED,
+        error_code="client_cancelled",
+        log_label="client-disconnect",
+    )
+
+
+def _finalize_unhandled_failure(generation):
+    _finalize_active_stream(
+        generation,
+        state=Generation.State.FAILED,
+        error_code="stream_runtime_failed",
+        log_label="runtime-failure",
+    )
+
+
+def _finalize_incomplete_stream(generation):
+    _finalize_active_stream(
+        generation,
+        state=Generation.State.FAILED,
+        error_code="stream_incomplete",
+        log_label="incomplete-return",
     )
 
 
@@ -230,5 +268,14 @@ def managed_run(generation, *, adapter=None):
         for chunk in run(generation, adapter=adapter):
             chunk = _rewrite_error_chunk_if_needed(generation, chunk)
             yield _publicize_sse_chunk(generation, chunk)
-    finally:
+    except GeneratorExit:
         _finalize_unhandled_disconnect(generation)
+        raise
+    except BaseException:
+        _finalize_unhandled_failure(generation)
+        raise
+    else:
+        # A well-behaved runtime always persists COMPLETED/FAILED/CANCELLED before
+        # returning. If it silently stops while still active, fail closed instead of
+        # falsely reporting a user cancellation.
+        _finalize_incomplete_stream(generation)
