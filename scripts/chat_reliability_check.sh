@@ -33,8 +33,13 @@ grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/Workspa
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ModelPicker value={selectorValue} models={models}' frontend/app/workspace/WorkspaceV2.tsx
+# Failed/partial assistant messages must keep a one-click recovery action even when
+# no response text was produced. Otherwise a healthy backend recovery path looks like
+# a dead chat to the customer.
+grep -Fq 'const showActions=!editing&&(Boolean(message.content)||(message.role==="assistant"&&message.status!=="streaming"));' frontend/app/workspace/MessageCard.tsx
+grep -Fq 'aria-label="Повторить запрос"' frontend/app/workspace/MessageCard.tsx
 # The visible ModelPicker is the single live /models/ owner. Composer consumes only
-# its readiness event and must not start a competing refresh loop.
+# its readiness event, so availability cannot diverge between two pollers.
 grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'ModelPicker is the single live catalog owner' frontend/app/workspace/ModelPicker.tsx
