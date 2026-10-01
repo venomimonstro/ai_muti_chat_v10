@@ -21,6 +21,9 @@ grep -Fq '"cancelled"' frontend/lib/api.ts
 grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
 grep -Fq 'stream_first_event_timeout' frontend/lib/api.ts
 grep -Fq 'reader.cancel("stream_first_event_timeout")' frontend/lib/api.ts
+grep -Fq 'research_progress' frontend/lib/api.ts
+grep -Fq 'WorkspaceExperience' frontend/app/app/page.tsx
+grep -Fq 'ActivityTrace' frontend/app/workspace/WorkspaceExperience.tsx
 grep -Fq '/messages/status/' frontend/app/components/WorkspaceRuntimeGuard.tsx
 grep -Fq 'zero routing UI/state responsibilities' frontend/app/components/WorkspaceRuntimeGuard.tsx
 if grep -Fq 'dispatchRouting(source' frontend/app/components/WorkspaceRuntimeGuard.tsx; then
