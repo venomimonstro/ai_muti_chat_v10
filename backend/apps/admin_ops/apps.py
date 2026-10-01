@@ -8,3 +8,6 @@ class AdminOpsConfig(AppConfig):
 
     def ready(self):
         from . import issue_models  # noqa: F401
+        from . import procurement_views, search_economics
+
+        search_economics.install(procurement_views)
