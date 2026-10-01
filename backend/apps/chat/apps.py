@@ -30,6 +30,8 @@ class ChatConfig(AppConfig):
             asgi_stream,
             billing_recovery,
             cache_safety,
+            compare,
+            compare_readiness,
             context,
             context_safety,
             conversation_snapshot,
@@ -71,6 +73,10 @@ class ChatConfig(AppConfig):
         # same generation without creating another provider request.
         billing_recovery.install()
         manual_selection_recovery.install(serializers)
+        # Compare is a customer-facing sibling of normal chat. It must never accept a
+        # quarantined or commercially-unready model merely because the provider itself
+        # is healthy.
+        compare_readiness.install(compare)
         runtime_readiness.install(streaming)
         # Provider funds are reserved during prepare()/RequestCost. Once this exact
         # generation owns that reservation, execution must not require a second free
