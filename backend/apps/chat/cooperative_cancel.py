@@ -4,6 +4,8 @@ import sys
 
 from django.utils import timezone
 
+from apps.billing.models import BalanceReservation
+
 from .cancellation import cancel_requested, clear_cancel, forget_cancel_probe
 from .models import Generation, Message
 from .partial_billing import settle_delivered_partial
@@ -40,8 +42,26 @@ def _terminal_now(generation) -> bool:
     return generation.state in TERMINAL_STATES
 
 
+def _sync_authoritative_actual(generation):
+    """Make the cancellation event match the settled wallet ledger exactly."""
+    generation.refresh_from_db(fields=["state", "actual_cost_rub", "reservation_id"])
+    if not generation.reservation_id:
+        return generation.actual_cost_rub or 0
+    actual = (
+        BalanceReservation.objects.filter(pk=generation.reservation_id)
+        .values_list("actual_rub", flat=True)
+        .first()
+    )
+    if actual is None:
+        return generation.actual_cost_rub or 0
+    if generation.actual_cost_rub != actual:
+        Generation.objects.filter(pk=generation.pk).update(actual_cost_rub=actual)
+        generation.actual_cost_rub = actual
+    return actual
+
+
 def _cancelled_event(generation):
-    generation.refresh_from_db(fields=["state", "actual_cost_rub", "error_code"])
+    actual = _sync_authoritative_actual(generation)
     assistant = Message.objects.filter(pk=generation.assistant_message_id).only("content").first()
     partial = bool(str(getattr(assistant, "content", "") or "").strip())
     return sse(
@@ -51,10 +71,10 @@ def _cancelled_event(generation):
             "generation_id": str(generation.id),
             "state": generation.state,
             "partial": partial,
-            "cost_rub": str(generation.actual_cost_rub or 0),
+            "cost_rub": str(actual or 0),
             "message": (
                 "Генерация остановлена. Списана только подтверждённая стоимость уже полученной части ответа."
-                if partial
+                if actual
                 else "Запрос остановлен пользователем. Неподтверждённые расходы не списаны."
             ),
         },
@@ -68,7 +88,6 @@ def install(streaming_module) -> None:
 
     def run(generation, *args, **kwargs):
         try:
-            # Covers the race where Stop arrives while prepare() is still committing.
             if cancel_requested(generation):
                 try:
                     if _cancel_before_provider(generation):
@@ -81,16 +100,10 @@ def install(streaming_module) -> None:
             try:
                 for chunk in iterator:
                     if cancel_requested(generation):
-                        # A late Stop must never rewrite a durable terminal outcome.
-                        # This closes the millisecond race between DB completion and
-                        # delivery of the final SSE event to the browser.
                         if _terminal_now(generation):
                             clear_cancel(generation)
                             yield chunk
                             continue
-
-                        # Closing raw streaming.run enters its authoritative GeneratorExit
-                        # settlement path. It alone decides whether confirmed usage exists.
                         iterator.close()
                         clear_cancel(generation)
                         yield _cancelled_event(generation)
@@ -104,16 +117,12 @@ def install(streaming_module) -> None:
                     finally:
                         clear_cancel(generation)
         finally:
-            # Every generation polls the DB fallback while streaming. Release its
-            # short-lived process-local cache even when Stop was never requested.
             forget_cancel_probe(generation)
 
     run._ai_workspace_cooperative_cancel = True
     run._raw_run = raw_run
     streaming_module.run = run
 
-    # Modules can import run by value. Keep every known customer execution surface
-    # aligned so WSGI tests and ASGI production use the same cancellation contract.
     for module_name in ("apps.chat.managed_stream", "apps.chat.services", "apps.chat.views"):
         module = sys.modules.get(module_name)
         if module is not None and hasattr(module, "run"):
