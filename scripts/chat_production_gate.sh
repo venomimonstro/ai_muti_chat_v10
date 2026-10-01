@@ -19,13 +19,16 @@ env_value() {
 }
 
 echo '============================================================'
-echo '[1/4] FULL production update + release gates'
+echo '[1/5] FULL production update + release gates'
 echo '============================================================'
 bash scripts/update.sh --full
 
 echo '============================================================'
-echo '[2/4] Production readiness'
+echo '[2/5] Production configuration + readiness'
 echo '============================================================'
+# Run Django system checks against the actual production environment. This catches
+# unsafe local cache/procurement settings that an isolated test stack cannot prove.
+compose exec -T backend python manage.py check
 compose exec -T backend python - <<'PY'
 import urllib.request
 with urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=8) as response:
@@ -35,12 +38,24 @@ print('CHAT_PRODUCTION_READINESS_OK')
 PY
 
 echo '============================================================'
-echo '[3/4] Live inference for every customer-visible model'
+echo '[3/5] Real production AUTO customer preflight'
 echo '============================================================'
+# This creates an ephemeral synthetic user/wallet/conversation inside a rollback-only
+# transaction, then executes the same preview -> AUTO router -> pricing -> procurement
+# reserve -> customer reserve -> Generation path as the real chat. No provider call is
+# made and no test data or wallet mutation survives the command.
+compose exec -T backend python manage.py chat_preflight_smoke --mode auto
+
+echo '============================================================'
+echo '[4/5] Live inference for every customer-visible model'
+echo '============================================================'
+# Direct live inference is complementary to the synthetic customer preflight above:
+# preflight proves the commercial/chat path, while this proves every model currently
+# advertised to users can actually answer through its production credential.
 compose exec -T backend python manage.py chat_runtime_check --live
 
 echo '============================================================'
-echo '[4/4] Full customer HTTP journey when E2E account is configured'
+echo '[5/5] Full customer HTTP journey when E2E account is configured'
 echo '============================================================'
 E2E_USERNAME="$(env_value E2E_USERNAME)"
 E2E_PASSWORD="$(env_value E2E_PASSWORD)"
@@ -54,8 +69,8 @@ if [[ -n "$E2E_USERNAME" && -n "$E2E_PASSWORD" && -n "$APP_DOMAIN" ]]; then
     backend python /smoke/commercial_http_smoke.py
   echo 'CHAT_CUSTOMER_E2E_OK'
 else
-  echo '[WARN] E2E_USERNAME/E2E_PASSWORD не настроены: полный клиентский HTTP smoke пропущен.'
-  echo '[WARN] Для максимального release assurance создайте отдельный verified E2E-аккаунт с небольшим положительным балансом.'
+  echo '[WARN] E2E_USERNAME/E2E_PASSWORD не настроены: внешний browser/HTTP smoke пропущен.'
+  echo '[INFO] Внутренний production customer preflight и live inference уже обязательны и пройдены.'
 fi
 
 echo '============================================================'
