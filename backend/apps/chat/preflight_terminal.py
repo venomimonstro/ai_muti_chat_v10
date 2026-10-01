@@ -6,6 +6,9 @@ import sys
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+from apps.billing.models import BalanceReservation
+from apps.billing.services import release
+
 from .models import Generation, Message
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,35 @@ def classify_preflight_exception(exc: Exception) -> str:
     return "preflight_validation"
 
 
+def _recover_preflight_reservation(generation):
+    """Make an early customer reserve discoverable and release it exactly once.
+
+    streaming.prepare() reserves with a deterministic ``generation:<uuid>`` key.
+    A failure can happen before the reservation id is copied onto Generation. If
+    the first best-effort release also failed, stale recovery would otherwise have
+    no direct link to those frozen funds. Persist the link first, then retry the
+    idempotent release. A later recovery sweep can finish the work if the database
+    itself is temporarily unavailable now.
+    """
+    reservation = BalanceReservation.objects.filter(
+        idempotency_key=f"generation:{generation.id}",
+        state=BalanceReservation.State.ACTIVE,
+    ).first()
+    if reservation is None:
+        return
+    if generation.reservation_id != reservation.id:
+        Generation.objects.filter(pk=generation.pk).update(reservation_id=reservation.id)
+        generation.reservation_id = reservation.id
+    try:
+        release(reservation.id)
+    except Exception:
+        logger.exception(
+            "Chat preflight reservation recovery failed generation_id=%s reservation_id=%s",
+            generation.id,
+            reservation.id,
+        )
+
+
 def _terminalize_matching_generation(*, user, content, client_message_id, idempotency_key, error_code):
     """Close only the request that just failed; never corrupt an unrelated replay."""
     generation = (
@@ -63,6 +95,7 @@ def _terminalize_matching_generation(*, user, content, client_message_id, idempo
     if generation.state not in {Generation.State.QUEUED, Generation.State.FAILED}:
         return generation
 
+    _recover_preflight_reservation(generation)
     now = timezone.now()
     Generation.objects.filter(
         pk=generation.pk,
