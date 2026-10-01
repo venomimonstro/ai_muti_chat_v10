@@ -46,14 +46,14 @@ def reasoning_required(query: str) -> bool:
         return True
     if score >= 2:
         return True
-    # Multiple explicit constraints are a useful provider-agnostic complexity signal.
     separators = text.count(";") + text.count("\n") + text.count(" 1)") + text.count(" 2)")
     return len(text) >= 500 or separators >= 3
 
 
-def install(context_module) -> None:
+def install(context_module, streaming_module) -> None:
     raw = context_module.assemble_context
     if getattr(raw, "_ai_workspace_adaptive_reasoning", False):
+        streaming_module.assemble_context = raw
         return
 
     def assemble_context(*args, **kwargs):
@@ -111,3 +111,6 @@ def install(context_module) -> None:
     assemble_context._ai_workspace_adaptive_reasoning = True
     assemble_context._raw_assemble_context = raw
     context_module.assemble_context = assemble_context
+    # streaming imports assemble_context by value before AppConfig.ready(). Rebind
+    # the exact runtime symbol so the customer path receives the policy too.
+    streaming_module.assemble_context = assemble_context
