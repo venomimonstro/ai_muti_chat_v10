@@ -149,5 +149,9 @@ class ChatConfig(AppConfig):
             serializers_module=serializers,
             managed_stream_module=managed_stream,
         )
+        # activity_stream imported these functions by value. Rebind after every
+        # runtime wrapper so the actual HTTP/SSE request path cannot keep stale logic.
+        activity_stream.prepare = streaming.prepare
+        activity_stream.needs_web_search = live_tools.needs_web_search
         # Show a concise verifiable execution trace, never hidden chain-of-thought.
         reasoning_trace.install(activity_stream)
