@@ -1,7 +1,6 @@
 "use client";
 
 import {useEffect,useMemo,useRef,useState} from "react";
-import {api} from "../../lib/api";
 import type {AIModel} from "../../lib/types";
 import {Icon} from "./Icons";
 
@@ -29,9 +28,11 @@ function modelLabel(model:AIModel){let label=(model.display_name||model.slug).tr
 function tierForMode(value:string):RoutingTier|null{if(value==="auto:economy")return"economy";if(value==="auto:balanced")return"balanced";if(value==="auto:maximum")return"maximum";return null}
 
 export function ModelPicker({value,models,disabled=false,onChange}:Props){
- const[open,setOpen]=useState(false);const[catalog,setCatalog]=useState<AIModel[]>(()=>models.filter(item=>item.available));const root=useRef<HTMLDivElement|null>(null);const autoFallbackRef=useRef("");const initialSection:PickerSection=value.startsWith("model:")?"model":"auto";const[section,setSection]=useState<PickerSection>(initialSection);
- useEffect(()=>{setCatalog(models.filter(item=>item.available));},[models]);
- useEffect(()=>{let active=true;const refresh=async()=>{if(typeof document!=="undefined"&&document.visibilityState==="hidden")return;try{const rows=await api<AIModel[]>("/models/");if(active)setCatalog(rows.filter(item=>item.available));}catch{}};void refresh();const timer=window.setInterval(()=>void refresh(),30000);const wake=()=>void refresh();window.addEventListener("online",wake);window.addEventListener("focus",wake);return()=>{active=false;window.clearInterval(timer);window.removeEventListener("online",wake);window.removeEventListener("focus",wake)}},[]);
+ const[open,setOpen]=useState(false);const root=useRef<HTMLDivElement|null>(null);const autoFallbackRef=useRef("");const initialSection:PickerSection=value.startsWith("model:")?"model":"auto";const[section,setSection]=useState<PickerSection>(initialSection);
+ // Composer is the single catalog refresh owner. Keeping one source of truth prevents
+ // a split-brain state where the picker shows a recovered model while Send still uses
+ // a stale empty catalog, and halves /models/ polling load for every open chat.
+ const catalog=useMemo(()=>models.filter(item=>item.available),[models]);
  const tiersConfigured=useMemo(()=>catalog.some(item=>item.routing_tiers_configured===true),[catalog]);
  const tierAvailable=(tier:RoutingTier)=>!tiersConfigured||catalog.some(item=>(item.routing_tiers??[]).includes(tier));
  const visibleModes=useMemo(()=>modes.filter(item=>{const tier=tierForMode(item.value);return tier===null||tierAvailable(tier)}),[catalog,tiersConfigured]);
