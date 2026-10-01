@@ -6,7 +6,20 @@ microscopic remainder that cannot fund even the smallest inference. Customer-fac
 catalogs must not advertise such a model as "ready".
 """
 
+import os
 import sys
+
+
+def provider_model_config_ready(model) -> bool:
+    """Validate provider-specific execution metadata before customer exposure."""
+    if model.provider.slug != "yandexgpt":
+        return True
+    upstream = str(model.upstream_model or "").strip()
+    if upstream.startswith("gpt://"):
+        return True
+    config = model.provider.auth_config or {}
+    folder_id = str(config.get("folder_id") or os.getenv("YANDEX_CLOUD_FOLDER_ID", "")).strip()
+    return bool(folder_id and upstream)
 
 
 def minimum_inference_fundable(model) -> bool:
@@ -38,7 +51,11 @@ def install(reliability_module) -> None:
         return
 
     def model_client_ready(model):
-        return bool(raw_ready(model) and minimum_inference_fundable(model))
+        return bool(
+            raw_ready(model)
+            and provider_model_config_ready(model)
+            and minimum_inference_fundable(model)
+        )
 
     model_client_ready._ai_workspace_minimum_funding = True
     model_client_ready._raw_model_client_ready = raw_ready
