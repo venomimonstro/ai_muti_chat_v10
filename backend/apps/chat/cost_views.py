@@ -15,6 +15,7 @@ from apps.billing.models import BalanceReservation
 
 from .asgi_stream import follow_generation_async, managed_run_async
 from .cost_preview import chat_cost_preview
+from .durable_follow import follow_existing_generation
 from .managed_stream import managed_run
 from .models import Conversation, Generation
 from .paid_search_billing import public_search_charge
@@ -150,19 +151,28 @@ def _held_confirmation_response(request, generation):
         idempotency_key=f"web-search:{generation.id}",
         state=BalanceReservation.State.ACTIVE,
     ).only("amount_rub").first()
-    required_total = required + (
-        search_reservation.amount_rub if search_reservation is not None else Decimal("0")
-    )
+    search_amount = search_reservation.amount_rub if search_reservation is not None else Decimal("0")
+    required_total = required + search_amount
     if not confirmed or ceiling is None or ceiling < required_total:
         return Response(
-            _confirmation_payload(
-                generation=generation,
-                required_max=required_total,
-                detail=(
+            {
+                "code": COST_CONFIRMATION_CHANGED,
+                "detail": (
                     "Фактический preflight требует подтверждения новой максимальной суммы. "
                     "Сумма только зарезервирована и не списана."
                 ),
-            ),
+                "estimated_min_rub": "0",
+                "estimated_max_rub": str(required_total),
+                "estimated_llm_max_rub": str(required),
+                "estimated_search_max_rub": str(search_amount),
+                "confirmation_required": True,
+                "confirmation_threshold_rub": str(required_total),
+                "selected_model": generation.routed_model or generation.model,
+                "models": [],
+                "spend_guard": {},
+                "blocked_by_spend_guard": False,
+                "spend_guard_message": "",
+            },
             status=status.HTTP_409_CONFLICT,
         )
 
@@ -176,19 +186,19 @@ def _held_confirmation_response(request, generation):
 
 
 def _customer_stream(request, generation, *, created):
-    """Use the iterator type required by the active deployment protocol.
+    """Use one durable producer/follower contract under ASGI and WSGI.
 
-    Production is ASGI/Uvicorn, where StreamingHttpResponse must receive an async
-    iterator. A reconnect to an already-running idempotent generation becomes a
-    read-only follower instead of starting or charging another provider request.
-    The synchronous path is retained for WSGI/test clients.
+    A reconnect to an already-running or terminal idempotent Generation is always a
+    read-only follower. Only a newly created / deliberately held QUEUED Generation
+    may enter the provider runtime. This keeps production ASGI, tests and fallback
+    WSGI deployments behaviorally identical and prevents replay from re-entering the
+    provider/billing path.
     """
     raw_request = getattr(request, "_request", None)
+    follow = not created and generation.state != Generation.State.QUEUED
     if isinstance(raw_request, ASGIRequest):
-        if not created and generation.state != Generation.State.QUEUED:
-            return follow_generation_async(generation)
-        return managed_run_async(generation)
-    return managed_run(generation)
+        return follow_generation_async(generation) if follow else managed_run_async(generation)
+    return follow_existing_generation(generation) if follow else managed_run(generation)
 
 
 def _stream_response(iterator):
@@ -207,6 +217,21 @@ def _existing_generation(user, idempotency_key):
         .select_related("assistant_message", "user_message")
         .first()
     )
+
+
+def _durable_prepare_failure(request, *, user, idempotency_key):
+    """Attach to a Generation already created by prepare() instead of returning 400.
+
+    Preflight can fail after durable messages/Generation were created. Returning a
+    plain HTTP error would make the browser believe the turn was never accepted,
+    restore the same prompt into the composer, and then also load the persisted failed
+    turn from history. Following the durable terminal state gives one acceptance ack,
+    one public error and one idempotent retry surface instead.
+    """
+    generation = _existing_generation(user, idempotency_key)
+    if generation is None:
+        return None
+    return _stream_response(_customer_stream(request, generation, created=False))
 
 
 class ChatCostPreviewView(APIView):
@@ -349,6 +374,13 @@ class ConfirmedConversationStreamView(APIView):
                 **serializer.validated_data,
             )
         except (ValidationError, AIModel.DoesNotExist) as exc:
+            durable = _durable_prepare_failure(
+                request,
+                user=request.user,
+                idempotency_key=key,
+            )
+            if durable is not None:
+                return durable
             return Response(
                 {"detail": getattr(exc, "messages", [str(exc)])},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -359,10 +391,13 @@ class ConfirmedConversationStreamView(APIView):
                 getattr(request.user, "pk", None),
                 conversation_id,
             )
-            failed_generation = _existing_generation(request.user, key)
-            raw_request = getattr(request, "_request", None)
-            if failed_generation is not None and isinstance(raw_request, ASGIRequest):
-                return _stream_response(follow_generation_async(failed_generation))
+            durable = _durable_prepare_failure(
+                request,
+                user=request.user,
+                idempotency_key=key,
+            )
+            if durable is not None:
+                return durable
             return _safe_preflight_response(exc)
 
         if created and generation.reservation_id:
