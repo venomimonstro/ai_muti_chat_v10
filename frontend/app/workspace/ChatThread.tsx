@@ -11,6 +11,7 @@ import {MessageCard} from "./MessageCard";
 const INITIAL_RENDER_LIMIT=60;
 const RENDER_STEP=40;
 const RECOVERY_POLL_MS=2000;
+const SERVER_GENERATION_EVENT="aiws:server-generation-active";
 const isOptimistic=(message:ChatMessage)=>message.id.startsWith("local-user-")||message.id.startsWith("local-ai-");
 const isOptimisticUser=(message:ChatMessage)=>message.id.startsWith("local-user-");
 const isOptimisticAssistant=(message:ChatMessage)=>message.id.startsWith("local-ai-");
@@ -60,6 +61,11 @@ function hasServerGenerationInFlight(conversation:Conversation|null){
  return serverGenerationInFlight(conversation)!==null;
 }
 
+function broadcastServerGeneration(conversationId:string,active:boolean){
+ if(typeof window==="undefined")return;
+ window.dispatchEvent(new CustomEvent(SERVER_GENERATION_EVENT,{detail:{conversationId,active}}));
+}
+
 export function ChatThread({conversation,hasMore,loadingOlder,onLoadOlder,onConversation,onStarter}:{conversation:Conversation|null;hasMore:boolean;loadingOlder:boolean;onLoadOlder:()=>void;onConversation:(value:Conversation)=>void;onStarter:(value:string)=>void}){
  const ref=useRef<HTMLElement|null>(null);const[away,setAway]=useState(false);const[renderLimit,setRenderLimit]=useState(INITIAL_RENDER_LIMIT);const[cancellingRecovered,setCancellingRecovered]=useState(false);const previousCount=useRef(0);const pagingAnchor=useRef<{height:number;top:number}|null>(null);const conversationHandler=useRef(onConversation);
  conversationHandler.current=onConversation;
@@ -71,6 +77,7 @@ export function ChatThread({conversation,hasMore,loadingOlder,onLoadOlder,onConv
  const recoveredActiveMessage=serverGenerationInFlight(conversation);const recoveryNeeded=recoveredActiveMessage!==null;
  useEffect(()=>{const el=ref.current;if(!el)return;if(pagingAnchor.current&&messageCount>previousCount.current){const anchor=pagingAnchor.current;pagingAnchor.current=null;requestAnimationFrame(()=>{el.scrollTop=anchor.top+(el.scrollHeight-anchor.height)});}else{const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<160;if(messageCount>=previousCount.current&&nearBottom)requestAnimationFrame(()=>{el.scrollTop=el.scrollHeight});}previousCount.current=messageCount;},[messageCount,lastContentLength]);
  useEffect(()=>{setRenderLimit(INITIAL_RENDER_LIMIT);setCancellingRecovered(false);const el=ref.current;if(el)requestAnimationFrame(()=>{el.scrollTop=el.scrollHeight});previousCount.current=messages.length;pagingAnchor.current=null;},[conversation?.id]);
+ useEffect(()=>{const id=conversation?.id;if(!id)return;broadcastServerGeneration(id,recoveryNeeded);return()=>broadcastServerGeneration(id,false)},[conversation?.id,recoveryNeeded]);
  // A browser reload detaches the SSE transport while the backend deliberately keeps
  // the same Generation running. Poll only when the freshly loaded server snapshot
  // contains an actual persisted in-flight assistant. Ordinary live SSE uses local
