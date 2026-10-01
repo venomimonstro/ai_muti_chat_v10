@@ -147,6 +147,25 @@ def _search_quote(provider, unit_cost_rub):
     )
 
 
+def expected_search_charge(query: str) -> Decimal:
+    """Upper-bound customer charge for one possible paid web-search call.
+
+    Free SearXNG remains the normal first path, so this value belongs to the preview
+    maximum, never its minimum. Returning zero when search is not required or paid
+    search is not commercially ready keeps the preview honest and avoids false cost
+    confirmations for timeless prompts.
+    """
+    from .search_trigger_policy import search_required
+
+    if not search_required(query) or not _paid_ready():
+        return Decimal("0")
+    try:
+        provider, _account, unit_cost = _provider_and_account()
+        return _search_quote(provider, unit_cost).user_charge_rub
+    except Exception:
+        return Decimal("0")
+
+
 def public_search_charge(generation) -> Decimal:
     reservation = BalanceReservation.objects.filter(
         idempotency_key=f"web-search:{generation.id}",
