@@ -10,6 +10,7 @@ from apps.billing.models import BalanceReservation, PriceVersion, RequestCost
 from apps.billing.services import credit, release, reserve
 
 from . import provider_delivery_checkpoint
+from .models import Conversation, Generation, Message
 
 
 @pytest.mark.django_db(transaction=True)
@@ -61,3 +62,66 @@ def test_provider_delivery_checkpoint_prevents_false_full_refund():
     assert request_cost.charged_rub == Decimal("5.0000")
     assert user.wallet.available_rub == Decimal("95.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_provider_delivery_checkpoint_persists_short_answer_before_terminal_commit():
+    user = User.objects.create_user(
+        username="delivery-text-user",
+        email="delivery-text@example.test",
+        password="password123!",
+    )
+    conversation = Conversation.objects.create(owner=user, title="Crash safe answer")
+    user_message = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.USER,
+        content="Короткий вопрос",
+        client_message_id=uuid.uuid4(),
+        status=Message.Status.SAVED,
+    )
+    assistant = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.ASSISTANT,
+        content="",
+        status=Message.Status.SAVED,
+    )
+    generation = Generation.objects.create(
+        owner=user,
+        user_message=user_message,
+        assistant_message=assistant,
+        model="delivery-text-model",
+        idempotency_key="delivery-text-checkpoint",
+        state=Generation.State.RUNNING,
+    )
+    price = PriceVersion.objects.create(
+        model_slug="delivery-text-model",
+        input_rub_per_million=Decimal("1.0000"),
+        output_rub_per_million=Decimal("1.0000"),
+        markup_percent=Decimal("100"),
+        effective_from=timezone.now(),
+    )
+    RequestCost.objects.create(
+        generation_id=generation.id,
+        price_version=price,
+        estimated_rub=Decimal("1.0000"),
+    )
+    model = SimpleNamespace(slug=price.model_slug)
+    completed = SimpleNamespace(input_tokens=12, output_tokens=4)
+
+    token = provider_delivery_checkpoint._CURRENT_GENERATION_ID.set(generation.id)
+    try:
+        provider_delivery_checkpoint._checkpoint(
+            model,
+            completed,
+            delivered_text="Короткий готовый ответ",
+        )
+    finally:
+        provider_delivery_checkpoint._CURRENT_GENERATION_ID.reset(token)
+
+    assistant.refresh_from_db()
+    request_cost = RequestCost.objects.get(generation_id=generation.id)
+    assert assistant.content == "Короткий готовый ответ"
+    assert assistant.status == Message.Status.STREAMING
+    assert request_cost.input_tokens == 12
+    assert request_cost.output_tokens == 4
+    assert request_cost.provider_cost_rub is not None
