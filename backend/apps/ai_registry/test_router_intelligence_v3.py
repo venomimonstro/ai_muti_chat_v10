@@ -48,6 +48,22 @@ def test_search_requirement_does_not_upgrade_simple_reasoning_by_itself():
     assert tier == "balanced"
 
 
+def test_simple_why_question_stays_balanced():
+    classification, tier = _classify("Почему небо голубое?")
+    assert classification.taxonomy == EvalCase.Taxonomy.REASONING
+    assert classification.signals["complexity_score"] < 0.68
+    assert tier == "balanced"
+
+
+def test_equal_rule_hits_have_deterministic_debug_priority():
+    classification, _tier = _classify(
+        "Напиши код Python API и исправь ошибку traceback"
+    )
+    assert classification.taxonomy == EvalCase.Taxonomy.DEBUGGING
+    assert classification.signals["matched_rules"]
+    assert classification.signals["complexity_version"] == "router-v3.1"
+
+
 def test_large_prompt_is_complex_even_without_magic_keywords():
     text = "Проанализируй данные и найди противоречия. " + ("Факт для проверки. " * 4000)
     classification, tier = _classify(text)
