@@ -3,6 +3,7 @@ const TEST_USER_KEY = "aiws:test-user";
 const API_TIMEOUT_MS = 12000;
 const STREAM_OPEN_TIMEOUT_MS = 30000;
 const STREAM_FIRST_EVENT_TIMEOUT_MS = 20000;
+const PENDING_MISSING_GRACE_MS = 30000;
 const STREAM_RECONNECT_DELAYS_MS = [500, 1000, 1600, 2500, 4000, 6000, 8000];
 
 export class ApiError extends Error {
@@ -160,6 +161,7 @@ type PendingStream = {
   confirmedCost?: boolean;
   confirmedMaxRub?: string;
 };
+type PendingStatus = {state:string;active:boolean;terminal:boolean};
 type ChatCostPreview = {
   estimated_min_rub: string;
   estimated_max_rub: string;
@@ -211,6 +213,22 @@ function clearPending(conversationId: string) {
     localStorage.removeItem(pendingKey(conversationId));
   } catch {
     // Best-effort reliability cache only.
+  }
+}
+
+async function verifyPendingStream(conversationId:string,pending:PendingStream,signal?:AbortSignal):Promise<PendingStream|null>{
+  try{
+    const status=await api<PendingStatus>(`/conversations/${conversationId}/messages/status/?idempotency_key=${encodeURIComponent(pending.idempotencyKey)}`,{signal});
+    if(status.active)return pending;
+    const age=Math.max(0,Date.now()-Number(pending.createdAt||0));
+    if(status.terminal||(status.state==="missing"&&age>=PENDING_MISSING_GRACE_MS)){
+      clearPending(conversationId);
+      return null;
+    }
+    return pending;
+  }catch(reason){
+    if(signal?.aborted)throw reason;
+    return pending;
   }
 }
 
@@ -266,9 +284,6 @@ async function previewChatCost(conversationId: string, payload: StreamPayload, s
     return await request();
   } catch (reason) {
     if (reason instanceof ApiError && reason.status === 403 && !signal?.aborted) {
-      // api() already invalidates the cached token on 403. Fetch a fresh token and
-      // retry this read-only commercial preview exactly once. No reservation or
-      // provider call exists at this stage, so the retry cannot double-charge.
       csrfToken = "";
       await ensureCsrf();
       return request();
@@ -317,7 +332,8 @@ export async function streamMessage(
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
 ) {
-  const restored = readPending(conversationId, payload);
+  const pendingCandidate = readPending(conversationId, payload);
+  const restored = pendingCandidate ? await verifyPendingStream(conversationId,pendingCandidate,signal) : null;
   const pending: PendingStream = restored ?? {
     payload,
     idempotencyKey,
@@ -385,16 +401,12 @@ export async function streamMessage(
     await ensureCsrf();
     let response = await send(Boolean(pending.confirmedCost));
 
-    // A session can outlive the CSRF token cached in this browser tab. Refresh it
-    // once before surfacing a 403 as a chat failure.
     if (response.status === 403 && !signal.aborted) {
       csrfToken = "";
       await ensureCsrf();
       response = await send(Boolean(pending.confirmedCost));
     }
 
-    // Re-evaluate every commercial 409. The route/context can change after the
-    // preview, but a stale confirmation must never be retried silently or looped.
     for (let confirmations = 0; response.status === 409 && confirmations < 2; confirmations += 1) {
       let details: CostConfirmationError | null = null;
       try {
