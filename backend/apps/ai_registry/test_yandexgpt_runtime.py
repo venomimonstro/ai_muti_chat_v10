@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.ai_registry.adapters import AdapterResult, DeepSeekChatAdapter, ProviderError
+from apps.ai_registry.adapters import DeepSeekChatAdapter, ProviderError, ProviderResult
 from apps.ai_registry.client_readiness import provider_model_config_ready
 from apps.ai_registry.yandexgpt_adapter import YandexGPTAdapter, normalize_model_id
 
@@ -37,7 +37,12 @@ class YandexGPTRuntimeTests(SimpleTestCase):
         self.assertTrue(provider_model_config_ready(model))
 
     def test_generate_uses_openai_compatible_folder_uri(self):
-        result = AdapterResult(text="OK", input_tokens=1, output_tokens=1)
+        result = ProviderResult(
+            text="OK",
+            input_tokens=1,
+            output_tokens=1,
+            provider_request_id="test-yandex",
+        )
         with patch.object(DeepSeekChatAdapter, "generate", return_value=result) as generate:
             adapter = YandexGPTAdapter(api_key="secret", folder_id="folder-123")
             returned = adapter.generate(
