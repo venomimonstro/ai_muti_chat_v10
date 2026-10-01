@@ -69,11 +69,17 @@ def test_admin_can_create_safe_diagnostics_share_link_and_public_reader_can_open
 
     assert response.status_code == 200
     payload = response.data
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 7
     assert payload["summary"]["open_system_issues"] >= 1
     assert "chat_readiness" in payload
     assert "stuck_generations" in payload["chat_readiness"]
     assert "stale_customer_reservations" in payload["chat_readiness"]
+    assert "chat_service" in payload
+    assert "ready_models" in payload["chat_service"]
+    assert "failure_rate_15m" in payload["chat_service"]
+    assert "stale_provider_reservations" in payload["chat_service"]
+    assert payload["summary"]["routable_models_now"] == payload["chat_service"]["ready_models"]
+    assert payload["summary"]["chat_failure_rate_15m"] == payload["chat_service"]["failure_rate_15m"]
     assert "models" in payload
     provider_row = next(item for item in payload["providers"] if item["provider"] == provider.slug)
     assert provider_row["key_error_codes"]["authentication_error"] == 1
