@@ -27,6 +27,7 @@ def test_provider_errors_are_hidden_from_customer(internal_code):
         "error",
         {
             "code": internal_code,
+            "cause_code": "secret-upstream-detail",
             "message": "internal provider detail that customer must never see",
         },
     )
@@ -37,6 +38,7 @@ def test_provider_errors_are_hidden_from_customer(internal_code):
 
     assert payload["code"] == "AI-102"
     assert payload["support_code"] == "AI-102"
+    assert "cause_code" not in payload
     assert "provider" not in payload["message"].lower()
     assert "api" not in payload["message"].lower()
     assert "администратор" not in payload["message"].lower()
@@ -51,6 +53,7 @@ def test_internal_runtime_codes_are_never_exposed_to_customer(internal_code):
         "error",
         {
             "code": internal_code,
+            "cause_code": internal_code,
             "message": "internal stack/runtime detail",
         },
     )
@@ -60,7 +63,7 @@ def test_internal_runtime_codes_are_never_exposed_to_customer(internal_code):
 
     assert payload["code"] == "AI-103"
     assert payload["support_code"] == "AI-103"
-    assert payload["cause_code"] == internal_code
+    assert "cause_code" not in payload
     assert "stack" not in payload["message"].lower()
     assert internal_code not in payload["message"]
 
@@ -89,17 +92,22 @@ def test_generation_in_progress_remains_internal_reconnect_signal():
     assert _public_chunk(raw) == raw
 
 
-def test_partial_response_contract_is_preserved_for_frontend():
+def test_partial_response_contract_is_preserved_but_private():
     raw = sse(
         "error",
         {
             "code": "partial_response_interrupted",
+            "cause_code": "openai_server_error",
             "cost_rub": "0.2000",
             "partial": True,
             "message": "Полученная часть сохранена",
         },
     )
-    assert _public_chunk(raw) == raw
+    public = _public_chunk(raw)
+    payload = json.loads(next(line[6:] for line in public.splitlines() if line.startswith("data: ")))
+    assert payload["code"] == "partial_response_interrupted"
+    assert "cause_code" not in payload
+    assert payload["cost_rub"] == "0.2000"
 
 
 def test_reconnect_reports_confirmed_partial_charge_truthfully():
@@ -146,4 +154,5 @@ def test_reconnect_hides_internal_runtime_failure_code():
     payload = json.loads(next(line[6:] for line in error.splitlines() if line.startswith("data: ")))
     assert payload["code"] == "AI-103"
     assert payload["support_code"] == "AI-103"
+    assert "cause_code" not in payload
     assert "stream_runtime_failed" not in payload["message"]
