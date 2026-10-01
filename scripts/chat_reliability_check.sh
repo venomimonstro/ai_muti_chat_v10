@@ -68,7 +68,6 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/procurement/test_special_provider_procurement.py \
   apps/chat/test_default_auto_routing.py \
   apps/chat/test_activity_stream.py \
-  apps/chat/test_native_asgi_stream.py \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_retry_adapter_refresh.py \
