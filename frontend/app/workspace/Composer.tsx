@@ -1,7 +1,6 @@
 "use client";
 
 import {KeyboardEvent,useEffect,useRef,useState} from "react";
-import {api} from "../../lib/api";
 import type {AIModel} from "../../lib/types";
 import {ChatImageStudio} from "./ChatImageStudio";
 import {Icon} from "./Icons";
@@ -29,11 +28,6 @@ type ComposerProps={
  sourceImageId?:string|null;
 };
 
-function pendingStreamIdempotencyKey(conversationId:string|null|undefined){
- if(typeof window==="undefined"||!conversationId)return"";
- try{const raw=localStorage.getItem(`aiws:pending-stream:${conversationId}`);if(!raw)return"";const parsed=JSON.parse(raw) as {idempotencyKey?:unknown};return typeof parsed.idempotencyKey==="string"?parsed.idempotencyKey:""}catch{return""}
-}
-
 export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenTools,modelValue,models,onModelChange,conversationId,ensureConversation,onAttachImage,sourceImageId}:ComposerProps){
  const ref=useRef<HTMLTextAreaElement|null>(null);const[focused,setFocused]=useState(false);const[slow,setSlow]=useState(false);const[controlValue,setControlValue]=useState(modelValue??"auto:auto");const[controlModels,setControlModels]=useState<AIModel[]>(models??[]);const[catalogState,setCatalogState]=useState<"loading"|"ready"|"error">("loading");const[workspaceModelsAvailable,setWorkspaceModelsAvailable]=useState<boolean|null>(null);const[imageStudioOpen,setImageStudioOpen]=useState(false);const submitGate=useRef(false);
  const trimmed=value.trim();const tooLong=value.length>MAX_MESSAGE_CHARS;const nearLimit=value.length>90000;
@@ -56,7 +50,9 @@ export function Composer({value,setValue,sending,offline,onSend,onStop,onOpenToo
  // dead button after failed first-chat creation and a premature second submit while
  // a valid creation/stream opening is still in progress.
  const submit=async()=>{if(!trimmed||tooLong||offline||sending||noModelsAvailable||submitGate.current)return;submitGate.current=true;setSlow(false);try{await Promise.resolve(onSend())}finally{submitGate.current=false}};
- const stop=()=>{setSlow(false);const key=pendingStreamIdempotencyKey(conversationId);if(conversationId&&key){void api(`/conversations/${conversationId}/messages/cancel/`,{method:"POST",headers:{"Idempotency-Key":key},body:JSON.stringify({idempotency_key:key})}).catch(()=>undefined)}onStop()};
+ // streamMessage owns durable cancellation. One click must produce one cancellation
+ // request; AbortController is the single signal for both UI stop and backend cancel.
+ const stop=()=>{setSlow(false);onStop()};
  const key=(event:KeyboardEvent<HTMLTextAreaElement>)=>{if(event.key==="Enter"&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();void submit()}};
  const changeModel=(next:string)=>{if(explicitModelControl){onModelChange?.(next);return;}setControlValue(next)};
  const blockedTitle=noModelsAvailable?"Сейчас нет доступных AI-моделей. Система перепроверит подключения автоматически.":offline?"Отправка станет доступна после восстановления сети":tooLong?"Сообщение превышает лимит 100 000 символов":selectedModelUnavailable?"Выбранная модель недоступна — запрос автоматически пойдёт на резервную модель":"Отправить · Enter";
