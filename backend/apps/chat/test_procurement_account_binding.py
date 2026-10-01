@@ -6,6 +6,7 @@ import pytest
 from django.test import override_settings
 from django.utils import timezone
 
+from apps.ai_registry.adapters import ProviderError
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.billing.models import PriceVersion, RequestCost
 from apps.procurement.models import ProviderFundingAccount, ProviderSpendReservation
@@ -97,6 +98,7 @@ def test_chat_provider_call_is_pinned_to_account_that_owns_procurement_reservati
     module = SimpleNamespace()
     module.provider_available = lambda _provider: True
     module._snapshot_capacity = lambda _model, _route_price: True
+    module.record_failure = lambda _provider, _error, adapter=None: None
 
     def raw_adapter_for(selected, *args, **kwargs):
         observed["model"] = selected.slug
@@ -115,3 +117,53 @@ def test_chat_provider_call_is_pinned_to_account_that_owns_procurement_reservati
     assert list(module.run(SimpleNamespace(id=generation_id))) == ["ok"]
     assert observed["model"] == model.slug
     assert str(observed["funding_account_id"]) == str(backup.id)
+
+
+@pytest.mark.django_db
+def test_candidate_funding_race_does_not_poison_provider_or_unrelated_keys():
+    provider = Provider.objects.create(
+        slug="chat-funding-race",
+        name="Chat funding race",
+        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    primary_key = _key(provider, label="funded", secret="sk-funded", priority=1)
+    backup_key = _key(provider, label="healthy-backup", secret="sk-healthy-backup", priority=2)
+
+    calls = []
+    module = SimpleNamespace()
+    module.provider_available = lambda _provider: True
+    module._snapshot_capacity = lambda _model, _route_price: True
+    module.adapter_for = lambda _model, *args, **kwargs: object()
+
+    def raw_record_failure(selected_provider, error, adapter=None):
+        calls.append((selected_provider.id, error.code, adapter))
+        Provider.objects.filter(pk=selected_provider.pk).update(
+            health_state=Provider.HealthState.DEGRADED
+        )
+        ProviderApiKey.objects.filter(pk=backup_key.pk).update(
+            health_state=ProviderApiKey.HealthState.DEGRADED
+        )
+
+    module.record_failure = raw_record_failure
+    module.run = lambda _generation, *args, **kwargs: iter(())
+    install(module)
+
+    module.record_failure(
+        provider,
+        ProviderError(
+            "Reserved funding credential is no longer execution-ready",
+            code="candidate_not_ready",
+            retryable=False,
+        ),
+        adapter=None,
+    )
+
+    provider.refresh_from_db()
+    primary_key.refresh_from_db()
+    backup_key.refresh_from_db()
+    assert calls == []
+    assert provider.health_state == Provider.HealthState.HEALTHY
+    assert primary_key.health_state == ProviderApiKey.HealthState.HEALTHY
+    assert backup_key.health_state == ProviderApiKey.HealthState.HEALTHY
