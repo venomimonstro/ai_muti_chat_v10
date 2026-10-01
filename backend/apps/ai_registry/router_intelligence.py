@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from decimal import Decimal
 
@@ -184,8 +185,13 @@ def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
         score += 0.05
     if signals.get("long_context"):
         score += 0.22
+    # Vision is a capability requirement first, not a reason to buy Max by
+    # itself. A small uplift covers the additional interpretation burden while
+    # tier continuity finds the first pool containing a healthy vision model.
     if signals.get("needs_vision"):
-        score += 0.12
+        score += 0.06
+    if signals.get("has_project_files"):
+        score += 0.07
     if tokens >= 2500:
         score += 0.20
     elif tokens >= 1200:
@@ -203,7 +209,7 @@ def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
         "needs_tools": needs_freshness,
         "needs_freshness": needs_freshness,
         "complexity_score": round(score, 4),
-        "complexity_version": "router-v3.1",
+        "complexity_version": "router-v3.2",
         "hard_reasoning": hard_reasoning,
         "multistep_signals": multistep_hits,
         "coding_action": coding_action,
@@ -242,19 +248,16 @@ def install(router_module) -> None:
         signals = classification.signals or {}
         score = float(signals.get("complexity_score", 0.45))
         tokens = int(signals.get("content_tokens") or 0)
+        simple_max = float(os.getenv("AUTO_ROUTER_SIMPLE_MAX", "0.28"))
+        complex_min = float(os.getenv("AUTO_ROUTER_COMPLEX_MIN", "0.68"))
+        hard_context_tokens = max(2500, int(os.getenv("AUTO_ROUTER_HARD_CONTEXT_TOKENS", "5000")))
 
-        if (
-            signals.get("long_context")
-            or signals.get("needs_vision")
-            or tokens >= 2500
-            or score >= 0.68
-        ):
+        # Capability requirements (vision/web/files) are resolved independently
+        # by candidate filtering and tier continuity. They must not force an
+        # expensive tier unless the reasoning/context complexity also warrants it.
+        if tokens >= hard_context_tokens or score >= complex_min:
             return "maximum"
-        if (
-            score <= 0.28
-            and tokens < 700
-            and not signals.get("needs_vision")
-        ):
+        if score <= simple_max and tokens < 700 and not signals.get("has_project_files"):
             return "economy"
         return "balanced"
 
