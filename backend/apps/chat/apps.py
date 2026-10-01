@@ -46,6 +46,7 @@ class ChatConfig(AppConfig):
             manual_selection_recovery,
             preflight_terminal,
             procurement_execution,
+            provider_delivery_checkpoint,
             public_error_wiring,
             response_safety,
             run_claim_safety,
@@ -94,6 +95,10 @@ class ChatConfig(AppConfig):
         # customer answer. Reject it locally and continue the existing fallback chain
         # without degrading an otherwise healthy key/provider.
         response_safety.install(streaming)
+        # Once a provider has returned authoritative token usage, persist that usage
+        # before customer settlement. A DB/ledger failure after answer delivery can
+        # then never be mistaken for a zero-cost provider request/full refund.
+        provider_delivery_checkpoint.install(streaming)
         # Recovery revokes the durable GenerationAttempt lease before touching money.
         # A provider thread that wakes up afterwards is fenced locally and can no
         # longer overwrite the recovered terminal state or settle twice.
