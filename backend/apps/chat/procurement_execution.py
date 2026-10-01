@@ -14,14 +14,6 @@ _generation_id: ContextVar[str | None] = ContextVar(
 )
 
 
-def _route_price_version_id(route_price):
-    if isinstance(route_price, str):
-        return str(route_price)
-    if isinstance(route_price, dict):
-        return str(route_price.get("price_version_id") or "")
-    return ""
-
-
 def _current_request_cost(generation_id):
     if not generation_id:
         return None
@@ -32,16 +24,9 @@ def _current_request_cost(generation_id):
     )
 
 
-def _request_owns_provider_reservation(
-    generation_id,
-    provider,
-    *,
-    price_version_id="",
-) -> bool:
+def _request_owns_provider_reservation(generation_id, provider) -> bool:
     request_cost = _current_request_cost(generation_id)
     if request_cost is None:
-        return False
-    if price_version_id and str(request_cost.price_version_id) != str(price_version_id):
         return False
     model = (
         AIModel.objects.filter(slug=request_cost.price_version.model_slug)
@@ -50,9 +35,9 @@ def _request_owns_provider_reservation(
     )
     if model is None or model.provider_id != provider.id:
         return False
-    source_key = f"chat:{request_cost.id}:{request_cost.price_version_id}"
+    prefix = f"chat:{request_cost.id}:"
     return ProviderSpendReservation.objects.filter(
-        source_key=source_key,
+        source_key__startswith=prefix,
         state=ProviderSpendReservation.State.ACTIVE,
     ).exists()
 
@@ -76,11 +61,16 @@ def _provider_execution_ready(provider: Provider) -> bool:
 def install(streaming_module) -> None:
     """Make the streaming execution phase aware of its own provider reservation.
 
-    Preflight and a *new* fallback candidate must pass the normal free-balance
-    procurement checks. Once RequestCost has successfully created an ACTIVE
-    provider reservation, however, that money belongs to this generation. Requiring
-    the account to still have additional free money would make a correctly funded
-    request invalidate itself when it reserves the remaining balance.
+    Preflight and a new provider must pass the normal free-balance procurement
+    checks. Once this Generation owns an ACTIVE reservation for a provider, however,
+    a fallback model on that same provider must be allowed to reach the atomic
+    RequestCost switch. The procurement signal releases the old model reservation and
+    reserves the replacement inside the same transaction; if the replacement really
+    costs too much, that save fails and rolls back before any provider call.
+
+    This avoids a false-negative where the primary model's own reservation made the
+    account look empty and incorrectly blocked a cheaper/equally funded sibling model.
+    Reservations belonging to another Generation never count here.
     """
     if getattr(streaming_module.run, "_ai_workspace_procurement_execution", False):
         return
@@ -97,11 +87,13 @@ def install(streaming_module) -> None:
 
     def snapshot_capacity(model, route_price):
         generation_id = _generation_id.get()
-        price_version_id = _route_price_version_id(route_price)
+        # Do not require the fallback PriceVersion to equal the currently reserved
+        # PriceVersion. That equality is impossible before the atomic switch and was
+        # the source of same-provider fallback failures. request_cost.save() remains
+        # the authoritative amount check before adapter_for()/provider traffic.
         if generation_id and _request_owns_provider_reservation(
             generation_id,
             model.provider,
-            price_version_id=price_version_id,
         ):
             return True
         return raw_snapshot_capacity(model, route_price)
