@@ -8,7 +8,10 @@ def test_all_chat_entrypoints_use_final_terminal_recovery_runtime():
     assert services.run is streaming.run
     assert managed_stream.run is streaming.run
     assert getattr(streaming.run, "_ai_workspace_terminal_recovery", False) is True
+    assert getattr(streaming.run, "_ai_workspace_procurement_execution", False) is True
     assert getattr(streaming.run, "_raw_run", None) is not None
+    assert getattr(streaming.provider_available, "_ai_workspace_procurement_execution", False) is True
+    assert getattr(streaming._snapshot_capacity, "_ai_workspace_procurement_execution", False) is True
 
 
 def test_all_prepare_entrypoints_use_terminal_safe_preflight_runtime():
