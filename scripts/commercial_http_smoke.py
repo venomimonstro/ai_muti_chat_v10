@@ -7,7 +7,7 @@ Required env:
   E2E_PASSWORD=...
 
 The account must already be email-verified and have a small positive balance.
-This script performs one real AI request and therefore incurs provider cost.
+This script performs one real AUTO-routed AI request and therefore incurs provider cost.
 """
 
 import json
@@ -50,6 +50,8 @@ def main():
     with httpx.Client(base_url=BASE, timeout=45.0, follow_redirects=False) as client:
         health = client.get("/api/v1/health/")
         health.raise_for_status()
+        readiness = client.get("/api/v1/readiness/")
+        readiness.raise_for_status()
         headers = csrf_headers(client, "/login")
         login = client.post(
             "/api/v1/auth/login/",
@@ -78,14 +80,15 @@ def main():
         conversation = client.post(
             "/api/v1/conversations/",
             json={
-                "title": f"Commercial E2E {uuid.uuid4().hex[:8]}",
-                "routing_mode": "balanced",
-                "selected_model": available[0]["slug"],
+                "title": f"Commercial AUTO E2E {uuid.uuid4().hex[:8]}",
+                "routing_mode": "auto",
             },
             headers=headers,
         )
         conversation.raise_for_status()
         conversation_id = conversation.json()["id"]
+        if conversation.json().get("routing_mode") != "auto":
+            raise RuntimeError("New conversation did not preserve AUTO routing")
         request_headers = {
             **headers,
             "Idempotency-Key": f"e2e:{uuid.uuid4()}",
@@ -181,6 +184,8 @@ def main():
                 {
                     "passed": True,
                     "conversation_id": conversation_id,
+                    "routing_mode": "auto",
+                    "catalog_models": len(available),
                     "model": generation.get("model"),
                     "provider": generation.get("provider"),
                     "cost_rub": str(persisted_cost),
