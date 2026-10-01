@@ -12,6 +12,8 @@ class ChatConfig(AppConfig):
             cache_safety,
             cooperative_cancel,
             error_contract,
+            freshness_policy,
+            live_tools,
             manual_selection_recovery,
             preflight_terminal,
             runtime_readiness,
@@ -21,7 +23,12 @@ class ChatConfig(AppConfig):
             streaming,
             terminal_recovery,
             ux_models,
+            web_context,
         )  # noqa: F401
+
+        # Current public facts such as office holders, exchange rates and software
+        # versions require web grounding even if the user does not say "today".
+        freshness_policy.install(live_tools, web_context)
 
         # Install guards before terminal recovery. Customer traffic must never probe a
         # stale provider/model candidate, one conversation must never create two
