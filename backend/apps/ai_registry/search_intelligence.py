@@ -45,6 +45,19 @@ TRACKING_QUERY_KEYS = {
 }
 
 
+def _truthy(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _searx_urls() -> list[str]:
+    raw = os.getenv("WEB_SEARCH_BASE_URLS", "").strip()
+    urls = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+    legacy = os.getenv("WEB_SEARCH_BASE_URL", "").strip().rstrip("/")
+    if legacy and legacy not in urls:
+        urls.append(legacy)
+    return urls
+
+
 def _intent(query: str) -> dict:
     text = re.sub(r"\s+", " ", str(query or "").casefold()).strip()
     time_range = ""
@@ -101,74 +114,127 @@ def install(web_tools_module) -> None:
     if getattr(current, "_ai_workspace_search_v3", False):
         return
 
-    def search_searx(query: str, *, limit: int):
-        base_url = os.getenv("WEB_SEARCH_BASE_URL", "").strip().rstrip("/")
-        if not base_url:
-            raise web_tools_module.WebToolError("SearXNG is not configured")
+    raw_provider_order = web_tools_module._search_provider_order
+
+    def execute_endpoint(base_url: str, query: str, *, limit: int, intent: dict, time_range: str = ""):
         web_tools_module._assert_search_provider_url(base_url)
         timeout = float(os.getenv("WEB_TOOL_TIMEOUT_SECONDS", "12"))
         max_results = max(1, min(limit, int(os.getenv("WEB_SEARCH_MAX_RESULTS", "8"))))
-        # Ask for extra candidates because duplicate domains are removed before
-        # grounding. This is still a single free/self-hosted metasearch request.
         requested = min(max(max_results * 3, max_results), 20)
-        intent = _intent(query)
+        params = {
+            "q": query,
+            "format": "json",
+            "language": "auto",
+            "safesearch": 1,
+            "categories": intent["category"],
+        }
+        if time_range:
+            params["time_range"] = time_range
+        try:
+            response = httpx.get(
+                f"{base_url}/search",
+                params=params,
+                headers={"User-Agent": "AIWorkspace-WebTool/3.1", "Accept": "application/json"},
+                timeout=timeout,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            hint = " (check search.formats includes json)" if status == 403 else ""
+            raise web_tools_module.WebToolError(f"SearXNG HTTP {status}{hint}") from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise web_tools_module.WebToolError("SearXNG provider failed") from exc
 
-        def execute(*, time_range: str = ""):
-            params = {
-                "q": query,
-                "format": "json",
-                "language": "auto",
-                "safesearch": 1,
-                "categories": intent["category"],
-            }
-            if time_range:
-                params["time_range"] = time_range
+        rows = []
+        for raw in (payload.get("results") or [])[:requested]:
+            url = str(raw.get("url") or "").strip()
             try:
-                response = httpx.get(
-                    f"{base_url}/search",
-                    params=params,
-                    headers={"User-Agent": "AIWorkspace-WebTool/3.0", "Accept": "application/json"},
-                    timeout=timeout,
-                    follow_redirects=False,
+                web_tools_module._assert_public_http_url(url)
+            except web_tools_module.WebToolError:
+                continue
+            rows.append(
+                web_tools_module.SearchResult(
+                    title=str(raw.get("title") or url).strip()[:300],
+                    url=url,
+                    snippet=str(raw.get("content") or raw.get("snippet") or "").strip()[:2000],
+                    published_at=str(
+                        raw.get("publishedDate") or raw.get("published_date") or ""
+                    ).strip()[:80],
                 )
-                response.raise_for_status()
-                payload = response.json()
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                hint = " (check search.formats includes json)" if status == 403 else ""
-                raise web_tools_module.WebToolError(f"SearXNG HTTP {status}{hint}") from exc
-            except (httpx.HTTPError, ValueError) as exc:
-                raise web_tools_module.WebToolError("SearXNG provider failed") from exc
+            )
+        return _diversify(rows, limit=max_results)
 
-            rows = []
-            for raw in (payload.get("results") or [])[:requested]:
-                url = str(raw.get("url") or "").strip()
-                try:
-                    web_tools_module._assert_public_http_url(url)
-                except web_tools_module.WebToolError:
-                    continue
-                rows.append(
-                    web_tools_module.SearchResult(
-                        title=str(raw.get("title") or url).strip()[:300],
-                        url=url,
-                        snippet=str(raw.get("content") or raw.get("snippet") or "").strip()[:2000],
-                        published_at=str(
-                            raw.get("publishedDate") or raw.get("published_date") or ""
-                        ).strip()[:80],
+    def search_searx(query: str, *, limit: int):
+        urls = _searx_urls()
+        if not urls:
+            raise web_tools_module.WebToolError("SearXNG is not configured")
+        intent = _intent(query)
+        errors = []
+        for base_url in urls:
+            try:
+                # Freshness is preferred, never mandatory. Some upstream engines
+                # ignore time_range, so an empty fresh pass retries the same free
+                # endpoint without the filter before moving to the next endpoint.
+                results = execute_endpoint(
+                    base_url,
+                    query,
+                    limit=limit,
+                    intent=intent,
+                    time_range=intent["time_range"],
+                )
+                if not results and intent["time_range"]:
+                    results = execute_endpoint(
+                        base_url,
+                        query,
+                        limit=limit,
+                        intent=intent,
+                        time_range="",
                     )
+                if results:
+                    return results
+                errors.append(f"{base_url}: no usable results")
+            except web_tools_module.WebToolError as exc:
+                errors.append(f"{base_url}: {exc}")
+                web_tools_module.logger.warning(
+                    "SearXNG endpoint failed; trying next free endpoint: %s", exc
                 )
-            return _diversify(rows, limit=max_results)
+        raise web_tools_module.WebToolError(
+            "All SearXNG endpoints failed: " + "; ".join(errors)
+        )
 
-        # Freshness is preferred, never mandatory. Some free engines do not
-        # implement SearXNG time_range consistently, so an empty fresh pass is
-        # retried without the filter before the paid provider is considered.
-        results = execute(time_range=intent["time_range"])
-        if not results and intent["time_range"]:
-            results = execute(time_range="")
-        if not results:
-            raise web_tools_module.WebToolError("SearXNG returned no usable results")
-        return results
+    def provider_order():
+        order = raw_provider_order()
+        if not _truthy("WEB_SEARCH_PAID_PROVIDERS_ENABLED", "false"):
+            order = [provider for provider in order if provider != "yandex"]
+        return order or ["searx"]
+
+    def searx_status():
+        urls = _searx_urls()
+        return {
+            "configured": bool(urls),
+            "endpoint": urls[0] if urls else "",
+            "endpoints": urls,
+            "endpoint_count": len(urls),
+        }
+
+    def web_search_status():
+        return {
+            "provider_order": provider_order(),
+            "searx": searx_status(),
+            "yandex": {
+                **web_tools_module.yandex_search_status(),
+                "customer_traffic_enabled": _truthy(
+                    "WEB_SEARCH_PAID_PROVIDERS_ENABLED", "false"
+                ),
+                "billing_policy": "included_in_answer_total",
+            },
+        }
 
     search_searx._ai_workspace_search_v3 = True
     search_searx._raw_search_searx = current
     web_tools_module._search_searx = search_searx
+    web_tools_module._search_provider_order = provider_order
+    web_tools_module.searx_search_status = searx_status
+    web_tools_module.web_search_status = web_search_status
