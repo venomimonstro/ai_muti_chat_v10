@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from django.db import transaction
 from django.utils import timezone
@@ -19,31 +20,46 @@ class GenerationExecutionFenced(BaseException):
 def install(streaming_module) -> None:
     """Fence stale provider workers after recovery revokes their execution attempt.
 
-    ``GenerationAttempt`` is the durable execution lease. Recovery revokes stale
-    RUNNING attempts before touching money. A worker that wakes afterwards raises a
-    non-Provider control-flow signal, so it cannot enter provider retry/fallback or
-    poison provider health.
+    ``GenerationAttempt`` is the durable execution lease. Every provider worker may
+    finish an attempt only through an atomic RUNNING -> terminal compare-and-swap.
+    Stale recovery performs the same transition first when it revokes a worker. The
+    loser can therefore never overwrite a recovered attempt, retry another provider,
+    poison provider health or settle money after its lease was revoked.
     """
     raw_finish_attempt = streaming_module._finish_attempt
     if not getattr(raw_finish_attempt, "_ai_workspace_execution_fence", False):
 
         def finish_attempt(attempt, *, state, started, error=None):
-            if state == GenerationAttempt.State.COMPLETED:
-                current = (
-                    GenerationAttempt.objects.filter(pk=attempt.pk)
-                    .values_list("state", flat=True)
-                    .first()
+            latency_ms = int((time.monotonic() - started) * 1000)
+            finished_at = timezone.now()
+            updates = {
+                "state": state,
+                "latency_ms": latency_ms,
+                "finished_at": finished_at,
+            }
+            if error is not None:
+                updates["error_code"] = error.code
+                updates["retryable"] = error.retryable
+
+            updated = GenerationAttempt.objects.filter(
+                pk=attempt.pk,
+                state=GenerationAttempt.State.RUNNING,
+            ).update(**updates)
+            if updated != 1:
+                raise GenerationExecutionFenced(
+                    "Generation execution lease was revoked by recovery"
                 )
-                if current != GenerationAttempt.State.RUNNING:
-                    raise GenerationExecutionFenced(
-                        "Generation execution lease was revoked by recovery"
-                    )
-            return raw_finish_attempt(
-                attempt,
-                state=state,
-                started=started,
-                error=error,
-            )
+
+            # Keep the caller's already-created model instance coherent without a
+            # second SELECT. No later billing decision depends on this in-memory copy,
+            # but tests/diagnostics can safely inspect it.
+            attempt.state = state
+            attempt.latency_ms = latency_ms
+            attempt.finished_at = finished_at
+            if error is not None:
+                attempt.error_code = error.code
+                attempt.retryable = error.retryable
+            return None
 
         finish_attempt._ai_workspace_execution_fence = True
         finish_attempt._raw_finish_attempt = raw_finish_attempt
