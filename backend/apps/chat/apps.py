@@ -20,6 +20,7 @@ class ChatConfig(AppConfig):
             preflight_terminal,
             procurement_execution,
             response_safety,
+            retry_adapter,
             run_claim_safety,
             runtime_readiness,
             serializers,
@@ -51,6 +52,10 @@ class ChatConfig(AppConfig):
         # customer answer. Reject it locally and continue the existing fallback chain
         # without degrading an otherwise healthy key/provider.
         response_safety.install(streaming)
+        # Resolve the final adapter inside every retry attempt. A key degraded by the
+        # previous attempt must never be reused merely because the provider still has
+        # another healthy credential; dispatch gets a fresh chance to select it.
+        retry_adapter.install(streaming)
         # Recovery revokes the durable GenerationAttempt lease before touching money.
         # A provider thread that wakes up afterwards is fenced locally and can no
         # longer overwrite the recovered terminal state or settle twice.
