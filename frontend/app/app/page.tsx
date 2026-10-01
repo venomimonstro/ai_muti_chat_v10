@@ -1,3 +1,3 @@
-import WorkspaceV2 from "../workspace/WorkspaceV2";
+import WorkspaceExperience from "../workspace/WorkspaceExperience";
 
-export default WorkspaceV2;
+export default WorkspaceExperience;
