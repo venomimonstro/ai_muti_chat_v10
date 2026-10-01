@@ -60,6 +60,7 @@ class ChatConfig(AppConfig):
             run_claim_safety,
             runtime_readiness,
             search_cost_public,
+            search_delivery_billing,
             search_policy_hardening,
             search_trigger_policy,
             serializers,
@@ -90,6 +91,13 @@ class ChatConfig(AppConfig):
         # may use it first, otherwise SearXNG is tried before the paid fallback. Bad
         # credentials are fail-closed and query-level empty results do not poison key health.
         search_policy_hardening.install(paid_search_billing)
+        # A paid provider request can be a real platform expense while its returned
+        # data is later excluded by context-budget safety. In that case never charge
+        # the customer for a tool result that did not reach the LLM answer path.
+        search_delivery_billing.install(
+            streaming_module=streaming,
+            paid_search_module=paid_search_billing,
+        )
         # Memory, summaries, retrieved history and files are reference data, never
         # system instructions. Keep a strict trusted allowlist before web enrichment
         # adds its own separately marked untrusted context.
