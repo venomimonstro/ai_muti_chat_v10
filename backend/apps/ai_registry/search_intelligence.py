@@ -182,7 +182,7 @@ def install(web_tools_module) -> None:
         errors = []
         for base_url in urls:
             try:
-                # Three free passes before paid fallback:
+                # Three free passes before any paid fallback:
                 # 1) preferred freshness/category,
                 # 2) same category without a strict time window,
                 # 3) general metasearch if specialised news engines are empty.
@@ -224,9 +224,18 @@ def install(web_tools_module) -> None:
             "All SearXNG endpoints failed: " + "; ".join(errors)
         )
 
+    def paid_search_ready() -> bool:
+        # A paid search API is allowed into customer traffic only when both the
+        # operator enables it and unified search-cost accounting is explicitly
+        # declared ready. This prevents hidden platform losses or an unpriced
+        # customer service from being activated by a single environment flag.
+        return _truthy("WEB_SEARCH_PAID_PROVIDERS_ENABLED", "false") and _truthy(
+            "WEB_SEARCH_PAID_BILLING_READY", "false"
+        )
+
     def provider_order():
         order = raw_provider_order()
-        if not _truthy("WEB_SEARCH_PAID_PROVIDERS_ENABLED", "false"):
+        if not paid_search_ready():
             order = [provider for provider in order if provider != "yandex"]
         return order or ["searx"]
 
@@ -240,15 +249,17 @@ def install(web_tools_module) -> None:
         }
 
     def web_search_status():
+        billing_ready = _truthy("WEB_SEARCH_PAID_BILLING_READY", "false")
         return {
             "provider_order": provider_order(),
             "searx": searx_status(),
             "yandex": {
                 **web_tools_module.yandex_search_status(),
-                "customer_traffic_enabled": _truthy(
-                    "WEB_SEARCH_PAID_PROVIDERS_ENABLED", "false"
+                "customer_traffic_enabled": paid_search_ready(),
+                "billing_ready": billing_ready,
+                "billing_policy": (
+                    "included_in_answer_total" if billing_ready else "blocked_until_unified_billing"
                 ),
-                "billing_policy": "included_in_answer_total",
             },
         }
 
