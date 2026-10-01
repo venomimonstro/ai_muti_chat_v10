@@ -8,6 +8,7 @@ class ChatConfig(AppConfig):
     def ready(self):
         # UI-only organization models are registered here to keep inference models focused.
         from . import (
+            asgi_entrypoint,
             billing_recovery,
             cache_safety,
             cooperative_cancel,
@@ -40,3 +41,10 @@ class ChatConfig(AppConfig):
         # Keep this outermost so recovered terminal successes are never rewritten,
         # while genuine partial failures receive financially accurate public wording.
         error_contract.install(streaming)
+
+        # Import the DRF view only after every prepare/run guard is installed. The
+        # production Uvicorn path then gets native async SSE + durable reconnect,
+        # while WSGI/test clients retain the synchronous compatibility surface.
+        from . import views
+
+        asgi_entrypoint.install(views, streaming)
