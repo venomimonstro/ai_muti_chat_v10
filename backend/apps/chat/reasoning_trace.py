@@ -31,33 +31,27 @@ def install(activity_stream_module) -> None:
         reasoning_completed = False
         for chunk in raw(*args, **kwargs):
             payload = _event_payload(chunk)
-            if payload and payload.get("step") == "answer" and payload.get("state") == "running":
-                if not reasoning_started:
+            if payload and payload.get("step") == "answer":
+                state = str(payload.get("state") or "")
+                if state == "running" and not reasoning_started:
                     reasoning_started = True
+                    # Replace the generic pre-answer status with a useful and truthful
+                    # execution phase. Do not expose model scratchpad/chain-of-thought.
                     yield _activity(
                         activity_stream_module,
                         "reasoning",
                         "running",
                         "Сопоставляю контекст, источники и ограничения ответа…",
                     )
-                # Keep the public answer stage, but only after the safe reasoning
-                # summary has been surfaced. This is an execution trace, not hidden
-                # chain-of-thought or model scratchpad content.
-                yield chunk
-                continue
-            if (
-                reasoning_started
-                and not reasoning_completed
-                and isinstance(chunk, str)
-                and chunk.startswith("event: delta\n")
-            ):
-                reasoning_completed = True
-                yield _activity(
-                    activity_stream_module,
-                    "reasoning",
-                    "completed",
-                    "Основания ответа проверены. Формулирую результат.",
-                )
+                    continue
+                if state in {"streaming", "completed"} and reasoning_started and not reasoning_completed:
+                    reasoning_completed = True
+                    yield _activity(
+                        activity_stream_module,
+                        "reasoning",
+                        "completed",
+                        "Основания ответа проверены. Формулирую результат.",
+                    )
             yield chunk
 
     managed_request_stream._ai_workspace_reasoning_trace = True
