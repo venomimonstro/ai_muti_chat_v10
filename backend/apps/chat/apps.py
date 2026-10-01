@@ -47,6 +47,7 @@ class ChatConfig(AppConfig):
             managed_stream,
             manual_selection_recovery,
             paid_search_billing,
+            paid_search_readiness,
             preflight_terminal,
             procurement_execution,
             provider_delivery_checkpoint,
@@ -79,6 +80,10 @@ class ChatConfig(AppConfig):
         # persist cost metadata into the Generation context. SearXNG remains the free
         # default and Yandex is selected only when policy/quality justifies it.
         paid_search_billing.install(streaming_module=streaming, web_tools_module=web_tools)
+        # Customer traffic must never be the probe for an UNKNOWN/DEGRADED paid-search
+        # credential. Only a previously verified HEALTHY ProviderApiKey may be used;
+        # health/recovery tooling probes suspect keys outside customer requests.
+        paid_search_readiness.install(paid_search_billing)
         # Expensive Yandex traffic is strictly opt-in-first: explicit Yandex wording
         # may use it first, otherwise SearXNG is tried before the paid fallback. Bad
         # credentials are fail-closed and query-level empty results do not poison key health.
