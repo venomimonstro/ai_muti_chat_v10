@@ -55,10 +55,23 @@ def _context_overhead_tokens(conversation):
 
 
 def _existing_history_tokens(conversation):
-    """Conservative allowance for messages already present in this conversation."""
-    rows = Message.objects.filter(conversation=conversation).exclude(status=Message.Status.FAILED).values(
-        "role", "content"
+    """Bound the preview to the same recent-window model as smart context.
+
+    Older conversation material is already represented by the explicit summary and
+    old-message budgets in ``_context_overhead_tokens``. Re-reading every historical
+    message here both double-counted context and made cost preview grow linearly with
+    the lifetime of a chat. A long-lived conversation must remain as cheap and fast to
+    preview as a new one.
+    """
+    recent_turns = max(1, int(getattr(settings, "SMART_CONTEXT_RECENT_TURNS", 6)))
+    recent_message_limit = recent_turns * 2
+    rows = list(
+        Message.objects.filter(conversation=conversation)
+        .exclude(status=Message.Status.FAILED)
+        .order_by("-created_at")
+        .values("role", "content")[:recent_message_limit]
     )
+    rows.reverse()
     messages = [{"role": item["role"], "content": item["content"] or ""} for item in rows]
     return estimate_message_tokens(messages) if messages else 0
 
