@@ -37,6 +37,42 @@ def _active_generation_exists(conversation) -> bool:
     ).exists()
 
 
+def _recover_stale_active_generations(conversation) -> int:
+    """Opportunistically close already-stale work before returning a busy error.
+
+    The scheduled recovery task remains the normal self-healing path. This fast path
+    only considers generations that have *already* crossed the same authoritative
+    stale cutoff and delegates every safety/billing decision to admin_ops.recovery.
+    A fresh RUNNING GenerationAttempt is therefore preserved by the existing recovery
+    guard and a healthy long fallback cannot be killed by a new message.
+    """
+    from apps.admin_ops import recovery as recovery_module
+
+    stale_ids = list(
+        Generation.objects.filter(
+            user_message__conversation=conversation,
+            state__in=ACTIVE_STATES,
+            created_at__lt=recovery_module._cutoff(),
+        )
+        .order_by("created_at")
+        .values_list("pk", flat=True)[:4]
+    )
+    recovered = 0
+    for pk in stale_ids:
+        try:
+            recovered += int(recovery_module._recover_generation(pk))
+        except Generation.DoesNotExist:
+            continue
+    return recovered
+
+
+def _active_after_stale_recovery(conversation) -> bool:
+    if not _active_generation_exists(conversation):
+        return False
+    _recover_stale_active_generations(conversation)
+    return _active_generation_exists(conversation)
+
+
 def _advisory_key(conversation_id) -> int:
     raw = hashlib.sha256(f"chat-single-flight:{conversation_id}".encode("utf-8")).digest()[:8]
     return int.from_bytes(raw, byteorder="big", signed=True)
@@ -118,7 +154,7 @@ def install(streaming_module) -> None:
                 idempotency_key=idempotency_key,
                 file_ids=file_ids,
             )
-        if _active_generation_exists(conversation):
+        if _active_after_stale_recovery(conversation):
             raise ValidationError(
                 "Предыдущий ответ ещё формируется. Дождитесь завершения или остановите его перед новым сообщением."
             )
@@ -148,7 +184,7 @@ def install(streaming_module) -> None:
                 idempotency_key=idempotency_key,
                 file_ids=file_ids,
             )
-        if _active_generation_exists(conversation):
+        if _active_after_stale_recovery(conversation):
             raise ValidationError(
                 "Предыдущий ответ ещё формируется. Дождитесь завершения или остановите его перед новым сообщением."
             )
