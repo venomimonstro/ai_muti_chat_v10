@@ -47,15 +47,16 @@ def _notify_admins(*, key: str, title: str, body: str, level=Notification.Level.
 
 
 def _alert_once(*, key: str, title: str, body: str, critical: bool = False):
-    # Avoid one notification per minute during a long external outage. The current
-    # snapshot is still returned every run and remains visible in diagnostics.
+    # Avoid one notification per minute during a long external outage. Notification
+    # currently exposes INFO/WARNING/SUCCESS, so a critical chat outage is represented
+    # as a high-priority warning whose title/body and diagnostics link carry severity.
     if not cache.add(f"{ALERT_PREFIX}{key}", "1", timeout=10 * 60):
         return 0
     return _notify_admins(
         key=key,
-        title=title,
+        title=(f"КРИТИЧНО · {title}" if critical else title),
         body=body,
-        level=Notification.Level.ERROR if critical else Notification.Level.WARNING,
+        level=Notification.Level.WARNING,
     )
 
 
