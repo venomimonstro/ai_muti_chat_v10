@@ -8,9 +8,46 @@ from apps.ai_registry.models import AIModel
 
 from .live_tools import needs_web_search
 from .managed_stream import managed_run
+from .preflight_terminal import classify_preflight_exception
 from .streaming import prepare, sse
 
 logger = logging.getLogger(__name__)
+
+
+PUBLIC_PREFLIGHT_MESSAGES = {
+    "preflight_provider_funding": (
+        "Сейчас нет AI-канала с доступным закупочным балансом для этого запроса. "
+        "Деньги не списаны. Попробуйте ещё раз позже или выберите другую модель."
+    ),
+    "preflight_balance": "Недостаточно средств на балансе. Деньги не списаны.",
+    "preflight_price": (
+        "Модель временно недоступна из-за настройки стоимости. Деньги не списаны. "
+        "Выберите AUTO или другую модель."
+    ),
+    "preflight_context": (
+        "Запрос не помещается в доступный контекст выбранного AI-канала. "
+        "Сократите сообщение или используйте другой уровень/модель. Деньги не списаны."
+    ),
+    "preflight_spend_guard": (
+        "Запрос остановлен лимитом расходов до обращения к AI. Деньги не списаны."
+    ),
+    "preflight_web": (
+        "Не удалось подготовить актуальный поиск для этого запроса. Деньги не списаны. "
+        "Повторите запрос позже."
+    ),
+    "preflight_input": (
+        "Не удалось подготовить вложения для AI. Проверьте файл и повторите запрос. Деньги не списаны."
+    ),
+    "preflight_no_model": (
+        "Сейчас нет подходящей доступной модели. Деньги не списаны. "
+        "Попробуйте AUTO или повторите запрос позже."
+    ),
+    "preflight_validation": "Не удалось подготовить запрос. Деньги не списаны. Проверьте параметры и повторите.",
+    "preflight_internal": (
+        "Не удалось безопасно подготовить запрос из-за внутреннего сбоя. Деньги не списаны. "
+        "Повторите запрос."
+    ),
+}
 
 
 def _activity(step: str, state: str, message: str, **extra):
@@ -37,6 +74,15 @@ def _status_events(step: str, state: str, message: str, **extra):
             **extra,
         },
     )
+
+
+def _preflight_error_payload(exc: Exception) -> dict:
+    code = classify_preflight_exception(exc)
+    return {
+        "code": "preflight_failed",
+        "support_code": code,
+        "message": PUBLIC_PREFLIGHT_MESSAGES.get(code, PUBLIC_PREFLIGHT_MESSAGES["preflight_internal"]),
+    }
 
 
 def managed_request_stream(*, user, conversation, idempotency_key: str, payload: dict):
@@ -68,18 +114,23 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
             idempotency_key=idempotency_key,
             **payload,
         )
-    except (ValidationError, AIModel.DoesNotExist) as exc:
-        message = " ".join(getattr(exc, "messages", []) or [str(exc)])
+    except GeneratorExit:
+        raise
+    except Exception as exc:
+        # prepare() already terminalizes a durable Generation when one exists. The
+        # transport layer must never turn an internal DB/search/billing exception
+        # into a silent broken SSE connection or expose raw provider/internal text.
+        if not isinstance(exc, (ValidationError, AIModel.DoesNotExist)):
+            logger.exception(
+                "Chat preflight failed owner_id=%s conversation_id=%s",
+                getattr(user, "pk", None),
+                getattr(conversation, "pk", None),
+            )
+        payload_out = _preflight_error_payload(exc)
         yield from _status_events(
-            "routing", "failed", "Не удалось подобрать доступный маршрут."
+            "routing", "failed", "Не удалось безопасно подготовить запрос."
         )
-        yield sse(
-            "error",
-            {
-                "code": "preflight_failed",
-                "message": message or "Не удалось подготовить запрос. Средства не списаны.",
-            },
-        )
+        yield sse("error", payload_out)
         return
 
     context = generation.context_snapshot or {}
@@ -119,7 +170,7 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
             "search",
             "warning",
             "Не удалось проверить актуальные источники. Ответ не будет выдавать непроверенные свежие данные за факт.",
-            error=str(web.get("error"))[:180],
+            error="search_unavailable",
         )
     elif search_expected:
         yield from _status_events(
