@@ -15,6 +15,7 @@ class WebSearchFailoverTests(SimpleTestCase):
             "WEB_SEARCH_BASE_URL": "http://searxng:8080",
             "WEB_SEARCH_PROVIDER_ORDER": "searx,yandex",
             "WEB_SEARCH_PAID_PROVIDERS_ENABLED": "false",
+            "WEB_SEARCH_PAID_BILLING_READY": "false",
         },
         clear=False,
     )
@@ -34,6 +35,7 @@ class WebSearchFailoverTests(SimpleTestCase):
             "WEB_SEARCH_BASE_URL": "http://searxng:8080",
             "WEB_SEARCH_PROVIDER_ORDER": "searx,yandex",
             "WEB_SEARCH_PAID_PROVIDERS_ENABLED": "false",
+            "WEB_SEARCH_PAID_BILLING_READY": "false",
         },
         clear=False,
     )
@@ -53,6 +55,7 @@ class WebSearchFailoverTests(SimpleTestCase):
             "WEB_SEARCH_BASE_URL": "http://searxng:8080",
             "WEB_SEARCH_PROVIDER_ORDER": "searx,yandex",
             "WEB_SEARCH_PAID_PROVIDERS_ENABLED": "true",
+            "WEB_SEARCH_PAID_BILLING_READY": "true",
         },
         clear=False,
     )
@@ -73,6 +76,7 @@ class WebSearchFailoverTests(SimpleTestCase):
             "WEB_SEARCH_BASE_URL": "http://searxng:8080",
             "WEB_SEARCH_PROVIDER_ORDER": "yandex,searx",
             "WEB_SEARCH_PAID_PROVIDERS_ENABLED": "true",
+            "WEB_SEARCH_PAID_BILLING_READY": "true",
         },
         clear=False,
     )
@@ -93,6 +97,7 @@ class WebSearchFailoverTests(SimpleTestCase):
             "WEB_SEARCH_BASE_URL": "http://searxng:8080",
             "WEB_SEARCH_PROVIDER_ORDER": "searx,yandex",
             "WEB_SEARCH_PAID_PROVIDERS_ENABLED": "true",
+            "WEB_SEARCH_PAID_BILLING_READY": "true",
         },
         clear=False,
     )
