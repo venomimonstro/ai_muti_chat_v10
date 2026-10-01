@@ -37,17 +37,17 @@ def customer_can_reserve(user, amount) -> bool:
     charge = _charge(amount)
     if user is None or charge <= 0:
         return False
+    wallet, _ = Wallet.objects.get_or_create(user=user)
+    if wallet.available_rub < charge:
+        return False
     try:
-        wallet, _ = Wallet.objects.get_or_create(user=user)
-        if wallet.available_rub < charge:
-            return False
         enforce_spend_limits(wallet, charge)
-        return True
     except ValidationError:
         return False
-    except Exception:
-        # Billing/readiness uncertainty must never grant extra spending capacity.
-        return False
+    # Unexpected DB/cache/runtime errors deliberately propagate. Misreporting an
+    # infrastructure failure as "insufficient balance" makes incidents much harder
+    # to diagnose and can hide a platform-wide outage from the diagnostics center.
+    return True
 
 
 def _mark_customer_rejection() -> None:
