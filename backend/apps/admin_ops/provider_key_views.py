@@ -38,6 +38,30 @@ def _set_pending_verification(provider: Provider):
     return True
 
 
+def _check_new_key(provider: Provider, item: ProviderApiKey) -> bool:
+    # Yandex Search API has no free /models or credential-introspection endpoint.
+    # The generic provider checker would call {base_url}/models with Bearer auth and
+    # incorrectly mark a valid Search API key DEGRADED. Do not burn a paid search just
+    # to save the credential. Its first real, procurement-backed search is the proof:
+    # success promotes the key to HEALTHY; confirmed auth/credit failure degrades it;
+    # the customer request still falls back to free SearXNG.
+    if provider.slug == "yandex-search":
+        item.health_state = ProviderApiKey.HealthState.UNKNOWN
+        item.last_error_code = ""
+        item.last_latency_ms = None
+        item.last_checked_at = None
+        item.save(
+            update_fields=[
+                "health_state",
+                "last_error_code",
+                "last_latency_ms",
+                "last_checked_at",
+            ]
+        )
+        return False
+    return _check_key(provider, item)
+
+
 class SafeProviderKeyCollectionView(LegacyProviderKeyCollectionView):
     """Add a provider credential without bypassing the inference recovery circuit.
 
@@ -99,7 +123,7 @@ class SafeProviderKeyCollectionView(LegacyProviderKeyCollectionView):
         )
         item.set_secret(secret)
         item.save()
-        healthy = _check_key(provider, item)
+        healthy = _check_new_key(provider, item)
 
         if provider.slug in {"openrouter", "gigachat"} and not healthy:
             error_code = item.last_error_code or "key_validation_failed"
