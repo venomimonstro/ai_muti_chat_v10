@@ -93,3 +93,28 @@ def test_activity_stream_reports_real_source_count(monkeypatch):
     )
     assert "Нашёл актуальные источники: 3" in output
     assert '"source_count": 3' in output
+
+
+def test_activity_stream_converts_unexpected_preflight_failure_to_safe_sse(monkeypatch):
+    secret_internal_text = "postgres password=TOP_SECRET provider-token=SECRET"
+
+    def broken_prepare(**_kwargs):
+        raise RuntimeError(secret_internal_text)
+
+    monkeypatch.setattr(activity_stream, "needs_web_search", lambda _content: False)
+    monkeypatch.setattr(activity_stream, "prepare", broken_prepare)
+
+    output = "".join(
+        activity_stream.managed_request_stream(
+            user=SimpleNamespace(pk="user-1"),
+            conversation=SimpleNamespace(pk="conversation-1"),
+            idempotency_key="activity-test-internal",
+            payload={"content": "Привет", "client_message_id": "msg-3"},
+        )
+    )
+
+    assert "event: error" in output
+    assert '"code": "preflight_failed"' in output
+    assert '"support_code": "preflight_internal"' in output
+    assert "Не удалось безопасно подготовить запрос" in output
+    assert secret_internal_text not in output
