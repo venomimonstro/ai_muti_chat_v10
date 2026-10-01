@@ -9,10 +9,17 @@ from .signals import _require_procurement
 
 @pytest.mark.django_db
 @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
-def test_legacy_special_external_provider_cannot_use_echo_procurement_bypass():
+@pytest.mark.parametrize(
+    ("slug", "name"),
+    [
+        ("gigachat", "Legacy GigaChat"),
+        ("yandexgpt", "Legacy YandexGPT"),
+    ],
+)
+def test_legacy_special_external_provider_cannot_use_echo_procurement_bypass(slug, name):
     provider = Provider.objects.create(
-        slug="gigachat",
-        name="Legacy GigaChat",
+        slug=slug,
+        name=name,
         adapter_type=Provider.AdapterType.ECHO,
         enabled=True,
         health_state=Provider.HealthState.HEALTHY,
