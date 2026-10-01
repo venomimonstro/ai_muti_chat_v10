@@ -21,6 +21,12 @@ grep -Fq '"cancelled"' frontend/lib/api.ts
 grep -Fq 'requestStreamCancellation' frontend/lib/api.ts
 grep -Fq 'stream_first_event_timeout' frontend/lib/api.ts
 grep -Fq 'reader.cancel("stream_first_event_timeout")' frontend/lib/api.ts
+grep -Fq '/messages/status/' frontend/app/components/WorkspaceRuntimeGuard.tsx
+grep -Fq 'zero routing UI/state responsibilities' frontend/app/components/WorkspaceRuntimeGuard.tsx
+if grep -Fq 'dispatchRouting(source' frontend/app/components/WorkspaceRuntimeGuard.tsx; then
+  echo '[FAIL] legacy WorkspaceRuntimeGuard still overrides the visible model/routing choice'
+  exit 1
+fi
 
 echo '[chat-check] build isolated backend test image'
 COMPOSE_BAKE=false docker compose --ansi never --progress plain -f "$TEST_COMPOSE" build backend-test
@@ -54,6 +60,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_execution_readiness_after_provider_reserve.py \
+  apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
   apps/chat/test_manual_selection_race.py \
