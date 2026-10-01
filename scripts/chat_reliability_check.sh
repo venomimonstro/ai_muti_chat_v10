@@ -30,6 +30,8 @@ grep -Fq 'WorkspaceExperience' frontend/app/app/page.tsx
 grep -Fq 'ActivityTrace' frontend/app/workspace/WorkspaceExperience.tsx
 grep -Fq 'event==="activity"' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/WorkspaceV2.tsx
+grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
+grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'const PRE_SEND_GATE_MS=15000;' frontend/app/workspace/Composer.tsx
 grep -Fq 'const noModelsAvailable=explicitModelControl&&' frontend/app/workspace/Composer.tsx
 grep -Fq 'система автоматически использует рабочую резервную модель' frontend/app/workspace/Composer.tsx
@@ -81,6 +83,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
   apps/chat/test_customer_capacity.py \
+  apps/chat/test_context_safety.py \
   apps/chat/test_execution_readiness_after_provider_reserve.py \
   apps/chat/test_execution_fence.py \
   apps/chat/test_procurement_execution_reservation.py \
