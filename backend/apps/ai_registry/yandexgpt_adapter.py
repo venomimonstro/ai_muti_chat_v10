@@ -27,10 +27,9 @@ def normalize_model_id(value: str, *, folder_id: str = "") -> str:
 class YandexGPTAdapter(DeepSeekChatAdapter):
     """Yandex Cloud OpenAI-compatible chat adapter.
 
-    Yandex AI Studio exposes an OpenAI-compatible Chat Completions API, but service
-    account API keys use ``Authorization: Api-Key ...`` rather than Bearer auth.
-    Credential selection, funding-account pinning and health admission are handled by
-    the shared dispatch layer.
+    The OpenAI-compatible ``/v1`` endpoint is documented with the OpenAI SDK and
+    therefore uses Bearer auth by default. Deployments using the standard Yandex
+    API-key authorization contract can explicitly select ``api-key``.
     """
 
     def __init__(
@@ -40,15 +39,25 @@ class YandexGPTAdapter(DeepSeekChatAdapter):
         folder_id: str = "",
         base_url: str = DEFAULT_BASE_URL,
         probe_model: str = DEFAULT_MODEL,
+        auth_scheme: str = "bearer",
     ):
         super().__init__(api_key=api_key, base_url=base_url or DEFAULT_BASE_URL)
         self.folder_id = str(folder_id or "").strip()
         self.probe_model = str(probe_model or DEFAULT_MODEL).strip()
+        normalized_scheme = str(auth_scheme or "bearer").strip().casefold().replace("_", "-")
+        if normalized_scheme not in {"bearer", "api-key"}:
+            raise ProviderError(
+                "Unsupported YandexGPT authentication scheme",
+                code="yandex_auth_scheme_invalid",
+                retryable=False,
+            )
+        self.auth_scheme = normalized_scheme
 
     @property
     def headers(self):
+        prefix = "Api-Key" if self.auth_scheme == "api-key" else "Bearer"
         return {
-            "Authorization": f"Api-Key {self.api_key}",
+            "Authorization": f"{prefix} {self.api_key}",
             "Content-Type": "application/json",
         }
 
