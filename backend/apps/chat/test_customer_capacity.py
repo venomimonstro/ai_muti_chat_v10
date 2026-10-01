@@ -85,3 +85,18 @@ def test_customer_capacity_failure_is_not_reported_as_provider_balance_failure()
 
     assert "балансе недостаточно средств" in str(caught.value).casefold()
     assert "api-балансом" not in str(caught.value).casefold()
+
+
+def test_infrastructure_error_is_not_misreported_as_insufficient_balance():
+    user = object()
+    quote = SimpleNamespace(user_charge_rub="5.00")
+    provider = object()
+
+    def raw_prepare(**_kwargs):
+        streaming.quote_has_procurement_capacity(provider, quote)
+        return "unreachable"
+
+    streaming, _preview = _modules(raw_prepare, lambda **_kwargs: {})
+    with patch.object(customer_capacity, "customer_can_reserve", side_effect=RuntimeError("db down")):
+        with pytest.raises(RuntimeError, match="db down"):
+            streaming.prepare(user=user)
