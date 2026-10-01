@@ -91,6 +91,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/billing/test_model_loss_isolation.py \
   apps/procurement/test_chat_reservation_cleanup.py \
   apps/procurement/test_special_provider_procurement.py \
+  apps/procurement/test_runtime_account_failover.py \
   apps/chat/test_default_auto_routing.py \
   apps/chat/test_activity_stream.py \
   apps/chat/test_runtime_safety_wiring.py \
@@ -102,6 +103,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_execution_readiness_after_provider_reserve.py \
   apps/chat/test_execution_fence.py \
   apps/chat/test_procurement_execution_reservation.py \
+  apps/chat/test_procurement_account_binding.py \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
   apps/chat/test_cost_preview_runtime_parity.py \
