@@ -6,6 +6,7 @@ from .compare_views import CompareDetailView, ComparePreviewView, CompareRunView
 from .cost_views import ChatCostPreviewView, ConfirmedConversationStreamView
 from .message_actions import EditMessageView, RegenerateMessageView
 from .safe_views import SafeConversationViewSet
+from .stream_status import ConversationGenerationStatusView
 from .ux_views import (
     ConversationFolderViewSet,
     ConversationSettingsView,
@@ -32,6 +33,11 @@ urlpatterns = [
         "conversations/<uuid:conversation_id>/messages/stream/",
         ConfirmedConversationStreamView.as_view(),
         name="confirmed-chat-stream",
+    ),
+    path(
+        "conversations/<uuid:conversation_id>/messages/status/",
+        ConversationGenerationStatusView.as_view(),
+        name="chat-generation-status",
     ),
     path(
         "conversations/<uuid:conversation_id>/messages/cancel/",
