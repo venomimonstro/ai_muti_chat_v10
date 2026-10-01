@@ -87,6 +87,13 @@ class Provider(models.Model):
             return ""
 
     def select_api_key(self, *, exclude_key_ids=None):
+        """Return ``(secret, key_id)`` using health-aware pool rotation.
+
+        A healthy key linked to the active default funding account is authoritative:
+        provider spend accounting and the runtime credential must refer to the same
+        purchased balance. Failed keys may still be excluded per request, allowing
+        safe rotation to a spare credential without reusing the bad key.
+        """
         excluded = {str(item) for item in (exclude_key_ids or []) if item}
         preferred = None
         try:
@@ -108,12 +115,14 @@ class Provider(models.Model):
                 preferred = funding.api_key
         except Exception:
             preferred = None
+
         try:
             if preferred is not None:
                 value = preferred.get_secret()
                 if value:
                     ProviderApiKey.objects.filter(pk=preferred.pk).update(last_used_at=timezone.now())
                     return value, preferred.pk
+
             for health_state in (
                 ProviderApiKey.HealthState.HEALTHY,
                 ProviderApiKey.HealthState.UNKNOWN,
@@ -122,7 +131,11 @@ class Provider(models.Model):
                 keys = self.api_keys.filter(enabled=True, health_state=health_state)
                 if excluded:
                     keys = keys.exclude(pk__in=excluded)
-                keys = keys.order_by(models.F("last_used_at").asc(nulls_first=True), "priority", "created_at")[:10]
+                keys = keys.order_by(
+                    models.F("last_used_at").asc(nulls_first=True),
+                    "priority",
+                    "created_at",
+                )[:10]
                 for key in keys:
                     value = key.get_secret()
                     if value:
@@ -130,7 +143,10 @@ class Provider(models.Model):
                         return value, key.pk
         except Exception:
             pass
-        legacy = self._legacy_api_key() or (os.getenv(self.credential_env, "").strip() if self.credential_env else "")
+
+        legacy = self._legacy_api_key() or (
+            os.getenv(self.credential_env, "").strip() if self.credential_env else ""
+        )
         return legacy, None
 
     def get_api_key(self) -> str:
@@ -150,8 +166,10 @@ class Provider(models.Model):
                 return "key_pool"
         except Exception:
             pass
-        if self._legacy_api_key(): return "database"
-        if self.credential_env and os.getenv(self.credential_env, "").strip(): return "environment"
+        if self._legacy_api_key():
+            return "database"
+        if self.credential_env and os.getenv(self.credential_env, "").strip():
+            return "environment"
         return "none"
 
     def _hydrate_runtime_credential(self):
@@ -174,6 +192,7 @@ class ProviderApiKey(models.Model):
         HEALTHY = "healthy", "Работает"
         DEGRADED = "degraded", "Ошибка"
         DISABLED = "disabled", "Отключён"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     provider = models.ForeignKey(Provider, on_delete=models.CASCADE, related_name="api_keys")
     label = models.CharField(max_length=120, default="Основной ключ")
@@ -190,134 +209,173 @@ class ProviderApiKey(models.Model):
     last_checked_at = models.DateTimeField(null=True, blank=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
         ordering = ["priority", "created_at"]
         constraints = [models.UniqueConstraint(fields=["provider", "label"], name="unique_provider_api_key_label")]
+
     def set_secret(self, value: str):
-        value=(value or "").strip()
-        if not value: raise ValidationError("API-ключ не может быть пустым")
-        self.secret_encrypted=_credential_cipher().encrypt(value.encode("utf-8")).decode("ascii")
+        value = (value or "").strip()
+        if not value:
+            raise ValidationError("API-ключ не может быть пустым")
+        self.secret_encrypted = _credential_cipher().encrypt(value.encode("utf-8")).decode("ascii")
+
     def get_secret(self) -> str:
-        if not self.secret_encrypted: return ""
-        try: return _credential_cipher().decrypt(self.secret_encrypted.encode("ascii")).decode("utf-8")
-        except (InvalidToken, ValueError, UnicodeError): return ""
+        if not self.secret_encrypted:
+            return ""
+        try:
+            return _credential_cipher().decrypt(self.secret_encrypted.encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError, UnicodeError):
+            return ""
+
     @property
     def masked(self):
-        value=self.get_secret()
-        if len(value)<=8: return "••••••••"
+        value = self.get_secret()
+        if len(value) <= 8:
+            return "••••••••"
         return f"{value[:4]}••••{value[-4:]}"
 
 
 class AIModel(models.Model):
-    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    provider=models.ForeignKey(Provider,on_delete=models.PROTECT,related_name="models")
-    slug=models.SlugField(unique=True)
-    display_name=models.CharField(max_length=120)
-    upstream_model=models.CharField(max_length=160,default="")
-    enabled=models.BooleanField(default=True)
-    capabilities=models.JSONField(default=list,blank=True)
-    routing_tags=models.JSONField(default=list,blank=True)
-    fallback_model=models.ForeignKey("self",on_delete=models.SET_NULL,null=True,blank=True,related_name="fallback_for")
-    context_window=models.PositiveIntegerField(default=8192)
-    max_output_tokens=models.PositiveIntegerField(default=2048)
-    input_price_rub_per_million=models.DecimalField(max_digits=12,decimal_places=4,default=0)
-    output_price_rub_per_million=models.DecimalField(max_digits=12,decimal_places=4,default=0)
-    current_version=models.ForeignKey("ModelVersion",on_delete=models.PROTECT,null=True,blank=True,related_name="active_for_models")
-    def __str__(self): return f"{self.display_name} ({self.provider.name})"
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.ForeignKey(Provider, on_delete=models.PROTECT, related_name="models")
+    slug = models.SlugField(unique=True)
+    display_name = models.CharField(max_length=120)
+    upstream_model = models.CharField(max_length=160, default="")
+    enabled = models.BooleanField(default=True)
+    capabilities = models.JSONField(default=list, blank=True)
+    routing_tags = models.JSONField(default=list, blank=True)
+    fallback_model = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="fallback_for")
+    context_window = models.PositiveIntegerField(default=8192)
+    max_output_tokens = models.PositiveIntegerField(default=2048)
+    input_price_rub_per_million = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    output_price_rub_per_million = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    current_version = models.ForeignKey("ModelVersion", on_delete=models.PROTECT, null=True, blank=True, related_name="active_for_models")
+
+    def __str__(self):
+        return f"{self.display_name} ({self.provider.name})"
 
 
 class ModelVersion(models.Model):
     class Stage(models.TextChoices):
-        CANDIDATE="candidate","Кандидат"; CANARY="canary","Canary"; ACTIVE="active","Активна"; RETIRED="retired","Выведена"
-    IMMUTABLE_FIELDS=("model_id","version","exact_api_id","capabilities","routing_tags","context_window","max_output_tokens")
-    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    model=models.ForeignKey(AIModel,on_delete=models.PROTECT,related_name="versions")
-    version=models.SlugField(max_length=100)
-    exact_api_id=models.CharField(max_length=160)
-    capabilities=models.JSONField(default=list,blank=True)
-    routing_tags=models.JSONField(default=list,blank=True)
-    context_window=models.PositiveIntegerField(default=8192)
-    max_output_tokens=models.PositiveIntegerField(default=2048)
-    stage=models.CharField(max_length=16,choices=Stage.choices,default=Stage.CANDIDATE)
-    release_notes=models.TextField(blank=True)
-    eval_run_id=models.UUIDField(null=True,blank=True)
-    created_at=models.DateTimeField(auto_now_add=True)
-    activated_at=models.DateTimeField(null=True,blank=True)
-    retired_at=models.DateTimeField(null=True,blank=True)
+        CANDIDATE = "candidate", "Кандидат"
+        CANARY = "canary", "Canary"
+        ACTIVE = "active", "Активна"
+        RETIRED = "retired", "Выведена"
+
+    IMMUTABLE_FIELDS = ("model_id", "version", "exact_api_id", "capabilities", "routing_tags", "context_window", "max_output_tokens")
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    model = models.ForeignKey(AIModel, on_delete=models.PROTECT, related_name="versions")
+    version = models.SlugField(max_length=100)
+    exact_api_id = models.CharField(max_length=160)
+    capabilities = models.JSONField(default=list, blank=True)
+    routing_tags = models.JSONField(default=list, blank=True)
+    context_window = models.PositiveIntegerField(default=8192)
+    max_output_tokens = models.PositiveIntegerField(default=2048)
+    stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.CANDIDATE)
+    release_notes = models.TextField(blank=True)
+    eval_run_id = models.UUIDField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
-        ordering=["model__slug","-created_at"]
-        constraints=[models.UniqueConstraint(fields=["model","version"],name="unique_model_registry_version"),models.UniqueConstraint(fields=["model"],condition=models.Q(stage="active"),name="unique_active_version_per_model")]
-    def save(self,*args,**kwargs):
+        ordering = ["model__slug", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["model", "version"], name="unique_model_registry_version"),
+            models.UniqueConstraint(fields=["model"], condition=models.Q(stage="active"), name="unique_active_version_per_model"),
+        ]
+
+    def save(self, *args, **kwargs):
         if self.pk:
-            previous=type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
-            changed=previous and any(previous[field]!=getattr(self,field) for field in self.IMMUTABLE_FIELDS)
-            if changed: raise ValidationError("Конфигурация ModelVersion неизменяема; создайте новую версию")
-        super().save(*args,**kwargs)
+            previous = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            changed = previous and any(previous[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS)
+            if changed:
+                raise ValidationError("Конфигурация ModelVersion неизменяема; создайте новую версию")
+        super().save(*args, **kwargs)
 
 
 class ModelVersionTransition(models.Model):
     class Action(models.TextChoices):
-        PROMOTE="promote","Продвижение"; ROLLBACK="rollback","Откат"
-    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    model=models.ForeignKey(AIModel,on_delete=models.PROTECT,related_name="version_transitions")
-    from_version=models.ForeignKey(ModelVersion,on_delete=models.PROTECT,null=True,blank=True,related_name="transitions_from")
-    to_version=models.ForeignKey(ModelVersion,on_delete=models.PROTECT,related_name="transitions_to")
-    action=models.CharField(max_length=16,choices=Action.choices)
-    eval_run_id=models.UUIDField(null=True,blank=True)
-    reason=models.CharField(max_length=500,blank=True)
-    created_at=models.DateTimeField(auto_now_add=True)
-    class Meta: ordering=["-created_at"]
+        PROMOTE = "promote", "Продвижение"
+        ROLLBACK = "rollback", "Откат"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    model = models.ForeignKey(AIModel, on_delete=models.PROTECT, related_name="version_transitions")
+    from_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, null=True, blank=True, related_name="transitions_from")
+    to_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, related_name="transitions_to")
+    action = models.CharField(max_length=16, choices=Action.choices)
+    eval_run_id = models.UUIDField(null=True, blank=True)
+    reason = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
 
 class ProviderHealthSnapshot(models.Model):
-    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    provider=models.ForeignKey(Provider,on_delete=models.CASCADE,related_name="health_snapshots")
-    healthy=models.BooleanField()
-    latency_ms=models.PositiveIntegerField(null=True,blank=True)
-    error_code=models.CharField(max_length=80,blank=True)
-    checked_at=models.DateTimeField(auto_now_add=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.ForeignKey(Provider, on_delete=models.CASCADE, related_name="health_snapshots")
+    healthy = models.BooleanField()
+    latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    checked_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
-        ordering=["-checked_at"]
-        indexes=[models.Index(fields=["provider","-checked_at"])]
+        ordering = ["-checked_at"]
+        indexes = [models.Index(fields=["provider", "-checked_at"])]
 
 
 class ReliabilityIncident(models.Model):
     class State(models.TextChoices):
-        OPEN="open","Открыт"; RECOVERED="recovered","Восстановлен"
-    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    correlation_id=models.UUIDField(default=uuid.uuid4,editable=False,db_index=True)
-    provider=models.ForeignKey(Provider,on_delete=models.PROTECT,related_name="incidents")
-    state=models.CharField(max_length=16,choices=State.choices,default=State.OPEN)
-    error_code=models.CharField(max_length=80)
-    details=models.JSONField(default=dict,blank=True)
-    opened_at=models.DateTimeField(auto_now_add=True)
-    recovered_at=models.DateTimeField(null=True,blank=True)
-    class Meta: ordering=["-opened_at"]
+        OPEN = "open", "Открыт"
+        RECOVERED = "recovered", "Восстановлен"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    correlation_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
+    provider = models.ForeignKey(Provider, on_delete=models.PROTECT, related_name="incidents")
+    state = models.CharField(max_length=16, choices=State.choices, default=State.OPEN)
+    error_code = models.CharField(max_length=80)
+    details = models.JSONField(default=dict, blank=True)
+    opened_at = models.DateTimeField(auto_now_add=True)
+    recovered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-opened_at"]
 
 
 class RoutingPolicyVersion(models.Model):
-    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    version=models.SlugField(max_length=80,unique=True)
-    active=models.BooleanField(default=False)
-    mode_weights=models.JSONField(default=dict)
-    thresholds=models.JSONField(default=dict)
-    created_at=models.DateTimeField(auto_now_add=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    version = models.SlugField(max_length=80, unique=True)
+    active = models.BooleanField(default=False)
+    mode_weights = models.JSONField(default=dict)
+    thresholds = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
-        ordering=["-created_at"]
-        constraints=[models.UniqueConstraint(fields=["active"],condition=models.Q(active=True),name="unique_active_routing_policy")]
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["active"], condition=models.Q(active=True), name="unique_active_routing_policy")]
 
 
 class RoutingTierAssignment(models.Model):
     class Tier(models.TextChoices):
-        SIMPLE="economy","Простой"; MEDIUM="balanced","Средний"; COMPLEX="maximum","Сложный"
-    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    tier=models.CharField(max_length=16,choices=Tier.choices)
-    model=models.ForeignKey(AIModel,on_delete=models.CASCADE,related_name="routing_tiers")
-    priority=models.PositiveIntegerField(default=100)
-    enabled=models.BooleanField(default=True)
-    created_at=models.DateTimeField(auto_now_add=True)
-    updated_at=models.DateTimeField(auto_now=True)
+        SIMPLE = "economy", "Простой"
+        MEDIUM = "balanced", "Средний"
+        COMPLEX = "maximum", "Сложный"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tier = models.CharField(max_length=16, choices=Tier.choices)
+    model = models.ForeignKey(AIModel, on_delete=models.CASCADE, related_name="routing_tiers")
+    priority = models.PositiveIntegerField(default=100)
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
     class Meta:
-        ordering=["tier","priority","model__display_name"]
-        constraints=[models.UniqueConstraint(fields=["tier","model"],name="unique_model_per_routing_tier")]
-    def __str__(self): return f"{self.get_tier_display()} · {self.model.display_name}"
+        ordering = ["tier", "priority", "model__display_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["tier", "model"], name="unique_model_per_routing_tier")
+        ]
+
+    def __str__(self):
+        return f"{self.get_tier_display()} · {self.model.display_name}"
