@@ -7,7 +7,7 @@ from django.utils import timezone
 from apps.billing.models import BalanceReservation
 
 from .cancellation import cancel_requested, clear_cancel, forget_cancel_probe
-from .models import Generation, Message
+from .models import Generation, GenerationAttempt, Message
 from .partial_billing import settle_delivered_partial
 from .streaming import sse
 
@@ -29,10 +29,20 @@ def _finalize_cancel(generation, *, clear_content: bool):
     charge = settle_delivered_partial(generation, assistant.content)
     assistant.status = Message.Status.PARTIAL if assistant.content else Message.Status.FAILED
     assistant.save(update_fields=["content", "status"])
+    now = timezone.now()
+    GenerationAttempt.objects.filter(
+        generation=generation,
+        state=GenerationAttempt.State.RUNNING,
+    ).update(
+        state=GenerationAttempt.State.SKIPPED,
+        error_code="client_cancelled",
+        retryable=False,
+        finished_at=now,
+    )
     generation.state = Generation.State.CANCELLED
     generation.error_code = "client_cancelled"
     generation.actual_cost_rub = charge
-    generation.completed_at = timezone.now()
+    generation.completed_at = now
     generation.save(
         update_fields=["state", "error_code", "actual_cost_rub", "completed_at"]
     )
