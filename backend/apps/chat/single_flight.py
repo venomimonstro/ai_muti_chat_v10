@@ -167,8 +167,14 @@ def install(streaming_module) -> None:
     prepare._raw_prepare = raw_prepare
     streaming_module.prepare = prepare
 
-    # Rebind modules that may have imported prepare by value before AppConfig.ready().
-    for module_name in ("apps.chat.services", "apps.chat.views"):
+    # Do not rely on Django import order. Any entrypoint imported before AppConfig.ready()
+    # must be rebound to the same authoritative single-flight prepare callable.
+    for module_name in (
+        "apps.chat.services",
+        "apps.chat.views",
+        "apps.chat.cost_views",
+        "apps.chat.activity_stream",
+    ):
         module = sys.modules.get(module_name)
-        if module is not None:
+        if module is not None and hasattr(module, "prepare"):
             module.prepare = prepare
