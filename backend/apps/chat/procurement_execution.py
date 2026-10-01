@@ -84,12 +84,17 @@ def _rebind_failed_provider_reservation(generation_id, provider) -> bool:
     commercial operation. Creating a second reservation for the same RequestCost is
     therefore intentionally impossible. Before any provider usage is confirmed it is
     safe to move that *active* reservation to another funding account while preserving
-    source identity and amount. Both account balances and the reservation row are
-    locked so concurrent retries cannot reserve the same capacity twice.
+    source identity and amount. RequestCost is locked first so settlement cannot race
+    this operation and confirm external usage while its reserve is being moved.
     """
     if not generation_id:
         return False
-    request_cost = _current_request_cost(generation_id)
+    request_cost = (
+        RequestCost.objects.select_for_update()
+        .select_related("price_version")
+        .filter(generation_id=generation_id)
+        .first()
+    )
     if request_cost is None or request_cost.provider_cost_rub is not None:
         return False
     prefix = f"chat:{request_cost.id}:"
