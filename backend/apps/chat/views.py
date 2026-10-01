@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel
 
+from .activity_stream import managed_request_stream
 from .branches import ensure_active_branch, fork_branch, visible_messages
 from .compare import (
     branch_from_variant,
@@ -16,7 +17,6 @@ from .compare import (
     serialize_compare,
     synthesize_compare,
 )
-from .managed_stream import managed_run
 from .models import CompareVariant, Conversation, ConversationDraft
 from .product_identity import create_identity_generation, direct_identity_answer, identity_sse
 from .serializers import (
@@ -26,7 +26,6 @@ from .serializers import (
     SendMessageSerializer,
 )
 from .services import generate_reply
-from .streaming import prepare
 
 
 class ConversationViewSet(viewsets.ModelViewSet):
@@ -281,8 +280,8 @@ class ConversationViewSet(viewsets.ModelViewSet):
         content = serializer.validated_data["content"]
         file_ids = serializer.validated_data.get("file_ids") or []
         identity_answer = direct_identity_answer(content, file_ids)
-        try:
-            if identity_answer is not None:
+        if identity_answer is not None:
+            try:
                 generation, _created = create_identity_generation(
                     user=request.user,
                     conversation=conversation,
@@ -291,17 +290,19 @@ class ConversationViewSet(viewsets.ModelViewSet):
                     idempotency_key=key,
                     answer=identity_answer,
                 )
-                stream = identity_sse(generation)
-            else:
-                generation, _created = prepare(
-                    user=request.user,
-                    conversation=conversation,
-                    idempotency_key=key,
-                    **serializer.validated_data,
-                )
-                stream = managed_run(generation)
-        except (ValidationError, AIModel.DoesNotExist) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            except (ValidationError, AIModel.DoesNotExist) as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            stream = identity_sse(generation)
+        else:
+            # The iterator yields immediately, then performs routing/search/preflight.
+            # This keeps the UI alive during real work instead of showing a silent
+            # spinner while preserving prepare() as the single billing authority.
+            stream = managed_request_stream(
+                user=request.user,
+                conversation=conversation,
+                idempotency_key=key,
+                payload=dict(serializer.validated_data),
+            )
         response = StreamingHttpResponse(
             stream, content_type="text/event-stream; charset=utf-8"
         )
