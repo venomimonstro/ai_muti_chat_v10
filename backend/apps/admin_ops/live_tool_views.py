@@ -69,24 +69,16 @@ class LiveToolSettingsView(AdminAPIView):
 
     @transaction.atomic
     def patch(self, request):
-        provider, _ = Provider.objects.select_for_update().get_or_create(
-            slug=YANDEX_SEARCH_SLUG,
-            defaults={
-                "name": YANDEX_SEARCH_NAME,
-                "enabled": True,
-                "adapter_type": Provider.AdapterType.ECHO,
-                "api_base_url": YANDEX_SEARCH_ENDPOINT,
-                "priority": 9999,
-                "auth_config": {},
-            },
-        )
         folder_id = str(request.data.get("folder_id") or "").strip()
         region = str(request.data.get("region") or "225").strip()
         search_type = str(request.data.get("search_type") or "SEARCH_TYPE_RU").strip()
         api_key = str(request.data.get("api_key") or "").strip()
-        markup = _decimal(request.data.get("markup_percent"), default="100")
-        purchased_requests = _decimal(request.data.get("purchased_requests"))
-        purchase_cost_rub = _decimal(request.data.get("purchase_cost_rub"))
+        try:
+            markup = _decimal(request.data.get("markup_percent"), default="100")
+            purchased_requests = _decimal(request.data.get("purchased_requests"))
+            purchase_cost_rub = _decimal(request.data.get("purchase_cost_rub"))
+        except ValidationError as exc:
+            return Response({"detail": exc.messages}, status=400)
 
         if not folder_id:
             return Response({"detail": "Укажите Folder ID каталога Yandex Cloud"}, status=400)
@@ -104,6 +96,26 @@ class LiveToolSettingsView(AdminAPIView):
                 status=400,
             )
 
+        existing = Provider.objects.filter(slug=YANDEX_SEARCH_SLUG).prefetch_related("api_keys").first()
+        existing_key = (
+            existing.api_keys.filter(enabled=True).order_by("priority", "created_at").first()
+            if existing
+            else None
+        )
+        if not api_key and (existing_key is None or not existing.credential_configured()):
+            return Response({"detail": "Вставьте API-ключ Yandex Search"}, status=400)
+
+        provider, _ = Provider.objects.select_for_update().get_or_create(
+            slug=YANDEX_SEARCH_SLUG,
+            defaults={
+                "name": YANDEX_SEARCH_NAME,
+                "enabled": True,
+                "adapter_type": Provider.AdapterType.ECHO,
+                "api_base_url": YANDEX_SEARCH_ENDPOINT,
+                "priority": 9999,
+                "auth_config": {},
+            },
+        )
         auth = dict(provider.auth_config or {})
         auth.update(
             {
@@ -143,8 +155,6 @@ class LiveToolSettingsView(AdminAPIView):
             key.save()
         else:
             key = provider.api_keys.filter(enabled=True).order_by("priority", "created_at").first()
-            if key is None or not provider.credential_configured():
-                return Response({"detail": "Вставьте API-ключ Yandex Search"}, status=400)
 
         account = ProviderFundingAccount.objects.filter(provider=provider, api_key=key).first()
         if account is None:
