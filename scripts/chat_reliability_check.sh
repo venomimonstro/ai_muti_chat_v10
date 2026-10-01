@@ -35,11 +35,13 @@ grep -Fq 'Чат доступен. Часть вспомогательных д�
 grep -Fq '<ModelPicker value={selectorValue} models={models}' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'api<AIModel[]>("/models/")' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'window.setInterval(()=>void refresh(),30000)' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'broadcastCatalogState("ready",ready.length>0)' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'MODEL_CATALOG_EVENT="aiws:model-catalog"' frontend/app/workspace/Composer.tsx
+grep -Fq 'workspaceModelsAvailable===false' frontend/app/workspace/Composer.tsx
 grep -Fq 'routing_tiers_configured' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'Уровни без рабочей модели автоматически скрываются.' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'onSend:()=>void|Promise<void>;' frontend/app/workspace/Composer.tsx
 grep -Fq 'await Promise.resolve(onSend())' frontend/app/workspace/Composer.tsx
-grep -Fq 'const noModelsAvailable=explicitModelControl&&' frontend/app/workspace/Composer.tsx
 grep -Fq 'система автоматически использует рабочую резервную модель' frontend/app/workspace/Composer.tsx
 if grep -Fq 'PRE_SEND_GATE_MS' frontend/app/workspace/Composer.tsx; then
   echo '[FAIL] composer still uses a timer-based submit latch instead of the real send lifecycle'
