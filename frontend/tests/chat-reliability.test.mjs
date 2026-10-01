@@ -89,3 +89,36 @@ test("Snapshots replace the prefix and preserve completed/partial states", () =>
   assert.equal(state.snapshotMessageUpdate({text: "Часть ответа", state: "failed"}).status, "partial");
   assert.equal(state.snapshotMessageUpdate({text: "", state: "cancelled"}).status, "failed");
 });
+
+const workspace = load("workspace-state");
+test("A delayed conversation response cannot overwrite a newer navigation or New chat", () => {
+  const requests = workspace.createLatestRequest();
+  const old = requests.begin(); const current = requests.begin();
+  assert.equal(requests.isCurrent(old), false);
+  assert.equal(requests.isCurrent(current), true);
+  requests.invalidate(); assert.equal(requests.isCurrent(current), false);
+});
+
+test("Clearing a submitted draft waits for an older autosave without blocking another chat", async () => {
+  const enqueue = workspace.createDraftWriter(); const calls = [];
+  let finish;
+  const save = enqueue("chat-a", () => {calls.push("save"); return new Promise(resolve => {finish = resolve;});});
+  const clear = enqueue("chat-a", async () => {calls.push("clear");});
+  await enqueue("chat-b", async () => {calls.push("other");});
+  assert.deepEqual(calls, ["save", "other"]);
+  finish(); await Promise.all([save, clear]);
+  assert.deepEqual(calls, ["save", "other", "clear"]);
+});
+
+test("A failed draft save does not poison the next save or delete", async () => {
+  const enqueue = workspace.createDraftWriter();
+  await assert.rejects(enqueue("chat", async () => {throw new Error("offline");}));
+  assert.equal(await enqueue("chat", async () => "saved"), "saved");
+});
+
+test("Attachments wait for extraction, accept partial extraction and surface a failed file", () => {
+  assert.equal(workspace.attachmentReadiness([{status:"parsing"}]).blocked, true);
+  assert.equal(workspace.attachmentReadiness([{status:"ready"},{status:"partial"}]).blocked, false);
+  assert.match(workspace.attachmentReadiness([{status:"failed"}]).message, /Уберите/);
+  assert.equal(workspace.attachmentReadiness([]).blocked, false);
+});

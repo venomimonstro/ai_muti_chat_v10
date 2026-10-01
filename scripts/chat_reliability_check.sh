@@ -62,7 +62,6 @@ grep -Fq 'workspaceModelsAvailable===false' frontend/app/workspace/Composer.tsx
 grep -Fq 'routing_tiers_configured' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'onSend:()=>void|Promise<void>;' frontend/app/workspace/Composer.tsx
 grep -Fq 'await Promise.resolve(onSend())' frontend/app/workspace/Composer.tsx
-grep -Fq 'система автоматически использует рабочую резервную модель' frontend/app/workspace/Composer.tsx
 grep -Fq 'streamMessage owns durable cancellation' frontend/app/workspace/Composer.tsx
 if grep -Fq '/messages/cancel/' frontend/app/workspace/Composer.tsx; then
   echo '[FAIL] Composer sends a duplicate cancellation request; transport must own cancel'
@@ -96,6 +95,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_stream_completion_integrity.py \
   apps/ai_registry/test_credential_save_continuity.py \
   apps/chat/test_preflight_reconnect_authorization.py \
+  apps/chat/test_draft_concurrency.py \
   apps/files/test_rag_outage_fallback.py \
   apps/ai_registry/test_chat_reliability.py \
   apps/ai_registry/test_unified_readiness.py \

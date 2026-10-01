@@ -347,6 +347,7 @@ export async function streamMessage(
   idempotencyKey: string,
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
+  requestConfirmation?: (estimate: ChatCostPreview) => Promise<boolean>,
 ) {
   const pendingCandidate = readPending(conversationId, payload);
   const restored = pendingCandidate ? await verifyPendingStream(conversationId,pendingCandidate,signal) : null;
@@ -383,7 +384,7 @@ export async function streamMessage(
   if (!restored) {
     const preview = await previewChatCost(conversationId, payload, signal);
     if (preview.confirmation_required) {
-      if (!askCostConfirmation(preview.estimated_max_rub)) {
+      if (!(requestConfirmation ? await requestConfirmation(preview) : askCostConfirmation(preview.estimated_max_rub))) {
         throw new ApiError("Запрос отменён до списания средств", 499);
       }
       pending.confirmedCost = true;
@@ -438,7 +439,7 @@ export async function streamMessage(
       if (!details || !["cost_confirmation_required", "cost_confirmation_changed"].includes(String(details.code ?? ""))) {
         throw new ApiError(errorText(details), 409, details);
       }
-      if (!askCostConfirmation(details.estimated_max_rub)) {
+      if (!(requestConfirmation ? await requestConfirmation(details) : askCostConfirmation(details.estimated_max_rub))) {
         clearPending(conversationId);
         throw new ApiError("Запрос отменён до списания средств", 499, details);
       }

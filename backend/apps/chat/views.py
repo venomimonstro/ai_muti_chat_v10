@@ -205,11 +205,16 @@ class ConversationViewSet(viewsets.ModelViewSet):
                 return Response({"content": "", "version": 0, "updated_at": None})
             return Response(ConversationDraftSerializer(draft).data)
         if request.method == "DELETE":
-            ConversationDraft.objects.filter(conversation=conversation).delete()
+            with transaction.atomic():
+                Conversation.objects.select_for_update().get(pk=conversation.pk)
+                ConversationDraft.objects.filter(conversation=conversation).delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
         serializer = ConversationDraftSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
+            # Lock the parent even when no draft exists: concurrent first saves
+            # must not race the unique conversation relation.
+            Conversation.objects.select_for_update().get(pk=conversation.pk)
             draft = (
                 ConversationDraft.objects.select_for_update()
                 .filter(conversation=conversation)
