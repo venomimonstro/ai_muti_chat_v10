@@ -68,3 +68,12 @@ class ChatConfig(AppConfig):
         # loses the atomic QUEUED->RUNNING claim is a follower, not an incomplete run,
         # and must never terminalize the real producer.
         run_claim_safety.install(streaming, managed_stream)
+
+        # Production runs under Uvicorn/ASGI. Import the request bridge only after all
+        # routing/billing/recovery wrappers above are installed so it captures the
+        # authoritative final synchronous pipeline, then expose that pipeline through
+        # a native async StreamingHttpResponse iterator instead of Django's sync-ASGI
+        # adaptation/buffering path.
+        from . import activity_stream, asgi_request_stream
+
+        asgi_request_stream.install(activity_stream)
