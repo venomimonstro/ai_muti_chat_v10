@@ -136,3 +136,51 @@ def test_model_scoped_recovery_failure_tries_sibling_without_provider_outage(mon
     success.assert_called_once()
     assert success.call_args.args[0].pk == provider.pk
     assert success.call_args.kwargs["adapter"] is good_adapter
+
+
+@pytest.mark.django_db
+def test_recovery_batch_never_releases_unprobed_sibling_to_customer_traffic(monkeypatch):
+    provider = _provider("batched-recovery", Provider.HealthState.DEGRADED)
+    models = [_model(provider, f"model-{index}") for index in range(6)]
+    bad = {
+        model.pk: FakeAdapter(
+            error=ProviderError("missing", code="model_not_found", retryable=False)
+        )
+        for model in models[:4]
+    }
+    good = {model.pk: FakeAdapter() for model in models[4:]}
+    health_adapter = FakeAdapter()
+    success = Mock()
+    failure = Mock()
+
+    def adapter_for(model, **kwargs):
+        # Provider metadata health may use any model. Inference probes below are
+        # distinguished by the adapter's generate() call.
+        adapter = bad.get(model.pk) or good.get(model.pk) or health_adapter
+        return adapter
+
+    monkeypatch.setattr(dispatch, "adapter_for", adapter_for)
+    monkeypatch.setattr(reliability, "record_success", success)
+    monkeypatch.setattr(reliability, "record_failure", failure)
+
+    first = reliability.check_provider(provider)
+
+    assert first.healthy is False
+    assert first.error_code == "recovery_batch_pending"
+    success.assert_not_called()
+    failure.assert_not_called()
+    assert sum(adapter.generate_calls for adapter in bad.values()) == 4
+    assert sum(adapter.generate_calls for adapter in good.values()) == 0
+    assert all(not model_quarantine.model_runtime_available(model) for model in models[:4])
+    assert all(model_quarantine.model_runtime_available(model) for model in models[4:])
+    snapshot = ProviderHealthSnapshot.objects.filter(provider=provider).latest("checked_at")
+    assert snapshot.healthy is False
+    assert snapshot.error_code == "recovery_batch_pending"
+
+    second = reliability.check_provider(provider)
+
+    assert second.healthy is True
+    assert sum(adapter.generate_calls for adapter in bad.values()) == 4
+    assert good[models[4].pk].generate_calls == 1
+    success.assert_called_once()
+    failure.assert_not_called()
