@@ -16,6 +16,7 @@ class ChatConfig(AppConfig):
             live_tools,
             manual_selection_recovery,
             preflight_terminal,
+            response_safety,
             runtime_readiness,
             serializers,
             signals,
@@ -37,6 +38,10 @@ class ChatConfig(AppConfig):
         billing_recovery.install()
         manual_selection_recovery.install(serializers)
         runtime_readiness.install(streaming)
+        # A provider that formally completes without useful text is not a successful
+        # customer answer. Reject it locally and continue the existing fallback chain
+        # without degrading an otherwise healthy key/provider.
+        response_safety.install(streaming)
         single_flight.install(streaming)
         # Keep preflight terminalization outside single-flight: failures inside the
         # real prepare pipeline and bounded concurrency rejection share one durable
