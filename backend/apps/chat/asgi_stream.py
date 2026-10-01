@@ -299,6 +299,10 @@ async def follow_generation_async(
         await asyncio.sleep(max(0.2, float(poll_seconds)))
 
 
+async def _finalize_async(generation):
+    await asyncio.to_thread(_finalize_unhandled_failure, generation)
+
+
 async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS):
     """Native ASGI iterator with bounded provider execution and durable reconnect."""
     loop = asyncio.get_running_loop()
@@ -306,7 +310,7 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
     detached = threading.Event()
 
     if not _STREAM_SLOTS.acquire(blocking=False):
-        _finalize_unhandled_failure(generation)
+        await _finalize_async(generation)
         yield sse(
             "error",
             {
@@ -325,7 +329,7 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
             _STREAM_EXECUTOR.submit(_produce_with_slot, generation, loop, queue, detached)
         except RuntimeError:
             _STREAM_SLOTS.release()
-            _finalize_unhandled_failure(generation)
+            await _finalize_async(generation)
             yield sse(
                 "error",
                 {
