@@ -1,4 +1,7 @@
-from apps.chat import asgi_entrypoint, managed_stream, services, streaming, views
+from django.urls import resolve
+
+from apps.chat import asgi_stream, cost_views, managed_stream, services, streaming, views
+from apps.chat.cost_views import ConfirmedConversationStreamView
 
 
 def test_all_chat_entrypoints_use_final_terminal_recovery_runtime():
@@ -11,28 +14,19 @@ def test_all_chat_entrypoints_use_final_terminal_recovery_runtime():
 def test_all_prepare_entrypoints_use_terminal_safe_preflight_runtime():
     assert services.prepare is streaming.prepare
     assert views.prepare is streaming.prepare
+    assert cost_views.prepare is streaming.prepare
     assert getattr(streaming.prepare, "_ai_workspace_preflight_terminal", False) is True
     assert getattr(streaming.prepare, "_raw_prepare", None) is not None
 
 
-def test_customer_stream_endpoint_uses_native_asgi_transport():
-    endpoint = views.ConversationViewSet.stream_messages
-    assert getattr(endpoint, "_ai_workspace_native_asgi_stream", False) is True
-    assert getattr(endpoint, "_raw_stream_messages", None) is not None
+def test_registered_customer_stream_route_uses_confirmed_stream_view():
+    match = resolve(
+        "/api/v1/conversations/00000000-0000-0000-0000-000000000001/messages/stream/"
+    )
+    assert match.func.view_class is ConfirmedConversationStreamView
 
 
-def test_asgi_request_detection_is_explicit_not_environment_guessing():
-    class ASGIRequest:
-        scope = {"type": "http"}
-
-    class Wrapper:
-        _request = ASGIRequest()
-
-    class WSGIRequest:
-        pass
-
-    class WSGIWrapper:
-        _request = WSGIRequest()
-
-    assert asgi_entrypoint._is_asgi_request(Wrapper()) is True
-    assert asgi_entrypoint._is_asgi_request(WSGIWrapper()) is False
+def test_confirmed_stream_view_is_wired_to_native_asgi_runtime():
+    assert cost_views.managed_run_async is asgi_stream.managed_run_async
+    assert cost_views.follow_generation_async is asgi_stream.follow_generation_async
+    assert cost_views.managed_run is managed_stream.managed_run
