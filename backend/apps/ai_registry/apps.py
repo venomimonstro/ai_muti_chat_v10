@@ -19,6 +19,7 @@ class AIRegistryConfig(AppConfig):
             provider_recovery,
             reliability,
             router,
+            router_intelligence,
             routing_pools,
             signals,
         )
@@ -27,6 +28,10 @@ class AIRegistryConfig(AppConfig):
         adapters.adapter_for = dispatch.adapter_for
         reliability.adapter_for = dispatch.adapter_for
         routing_pools.install_router_pool_resolver(router)
+        # Router v3 keeps reasoning complexity independent from web/tool usage.
+        # Continuity is installed afterwards so fallback uses the same preferred
+        # tier as the primary AUTO decision.
+        router_intelligence.install(router)
         model_quarantine.install(
             dispatch_module=dispatch,
             adapters_module=adapters,
