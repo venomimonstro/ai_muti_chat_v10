@@ -12,9 +12,13 @@ from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
 
 from .accounting import (
+    agent_provider_checkpoint_pending,
+    checkpoint_agent_provider_delivery,
+    mark_agent_provider_checkpoint_settled,
     release_agent_provider_spend,
     reserve_agent_provider_spend,
     settle_agent_provider_spend,
+    update_agent_provider_customer_charge,
 )
 from .file_context import project_file_context
 from .limits import effective_remaining_budget
@@ -61,6 +65,23 @@ def _fail(run, step, code, message, customer=None, provider=None):
     run.error_message = str(message)[:4000]
     run.finished_at = now
     run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+    return run
+
+
+def _defer_settlement_recovery(run, step, *, code):
+    run.state = AgentRun.State.REVIEWING
+    run.error_code = "agent_settlement_pending"
+    run.error_message = (
+        f"Provider delivery подтверждён, финансовое закрытие прервано ({code}). "
+        "Reconciliation продолжится без повторного вызова модели."
+    )[:4000]
+    run.finished_at = None
+    run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+    step.public_log = (
+        "Ответ провайдера получен. Финансовое закрытие восстанавливается автоматически; "
+        "повторный вызов модели не выполняется."
+    )
+    step.save(update_fields=["public_log"])
     return run
 
 
@@ -244,17 +265,30 @@ def execute_generic_team_run(run_id):
                 quote(price, max(1, result.input_tokens), max(1, result.output_tokens), provider_slug=model.provider.slug, model_slug=model.slug, operation_type="agent")
             )
             actual = min(actual_quote.user_charge_rub, customer.amount_rub)
-            settle_agent_provider_spend(
+            source_id = f"{run.id}:step:{index}"
+            checkpoint_agent_provider_delivery(
+                step=step,
+                model=model,
+                result=result,
+                actual_quote=actual_quote,
+                provider_reservation=provider_reservation,
+                customer_reservation=customer,
+                source_id=source_id,
+                customer_charge=actual,
+            )
+            provider_spend = settle_agent_provider_spend(
                 reservation=provider_reservation,
                 model=model,
                 result=result,
                 actual_quote=actual_quote,
-                source_id=f"{run.id}:step:{index}",
-                customer_charge=actual,
+                source_id=source_id,
+                customer_charge=Decimal("0"),
             )
             provider_reservation = None
             settle(customer.id, actual)
             customer = None
+            update_agent_provider_customer_charge(provider_spend, actual)
+            mark_agent_provider_checkpoint_settled(step, provider_spend=provider_spend)
             total += actual
 
             run.refresh_from_db(fields=["state"])
@@ -297,8 +331,14 @@ def execute_generic_team_run(run_id):
             run.cost_actual_rub = total
             run.save(update_fields=["step_count", "handoff_count", "cost_actual_rub", "updated_at"])
         except ProviderError as exc:
+            if agent_provider_checkpoint_pending(step):
+                return _defer_settlement_recovery(run, step, code=exc.code)
             return _fail(run, step, exc.code, str(exc), customer, provider_reservation)
         except Exception as exc:
+            if agent_provider_checkpoint_pending(step):
+                return _defer_settlement_recovery(
+                    run, step, code="generic_team_runtime_failed"
+                )
             return _fail(run, step, "generic_team_runtime_failed", str(exc), customer, provider_reservation)
 
     run.refresh_from_db(fields=["state"])
