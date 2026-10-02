@@ -115,7 +115,7 @@ def _rebuild_payload(context_module, payload, memory_items):
 
 def install(*, context_module, streaming_module) -> None:
     raw = context_module.assemble_context
-    if getattr(raw, "_ai_workspace_context_safety", False):
+    if getattr(raw, "_ai_workspace_context_safety", False) is True:
         streaming_module.assemble_context = raw
         return
 
