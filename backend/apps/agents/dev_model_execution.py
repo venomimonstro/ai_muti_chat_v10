@@ -119,17 +119,18 @@ def execute_with_model_fallback(
         source_id = f"{run.id}:step:{sequence}:model:{rank}"
         try:
             customer_reservation = reserve(run.owner, attempt.preflight.user_charge_rub, customer_key)
+            provider_currency = str(
+                (getattr(attempt.preflight, "pricing_snapshot", {}) or {}).get(
+                    "provider_currency"
+                )
+                or ""
+            )
             provider_reservation = reserve_agent_provider_spend(
                 model=model,
                 provider_cost_rub=attempt.preflight.provider_cost_rub,
                 fx_snapshot=attempt.preflight.fx_snapshot,
                 source_key=provider_key,
-                provider_currency=str(
-                    (getattr(attempt.preflight, "pricing_snapshot", {}) or {}).get(
-                        "provider_currency"
-                    )
-                    or ""
-                ),
+                provider_currency=provider_currency,
             )
             if is_canceled():
                 _release_customer(customer_reservation)
@@ -138,13 +139,33 @@ def execute_with_model_fallback(
                 provider_reservation = None
                 raise DevStageCanceled()
 
-            funding_account_id = (
-                getattr(provider_reservation, "account_id", None)
-                if provider_reservation is not None
-                else None
-            )
+            provider_adapter_attempt = 0
 
             def reserved_adapter_factory(candidate):
+                nonlocal provider_reservation, provider_adapter_attempt
+                provider_adapter_attempt += 1
+
+                # record_failure() degrades the exact failed credential before this
+                # factory is invoked again. A retry must therefore move the provider
+                # reserve to a newly selected HEALTHY funded account; retrying with
+                # the old reservation would either reuse a bad key or let execution
+                # drift away from the procurement ledger.
+                if provider_adapter_attempt > 1 and provider_reservation is not None:
+                    _release_provider(provider_reservation)
+                    provider_reservation = None
+                    provider_reservation = reserve_agent_provider_spend(
+                        model=candidate,
+                        provider_cost_rub=attempt.preflight.provider_cost_rub,
+                        fx_snapshot=attempt.preflight.fx_snapshot,
+                        source_key=f"{provider_key}:retry:{provider_adapter_attempt}",
+                        provider_currency=provider_currency,
+                    )
+
+                funding_account_id = (
+                    getattr(provider_reservation, "account_id", None)
+                    if provider_reservation is not None
+                    else None
+                )
                 return dispatch.adapter_for(
                     candidate,
                     funding_account_id=funding_account_id,
