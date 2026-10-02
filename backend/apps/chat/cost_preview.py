@@ -1,3 +1,4 @@
+import logging
 import os
 from decimal import Decimal
 
@@ -17,6 +18,8 @@ from .paid_search_billing import expected_search_charge
 
 MAX_OUTPUT_TOKENS = max(512, min(8192, int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "4096"))))
 VISION_RESERVE_TOKENS_PER_IMAGE = 2048
+logger = logging.getLogger("chat.pipeline")
+
 PUBLIC_SYSTEM_LEVELS = {
     Conversation.RoutingMode.ECONOMY: "System Lite",
     Conversation.RoutingMode.BALANCED: "System Pro",
@@ -99,7 +102,17 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         routing_content += "\n[vision attachment: изображение фото скриншот]"
     if attachments and len(attachments) != len(vision_assets):
         routing_content += "\n[document attachment: файл документ таблица PDF]"
+    logger.info(
+        "[CHAT_PIPELINE] stage=COST_PREVIEW_ROUTE_START mode=%s",
+        conversation.routing_mode,
+    )
     route = select_route(conversation=conversation, content=routing_content)
+    logger.info(
+        "[CHAT_PIPELINE] stage=COST_PREVIEW_ROUTE_OK mode=%s provider=%s model=%s",
+        conversation.routing_mode,
+        route.selected.provider.slug,
+        route.selected.slug,
+    )
     candidates = route.ordered_models
     if vision_assets:
         candidates = [item for item in candidates if "vision" in set(item.capabilities or [])]
@@ -145,6 +158,12 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         )
 
     if selected_model is None or not rows:
+        logger.error(
+            "[CHAT_PIPELINE] stage=COST_PREVIEW_NO_PRICED_MODEL mode=%s route_model=%s candidate_count=%s",
+            conversation.routing_mode,
+            route.selected.slug,
+            len(candidates),
+        )
         raise ValidationError("Сейчас нет модели с доступным API-балансом для этого запроса")
 
     # SearXNG is free and remains the normal first search path. The paid Yandex call
