@@ -17,12 +17,15 @@ from apps.ai_registry.models import Provider, ProviderApiKey
 from apps.billing.models import BalanceReservation
 from apps.billing.pricing import quote_flat, require_margin
 from apps.billing.services import release, reserve, settle
-from apps.procurement.services import (
+from apps.procurement.account_routing import (
     account_available_native,
-    account_weighted_unit_cost_rub,
-    default_account,
-    release_provider_spend,
+    account_secret,
     reserve_provider_spend,
+    select_runtime_funding_account,
+)
+from apps.procurement.services import (
+    account_weighted_unit_cost_rub,
+    release_provider_spend,
     settle_provider_spend,
 )
 
@@ -59,11 +62,17 @@ def _provider_and_account():
     ).first()
     if provider is None:
         raise ValidationError("Yandex Search provider не настроен")
-    account = default_account(provider)
-    if account is None or not account.active:
-        raise ValidationError("Для Yandex Search не настроен основной закупочный аккаунт")
-    if account_available_native(account) < SEARCH_NATIVE_UNITS:
-        raise ValidationError("Закупленный баланс Yandex Search исчерпан")
+    account = select_runtime_funding_account(
+        provider,
+        required_native=SEARCH_NATIVE_UNITS,
+        currency="RUB",
+        allow_probe=False,
+        require_balance=True,
+    )
+    if account is None:
+        raise ValidationError(
+            "Для Yandex Search нет HEALTHY закупочного аккаунта с доступным балансом"
+        )
     unit_cost = account_weighted_unit_cost_rub(account)
     if unit_cost <= 0:
         raise ValidationError("Для Yandex Search не задана стоимость закупки")
@@ -71,14 +80,8 @@ def _provider_and_account():
 
 
 def _account_secret(account) -> str:
-    if account.api_key_id:
-        key = account.api_key
-        if not key.enabled or key.health_state == ProviderApiKey.HealthState.DISABLED:
-            return ""
-        return key.get_secret()
-    if account.credential_env:
-        return os.getenv(account.credential_env, "").strip()
-    return ""
+    secret, _key_id = account_secret(account)
+    return secret
 
 
 def _paid_ready() -> bool:
@@ -307,6 +310,8 @@ def install(*, streaming_module, web_tools_module) -> None:
                     provider=provider,
                     amount_native=SEARCH_NATIVE_UNITS,
                     source_key=f"web-search:{generation.id}",
+                    currency="RUB",
+                    account_id=account.id,
                 )
         except Exception as exc:
             raise web_tools_module.WebToolError(
