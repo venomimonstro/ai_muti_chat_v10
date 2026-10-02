@@ -62,11 +62,8 @@ def quote_has_procurement_capacity(provider: Provider, price_quote) -> bool:
         account = None
     if account is not None:
         return True
-    # A zero-balance funding row is only a draft and must not hide an otherwise
-    # healthy model from the customer catalog. The procurement ledger becomes
-    # authoritative only after real provider credit has been recorded. Once funded,
-    # an exhausted balance remains fail-closed.
-    return not provider.funding_accounts.filter(
-        active=True,
-        funded_native__gt=0,
-    ).exists()
+    # Procurement is accounting metadata and can lag the actual upstream account.
+    # Do not remove a model from customer routing solely because this local ledger
+    # has no reservable capacity; execution still requires a verified provider
+    # credential and runtime failures remain fail-closed at the provider layer.
+    return True
