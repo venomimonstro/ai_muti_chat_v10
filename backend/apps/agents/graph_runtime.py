@@ -348,7 +348,7 @@ def _run_llm_node(run, agent, node, sequence, remaining_budget):
             fx_snapshot=preflight.fx_snapshot,
             source_key=f"agent-graph:{run.id}:{node_id}",
             provider_currency=str(
-                (preflight.pricing_snapshot or {}).get("provider_currency") or ""
+                (getattr(preflight, "pricing_snapshot", {}) or {}).get("provider_currency") or ""
             ),
         )
         run.state = AgentRun.State.RUNNING
