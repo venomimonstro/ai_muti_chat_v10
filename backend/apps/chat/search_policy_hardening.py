@@ -53,22 +53,19 @@ LOCAL_DECISION_MARKERS = (
 
 def _yandex_first(query: str) -> bool:
     text = " ".join(str(query or "").casefold().split())
-    if any(marker in text for marker in EXPLICIT_YANDEX_MARKERS):
-        return True
-    # Local commercial/recommendation intent is exactly where generic metasearch
-    # quality is least reliable and Yandex's RU index/ranking adds material value.
-    # Fresh generic facts/news still use free SearXNG first to control API spend.
-    return any(marker in text for marker in LOCAL_RU_MARKERS) and any(
-        marker in text for marker in LOCAL_DECISION_MARKERS
-    )
+    # Paid Yandex search is opt-in per request. Local/commercial intent still
+    # requires current search, but it starts with the free redundant SearXNG path.
+    # This avoids turning an ordinary recommendation into an unexpected paid call
+    # and improves availability when the paid credential is degraded.
+    return any(marker in text for marker in EXPLICIT_YANDEX_MARKERS)
 
 
 def install(paid_search_module) -> None:
     """Harden paid-search policy without touching the transport/billing pipeline.
 
     Rules:
-    - Yandex-first for explicit Yandex requests and high-value local RU commercial /
-      recommendation intent. Generic current facts/news try free SearXNG first.
+    - Yandex-first only for an explicit Yandex request. All other current/local
+      queries try the redundant free SearXNG path first.
     - DEGRADED/DISABLED credentials never receive customer traffic.
     - Generic query-level search failures do not degrade the credential. Only
       confirmed auth/credit failures do; temporary/no-result errors stay local to
