@@ -374,6 +374,13 @@ def _manual_route(policy, classification, conversation, input_tokens):
         if row["fallback_allowed"]:
             row["rank"] = len(allowed) + 1
             allowed.append(row)
+        else:
+            # A routable model can still be commercially ineligible as a silent
+            # fallback. Reflect that in the candidate snapshot so diagnostics and
+            # UI never describe a price-escalating fallback as "eligible".
+            row["status"] = "rejected"
+            if "fallback_price_requires_consent" not in row["reasons"]:
+                row["reasons"].append("fallback_price_requires_consent")
     if not allowed:
         raise ValidationError("Резервная модель превышает допустимый лимит стоимости")
 
