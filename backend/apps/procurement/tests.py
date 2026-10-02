@@ -10,6 +10,9 @@ from apps.accounts.models import User
 from apps.ai_registry.models import AIModel, Provider
 from apps.billing.models import FxRateSnapshot, MarginPolicyVersion, PriceVersion, RequestCost
 from apps.billing.pricing import quote
+from apps.b2b_api.models import APIKey, APIUsage, Organization
+from apps.chat.models import CompareRun, CompareVariant, Conversation
+from apps.image_studio.models import ImageGeneration, ImageModel
 
 from .models import ProviderFundingAccount, ProviderSpend, ProviderSpendReservation, RetailTokenPriceVersion
 from .services import (
@@ -240,3 +243,174 @@ def test_procurement_safety_gate_blocks_empty_provider_balance(procurement_conte
     _user, _provider, _model, _account = procurement_context
     with pytest.raises(CommandError, match="provider_procurement_balance_empty"):
         call_command("procurement_safety_check")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_failed_b2b_with_confirmed_usage_settles_provider_spend(procurement_context):
+    user, _provider, model, account = procurement_context
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+    organization = Organization.objects.create(
+        name="Procurement B2B",
+        slug="procurement-b2b",
+        billing_user=user,
+    )
+    api_key = APIKey.objects.create(
+        organization=organization,
+        created_by=user,
+        name="key",
+        prefix="ak_proc",
+        secret_hash="0" * 64,
+        scopes=["chat.completions"],
+    )
+    usage = APIUsage.objects.create(
+        organization=organization,
+        api_key=api_key,
+        model=model,
+        response_id="chatcmpl-procurement-failed",
+        request_hash="b" * 64,
+        state=APIUsage.State.RUNNING,
+        estimated_cost_rub=Decimal("4"),
+        pricing_snapshot={
+            "fx_rate": "100",
+            "provider_currency": "USD",
+            "expected_provider_cost_rub": "2",
+        },
+    )
+    reservation = ProviderSpendReservation.objects.get(source_key=f"b2b:{usage.id}")
+    assert reservation.amount_native == Decimal("0.020000")
+
+    usage.state = APIUsage.State.FAILED
+    usage.provider_cost_rub = Decimal("1.5000")
+    usage.prompt_tokens = 100
+    usage.completion_tokens = 50
+    usage.provider_request_id = "provider-b2b-failed"
+    usage.save(
+        update_fields=[
+            "state",
+            "provider_cost_rub",
+            "prompt_tokens",
+            "completion_tokens",
+            "provider_request_id",
+        ]
+    )
+
+    reservation.refresh_from_db()
+    account.refresh_from_db()
+    spend = ProviderSpend.objects.get(source_type="b2b", source_id=str(usage.id))
+    assert reservation.state == ProviderSpendReservation.State.SETTLED
+    assert spend.native_cost == Decimal("0.015000")
+    assert spend.customer_charge_rub == Decimal("0.0000")
+    assert account.reserved_native == Decimal("0.000000")
+    assert account.spent_native == Decimal("0.015000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_failed_compare_with_confirmed_usage_settles_provider_spend(procurement_context):
+    user, _provider, model, account = procurement_context
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+    conversation = Conversation.objects.create(owner=user, title="Procurement compare")
+    run = CompareRun.objects.create(
+        owner=user,
+        conversation=conversation,
+        prompt="compare",
+        idempotency_key="procurement-compare-failed",
+        state=CompareRun.State.RUNNING,
+        model_slugs=[model.slug],
+        expected_min_rub=Decimal("1"),
+        expected_max_rub=Decimal("4"),
+    )
+    variant = CompareVariant.objects.create(
+        compare_run=run,
+        model=model,
+        position=0,
+        state=CompareVariant.State.RUNNING,
+        expected_min_rub=Decimal("1"),
+        expected_max_rub=Decimal("4"),
+        pricing_snapshot={
+            "fx_rate": "100",
+            "provider_currency": "USD",
+            "expected_provider_cost_rub": "2",
+        },
+    )
+    reservation = ProviderSpendReservation.objects.get(source_key=f"compare:{variant.id}")
+    assert reservation.amount_native == Decimal("0.020000")
+
+    variant.state = CompareVariant.State.FAILED
+    variant.provider_cost_rub = Decimal("1.5000")
+    variant.input_tokens = 100
+    variant.output_tokens = 50
+    variant.provider_request_id = "provider-compare-failed"
+    variant.save()
+
+    reservation.refresh_from_db()
+    account.refresh_from_db()
+    spend = ProviderSpend.objects.get(source_type="compare", source_id=str(variant.id))
+    assert reservation.state == ProviderSpendReservation.State.SETTLED
+    assert spend.native_cost == Decimal("0.015000")
+    assert spend.customer_charge_rub == Decimal("0.0000")
+    assert account.reserved_native == Decimal("0.000000")
+    assert account.spent_native == Decimal("0.015000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_failed_image_with_confirmed_usage_settles_provider_spend(procurement_context):
+    user, provider, _model, account = procurement_context
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+    image_model = ImageModel.objects.create(
+        provider=provider,
+        slug="procurement-image-model",
+        display_name="Procurement image",
+        upstream_model="image-v1",
+        adapter_type=ImageModel.AdapterType.OPENAI_IMAGES,
+        provider_currency="USD",
+        provider_price_per_image=Decimal("0.020000"),
+        supported_sizes=["1024x1024"],
+        supported_qualities=["standard"],
+    )
+    generation = ImageGeneration.objects.create(
+        owner=user,
+        model=image_model,
+        prompt="image",
+        size="1024x1024",
+        quality="standard",
+        requested_count=1,
+        state=ImageGeneration.State.RUNNING,
+        idempotency_key="procurement-image-failed",
+        estimated_cost_rub=Decimal("4"),
+        price_snapshot={
+            "fx_rate": "100",
+            "provider_currency": "USD",
+            "expected_provider_cost_rub": "2",
+        },
+    )
+    reservation = ProviderSpendReservation.objects.get(source_key=f"image:{generation.id}")
+    assert reservation.amount_native == Decimal("0.020000")
+
+    generation.state = ImageGeneration.State.FAILED
+    generation.provider_cost_rub = Decimal("1.5000")
+    generation.provider_request_id = "provider-image-failed"
+    generation.save(update_fields=["state", "provider_cost_rub", "provider_request_id"])
+
+    reservation.refresh_from_db()
+    account.refresh_from_db()
+    spend = ProviderSpend.objects.get(source_type="image", source_id=str(generation.id))
+    assert reservation.state == ProviderSpendReservation.State.SETTLED
+    assert spend.native_cost == Decimal("0.015000")
+    assert spend.customer_charge_rub == Decimal("0.0000")
+    assert account.reserved_native == Decimal("0.000000")
+    assert account.spent_native == Decimal("0.015000")
