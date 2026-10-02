@@ -12,8 +12,6 @@ LOG_FILE="${LOG_DIR}/release-check-${RUN_ID}.log"
 CURRENT_STEP="initialization"
 STARTED_AT="$(date +%s)"
 
-mkdir -p "$LOG_DIR"
-touch "$LOG_FILE"
 cd "$PROJECT_DIR"
 
 # FULL release builds backend/sandbox/frontend images side-by-side with the running
@@ -52,6 +50,8 @@ ensure_release_disk() {
 
 ensure_release_disk
 
+mkdir -p "$LOG_DIR"
+touch "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 cleanup() {
