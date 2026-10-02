@@ -6,7 +6,7 @@ from apps.ai_registry.models import Provider
 
 from .account_routing import NATIVE_STEP, select_runtime_funding_account
 
-SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter"}
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai"}
 
 
 def _strict_runtime() -> bool:
