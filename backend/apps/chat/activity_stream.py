@@ -132,7 +132,12 @@ def managed_request_stream(*, user, conversation, idempotency_key: str, payload:
         yield sse("error", payload_out)
         return
 
-    generation.refresh_from_db(fields=["state"])
+    # Real Generations support refresh_from_db; lightweight adapters/test doubles
+    # may not. Do not let an observability refresh turn a valid SSE request into a
+    # user-visible 500 before the answer starts.
+    refresh_generation = getattr(generation, "refresh_from_db", None)
+    if callable(refresh_generation):
+        refresh_generation(fields=["state"])
     if not created and generation.state != Generation.State.QUEUED:
         yield from _status_events(
             "answer",
