@@ -5,28 +5,28 @@ from django.utils import timezone
 MODELS = [
     (
         "hubai-deepseek-chat-fast",
-        "DeepSeek V3 Fast (HubAI)",
+        "DeepSeek V3 Fast",
         "deepseek-chat-fast",
         ["text", "streaming"],
         ["general", "fast", "deepseek", "hubai"],
     ),
     (
         "hubai-deepseek-reasoner-fast",
-        "DeepSeek R1 Fast (HubAI)",
+        "DeepSeek R1 Fast",
         "deepseek-reasoner-fast",
         ["text", "streaming", "reasoning"],
         ["reasoning", "fast", "deepseek", "hubai"],
     ),
     (
         "hubai-deepseek-chat",
-        "DeepSeek V3 (HubAI)",
+        "DeepSeek V3",
         "deepseek-chat",
         ["text", "streaming"],
         ["general", "deepseek", "hubai"],
     ),
     (
         "hubai-deepseek-reasoner",
-        "DeepSeek R1 (HubAI)",
+        "DeepSeek R1",
         "deepseek-reasoner",
         ["text", "streaming", "reasoning"],
         ["reasoning", "deepseek", "hubai"],
