@@ -103,3 +103,31 @@ def test_refund_failure_cannot_roll_back_terminal_authorization_state():
 
     assert result["released"] == 1
     assert reservation.state == BalanceReservation.State.RELEASED
+
+
+@pytest.mark.django_db(transaction=True)
+def test_terminal_hook_failure_cannot_restore_queued_authorization_state():
+    user, generation, reservation = _prepared_generation("hook-failure")
+
+    original_save = Generation.save
+
+    def fail_terminal_hook_save(instance, *args, **kwargs):
+        if instance.pk == generation.pk and instance.state == Generation.State.FAILED:
+            raise RuntimeError("synthetic terminal hook failure")
+        return original_save(instance, *args, **kwargs)
+
+    with patch.object(Generation, "save", fail_terminal_hook_save):
+        terminal = cost_views._terminalize_stream_authorization_failure(
+            generation,
+            RuntimeError("authorization write failed"),
+        )
+
+    generation.refresh_from_db()
+    reservation.refresh_from_db()
+    user.wallet.refresh_from_db()
+
+    assert terminal.state == Generation.State.FAILED
+    assert generation.state == Generation.State.FAILED
+    assert generation.error_code == "stream_authorization_failed"
+    assert reservation.state == BalanceReservation.State.RELEASED
+    assert user.wallet.reserved_rub == Decimal("0.0000")
