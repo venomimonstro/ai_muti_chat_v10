@@ -168,6 +168,7 @@ def reserve_provider_spend(
     amount_native,
     source_key,
     currency: str = "",
+    account_id=None,
 ):
     from apps.ai_registry.models import Provider
 
@@ -191,31 +192,48 @@ def reserve_provider_spend(
     if existing:
         return existing
 
-    candidates = runtime_funding_accounts(
-        provider,
-        required_native=amount,
-        currency=currency,
-        allow_probe=False,
-        require_balance=True,
-        lock=True,
-    )
-    if not candidates:
-        credential_candidates = runtime_funding_accounts(
-            provider,
-            required_native=ZERO,
+    if account_id is not None:
+        account = (
+            ProviderFundingAccount.objects.select_for_update()
+            .filter(pk=account_id, provider=provider, active=True)
+            .first()
+        )
+        if account is None or not account_matches(
+            account,
+            required_native=amount,
             currency=currency,
             allow_probe=False,
-            require_balance=False,
+            require_balance=True,
+        ):
+            raise ValidationError(
+                "Выбранный закупочный API-аккаунт недоступен или имеет недостаточный баланс"
+            )
+    else:
+        candidates = runtime_funding_accounts(
+            provider,
+            required_native=amount,
+            currency=currency,
+            allow_probe=False,
+            require_balance=True,
             lock=True,
         )
-        if credential_candidates:
-            raise ValidationError(
-                "Закупочный баланс провайдера исчерпан или недостаточен для этого запроса"
+        if not candidates:
+            credential_candidates = runtime_funding_accounts(
+                provider,
+                required_native=ZERO,
+                currency=currency,
+                allow_probe=False,
+                require_balance=False,
+                lock=True,
             )
-        raise ValidationError(
-            "Нет активного HEALTHY API-аккаунта с доступным ключом"
-        )
-    account = candidates[0]
+            if credential_candidates:
+                raise ValidationError(
+                    "Закупочный баланс провайдера исчерпан или недостаточен для этого запроса"
+                )
+            raise ValidationError(
+                "Нет активного HEALTHY API-аккаунта с доступным ключом"
+            )
+        account = candidates[0]
     account.reserved_native += amount
     account.save(update_fields=["reserved_native", "updated_at"])
     return ProviderSpendReservation.objects.create(
