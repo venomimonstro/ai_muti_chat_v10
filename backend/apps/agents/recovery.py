@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import timedelta
 
@@ -10,9 +11,16 @@ from apps.billing.services import release
 from apps.procurement.models import ProviderSpendReservation
 from apps.procurement.services import release_provider_spend
 
-from .accounting import agent_provider_checkpoint_pending, reconcile_agent_provider_checkpoint
-from .models import AgentApproval, AgentRun, AgentStepRun
+from .accounting import (
+    agent_provider_checkpoint_pending,
+    reconcile_agent_provider_checkpoint,
+    reconcile_agent_provider_checkpoint_data,
+)
+from .models import AgentApproval, AgentPlanOperation, AgentRun, AgentStepRun
 from .wait_runtime import wait_metadata
+
+
+logger = logging.getLogger(__name__)
 
 
 RECOVERABLE_STATES = (
@@ -38,6 +46,11 @@ def _cutoff():
 
 def _approval_cutoff():
     return timezone.now() - timedelta(hours=_approval_timeout_hours())
+
+
+def _settlement_cutoff():
+    seconds = max(60, int(os.getenv("AGENT_SETTLEMENT_RECOVERY_SECONDS", "120")))
+    return timezone.now() - timedelta(seconds=seconds)
 
 
 def _release_customer_reservations(run_id):
@@ -210,5 +223,55 @@ def recover_stale_agent_runs():
     )
     recovered = 0
     for run_id in stale_ids:
-        recovered += int(recover_agent_run(run_id))
+        try:
+            recovered += int(recover_agent_run(run_id))
+        except Exception:
+            logger.exception("Agent stale recovery failed run_id=%s", run_id)
+    return recovered
+
+
+@transaction.atomic
+def _recover_plan_operation(operation_id):
+    operation = AgentPlanOperation.objects.select_for_update().filter(pk=operation_id).first()
+    if (
+        operation is None
+        or operation.state != "reconciling"
+        or operation.updated_at >= _settlement_cutoff()
+    ):
+        return False
+
+    checkpoint = dict((operation.response or {}).get("_provider_settlement") or {})
+    if checkpoint.get("status") == "pending":
+        reconcile_agent_provider_checkpoint_data(checkpoint)
+
+    operation.state = "failed"
+    operation.response = {
+        "detail": (
+            "AI-конструктор получил ответ модели, но локальная операция была прервана. "
+            "Финансовое закрытие восстановлено автоматически; повторного LLM-вызова "
+            "по этому ключу не будет. Создайте новый preview при необходимости."
+        )
+    }
+    operation.save(update_fields=["state", "response", "updated_at"])
+    return True
+
+
+def recover_stale_agent_plan_operations(limit=200):
+    ids = list(
+        AgentPlanOperation.objects.filter(
+            state="reconciling",
+            updated_at__lt=_settlement_cutoff(),
+        )
+        .order_by("updated_at")
+        .values_list("id", flat=True)[: max(1, min(int(limit), 1000))]
+    )
+    recovered = 0
+    for operation_id in ids:
+        try:
+            recovered += int(_recover_plan_operation(operation_id))
+        except Exception:
+            logger.exception(
+                "Agent planner settlement recovery failed operation_id=%s",
+                operation_id,
+            )
     return recovered
