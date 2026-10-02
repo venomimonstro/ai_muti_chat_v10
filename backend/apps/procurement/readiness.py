@@ -62,8 +62,11 @@ def quote_has_procurement_capacity(provider: Provider, price_quote) -> bool:
         account = None
     if account is not None:
         return True
-    # No purchasing ledger configured: customer pricing still applies and the
-    # verified provider key may be used directly. If an administrator has opted
-    # into procurement by creating an active account, its balance becomes
-    # authoritative and insufficient capacity blocks the request.
-    return not provider.funding_accounts.filter(active=True).exists()
+    # A zero-balance funding row is only a draft and must not hide an otherwise
+    # healthy model from the customer catalog. The procurement ledger becomes
+    # authoritative only after real provider credit has been recorded. Once funded,
+    # an exhausted balance remains fail-closed.
+    return not provider.funding_accounts.filter(
+        active=True,
+        funded_native__gt=0,
+    ).exists()
