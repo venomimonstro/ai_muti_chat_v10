@@ -4,8 +4,10 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
-from apps.ai_registry.models import AIModel, Provider, RoutingPolicyVersion
+from apps.ai_registry.adapters import ProviderError
+from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry.model_quarantine import model_runtime_available
+from apps.ai_registry.models import AIModel, RoutingPolicyVersion
 from apps.ai_registry.reliability import provider_available
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.ai_registry.web_tools import WebToolError, search_context
@@ -38,7 +40,7 @@ def _subject_agent(run: AgentRun):
 def _model_for(agent, selected_model=""):
     if selected_model:
         model = AIModel.objects.filter(slug=selected_model, enabled=True).select_related("provider", "current_version").first()
-        if model and model.provider.health_state == Provider.HealthState.HEALTHY and provider_available(model.provider):
+        if model and model_runtime_available(model) and provider_available(model.provider):
             return model
         raise ValidationError("Выбранная для шага модель недоступна. Измените модель в конструкторе")
     policy = RoutingPolicyVersion.objects.filter(active=True).first()
@@ -48,10 +50,10 @@ def _model_for(agent, selected_model=""):
     queryset = AIModel.objects.filter(enabled=True).select_related("provider", "current_version")
     if pinned:
         model = queryset.filter(slug=pinned).first()
-        if model and provider_available(model.provider):
+        if model and model_runtime_available(model) and provider_available(model.provider):
             return model
     for model in queryset.order_by("provider__priority", "slug"):
-        if model.provider.health_state == Provider.HealthState.HEALTHY and provider_available(model.provider):
+        if model_runtime_available(model) and provider_available(model.provider):
             return model
     raise ValidationError("Для уровня агента нет доступной подключённой модели")
 
@@ -293,12 +295,22 @@ def execute_run(run_id):
             provider_cost_rub=preflight.provider_cost_rub,
             fx_snapshot=preflight.fx_snapshot,
             source_key=f"agent:{run.id}",
+            provider_currency=str(
+                (preflight.pricing_snapshot or {}).get("provider_currency") or ""
+            ),
         )
         run.cost_reserved_rub = preflight.user_charge_rub
         run.state = AgentRun.State.RUNNING
         run.save(update_fields=["cost_reserved_rub", "state", "updated_at"])
 
-        result = adapter_for(model).generate(
+        result = adapter_for(
+            model,
+            funding_account_id=(
+                getattr(provider_reservation, "account_id", None)
+                if provider_reservation is not None
+                else None
+            ),
+        ).generate(
             model=model.upstream_model or model.slug,
             messages=messages,
             max_output_tokens=output_tokens,
