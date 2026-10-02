@@ -17,7 +17,7 @@ from apps.chat.models import CompareVariant
 from apps.image_studio.models import ImageGeneration
 from apps.procurement.models import ProviderFundingAccount, ProviderPurchase, ProviderSpend, RetailTokenPriceVersion
 from apps.procurement.official_pricing import official_status, sync_official_prices
-from apps.procurement.services import create_funding_account, funding_summary, record_purchase, set_default_account
+from apps.procurement.services import create_funding_account, funding_summary, provider_pricing_currency, record_purchase, set_default_account
 from .services import audit
 from .views import AdminAPIView
 
@@ -114,7 +114,7 @@ class ProcurementEconomicsView(AdminAPIView):
                     model=AIModel.objects.get(slug=str(request.data.get("model") or "").strip());scope_type=MarkupRuleVersion.Scope.MODEL;scope_key=model.slug;RetailTokenPriceVersion.objects.filter(model_slug=model.slug,active=True).update(active=False)
                 MarkupRuleVersion.objects.filter(scope_type=scope_type,scope_key=scope_key,active=True).update(active=False);rule=MarkupRuleVersion.objects.create(scope_type=scope_type,scope_key=scope_key,markup_percent=markup,price_multiplier=Decimal("1"),active=True,effective_from=timezone.now(),reason="Изменено владельцем через экран экономики");audit(request,"pricing.markup_changed",scope_type,scope_key,{"markup_percent":str(markup),"resulting_margin_percent":str(resulting_margin)});return Response({"id":str(rule.id),"markup_percent":str(markup),"resulting_margin_percent":str(resulting_margin.quantize(Decimal("0.001")))})
             if action=="create_account":
-                provider=Provider.objects.get(slug=str(request.data.get("provider") or "").strip());account=create_funding_account(provider=provider,label=request.data.get("label"),credential_env=request.data.get("credential_env"),currency=request.data.get("currency") or "USD",low_balance_native=request.data.get("low_balance_native") or 0,priority=request.data.get("priority") or 100,is_default=request.data.get("is_default") is True,notes=request.data.get("notes") or "");return Response(funding_summary(account),status=201)
+                provider=Provider.objects.get(slug=str(request.data.get("provider") or "").strip());account=create_funding_account(provider=provider,label=request.data.get("label"),credential_env=request.data.get("credential_env"),currency=request.data.get("currency") or provider_pricing_currency(provider),low_balance_native=request.data.get("low_balance_native") or 0,priority=request.data.get("priority") or 100,is_default=request.data.get("is_default") is True,notes=request.data.get("notes") or "");return Response(funding_summary(account),status=201)
             if action=="set_default":return Response(funding_summary(set_default_account(ProviderFundingAccount.objects.select_related("provider").get(pk=request.data.get("account")))))
             if action=="set_active":
                 account=ProviderFundingAccount.objects.select_for_update().select_related("provider").get(pk=request.data.get("account"));active=request.data.get("active") is True
