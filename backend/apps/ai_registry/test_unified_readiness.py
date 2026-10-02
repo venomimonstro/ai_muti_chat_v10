@@ -43,6 +43,11 @@ class UnifiedReadinessTests(TestCase):
         self.assertFalse(provider_available(provider))
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+    def test_no_procurement_ledger_does_not_block_healthy_customer_key(self):
+        provider, _key = self._provider_with_key()
+        self.assertTrue(provider_available(provider))
+
+    @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
     def test_zero_procurement_balance_blocks_customer_traffic(self):
         provider, key = self._provider_with_key()
         ProviderFundingAccount.objects.create(
