@@ -27,7 +27,7 @@ def install(streaming_module) -> None:
     poison provider health or settle money after its lease was revoked.
     """
     raw_finish_attempt = streaming_module._finish_attempt
-    if not getattr(raw_finish_attempt, "_ai_workspace_execution_fence", False):
+    if getattr(raw_finish_attempt, "_ai_workspace_execution_fence", False) is not True:
 
         def finish_attempt(attempt, *, state, started, error=None):
             latency_ms = int((time.monotonic() - started) * 1000)
