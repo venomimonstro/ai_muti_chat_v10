@@ -12,7 +12,8 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
+from apps.ai_registry.adapters import ProviderError
+from apps.ai_registry.dispatch import adapter_for
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
@@ -199,8 +200,18 @@ class AgentAIPlannerPreviewView(APIView):
                 provider_cost_rub=estimate.provider_cost_rub,
                 fx_snapshot=estimate.fx_snapshot,
                 source_key=source_key,
+                provider_currency=str(
+                    (estimate.pricing_snapshot or {}).get("provider_currency") or ""
+                ),
             )
-            result = adapter_for(model).generate(
+            result = adapter_for(
+                model,
+                funding_account_id=(
+                    getattr(provider_reservation, "account_id", None)
+                    if provider_reservation is not None
+                    else None
+                ),
+            ).generate(
                 model=model.upstream_model or model.slug,
                 messages=messages,
                 max_output_tokens=max_output,
