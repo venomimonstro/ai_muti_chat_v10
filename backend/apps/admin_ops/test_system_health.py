@@ -3,6 +3,7 @@ from django.core.cache import cache
 from django.test import RequestFactory
 
 from apps.accounts.models import User
+from apps.ai_registry.models import AIModel, Provider
 
 from .issue_models import SystemIssue
 from .system_health import (
@@ -74,6 +75,31 @@ def test_background_failure_is_visible_in_analysis():
     assert issue["path"] == "celery:files.extract"
     assert issue["task_id"] == "task-123"
     assert result["state"] in {"healthy", "warning", "critical"}
+
+
+@pytest.mark.django_db
+def test_enabled_models_with_zero_customer_ready_capacity_are_critical():
+    provider = Provider.objects.create(
+        slug="customer-outage-provider",
+        name="Customer outage provider",
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    AIModel.objects.create(
+        provider=provider,
+        slug="customer-outage-model",
+        display_name="Customer outage model",
+        upstream_model="customer-outage-v1",
+        enabled=True,
+    )
+
+    result = system_analysis()
+
+    assert result["state"] == "critical"
+    assert result["models"]["enabled_count"] == 1
+    assert result["models"]["customer_ready_count"] == 0
+    assert result["models"]["customer_ai_outage"] is True
+    assert result["models"]["customer_blocked"] == ["customer-outage-model"]
 
 
 @pytest.mark.django_db
