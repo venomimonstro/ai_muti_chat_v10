@@ -187,6 +187,7 @@ def prepare_generation(
         "model_slug": model.slug,
         "provider_slug": model.provider.slug,
         "provider_price_per_image": str(unit_price),
+        "expected_provider_cost_rub": str(value.provider_cost_rub),
         "price_variant": f"{size}|{quality}",
         "requested_count": count,
         "size": size,
