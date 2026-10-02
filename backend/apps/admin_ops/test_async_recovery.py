@@ -8,12 +8,13 @@ from apps.accounts.models import User
 from apps.ai_registry.models import Provider
 from apps.billing.models import BalanceReservation
 from apps.billing.services import credit
+from apps.chat.models import Conversation, Generation, Message
 from apps.files.models import FileAsset
 from apps.image_studio.models import ImageGeneration, ImageModel
 from apps.image_studio.services import prepare_generation
 from apps.projects.models import Project
 
-from .recovery import recover_stale_operations
+from .recovery import recover_stale_chat_operations, recover_stale_operations
 
 
 @pytest.mark.django_db(transaction=True)
@@ -94,3 +95,56 @@ def test_stale_uploaded_file_becomes_failed_instead_of_waiting_forever(settings)
     assert result["files"] == 1
     assert asset.status == FileAsset.Status.FAILED
     assert asset.error_code == "stale_operation_recovered"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_chat_recovery_isolates_one_broken_generation_and_continues(settings, monkeypatch):
+    settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS = 60
+    user = User.objects.create_user(
+        username="chat-recovery-isolation",
+        email="chat-recovery-isolation@example.test",
+        password="password123",
+    )
+    conversation = Conversation.objects.create(owner=user, title="Recovery isolation")
+
+    generations = []
+    for index in range(2):
+        user_message = Message.objects.create(
+            conversation=conversation,
+            role=Message.Role.USER,
+            content=f"request {index}",
+        )
+        assistant = Message.objects.create(
+            conversation=conversation,
+            role=Message.Role.ASSISTANT,
+            status=Message.Status.STREAMING,
+        )
+        generation = Generation.objects.create(
+            owner=user,
+            user_message=user_message,
+            assistant_message=assistant,
+            state=Generation.State.RUNNING,
+            model="test-model",
+            idempotency_key=f"recovery-isolation:{index}",
+        )
+        Generation.objects.filter(pk=generation.pk).update(
+            created_at=timezone.now() - timedelta(minutes=2)
+        )
+        generations.append(generation)
+
+    first_id = generations[0].id
+    calls = []
+
+    def fake_recover(pk):
+        calls.append(pk)
+        if pk == first_id:
+            raise RuntimeError("synthetic damaged generation")
+        return True
+
+    monkeypatch.setattr("apps.admin_ops.recovery._recover_generation", fake_recover)
+
+    result = recover_stale_chat_operations()
+
+    assert result["generation_errors"] == 1
+    assert result["generations"] == 1
+    assert set(calls) == {item.id for item in generations}
