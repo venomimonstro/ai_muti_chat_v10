@@ -315,7 +315,10 @@ def recover_stale_chat_operations():
         "generations": recovered,
         "generation_errors": errors,
         "terminal_chat_reservations": recover_terminal_chat_reservations(
-            older_than_seconds=settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS
+            older_than_seconds=max(
+                0,
+                int(getattr(settings, "CHAT_TERMINAL_REFUND_RECOVERY_SECONDS", 60)),
+            )
         ),
         "web_search_reservations": recover_search_reservations(
             older_than_seconds=settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS
