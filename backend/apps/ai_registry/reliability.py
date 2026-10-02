@@ -199,13 +199,14 @@ def _procurement_ready(provider: Provider) -> bool:
             provider=provider,
             active=True,
         ).exists()
-        if configured:
-            return False
-        return not bool(
-            getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False)
-        )
+        # Procurement is optional until the administrator explicitly creates a
+        # funding account for this provider. A verified HEALTHY API key must not
+        # be blocked merely because the optional purchasing ledger is unused.
+        # Once at least one active account exists, balance/key matching remains
+        # strict and fail-closed.
+        return not configured
     except Exception:
-        return not bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
+        return False
 
 
 def provider_available(provider: Provider) -> bool:
