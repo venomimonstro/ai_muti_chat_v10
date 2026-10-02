@@ -77,13 +77,16 @@ def _customer_traffic_blockers(provider: Provider):
         ).exists()
         if provider.api_keys.filter(enabled=True).exists() and not has_healthy_key:
             blockers.append("Нет HEALTHY API-ключа для клиентского трафика")
-        active_accounts = provider.funding_accounts.filter(active=True)
+        active_accounts = provider.funding_accounts.filter(
+            active=True,
+            funded_native__gt=0,
+        )
         if active_accounts.exists():
             funded = active_accounts.filter(
                 funded_native__gt=F("spent_native") + F("reserved_native")
             ).exists()
             if not funded:
-                blockers.append("Закупочный баланс провайдера исчерпан")
+                blockers.append("Закупленный баланс провайдера исчерпан")
     if not blockers:
         blockers.append(
             "Клиентский runtime не готов: проверьте ключ, funding account, закупочный баланс и pricing"
