@@ -158,6 +158,14 @@ def checkpoint_agent_provider_delivery(
     return payload["_provider_settlement"]
 
 
+def agent_provider_checkpoint_pending(step) -> bool:
+    if step is None:
+        return False
+    payload = getattr(step, "output_payload", {}) or {}
+    checkpoint = payload.get("_provider_settlement") or {}
+    return checkpoint.get("status") == "pending"
+
+
 def mark_agent_provider_checkpoint_settled(step, *, provider_spend=None):
     if step is None:
         return
