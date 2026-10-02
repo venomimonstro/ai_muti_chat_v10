@@ -41,6 +41,21 @@ class Command(BaseCommand):
             elif now > reference + timedelta(seconds=max(60, allowed_seconds // 2)):
                 warnings.append(f"run={run.id}: long-running state={run.state}")
 
+        settlement_cutoff = now - timedelta(minutes=15)
+        stale_settlement_runs = list(
+            AgentRun.objects.filter(
+                state=AgentRun.State.REVIEWING,
+                error_code="agent_settlement_pending",
+                updated_at__lt=settlement_cutoff,
+            )
+            .order_by("updated_at")
+            .values_list("id", flat=True)[:200]
+        )
+        for run_id in stale_settlement_runs:
+            failures.append(
+                f"run={run_id}: provider/customer settlement reconciliation exceeded 15m"
+            )
+
         planner_cutoff = now - timedelta(minutes=15)
         stale_planner = list(
             AgentPlanOperation.objects.filter(
@@ -56,7 +71,9 @@ class Command(BaseCommand):
             )
 
         self.stdout.write(
-            f"active_checked={queryset.count()} planner_reconciling_stale={len(stale_planner)}"
+            f"active_checked={queryset.count()} "
+            f"settlement_reconciling_stale={len(stale_settlement_runs)} "
+            f"planner_reconciling_stale={len(stale_planner)}"
         )
         for warning in warnings:
             self.stdout.write(self.style.WARNING(f"[WARN] {warning}"))
