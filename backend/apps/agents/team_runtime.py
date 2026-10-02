@@ -11,7 +11,7 @@ from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release
 
-from .accounting import release_agent_provider_spend
+from .accounting import agent_provider_checkpoint_pending, release_agent_provider_spend
 from .dev_changes import developer_output_contract, parse_change_proposal
 from .dev_context import build_repository_context
 from .dev_execution import apply_approved_changes, enrich_changes_with_snapshot
@@ -111,6 +111,31 @@ def _fail(run, step, code, message, customer_reservation=None, provider_reservat
     run.error_message = str(message)[:4000]
     run.finished_at = now
     run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+    return run
+
+
+def _defer_settlement_recovery(run, step, *, code):
+    run.state = AgentRun.State.REVIEWING
+    run.error_code = "agent_settlement_pending"
+    run.error_message = (
+        f"Provider delivery подтверждён, финансовое закрытие Dev stage прервано ({code}). "
+        "Reconciliation продолжится без повторного вызова модели."
+    )[:4000]
+    run.finished_at = None
+    run.save(
+        update_fields=[
+            "state",
+            "error_code",
+            "error_message",
+            "finished_at",
+            "updated_at",
+        ]
+    )
+    step.public_log = (
+        "Ответ провайдера получен. Финансовое закрытие Dev stage "
+        "восстанавливается автоматически; повторный вызов модели не выполняется."
+    )
+    step.save(update_fields=["public_log"])
     return run
 
 
@@ -276,8 +301,16 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
     except ProviderError as exc:
         attempts = getattr(exc, "model_attempts", None)
         if attempts:
-            step.output_payload = {"model_attempts": attempts}
+            payload = dict(step.output_payload or {})
+            payload["model_attempts"] = attempts
+            step.output_payload = payload
             step.save(update_fields=["output_payload"])
+        if agent_provider_checkpoint_pending(step):
+            return None, total, _defer_settlement_recovery(
+                run,
+                step,
+                code=exc.code,
+            )
         return None, total, _fail(run, step, exc.code, str(exc))
     except Exception as exc:
         return None, total, _fail(run, step, "team_runtime_failed", str(exc))
