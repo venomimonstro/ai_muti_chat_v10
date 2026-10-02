@@ -27,7 +27,7 @@ def install(asgi_stream_module) -> None:
     to completion so a reconnect can read the saved answer.
     """
     raw_enqueue = asgi_stream_module._enqueue
-    if getattr(raw_enqueue, "_ai_workspace_backpressure", False):
+    if getattr(raw_enqueue, "_ai_workspace_backpressure", False) is True:
         return
 
     def enqueue(loop, queue, item, detached):
