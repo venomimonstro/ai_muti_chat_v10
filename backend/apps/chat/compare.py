@@ -347,6 +347,27 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
         provider_cost, charge, _profit, _margin = calculate_from_snapshot(
             price, usage.input_tokens, usage.output_tokens, expected.pricing_snapshot
         )
+
+        # Provider usage is already confirmed. Persist procurement immediately with
+        # zero customer revenue; fail-closed cost guards must never release a real
+        # upstream expense as if the provider call had not happened.
+        provider_spend = None
+        if provider_reservation is not None:
+            fx_rate = Decimal(expected.pricing_snapshot["fx_rate"])
+            provider_spend = settle_provider_spend(
+                reservation_id=provider_reservation.id,
+                actual_native=provider_cost / fx_rate,
+                nominal_cost_rub=provider_cost,
+                customer_charge_rub=Decimal("0"),
+                source_type="compare_synthesis",
+                source_id=str(compare_run.id),
+                model_slug=model.slug,
+                provider_request_id=usage.provider_request_id,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+            provider_reservation = None
+
         if charge > expected.user_charge_rub:
             _trip_compare_cost_guard(
                 model=model,
@@ -356,23 +377,16 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
                 operation="compare_synthesis",
             )
             raise ValidationError("Фактическая стоимость синтеза превысила зарезервированный максимум")
-        if provider_reservation is not None:
-            fx_rate = Decimal(expected.pricing_snapshot["fx_rate"])
-            settle_provider_spend(
-                reservation_id=provider_reservation.id,
-                actual_native=provider_cost / fx_rate,
-                nominal_cost_rub=provider_cost,
-                source_type="compare_synthesis",
-                source_id=str(compare_run.id),
-                model_slug=model.slug,
-                provider_request_id=usage.provider_request_id,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-            )
-        settle(reservation.id, charge)
-        compare_run.synthesis_output = output
-        compare_run.synthesis_cost_rub = charge
-        compare_run.save(update_fields=["synthesis_output", "synthesis_cost_rub"])
+
+        with transaction.atomic():
+            settle(reservation.id, charge)
+            if provider_spend is not None:
+                ProviderSpend.objects.filter(pk=provider_spend.pk).update(
+                    customer_charge_rub=charge
+                )
+            compare_run.synthesis_output = output
+            compare_run.synthesis_cost_rub = charge
+            compare_run.save(update_fields=["synthesis_output", "synthesis_cost_rub"])
     except Exception:
         if provider_reservation is not None:
             release_provider_spend(provider_reservation.id)
