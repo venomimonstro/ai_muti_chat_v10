@@ -69,7 +69,7 @@ def execution_model_ready(model: AIModel, *, funding_account_id=None) -> bool:
 def install(streaming_module) -> None:
     """Revalidate every routed model immediately before customer inference."""
     raw_adapter_for = streaming_module.adapter_for
-    if getattr(raw_adapter_for, "_ai_workspace_runtime_readiness", False):
+    if getattr(raw_adapter_for, "_ai_workspace_runtime_readiness", False) is True:
         return
     raw_record_failure = streaming_module.record_failure
 
