@@ -5,7 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError
-from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry import dispatch
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.ai_registry.web_tools import WebToolError, search_context
 from apps.billing.pricing import active_price, quote, require_margin
@@ -228,7 +228,7 @@ def execute_generic_team_run(run_id):
             )
             run.state = AgentRun.State.RUNNING
             run.save(update_fields=["state", "updated_at"])
-            result = adapter_for(
+            result = dispatch.adapter_for(
                 model,
                 funding_account_id=(
                     getattr(provider_reservation, "account_id", None)
