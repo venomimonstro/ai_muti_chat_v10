@@ -238,6 +238,7 @@ def install(*, streaming_module, web_tools_module) -> None:
     raw_yandex = web_tools_module._search_yandex
     raw_config = web_tools_module._yandex_search_config
     raw_searx = web_tools_module._search_searx
+    raw_search_web = web_tools_module.search_web
     if getattr(raw_prepare, "_ai_workspace_paid_search_billing", False):
         return
 
@@ -361,6 +362,12 @@ def install(*, streaming_module, web_tools_module) -> None:
         return results
 
     def search_web(query: str, *, limit: int = 5):
+        # Keep the registry-level search service independent from chat billing.
+        # Only a real chat prepare() establishes _ctx. Health checks, diagnostics,
+        # tests and other internal callers retain ordinary provider failover.
+        if not _ctx.get():
+            return raw_search_web(query, limit=limit)
+
         premium = _premium_search(query)
         paid = _paid_ready()
         errors = []
