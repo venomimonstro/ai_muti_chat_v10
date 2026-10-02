@@ -191,7 +191,7 @@ type CostConfirmationError = ChatCostPreview & {
   detail?: string;
 };
 
-type ConsumeResult = "completed" | "retry" | "terminal";
+type ConsumeResult = "completed" | "retry";
 
 const pendingKey = (conversationId: string) => `aiws:pending-stream:${conversationId}`;
 const fileIds = (value: StreamPayload) => value.file_ids ?? [];
@@ -491,6 +491,7 @@ export async function streamMessage(
     let buffer = "";
     let terminal = false;
     let inProgress = false;
+    let generationAccepted = false;
     let receivedFirstEvent = false;
     let receivedFirstDelta = false;
 
@@ -551,6 +552,7 @@ export async function streamMessage(
         if (event === "heartbeat") continue;
 
         if (event === "generation") {
+          generationAccepted = true;
           activity(onEvent, "provider", "running", "Маршрут готов. Подключаю AI-модель…");
         } else if (event === "routing") {
           activity(onEvent, "route", "completed", String(parsed.explanation ?? "Маршрут выбран"));
@@ -589,6 +591,13 @@ export async function streamMessage(
           activity(onEvent, "error", "failed", String(parsed.message ?? "Не удалось получить ответ"));
         }
         onEvent({event, data: event === "generation" ? {...parsed, client_message_id: pending.payload.client_message_id} : parsed});
+        if (event === "error" && !generationAccepted) {
+          throw new ApiError(
+            String(parsed.message ?? "Не удалось подготовить запрос"),
+            422,
+            parsed,
+          );
+        }
         if (terminal) return "completed";
       }
       if (done) {
@@ -613,7 +622,7 @@ export async function streamMessage(
     try {
       const response = await openResponse();
       const result = await consume(response);
-      if (result === "completed" || result === "terminal") return;
+      if (result === "completed") return;
       lastError = new ApiError("Поток ответа завершился раньше времени", 503, {code: "stream_interrupted"});
     } catch (reason) {
       if (signal.aborted || (reason instanceof DOMException && reason.name === "AbortError")) {
