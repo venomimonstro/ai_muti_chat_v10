@@ -136,6 +136,9 @@ def recover_stale_chat_operations_task():
         return {"status": "skipped", "reason": "already_running"}
     try:
         result = recover_stale_chat_operations()
+        from apps.procurement.chat_signals import reconcile_confirmed_chat_procurement
+
+        result["confirmed_provider_settlement"] = reconcile_confirmed_chat_procurement()
         return {"status": "ok", **result}
     finally:
         cache.delete(CHAT_RECOVERY_LOCK)
