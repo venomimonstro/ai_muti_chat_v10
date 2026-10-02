@@ -162,7 +162,7 @@ def _post_complete(streaming_module, generation_id):
 
 def install(streaming_module) -> None:
     raw_run = streaming_module.run
-    if getattr(raw_run, "_ai_workspace_terminal_recovery", False):
+    if getattr(raw_run, "_ai_workspace_terminal_recovery", False) is True:
         return
 
     def run(generation, *args, **kwargs):
