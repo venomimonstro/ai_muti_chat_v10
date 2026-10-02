@@ -270,6 +270,36 @@ def _recover_file(pk):
     return True
 
 
+def recover_stale_chat_operations():
+    """Recover only customer chat state; safe to run every minute.
+
+    The broader recovery sweep also touches files, agents and model quarantine.
+    Keeping this path narrow improves chat recovery latency without increasing
+    external probes or unrelated worker load.
+    """
+    generation_cutoff = _generation_cutoff()
+    recovered = 0
+    queryset = Generation.objects.filter(
+        state__in=[Generation.State.QUEUED, Generation.State.RUNNING],
+        created_at__lt=generation_cutoff,
+    )
+    for pk in queryset.values_list("pk", flat=True).iterator():
+        try:
+            recovered += int(_recover_generation(pk))
+        except Generation.DoesNotExist:
+            continue
+
+    return {
+        "generations": recovered,
+        "terminal_chat_reservations": recover_terminal_chat_reservations(
+            older_than_seconds=settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS
+        ),
+        "web_search_reservations": recover_search_reservations(
+            older_than_seconds=settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS
+        ),
+    }
+
+
 def recover_stale_operations():
     cutoff = _cutoff()
     generation_cutoff = _generation_cutoff()
