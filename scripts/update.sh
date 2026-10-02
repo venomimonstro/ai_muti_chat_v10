@@ -119,7 +119,10 @@ reclaim_disposable_docker_space() {
 }
 
 prune_old_update_artifacts() {
-  local keep="${UPDATE_BACKUP_KEEP:-3}" file
+  # Small production hosts cannot safely keep several full DB+media release snapshots
+  # alongside BuildKit layers. One previous verified release backup is sufficient for
+  # update rollback; external/off-host retention should be handled separately.
+  local keep="${UPDATE_BACKUP_KEEP:-1}" file
   mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
   if [[ "${keep}" =~ ^[0-9]+$ ]] && (( keep >= 1 )); then
     while IFS= read -r file; do
@@ -136,7 +139,20 @@ prune_old_update_artifacts() {
   fi
   find "${LOG_DIR}" -maxdepth 1 -type f \
     \( -name 'update-*.log' -o -name 'release-check-*.log' \) \
-    -mtime +14 -delete 2>/dev/null || true
+    -mtime +7 -delete 2>/dev/null || true
+}
+
+prune_project_build_artifacts() {
+  printf '[DISK] Очищаю пересоздаваемые build/test артефакты проекта.\n'
+  rm -rf -- \
+    "${PROJECT_DIR}/frontend/.next" \
+    "${PROJECT_DIR}/frontend/coverage" \
+    "${PROJECT_DIR}/backend/.pytest_cache" \
+    "${PROJECT_DIR}/.pytest_cache" \
+    "${PROJECT_DIR}/.ruff_cache" \
+    "${PROJECT_DIR}/test-results" \
+    "${PROJECT_DIR}/playwright-report" 2>/dev/null || true
+  find "${PROJECT_DIR}/backend" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
 }
 
 ensure_full_build_disk_before_backup() {
@@ -146,10 +162,12 @@ ensure_full_build_disk_before_backup() {
   if (( free_kb < minimum_kb )); then
     printf '[DISK] До backup/build свободно только %s MiB; запускаю безопасную очистку.\n' "$((free_kb / 1024))"
     reclaim_disposable_docker_space
+    prune_project_build_artifacts
+    prune_old_update_artifacts
     free_kb="$(docker_free_kb)"
   fi
   if (( free_kb < minimum_kb )); then
-    printf '[DISK] Docker cache cleanup недостаточен; ротирую только старые pre-update backups/logs.\n'
+    printf '[DISK] После Docker/project cleanup места всё ещё мало; повторно проверяю ротацию backup/logs.\n'
     prune_old_update_artifacts
     free_kb="$(docker_free_kb)"
   fi
