@@ -111,7 +111,7 @@ def _diversify(items: list, *, limit: int, per_domain: int = 2) -> list:
 
 def install(web_tools_module) -> None:
     current = web_tools_module._search_searx
-    if getattr(current, "_ai_workspace_search_v3", False):
+    if getattr(current, "_ai_workspace_search_v3", False) is True:
         return
 
     raw_provider_order = web_tools_module._search_provider_order
