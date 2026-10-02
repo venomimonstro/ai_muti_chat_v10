@@ -353,10 +353,40 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, cu
 
     if overrun:
         unallocated = (actual - ledger_spend).quantize(NATIVE_STEP)
-        Provider.objects.filter(pk=provider.pk).update(
-            emergency_disabled=True,
-            health_state=Provider.HealthState.DISABLED,
-        )
+
+        # A reservation miss is normally model/estimation scoped, not proof that
+        # every model and credential of the provider is broken. Quarantine the
+        # exact model when possible. If the actual external spend cannot be fully
+        # represented by purchased inventory, isolate only the offending funding
+        # account so a healthy paid backup account can keep the provider online.
+        model_disabled = False
+        if model_slug:
+            try:
+                from apps.ai_registry.models import AIModel
+
+                updated = AIModel.objects.filter(slug=model_slug, provider=provider).update(
+                    enabled=False
+                )
+                model_disabled = bool(updated)
+            except Exception:
+                model_disabled = False
+            if not model_disabled:
+                try:
+                    from apps.image_studio.models import ImageModel
+
+                    updated = ImageModel.objects.filter(
+                        slug=model_slug, provider=provider
+                    ).update(enabled=False)
+                    model_disabled = bool(updated)
+                except Exception:
+                    model_disabled = False
+
+        account_disabled = False
+        if unallocated > ZERO or not model_disabled:
+            ProviderFundingAccount.objects.filter(pk=account.pk).update(active=False)
+            account.active = False
+            account_disabled = True
+
         CostAnomaly.objects.get_or_create(
             dedupe_key=f"provider-procurement-overrun:{source_type}:{source_id}",
             defaults={
@@ -373,7 +403,9 @@ def settle_provider_spend(*, reservation_id, actual_native, nominal_cost_rub, cu
                     "ledger_spend_native": str(ledger_spend),
                     "unallocated_native": str(unallocated),
                     "customer_charge_rub": str(customer_charge),
-                    "provider_disabled": True,
+                    "model_disabled": model_disabled,
+                    "funding_account_disabled": account_disabled,
+                    "provider_disabled": False,
                 },
             },
         )
