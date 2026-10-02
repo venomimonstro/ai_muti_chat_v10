@@ -3,7 +3,7 @@ import os
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from apps.billing.models import BalanceReservation
@@ -117,8 +117,20 @@ def recover_agent_run(run_id):
     for step in pending_steps:
         if not agent_provider_checkpoint_pending(step):
             continue
+        checkpoint = dict((step.output_payload or {}).get("_provider_settlement") or {})
+        customer_id = str(checkpoint.get("customer_reservation_id") or "")
         reconcile_agent_provider_checkpoint(step)
         reconciled_provider += 1
+
+        if customer_id:
+            customer = BalanceReservation.objects.filter(pk=customer_id).first()
+            if (
+                customer is not None
+                and customer.state == BalanceReservation.State.SETTLED
+                and customer.actual_rub is not None
+            ):
+                step.cost_rub = customer.actual_rub
+                step.save(update_fields=["cost_rub"])
 
     released_customer = _release_customer_reservations(run.id)
     released_provider = _release_provider_reservations(run.id)
@@ -145,6 +157,11 @@ def recover_agent_run(run_id):
             f" Рабочая ветка {branch} сохранена для проверки; она не считается успешным релизом. "
             "Повторный запуск создаст новую изолированную ветку."
         )
+    recovered_cost = (
+        run.steps.aggregate(total=Sum("cost_rub"))["total"] or 0
+    )
+    run.cost_actual_rub = recovered_cost
+    run.cost_reserved_rub = 0
     run.state = AgentRun.State.FAILED
     run.error_code = "stale_agent_run_recovered"
     run.error_message = (
@@ -156,6 +173,8 @@ def recover_agent_run(run_id):
     run.finished_at = now
     run.save(
         update_fields=[
+            "cost_actual_rub",
+            "cost_reserved_rub",
             "state",
             "error_code",
             "error_message",
