@@ -172,3 +172,71 @@ def test_held_confirmation_reports_search_reserve_once(monkeypatch):
     assert Decimal(payload["estimated_llm_max_rub"]) == reservation.amount_rub
     assert Decimal(payload["estimated_search_max_rub"]) == search_reservation.amount_rub
     assert Decimal(payload["estimated_max_rub"]) == reservation.amount_rub + search_reservation.amount_rub
+
+
+@pytest.mark.django_db(transaction=True)
+def test_authorization_failure_terminalizes_held_generation_and_releases_all_customer_reserves(monkeypatch):
+    user = User.objects.create_user(
+        username="held-authorization-failure-user",
+        email="held-authorization-failure@example.test",
+        password="password123",
+    )
+    credit(user, Decimal("30"), "test", "held-authorization-failure")
+    conversation = Conversation.objects.create(
+        owner=user,
+        title="Held authorization failure",
+    )
+    generation, reservation, client_message_id = _held_generation(
+        user,
+        conversation,
+    )
+    search_reservation = reserve(
+        user,
+        Decimal("2.0000"),
+        f"web-search:{generation.id}",
+    )
+
+    def broken_authorization(_generation):
+        raise RuntimeError("synthetic authorization write failure")
+
+    monkeypatch.setattr(
+        "apps.chat.cost_views._authorize_customer_stream",
+        broken_authorization,
+    )
+
+    client = APIClient()
+    client.force_authenticate(user)
+    response = client.post(
+        f"/api/v1/conversations/{conversation.id}/messages/stream/",
+        {
+            "content": generation.user_message.content,
+            "client_message_id": str(client_message_id),
+            "confirm_cost": True,
+            "confirmed_max_rub": "7.0000",
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=generation.idempotency_key,
+    )
+
+    assert response.status_code == 200
+    body = b"".join(response.streaming_content).decode("utf-8")
+
+    generation.refresh_from_db()
+    generation.assistant_message.refresh_from_db()
+    reservation.refresh_from_db()
+    search_reservation.refresh_from_db()
+    user.wallet.refresh_from_db()
+
+    assert generation.state == Generation.State.FAILED
+    assert generation.error_code == "stream_authorization_failed"
+    assert generation.assistant_message.status == Message.Status.FAILED
+    assert reservation.state == BalanceReservation.State.RELEASED
+    assert search_reservation.state == BalanceReservation.State.RELEASED
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert "event: generation" in body
+    assert "event: error" in body
+    assert Generation.objects.filter(pk=generation.pk).count() == 1
+    assert Message.objects.filter(
+        conversation=conversation,
+        role=Message.Role.USER,
+    ).count() == 1
