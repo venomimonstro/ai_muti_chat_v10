@@ -121,6 +121,30 @@ def test_gigachat_adapter_prefers_persisted_scope():
     assert adapter.scope == "GIGACHAT_API_B2B"
 
 
+def test_gigachat_merges_multiple_system_messages_into_one_first_message():
+    messages = GigaChatAPIAdapter._messages(
+        [
+            {"role": "system", "content": "base rules"},
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": "project context"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "system", "content": "memory context"},
+            {"role": "assistant", "content": "   "},
+        ]
+    )
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": "base rules\n\nproject context\n\nmemory context",
+        },
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    assert sum(1 for item in messages if item["role"] == "system") == 1
+    assert messages[0]["role"] == "system"
+
+
 @pytest.mark.django_db
 def test_gigachat_stream_headers_request_event_stream():
     provider, _ = Provider.objects.get_or_create(slug="gigachat", defaults={"name": "GigaChat API"})
