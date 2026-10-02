@@ -20,9 +20,11 @@ from apps.billing.services import release, reserve, settle
 from apps.projects.models import Project
 
 from .accounting import (
+    build_agent_provider_delivery_checkpoint,
     release_agent_provider_spend,
     reserve_agent_provider_spend,
     settle_agent_provider_spend,
+    update_agent_provider_customer_charge,
 )
 from .config_views import _validate_graph
 from .models import Agent, AgentPlanOperation
@@ -130,15 +132,48 @@ def _project_for(user, raw_id):
     return project
 
 
+def _planner_checkpoint(operation):
+    if operation is None:
+        return {}
+    return dict((operation.response or {}).get("_provider_settlement") or {})
+
+
+def _planner_checkpoint_pending(operation) -> bool:
+    return _planner_checkpoint(operation).get("status") == "pending"
+
+
+def _save_planner_checkpoint(operation, checkpoint):
+    if operation is None or checkpoint is None:
+        return
+    operation.response = {"_provider_settlement": dict(checkpoint)}
+    operation.save(update_fields=["response", "updated_at"])
+
+
 class AgentAIPlannerPreviewView(APIView):
     def post(self, request):
         key = str(request.headers.get("Idempotency-Key") or "").strip()
-        if not key:
-            return self._generate(request)
         if len(key) > 200:
             raise ValidationError({"detail": "Слишком длинный ключ операции"})
-        fingerprint = hashlib.sha256(json.dumps(dict(request.data), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        operation, created = AgentPlanOperation.objects.get_or_create(owner=request.user, key=key, defaults={"fingerprint": fingerprint})
+        fingerprint = hashlib.sha256(
+            json.dumps(dict(request.data), sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
+
+        if key:
+            operation, created = AgentPlanOperation.objects.get_or_create(
+                owner=request.user,
+                key=key,
+                defaults={"fingerprint": fingerprint},
+            )
+        else:
+            # Even an unkeyed preview needs a durable financial owner so a worker/DB
+            # failure after provider delivery can be reconciled without losing spend.
+            operation = AgentPlanOperation.objects.create(
+                owner=request.user,
+                key=f"internal-planner:{uuid.uuid4().hex}",
+                fingerprint=fingerprint,
+            )
+            created = True
+
         if not created:
             if operation.fingerprint != fingerprint:
                 return Response({"detail": "Этот ключ уже использован для другого описания"}, status=409)
@@ -146,20 +181,38 @@ class AgentAIPlannerPreviewView(APIView):
                 return Response(operation.response)
             if operation.state == "failed":
                 return Response(operation.response, status=400)
-            return Response({"detail": "Схема ещё проектируется. Повторите этот же запрос позже: повторного списания не будет."}, status=409)
+            return Response(
+                {
+                    "detail": (
+                        "Схема ещё проектируется или финансовое закрытие восстанавливается. "
+                        "Повторного списания и повторного LLM-вызова не будет."
+                    )
+                },
+                status=409,
+            )
         try:
-            response = self._generate(request)
+            response = self._generate(request, operation=operation)
         except Exception:
-            operation.state = "failed"
-            operation.response = {"detail": "Операция проектирования не завершилась. Повтор с тем же ключом не выполняет новое списание. Проверьте баланс и измените описание для нового проектирования."}
-            operation.save(update_fields=["state", "response", "updated_at"])
+            if _planner_checkpoint_pending(operation):
+                operation.state = "reconciling"
+                operation.save(update_fields=["state", "updated_at"])
+            else:
+                operation.state = "failed"
+                operation.response = {
+                    "detail": (
+                        "Операция проектирования не завершилась. Повтор с тем же ключом "
+                        "не выполняет новое списание. Проверьте баланс и измените описание "
+                        "для нового проектирования."
+                    )
+                }
+                operation.save(update_fields=["state", "response", "updated_at"])
             raise
         operation.state = "completed"
         operation.response = response.data
         operation.save(update_fields=["state", "response", "updated_at"])
         return response
 
-    def _generate(self, request):
+    def _generate(self, request, *, operation):
         description = str(request.data.get("description") or "").strip()
         if len(description) < 20:
             raise ValidationError({"description": "Опишите сотрудника чуть подробнее"})
@@ -227,17 +280,33 @@ class AgentAIPlannerPreviewView(APIView):
                 )
             )
             actual = min(Decimal(actual_quote.user_charge_rub), Decimal(customer.amount_rub))
-            settle_agent_provider_spend(
+            checkpoint = build_agent_provider_delivery_checkpoint(
+                model=model,
+                result=result,
+                actual_quote=actual_quote,
+                provider_reservation=provider_reservation,
+                customer_reservation=customer,
+                source_id=operation_id,
+                customer_charge=actual,
+            )
+            _save_planner_checkpoint(operation, checkpoint)
+            provider_spend = settle_agent_provider_spend(
                 reservation=provider_reservation,
                 model=model,
                 result=result,
                 actual_quote=actual_quote,
                 source_id=operation_id,
-                customer_charge=actual,
+                customer_charge=Decimal("0"),
             )
             provider_reservation = None
             settle(customer.id, actual)
             customer = None
+            update_agent_provider_customer_charge(provider_spend, actual)
+            if checkpoint is not None:
+                checkpoint["status"] = "settled"
+                if provider_spend is not None:
+                    checkpoint["provider_spend_id"] = str(provider_spend.id)
+                _save_planner_checkpoint(operation, checkpoint)
 
             payload = _extract_json(result.text)
             draft = _sanitize_draft(payload, description)
@@ -254,12 +323,13 @@ class AgentAIPlannerPreviewView(APIView):
         except DjangoValidationError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
         finally:
-            if customer is not None:
+            settlement_pending = _planner_checkpoint_pending(operation)
+            if customer is not None and not settlement_pending:
                 try:
                     release(customer.id)
                 except Exception:
                     pass
-            if provider_reservation is not None:
+            if provider_reservation is not None and not settlement_pending:
                 release_agent_provider_spend(provider_reservation)
 
 
