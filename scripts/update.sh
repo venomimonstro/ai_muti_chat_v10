@@ -169,6 +169,7 @@ ensure_runtime_env() {
   ensure_env_default WEB_SEARCH_TRUSTED_HOSTS searxng
   upsert_env_if_missing WEB_SEARCH_MAX_RESULTS 8
   upsert_env_if_missing WEB_CONTEXT_MAX_TOKENS 2200
+  upsert_env_if_missing CHAT_GENERATION_STALE_TIMEOUT_SECONDS 360
 
   local procurement_fail_closed
   procurement_fail_closed="$(sed -n 's/^PROCUREMENT_RUNTIME_FAIL_CLOSED=//p' "${ENV_FILE}" | head -n 1 | tr '[:upper:]' '[:lower:]')"
