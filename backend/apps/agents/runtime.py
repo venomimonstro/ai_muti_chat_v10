@@ -15,9 +15,13 @@ from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
 
 from .accounting import (
+    agent_provider_checkpoint_pending,
+    checkpoint_agent_provider_delivery,
+    mark_agent_provider_checkpoint_settled,
     release_agent_provider_spend,
     reserve_agent_provider_spend,
     settle_agent_provider_spend,
+    update_agent_provider_customer_charge,
 )
 from .dev_context import build_repository_context
 from .file_context import project_file_context
@@ -139,6 +143,24 @@ def _mark_failure(run, step, *, code, message, reservation=None, provider_reserv
     run.error_message = str(message)[:4000]
     run.finished_at = now
     run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+
+
+def _defer_settlement_recovery(run, step, *, code, message):
+    """Keep durable financial evidence active for watchdog reconciliation."""
+    run.state = AgentRun.State.REVIEWING
+    run.error_code = "agent_settlement_pending"
+    run.error_message = (
+        f"Провайдер вернул результат, но локальное финансовое закрытие прервано ({code}). "
+        "Расход сохранён для автоматического reconciliation; повторный LLM-вызов не выполняется."
+    )[:4000]
+    run.finished_at = None
+    run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+    step.public_log = (
+        "Ответ провайдера получен. Финансовое закрытие восстанавливается автоматически; "
+        "повторный запрос к модели не выполняется."
+    )
+    step.save(update_fields=["public_log"])
+    return run
 
 
 def _finish_canceled_after_provider(run, step, result, actual, repository_context=None):
@@ -326,17 +348,29 @@ def execute_run(run_id):
             )
         )
         actual = min(actual_quote.user_charge_rub, reservation.amount_rub)
-        settle_agent_provider_spend(
+        checkpoint_agent_provider_delivery(
+            step=step,
+            model=model,
+            result=result,
+            actual_quote=actual_quote,
+            provider_reservation=provider_reservation,
+            customer_reservation=reservation,
+            source_id=run.id,
+            customer_charge=actual,
+        )
+        provider_spend = settle_agent_provider_spend(
             reservation=provider_reservation,
             model=model,
             result=result,
             actual_quote=actual_quote,
             source_id=run.id,
-            customer_charge=actual,
+            customer_charge=Decimal("0"),
         )
         provider_reservation = None
         settle(reservation.id, actual)
         reservation = None
+        update_agent_provider_customer_charge(provider_spend, actual)
+        mark_agent_provider_checkpoint_settled(step, provider_spend=provider_spend)
 
         run.refresh_from_db(fields=["state"])
         if run.state == AgentRun.State.CANCELED:
@@ -372,7 +406,29 @@ def execute_run(run_id):
         run.save(update_fields=["plan", "output_payload", "cost_actual_rub", "cost_reserved_rub", "state", "finished_at", "updated_at"])
         return run
     except ProviderError as exc:
-        _mark_failure(run, step, code=exc.code, message=str(exc), reservation=reservation, provider_reservation=provider_reservation)
+        if agent_provider_checkpoint_pending(step):
+            return _defer_settlement_recovery(
+                run, step, code=exc.code, message=str(exc)
+            )
+        _mark_failure(
+            run,
+            step,
+            code=exc.code,
+            message=str(exc),
+            reservation=reservation,
+            provider_reservation=provider_reservation,
+        )
     except Exception as exc:
-        _mark_failure(run, step, code="agent_runtime_failed", message=str(exc), reservation=reservation, provider_reservation=provider_reservation)
+        if agent_provider_checkpoint_pending(step):
+            return _defer_settlement_recovery(
+                run, step, code="agent_runtime_failed", message=str(exc)
+            )
+        _mark_failure(
+            run,
+            step,
+            code="agent_runtime_failed",
+            message=str(exc),
+            reservation=reservation,
+            provider_reservation=provider_reservation,
+        )
     return run
