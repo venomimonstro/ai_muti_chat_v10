@@ -301,7 +301,7 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
 
     raw_success = reliability_module.record_success
     if getattr(raw_success, "_ai_workspace_model_quarantine", False) is not True:
-        def record_success(provider, latency_ms, adapter=None):
+        def record_success(provider, latency_ms, adapter=None, **kwargs):
             with transaction.atomic():
                 model_incident_ids = list(
                     ReliabilityIncident.objects.filter(
@@ -310,7 +310,7 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
                         details__scope=MODEL_SCOPE,
                     ).values_list("id", flat=True)
                 )
-                result = raw_success(provider, latency_ms, adapter=adapter)
+                result = raw_success(provider, latency_ms, adapter=adapter, **kwargs)
                 if model_incident_ids:
                     ReliabilityIncident.objects.filter(id__in=model_incident_ids).update(
                         state=ReliabilityIncident.State.OPEN,
