@@ -20,6 +20,52 @@ from .services import release_provider_spend
 logger = logging.getLogger(__name__)
 
 
+def release_stale_terminal_chat_reservations(*, limit: int = 500) -> int:
+    """Release orphaned chat procurement reservations left by older runtimes.
+
+    Only terminal generations with no authoritative provider cost/spend are safe to
+    release. This makes the repair idempotent and prevents stale reservations from
+    silently removing otherwise healthy models from customer routing.
+    """
+    released = 0
+    active = list(
+        ProviderSpendReservation.objects.filter(
+            source_key__startswith="chat:",
+            state=ProviderSpendReservation.State.ACTIVE,
+        )
+        .order_by("created_at")[: max(1, int(limit))]
+    )
+    for reservation in active:
+        parts = str(reservation.source_key or "").split(":", 2)
+        if len(parts) < 3:
+            continue
+        request_cost = RequestCost.objects.filter(pk=parts[1]).first()
+        if request_cost is None:
+            continue
+        if request_cost.provider_cost_rub is not None:
+            continue
+        if ProviderSpend.objects.filter(
+            source_type="chat", source_id=str(request_cost.id)
+        ).exists():
+            continue
+        terminal = Generation.objects.filter(
+            pk=request_cost.generation_id,
+            state__in=[Generation.State.FAILED, Generation.State.CANCELLED],
+        ).exists()
+        if not terminal:
+            continue
+        try:
+            release_provider_spend(reservation.id)
+            released += 1
+        except Exception:
+            logger.exception(
+                "Failed to repair stale chat provider reservation request_cost=%s reservation=%s",
+                request_cost.id,
+                reservation.id,
+            )
+    return released
+
+
 @receiver(post_save, sender=Generation)
 def release_terminal_chat_procurement(sender, instance, **kwargs):
     if instance.state not in {Generation.State.FAILED, Generation.State.CANCELLED}:
