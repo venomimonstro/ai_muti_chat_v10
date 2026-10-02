@@ -100,7 +100,14 @@ def recover_agent_run(run_id):
     # durable, explicitly scheduled wait is healthy state, not a dead worker.
     if run.state == AgentRun.State.WAITING_TOOL and wait_metadata(run):
         return False
-    if run.state not in RECOVERABLE_STATES or run.updated_at >= _cutoff():
+    if run.state not in RECOVERABLE_STATES:
+        return False
+    settlement_pending = (
+        run.state == AgentRun.State.REVIEWING
+        and run.error_code == "agent_settlement_pending"
+    )
+    cutoff = _settlement_cutoff() if settlement_pending else _cutoff()
+    if run.updated_at >= cutoff:
         return False
 
     reconciled_provider = 0
@@ -215,11 +222,20 @@ def expire_stale_agent_approvals():
 
 
 def recover_stale_agent_runs():
+    normal_cutoff = _cutoff()
+    settlement_cutoff = _settlement_cutoff()
     stale_ids = list(
-        AgentRun.objects.filter(
-            state__in=RECOVERABLE_STATES,
-            updated_at__lt=_cutoff(),
-        ).values_list("id", flat=True)[:500]
+        AgentRun.objects.filter(state__in=RECOVERABLE_STATES)
+        .filter(
+            Q(updated_at__lt=normal_cutoff)
+            | Q(
+                state=AgentRun.State.REVIEWING,
+                error_code="agent_settlement_pending",
+                updated_at__lt=settlement_cutoff,
+            )
+        )
+        .order_by("updated_at")
+        .values_list("id", flat=True)[:500]
     )
     recovered = 0
     for run_id in stale_ids:
