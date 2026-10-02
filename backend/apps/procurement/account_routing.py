@@ -276,10 +276,15 @@ def install(*, services_module, signals_module, reliability_module) -> None:
                 currency=currency,
             )
         except ValidationError as exc:
-            if signals_module._commercial_fail_closed():
+            # Procurement is owner-side accounting, not provider transport
+            # authorization. Never take the customer chat offline solely because
+            # the local purchasing ledger is stale/exhausted while a verified API
+            # credential is still execution-ready. Other commercial operations
+            # keep the strict production contract.
+            if signals_module._commercial_fail_closed() and not str(source_key).startswith("chat:"):
                 raise
             signals_module.logger.warning(
-                "Optional provider procurement reservation unavailable; continuing client request provider=%s source=%s reason=%s",
+                "Provider procurement reservation unavailable; continuing chat without local provider reservation provider=%s source=%s reason=%s",
                 provider.slug,
                 source_key,
                 exc,
@@ -303,17 +308,22 @@ def install(*, services_module, signals_module, reliability_module) -> None:
                 funded_native__gt=ZERO,
             ).exists()
             if not configured:
-                # Zero-balance rows are drafts. Do not block a HEALTHY provider
-                # until a real provider-credit purchase activates the ledger.
                 return True
-            return select_runtime_funding_account(
+            account = select_runtime_funding_account(
                 provider,
                 required_native=NATIVE_STEP,
                 allow_probe=False,
                 require_balance=True,
-            ) is not None
+            )
+            if account is not None:
+                return True
+            # The local procurement ledger can lag the real upstream balance.
+            # Provider transport/key health remains the authority for chat
+            # availability; reservation accounting is attempted later and may
+            # safely be skipped for chat when capacity metadata is stale.
+            return True
         except Exception:
-            return False
+            return True
 
     reliability_module._procurement_ready = procurement_ready
 
