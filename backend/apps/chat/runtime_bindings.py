@@ -92,6 +92,7 @@ def synchronize(*, streaming_module, managed_stream_module, activity_stream_modu
     # cost_views imports managed_run by value for the WSGI/customer-stream fallback.
     # It must track the finalized managed runtime just like the native ASGI module.
     _bind("apps.chat.cost_views", managed_run=managed_stream_module.managed_run)
+    _bind("apps.chat.message_actions", managed_run=managed_stream_module.managed_run)
 
     # managed_run must itself call the same final run() object. Rebinding the module
     # global closes the common Python "from x import run" stale-reference trap.
