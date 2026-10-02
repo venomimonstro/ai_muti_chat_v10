@@ -240,10 +240,17 @@ def adapter_for(
             or os.getenv("ANTHROPIC_API_BASE_URL", "https://api.anthropic.com/v1"),
         )
     elif provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT:
+        base_url = (
+            provider.api_base_url
+            or (
+                os.getenv("HUBAI_API_BASE_URL", "https://hubai.loe.gg/v1")
+                if provider.slug == "hubai"
+                else os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com")
+            )
+        )
         adapter = adapters.DeepSeekChatAdapter(
             api_key=api_key,
-            base_url=provider.api_base_url
-            or os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
+            base_url=base_url,
         )
     elif provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT:
         adapter = adapters.GeminiGenerateContentAdapter(
