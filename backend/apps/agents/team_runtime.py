@@ -235,6 +235,7 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
             requested_output_tokens=output_tokens,
             remaining_budget_rub=effective_remaining,
             is_canceled=lambda: _is_canceled(run),
+            step=step,
         )
         result = generation.result
         selected_model = generation.model
