@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import re
 import uuid
 from decimal import Decimal
@@ -33,6 +34,8 @@ from .planner import infer_kind
 from .readiness import RUNTIME_NODE_TYPES
 from .runtime import _model_for
 from .serializers import AgentSerializer
+
+logger = logging.getLogger(__name__)
 
 PLANNER_OUTPUT_TOKENS = 1800
 PLANNER_ALLOWED_TYPES = set(RUNTIME_NODE_TYPES)
@@ -133,6 +136,18 @@ def _project_for(user, raw_id):
     return project
 
 
+def _delete_ephemeral_operation(operation):
+    if operation is None:
+        return
+    try:
+        operation.delete()
+    except Exception:
+        logger.exception(
+            "Failed to delete completed ephemeral planner operation id=%s",
+            getattr(operation, "id", None),
+        )
+
+
 def _planner_checkpoint(operation):
     if operation is None:
         return {}
@@ -209,13 +224,13 @@ class AgentAIPlannerPreviewView(APIView):
                 }
                 operation.save(update_fields=["state", "response", "updated_at"])
                 if ephemeral_operation:
-                    operation.delete()
+                    _delete_ephemeral_operation(operation)
             raise
         operation.state = "completed"
         operation.response = response.data
         operation.save(update_fields=["state", "response", "updated_at"])
         if ephemeral_operation:
-            operation.delete()
+            _delete_ephemeral_operation(operation)
         return response
 
     def _generate(self, request, *, operation):
