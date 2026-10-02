@@ -4,12 +4,9 @@ from decimal import ROUND_UP, Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
+from apps.procurement.account_routing import reserve_provider_spend
 from apps.procurement.models import ProviderFundingAccount
-from apps.procurement.services import (
-    release_provider_spend,
-    reserve_provider_spend,
-    settle_provider_spend,
-)
+from apps.procurement.services import release_provider_spend, settle_provider_spend
 
 logger = logging.getLogger(__name__)
 NATIVE_STEP = Decimal("0.000001")
@@ -19,11 +16,17 @@ def procurement_fail_closed():
     return bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
 
 
-def reserve_agent_provider_spend(*, model, provider_cost_rub, fx_snapshot, source_key):
+def reserve_agent_provider_spend(
+    *,
+    model,
+    provider_cost_rub,
+    fx_snapshot,
+    source_key,
+    provider_currency="",
+):
     configured = ProviderFundingAccount.objects.filter(
         provider=model.provider,
         active=True,
-        is_default=True,
     ).exists()
     if not configured:
         if procurement_fail_closed():
@@ -46,6 +49,7 @@ def reserve_agent_provider_spend(*, model, provider_cost_rub, fx_snapshot, sourc
             provider=model.provider,
             amount_native=native,
             source_key=source_key,
+            currency=str(provider_currency or "").upper().strip(),
         )
     except ValidationError:
         if procurement_fail_closed():
