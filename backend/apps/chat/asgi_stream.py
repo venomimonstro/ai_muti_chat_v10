@@ -69,6 +69,17 @@ def _is_provider_error(code):
     return value in _PROVIDER_ERROR_CODES or any(marker in value for marker in _PROVIDER_ERROR_MARKERS)
 
 
+def _generation_in_progress_chunk(chunk) -> bool:
+    if not isinstance(chunk, str) or not chunk.startswith("event: error"):
+        return False
+    try:
+        data_line = next(line for line in chunk.splitlines() if line.startswith("data:"))
+        payload = json.loads(data_line[5:].strip())
+    except Exception:
+        return False
+    return str((payload or {}).get("code") or "") == "generation_in_progress"
+
+
 def _positive_cost(value) -> bool:
     try:
         return Decimal(str(value or "0")) > 0
@@ -382,6 +393,18 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                 # the same Generation before queueing, so suppress only that duplicate.
                 if isinstance(value, str) and value.startswith("event: generation\n"):
                     continue
+                if _generation_in_progress_chunk(value):
+                    # A simultaneous reconnect lost the atomic QUEUED -> RUNNING
+                    # producer claim. It is not a customer-visible failure: attach to
+                    # the winning producer and replay durable snapshots/terminal state.
+                    detached.set()
+                    async for follow_chunk in follow_generation_async(generation):
+                        if isinstance(follow_chunk, str) and follow_chunk.startswith(
+                            "event: generation\n"
+                        ):
+                            continue
+                        yield follow_chunk
+                    return
                 yield _public_chunk(value)
                 continue
             if kind == "error":
