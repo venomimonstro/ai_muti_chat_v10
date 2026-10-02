@@ -102,6 +102,40 @@ fi
 
 ensure_update_bootstrap_disk
 
+docker_free_kb() {
+  local root
+  root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [[ -n "${root}" && -e "${root}" ]] || root="${PROJECT_DIR}"
+  df -Pk "${root}" | awk 'NR==2 {print $4}'
+}
+
+reclaim_disposable_docker_space() {
+  command -v docker >/dev/null 2>&1 || return 0
+  printf '[DISK] Очищаю только неиспользуемые Docker containers/images/build cache. Volumes не трогаются.\n'
+  docker container prune -f >/dev/null 2>&1 || true
+  docker builder prune -af >/dev/null 2>&1 || true
+  docker buildx prune -af >/dev/null 2>&1 || true
+  docker image prune -af >/dev/null 2>&1 || true
+}
+
+ensure_full_build_disk_before_backup() {
+  local minimum_kb="${UPDATE_FULL_MIN_FREE_KB:-8388608}" # 8 GiB
+  local free_kb
+  free_kb="$(docker_free_kb)"
+  if (( free_kb < minimum_kb )); then
+    printf '[DISK] До backup/build свободно только %s MiB; запускаю безопасную очистку.\n' "$((free_kb / 1024))"
+    reclaim_disposable_docker_space
+    free_kb="$(docker_free_kb)"
+  fi
+  if (( free_kb < minimum_kb )); then
+    printf '[FAIL] Недостаточно места ДО создания нового backup: %s MiB; требуется минимум %s MiB.\n' \
+      "$((free_kb / 1024))" "$((minimum_kb / 1024))" >&2
+    printf '[INFO] Новый backup не создавался; production volumes и PostgreSQL не удалялись.\n' >&2
+    exit 1
+  fi
+  printf '[DISK] Свободно перед FULL backup/build: %s MiB.\n' "$((free_kb / 1024))"
+}
+
 mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
 touch "${UPDATE_LOG}"
 exec > >(tee -a "${UPDATE_LOG}") 2>&1
@@ -379,7 +413,8 @@ ensure_runtime_env
 printf '[PASS] Runtime env и secrets готовы.\n'
 
 if [[ "$UPDATE_MODE" == "full" ]]; then
-  phase 5 'FULL gate: backup + тесты + безопасность + frontend'
+  phase 5 'FULL gate: место + backup + тесты + безопасность + frontend'
+  ensure_full_build_disk_before_backup
   BACKUP_FILE="${BACKUP_DIR}/pre-update-${STAMP}.dump"
   MEDIA_BACKUP="${BACKUP_DIR}/pre-update-media-${STAMP}.tar.gz"
   printf '[BACKUP] PostgreSQL -> %s\n' "$BACKUP_FILE"
@@ -402,6 +437,10 @@ fi
 
 if [[ "$UPDATE_MODE" == "full" ]]; then
   phase 6 'FULL deploy: сборка, миграции и production'
+  # release_check leaves no running test stack, but its build images/cache may still
+  # occupy several GiB. Reclaim disposable layers before the production image export.
+  reclaim_disposable_docker_space
+  ensure_full_build_disk_before_backup
   compose build --pull
   compose pull searxng
   compose up -d postgres redis searxng
