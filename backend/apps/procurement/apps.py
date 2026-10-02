@@ -7,14 +7,14 @@ from django.core.checks import Error, register
 
 @register()
 def procurement_production_configuration_check(app_configs, **kwargs):
-    """Commercial production must never bypass the provider funding ledger."""
+    """Production must keep procurement fail-closed once a funding ledger is configured."""
     if settings.DEBUG:
         return []
     if not bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False)):
         return [
             Error(
-                "Production procurement is permissive; provider funding can be bypassed.",
-                hint="Set PROCUREMENT_RUNTIME_FAIL_CLOSED=1 in .env.production.",
+                "Production procurement is permissive after a funding ledger is configured.",
+                hint="Set PROCUREMENT_RUNTIME_FAIL_CLOSED=1 in .env.production. Providers without an active funding ledger may still use a verified API key.",
                 id="procurement.E001",
             )
         ]
@@ -27,9 +27,11 @@ class ProcurementConfig(AppConfig):
     verbose_name = "Закупки API"
 
     def ready(self):
-        # Production is fail-closed by default: a commercial provider must have
-        # usable purchased capacity. Dev/test stays permissive unless explicitly
-        # enabled so legacy fixtures do not need artificial procurement ledgers.
+        # Production is fail-closed once an administrator opts a provider into
+        # the purchasing ledger. A provider with no active funding account may use
+        # a verified HEALTHY key directly; creating a funding account makes balance
+        # accounting strict for that provider. Dev/test stays permissive unless
+        # explicitly enabled.
         default = "false" if settings.DEBUG else "true"
         raw = os.getenv("PROCUREMENT_RUNTIME_FAIL_CLOSED", default).strip().casefold()
         settings.PROCUREMENT_RUNTIME_FAIL_CLOSED = raw not in {"0", "false", "no", "off"}
