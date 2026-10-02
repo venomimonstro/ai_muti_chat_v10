@@ -146,7 +146,10 @@ WEB_SEARCH_TRUSTED_HOSTS=searxng \
 PUBLIC_API_URL=https://release-check.example.test/api/v1 \
 docker compose --ansi never --env-file .env.example -f "$PROD_COMPOSE" config >/dev/null
 grep -Fq -- '--timeout-graceful-shutdown ${UVICORN_GRACEFUL_SHUTDOWN_SECONDS:-150}' "$PROD_COMPOSE"
-grep -Fq 'stop_grace_period: 165s' "$PROD_COMPOSE"
+if [[ "$(grep -Fc 'stop_grace_period: 165s' "$PROD_COMPOSE")" -lt 2 ]]; then
+  echo '[FAIL] backend and worker must both have stop_grace_period: 165s' >&2
+  exit 1
+fi
 pass 3 'Compose syntax'
 
 step 4 'Build isolated test stack'
