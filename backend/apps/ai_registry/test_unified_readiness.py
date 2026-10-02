@@ -48,7 +48,7 @@ class UnifiedReadinessTests(TestCase):
         self.assertTrue(provider_available(provider))
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
-    def test_zero_procurement_balance_blocks_customer_traffic(self):
+    def test_zero_procurement_balance_is_only_a_draft_and_does_not_block(self):
         provider, key = self._provider_with_key()
         ProviderFundingAccount.objects.create(
             provider=provider,
@@ -59,7 +59,7 @@ class UnifiedReadinessTests(TestCase):
             is_default=True,
             funded_native=0,
         )
-        self.assertFalse(provider_available(provider))
+        self.assertTrue(provider_available(provider))
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
     def test_positive_procurement_balance_allows_customer_traffic(self):
