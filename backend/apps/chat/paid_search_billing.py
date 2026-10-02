@@ -509,6 +509,7 @@ def install(*, streaming_module, web_tools_module) -> None:
         }
 
     prepare._ai_workspace_paid_search_billing = True
+    prepare._raw_prepare = raw_prepare
     web_tools_module._yandex_search_config = yandex_config
     web_tools_module._search_yandex = billed_yandex
     web_tools_module.search_web = search_web
