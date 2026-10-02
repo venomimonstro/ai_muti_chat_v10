@@ -51,7 +51,13 @@ def provider_health_watch_task():
             if provider.last_checked_at:
                 age = (now - provider.last_checked_at).total_seconds()
                 if provider.health_state == Provider.HealthState.HEALTHY and age < 180:
-                    healthy += int(provider_available(provider))
+                    if provider_available(provider):
+                        healthy += 1
+                    else:
+                        # Transport can be healthy while customer traffic is blocked
+                        # by credential/funding readiness. Count that as unavailable
+                        # so the platform alert reflects the actual client outage.
+                        unavailable += 1
                     continue
                 if (
                     provider.health_state == Provider.HealthState.OPEN
