@@ -34,6 +34,11 @@ def _fx(snapshot):
     return value if value > ZERO else None
 
 
+def _expected_provider_rub(snapshot, fallback):
+    value = _decimal((snapshot or {}).get("expected_provider_cost_rub"), "0")
+    return value if value > ZERO else _decimal(fallback)
+
+
 def _commercial_fail_closed():
     """Whether the owner-side provider funding ledger is mandatory in runtime."""
     return bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
@@ -210,7 +215,9 @@ def api_usage_procurement(sender, instance, **kwargs):
         if reservation is None:
             _ensure(
                 provider=provider,
-                expected_rub=instance.estimated_cost_rub,
+                expected_rub=_expected_provider_rub(
+                    instance.pricing_snapshot, instance.estimated_cost_rub
+                ),
                 snapshot=instance.pricing_snapshot,
                 source_key=key,
             )
@@ -251,7 +258,9 @@ def image_generation_procurement(sender, instance, **kwargs):
         if reservation is None:
             _ensure(
                 provider=provider,
-                expected_rub=instance.estimated_cost_rub,
+                expected_rub=_expected_provider_rub(
+                    instance.price_snapshot, instance.estimated_cost_rub
+                ),
                 snapshot=instance.price_snapshot,
                 source_key=key,
             )
@@ -290,7 +299,9 @@ def compare_variant_procurement(sender, instance, **kwargs):
         if reservation is None:
             _ensure(
                 provider=provider,
-                expected_rub=instance.expected_max_rub,
+                expected_rub=_expected_provider_rub(
+                    instance.pricing_snapshot, instance.expected_max_rub
+                ),
                 snapshot=instance.pricing_snapshot,
                 source_key=key,
             )
