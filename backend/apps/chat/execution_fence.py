@@ -75,7 +75,7 @@ def install(streaming_module) -> None:
         return
 
     def recover_generation(pk):
-        cutoff = recovery_module._cutoff()
+        cutoff = recovery_module._generation_cutoff()
         with transaction.atomic():
             generation = Generation.objects.select_for_update().filter(pk=pk).first()
             if generation is None:
