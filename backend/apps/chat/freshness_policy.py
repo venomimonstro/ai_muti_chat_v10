@@ -70,7 +70,7 @@ def is_volatile_fact_query(query: str) -> bool:
 
 def install(live_tools_module, web_context_module) -> None:
     raw = live_tools_module.needs_web_search
-    if getattr(raw, "_ai_workspace_volatile_facts", False):
+    if getattr(raw, "_ai_workspace_volatile_facts", False) is True:
         return
 
     def needs_web_search(query: str) -> bool:
