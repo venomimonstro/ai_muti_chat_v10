@@ -434,4 +434,4 @@ def edit(
     )
     if not created:
         return generation
-    return execute_generation(generation, adapter=adapter, claim_queued=False)
+    return execute_generation(generation, adapter=adapter, claim_queued=True)
