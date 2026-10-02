@@ -81,7 +81,7 @@ def search_required(query: str) -> bool:
 
 def install(live_tools_module, web_context_module) -> None:
     current = live_tools_module.needs_web_search
-    if getattr(current, "_ai_workspace_cost_aware_search", False):
+    if getattr(current, "_ai_workspace_cost_aware_search", False) is True:
         return
 
     def needs_web_search(query: str) -> bool:
