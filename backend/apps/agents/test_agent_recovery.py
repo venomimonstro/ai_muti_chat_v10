@@ -12,9 +12,17 @@ from apps.billing.services import credit, reserve
 from apps.procurement.models import ProviderSpend, ProviderSpendReservation
 from apps.procurement.services import create_funding_account, record_purchase
 
-from .accounting import checkpoint_agent_provider_delivery, reserve_agent_provider_spend
-from .models import Agent, AgentApproval, AgentRun, AgentStepRun
-from .recovery import expire_stale_agent_approvals, recover_stale_agent_runs
+from .accounting import (
+    build_agent_provider_delivery_checkpoint,
+    checkpoint_agent_provider_delivery,
+    reserve_agent_provider_spend,
+)
+from .models import Agent, AgentApproval, AgentPlanOperation, AgentRun, AgentStepRun
+from .recovery import (
+    expire_stale_agent_approvals,
+    recover_stale_agent_plan_operations,
+    recover_stale_agent_runs,
+)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -343,4 +351,114 @@ def test_stale_agent_reconciles_confirmed_provider_delivery_before_releasing_cus
     assert account.reserved_native == Decimal("0.000000")
     assert account.spent_native == Decimal("0.015000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert user.wallet.available_rub == Decimal("20.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stale_planner_operation_reconciles_provider_spend_and_releases_customer(monkeypatch):
+    monkeypatch.setenv("AGENT_SETTLEMENT_RECOVERY_SECONDS", "60")
+    user = get_user_model().objects.create_user(
+        username="planner-settlement-recovery",
+        email="planner-settlement-recovery@example.test",
+        password="test-password",
+    )
+    credit(user, Decimal("20"), "test", "planner-settlement-recovery")
+
+    provider = Provider.objects.create(
+        slug="planner-recovery-provider",
+        name="Planner recovery provider",
+        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    key = ProviderApiKey(
+        provider=provider,
+        label="healthy",
+        enabled=True,
+        health_state=ProviderApiKey.HealthState.HEALTHY,
+    )
+    key.set_secret("sk-planner-recovery")
+    key.save()
+    model = AIModel.objects.create(
+        provider=provider,
+        slug="planner-recovery-model",
+        display_name="Planner recovery model",
+        upstream_model="planner-upstream",
+        enabled=True,
+    )
+    account = create_funding_account(
+        provider=provider,
+        api_key=key,
+        label="Planner funding",
+        currency="USD",
+        is_default=True,
+    )
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+
+    operation = AgentPlanOperation.objects.create(
+        owner=user,
+        key="planner-recovery-operation",
+        fingerprint="f" * 64,
+        state="reconciling",
+    )
+    customer = reserve(
+        user,
+        Decimal("2.5"),
+        f"agent-planner:{operation.id}:customer",
+    )
+    provider_reservation = reserve_agent_provider_spend(
+        model=model,
+        provider_cost_rub=Decimal("2"),
+        fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        source_key=f"agent-planner:{operation.id}",
+        provider_currency="USD",
+    )
+    checkpoint = build_agent_provider_delivery_checkpoint(
+        model=model,
+        result=SimpleNamespace(
+            provider_request_id="planner-provider-recovery",
+            input_tokens=120,
+            output_tokens=60,
+        ),
+        actual_quote=SimpleNamespace(
+            provider_cost_rub=Decimal("1.5"),
+            fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        ),
+        provider_reservation=provider_reservation,
+        customer_reservation=customer,
+        source_id=f"planner:{operation.id}",
+        customer_charge=Decimal("2.5"),
+    )
+    operation.response = {"_provider_settlement": checkpoint}
+    operation.save(update_fields=["response", "updated_at"])
+    AgentPlanOperation.objects.filter(pk=operation.pk).update(
+        updated_at=timezone.now() - timedelta(minutes=10)
+    )
+
+    assert recover_stale_agent_plan_operations() == 1
+
+    operation.refresh_from_db()
+    customer.refresh_from_db()
+    provider_reservation.refresh_from_db()
+    account.refresh_from_db()
+    user.wallet.refresh_from_db()
+    spend = ProviderSpend.objects.get(
+        source_type="agent",
+        source_id=f"planner:{operation.id}",
+    )
+
+    assert operation.state == "failed"
+    assert "_provider_settlement" not in operation.response
+    assert "Финансовое закрытие восстановлено" in operation.response["detail"]
+    assert customer.state == BalanceReservation.State.RELEASED
+    assert provider_reservation.state == ProviderSpendReservation.State.SETTLED
+    assert spend.customer_charge_rub == Decimal("0.0000")
+    assert spend.native_cost == Decimal("0.015000")
+    assert account.reserved_native == Decimal("0.000000")
+    assert account.spent_native == Decimal("0.015000")
     assert user.wallet.available_rub == Decimal("20.0000")
