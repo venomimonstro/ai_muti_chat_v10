@@ -20,6 +20,10 @@ app.conf.beat_schedule = {
     },
     # Keep the existing recovery key/cadence. recover_stale_operations_task already
     # performs quarantined-model recovery, so no second model-recovery beat job exists.
+    "recover-stale-chat-operations": {
+        "task": "apps.admin_ops.tasks.recover_stale_chat_operations_task",
+        "schedule": 60.0,
+    },
     "recover-stale-operations": {
         "task": "apps.admin_ops.tasks.recover_stale_operations_task",
         "schedule": 300.0,
