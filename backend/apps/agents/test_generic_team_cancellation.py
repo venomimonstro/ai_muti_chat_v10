@@ -59,6 +59,7 @@ def test_generic_team_cancel_after_provider_accounts_cost_and_stops_next_member(
         user_charge_rub=Decimal("2.0000"),
         provider_cost_rub=Decimal("1.0000"),
         fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        pricing_snapshot={"provider_currency": "USD"},
     )
     customer_reservation = SimpleNamespace(id="customer-reservation", amount_rub=Decimal("2.0000"))
     provider_reservation = SimpleNamespace(id="provider-reservation")
@@ -82,7 +83,13 @@ def test_generic_team_cancel_after_provider_accounts_cost_and_stops_next_member(
         return_value=(Decimal("100"), {"day_spend": Decimal("0"), "day_limit": Decimal("100"), "month_spend": Decimal("0"), "month_limit": Decimal("1000")}),
     ), patch("apps.agents.generic_team_runtime.reserve", return_value=customer_reservation), patch(
         "apps.agents.generic_team_runtime.reserve_agent_provider_spend", return_value=provider_reservation
-    ), patch("apps.agents.generic_team_runtime.settle_agent_provider_spend"), patch(
+    ), patch(
+        "apps.agents.generic_team_runtime.actual_agent_quote_from_snapshot",
+        return_value=quoted,
+    ), patch(
+        "apps.agents.generic_team_runtime.settle_agent_provider_spend",
+        return_value=None,
+    ), patch(
         "apps.agents.generic_team_runtime.settle"
     ), patch("apps.agents.generic_team_runtime.dispatch.adapter_for", return_value=Adapter()):
         result = execute_generic_team_run(run.id)
