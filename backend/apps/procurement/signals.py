@@ -201,17 +201,29 @@ def request_cost_procurement(sender, instance, **kwargs):
         source_key=key,
         state=ProviderSpendReservation.State.ACTIVE,
     ).first()
-    _settle(
-        reservation=reservation,
-        provider_cost_rub=instance.provider_cost_rub,
-        customer_charge_rub=instance.charged_rub or ZERO,
-        snapshot=instance.pricing_snapshot,
-        source_type="chat",
-        source_id=str(instance.id),
-        model_slug=model.slug,
-        input_tokens=instance.input_tokens,
-        output_tokens=instance.output_tokens,
-    )
+    try:
+        _settle(
+            reservation=reservation,
+            provider_cost_rub=instance.provider_cost_rub,
+            customer_charge_rub=instance.charged_rub or ZERO,
+            snapshot=instance.pricing_snapshot,
+            source_type="chat",
+            source_id=str(instance.id),
+            model_slug=model.slug,
+            input_tokens=instance.input_tokens,
+            output_tokens=instance.output_tokens,
+        )
+    except Exception:
+        # Provider usage is already authoritative at this point. A local
+        # procurement-ledger/reconciliation failure must never turn a valid AI
+        # response into a customer-visible chat failure. Keep the reservation
+        # ACTIVE and let the minute recovery sweep retry the exact settlement.
+        logger.exception(
+            "Deferred chat procurement settlement request_cost=%s provider=%s reservation=%s",
+            instance.id,
+            model.provider.slug,
+            getattr(reservation, "id", None),
+        )
 
 
 @receiver(post_save, sender=APIUsage)
