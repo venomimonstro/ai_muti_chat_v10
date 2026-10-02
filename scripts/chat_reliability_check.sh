@@ -120,11 +120,22 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/billing/test_pricing_bridge.py \
   apps/billing/test_confirmed_usage_guard.py \
   apps/billing/test_model_loss_isolation.py \
+  apps/billing/test_loss_watchdog.py \
   apps/procurement/test_chat_reservation_cleanup.py \
   apps/procurement/test_special_provider_procurement.py \
   apps/procurement/test_runtime_account_failover.py \
   apps/procurement/test_request_cost_usage_guard.py \
   apps/chat/test_default_auto_routing.py \
+  apps/chat/test_streaming.py \
+  apps/chat/tests.py \
+  apps/chat/test_client_journey.py \
+  apps/chat/test_client_cabinet_journey.py \
+  apps/chat/test_chat_cost_confirmation.py \
+  apps/chat/test_manual_llm_system_selection.py \
+  apps/chat/test_public_system_identity.py \
+  apps/chat/test_cost_preview_public_identity.py \
+  apps/chat/test_mixed_attachments.py \
+  apps/memory_store/tests.py \
   apps/chat/test_activity_stream.py \
   apps/chat/test_reasoning_trace.py \
   apps/chat/test_search_trigger_policy.py \
@@ -165,6 +176,9 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_single_flight_cache_outage.py \
   apps/chat/test_error_contract.py \
   apps/chat/test_web_search_reliability.py \
+  apps/chat/test_search_policy_hardening.py \
+  apps/ai_registry/test_web_search_failover.py \
+  apps/ai_registry/test_web_tools_yandex.py \
   apps/chat/test_public_error_codes.py \
   apps/chat/test_public_history_error_contract.py \
   apps/chat/test_reconnect_fast_path.py \
