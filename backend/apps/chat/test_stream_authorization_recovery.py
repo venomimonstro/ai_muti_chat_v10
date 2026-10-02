@@ -95,3 +95,11 @@ def test_refund_failure_cannot_roll_back_terminal_authorization_state():
     # Recovery can retry this idempotent ACTIVE refund later; provider execution is
     # permanently fenced by the durable FAILED generation.
     assert reservation.state == BalanceReservation.State.ACTIVE
+
+    from apps.admin_ops.recovery import recover_terminal_chat_reservations
+
+    result = recover_terminal_chat_reservations(older_than_seconds=0)
+    reservation.refresh_from_db()
+
+    assert result["released"] == 1
+    assert reservation.state == BalanceReservation.State.RELEASED
