@@ -7,11 +7,12 @@ from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.ai_registry.models import Provider
 from apps.billing.models import CostAnomaly
 from apps.billing.pricing import calculate_flat_from_snapshot, quote_flat, require_margin
 from apps.billing.services import release, reserve, settle
 from apps.files.models import FileAsset
+from apps.procurement.account_routing import reserve_provider_spend
+from apps.procurement.models import ProviderSpendReservation
 
 from .adapters import ImageProviderError, _detect_mime, adapter_for
 from .models import GeneratedImage, ImageGeneration, ImageModel
@@ -66,15 +67,14 @@ def _trip_image_provider(*, model, generation, reason, expected=None, actual=Non
                 "reason": reason,
                 "generation_id": str(generation.id),
                 "requested_count": generation.requested_count,
+                "scope": "image_model",
             },
         },
     )
-    Provider.objects.filter(pk=model.provider_id).update(
-        emergency_disabled=True,
-        health_state=Provider.HealthState.DISABLED,
-    )
-    model.provider.emergency_disabled = True
-    model.provider.health_state = Provider.HealthState.DISABLED
+    # A malformed count/price contract is scoped to this image model. Do not take
+    # text/chat or healthy sibling image models of the same provider offline.
+    ImageModel.objects.filter(pk=model.pk).update(enabled=False)
+    model.enabled = False
 
 
 def _validate_existing(existing, *, model_slug, prompt, size, quality, count, conversation, operation="generate", source_file=None):
@@ -203,7 +203,10 @@ def prepare_generation(
                 size=size, quality=quality, requested_count=count,
                 idempotency_key=idempotency_key, price_snapshot=snapshot,
                 estimated_cost_rub=value.user_charge_rub,
-                state=ImageGeneration.State.QUEUED if deferred else ImageGeneration.State.RUNNING,
+                # Provider execution is claimed explicitly after customer reserve is
+                # durable. This prevents post_save/bulk-update gaps from bypassing
+                # procurement and keeps sync/async generation on one state machine.
+                state=ImageGeneration.State.QUEUED,
             )
             reservation = reserve(user, value.user_charge_rub, f"image:{generation.id}")
             generation.reservation = reservation
@@ -217,6 +220,41 @@ def prepare_generation(
             raced, model_slug=model_slug, prompt=prompt, size=size, quality=quality,
             count=count, conversation=conversation, operation=operation, source_file=source_file,
         ), False
+
+
+def _ensure_provider_reservation(generation):
+    """Reserve exact native image spend before any external provider call."""
+    model = generation.model
+    if model.adapter_type == ImageModel.AdapterType.ECHO:
+        return None
+    key = f"image:{generation.id}"
+    existing = (
+        ProviderSpendReservation.objects.select_related("account")
+        .filter(source_key=key, state=ProviderSpendReservation.State.ACTIVE)
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    snapshot = generation.price_snapshot or {}
+    try:
+        native = Decimal(str(snapshot["provider_price_per_image"])) * Decimal(
+            int(generation.requested_count)
+        )
+    except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+        raise ValidationError("Не удалось определить закупочный резерв изображения") from exc
+
+    try:
+        return reserve_provider_spend(
+            provider=model.provider,
+            amount_native=native,
+            source_key=key,
+            currency=str(snapshot.get("provider_currency") or model.provider_currency),
+        )
+    except ValidationError:
+        if bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False)):
+            raise
+        return None
 
 
 def _claim_queued_generation(generation):
@@ -271,8 +309,14 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
 
     model = generation.model
     snapshot = generation.price_snapshot or {}
-    image_adapter = adapter or adapter_for(model)
     try:
+        provider_reservation = _ensure_provider_reservation(generation)
+        image_adapter = adapter or adapter_for(
+            model,
+            funding_account_id=(
+                provider_reservation.account_id if provider_reservation is not None else None
+            ),
+        )
         if snapshot.get("operation", "generate") == "edit":
             source = _source_for_edit(generation)
             with source.blob.open("rb") as stream:
@@ -376,7 +420,7 @@ def generate(
     )
     if not created:
         return generation
-    return execute_generation(generation, adapter=adapter, claim_queued=False)
+    return execute_generation(generation, adapter=adapter, claim_queued=True)
 
 
 def edit(
