@@ -57,7 +57,7 @@ def execution_model_ready(model: AIModel, *, funding_account_id=None) -> bool:
     if not model_runtime_available(model):
         return False
     if _is_test_echo_provider(provider):
-        return True
+        return provider.health_state != Provider.HealthState.OPEN
     if provider.health_state not in {
         Provider.HealthState.HEALTHY,
         Provider.HealthState.DEGRADED,
