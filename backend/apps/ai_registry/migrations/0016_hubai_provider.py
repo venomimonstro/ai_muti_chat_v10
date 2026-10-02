@@ -52,7 +52,7 @@ def seed_hubai(apps, _schema_editor):
             # credentials, health, procurement and billing isolated by provider.
             "adapter_type": "deepseek_chat",
             "api_base_url": "https://hubai.loe.gg/v1",
-            "credential_env": "HUBAI_API_KEY",
+            "credential_env": "",
             "health_state": "unknown",
         },
     )
@@ -61,7 +61,7 @@ def seed_hubai(apps, _schema_editor):
         "name": "HubAI",
         "adapter_type": "deepseek_chat",
         "api_base_url": "https://hubai.loe.gg/v1",
-        "credential_env": "HUBAI_API_KEY",
+        "credential_env": "",
     }
     changed = []
     for field, value in desired_provider.items():
