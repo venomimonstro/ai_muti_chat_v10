@@ -172,7 +172,13 @@ def _schedule_from_value(value, plan):
 
 @transaction.atomic
 def sync_generated_plan(plan: SMMContentPlan):
-    plan = SMMContentPlan.objects.select_for_update().select_related("generation_run").get(pk=plan.pk)
+    # generation_run is nullable. PostgreSQL cannot lock the nullable side of the
+    # OUTER JOIN produced by select_related(), so explicitly lock only the plan row.
+    plan = (
+        SMMContentPlan.objects.select_for_update(of=("self",))
+        .select_related("generation_run")
+        .get(pk=plan.pk)
+    )
     run = plan.generation_run
     if run is None:
         raise ValidationError("Генерация ещё не запускалась")
