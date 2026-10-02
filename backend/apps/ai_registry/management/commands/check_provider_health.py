@@ -7,10 +7,21 @@ from apps.ai_registry.reliability import check_provider
 class Command(BaseCommand):
     help = "Checks configured AI providers and updates circuit health state."
 
-    def handle(self, *_args, **_options):
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--provider",
+            default="",
+            help="Optional provider slug to check only one provider.",
+        )
+
+    def handle(self, *_args, **options):
         failed = 0
         disabled = 0
-        for provider in Provider.objects.all():
+        providers = Provider.objects.all()
+        provider_slug = str(options.get("provider") or "").strip()
+        if provider_slug:
+            providers = providers.filter(slug=provider_slug)
+        for provider in providers:
             health = check_provider(provider)
             provider.refresh_from_db()
             if not provider.enabled or provider.emergency_disabled:
