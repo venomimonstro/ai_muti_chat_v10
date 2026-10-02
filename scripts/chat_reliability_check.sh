@@ -44,6 +44,7 @@ grep -Fq 'label:"Простой"' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'label:"Средний"' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'label:"Сложный"' frontend/app/workspace/ModelPicker.tsx
 grep -Fq 'yandexgpt:{label:"YandexGPT"' frontend/app/workspace/ModelPicker.tsx
+grep -Fq 'hubai:{label:"HubAI"' frontend/app/workspace/ModelPicker.tsx
 if grep -Fq 'broadcastCatalogState("error",catalog.length>0)' frontend/app/workspace/ModelPicker.tsx; then
   echo '[FAIL] ModelPicker uses stale catalog closure on refresh errors'
   exit 1
