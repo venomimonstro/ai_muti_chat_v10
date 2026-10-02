@@ -10,6 +10,8 @@ from apps.billing.services import release, reserve, settle
 
 from .accounting import (
     actual_agent_quote_from_snapshot,
+    checkpoint_agent_provider_delivery,
+    mark_agent_provider_checkpoint_settled,
     release_agent_provider_spend,
     reserve_agent_provider_spend,
     settle_agent_provider_spend,
@@ -90,6 +92,7 @@ def execute_with_model_fallback(
     requested_output_tokens,
     remaining_budget_rub,
     is_canceled,
+    step=None,
 ):
     attempts = plan_model_attempts(
         primary_model=primary_model,
@@ -188,8 +191,20 @@ def execute_with_model_fallback(
             )
             actual = min(actual_quote.user_charge_rub, customer_reservation.amount_rub)
 
+            checkpoint_agent_provider_delivery(
+                step=step,
+                model=model,
+                result=result,
+                actual_quote=actual_quote,
+                provider_reservation=provider_reservation,
+                customer_reservation=customer_reservation,
+                source_id=source_id,
+                customer_charge=actual,
+            )
+
+            provider_spend = None
             with transaction.atomic():
-                settle_agent_provider_spend(
+                provider_spend = settle_agent_provider_spend(
                     reservation=provider_reservation,
                     model=model,
                     result=result,
@@ -198,6 +213,10 @@ def execute_with_model_fallback(
                     customer_charge=actual,
                 )
                 settle(customer_reservation.id, actual)
+            mark_agent_provider_checkpoint_settled(
+                step,
+                provider_spend=provider_spend,
+            )
             provider_reservation = None
             customer_reservation = None
             evidence.append(
