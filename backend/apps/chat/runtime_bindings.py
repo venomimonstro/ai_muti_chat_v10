@@ -4,8 +4,9 @@ import sys
 
 
 PREPARE_MARKERS = (
+    "_ai_workspace_paid_search_billing",
     "_ai_workspace_customer_capacity",
-    "_ai_workspace_conversation_snapshot",
+    "_ai_workspace_fresh_conversation",
     "_ai_workspace_single_flight",
     "_ai_workspace_preflight_terminal",
     "_ai_workspace_attachment_durability",
@@ -17,6 +18,7 @@ RUN_MARKERS = (
     "_ai_workspace_cooperative_cancel",
     "_ai_workspace_terminal_recovery",
     "_ai_workspace_error_contract",
+    "_ai_workspace_run_claim_safety",
     "_ai_workspace_execution_fence_outer",
 )
 
@@ -34,7 +36,7 @@ def _expose_chain_markers(callable_obj, *, raw_attr: str, markers) -> None:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         for marker in markers:
-            if getattr(current, marker, False):
+            if getattr(current, marker, False) is True:
                 setattr(callable_obj, marker, True)
         current = getattr(current, raw_attr, None)
 
