@@ -309,24 +309,26 @@ async def _finalize_async(generation):
 
 
 async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_SECONDS):
-    """Native ASGI iterator with bounded provider execution and durable reconnect."""
+    """Native ASGI iterator with bounded provider execution and durable reconnect.
+
+    The durable turn is acknowledged immediately, before it waits for an executor
+    thread. This prevents browser first-event timeouts from opening additional
+    producer attempts for the same still-QUEUED Generation under load.
+    """
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
     detached = threading.Event()
 
+    yield sse(
+        "generation",
+        {
+            "id": str(generation.id),
+            "state": generation.state,
+            "accepted": True,
+        },
+    )
+
     if not _STREAM_SLOTS.acquire(blocking=False):
-        # prepare() already created a durable customer turn. A transport-capacity
-        # rejection must acknowledge that turn before the terminal error; otherwise
-        # the browser restores the prompt as "not accepted" while history already
-        # contains the failed Generation, producing duplicate-looking UX.
-        yield sse(
-            "generation",
-            {
-                "id": str(generation.id),
-                "state": generation.state,
-                "accepted": True,
-            },
-        )
         await _finalize_async(generation)
         yield sse(
             "error",
@@ -346,14 +348,6 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
             _STREAM_EXECUTOR.submit(_produce_with_slot, generation, loop, queue, detached)
         except RuntimeError:
             _STREAM_SLOTS.release()
-            yield sse(
-                "generation",
-                {
-                    "id": str(generation.id),
-                    "state": generation.state,
-                    "accepted": True,
-                },
-            )
             await _finalize_async(generation)
             yield sse(
                 "error",
@@ -383,6 +377,11 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                 continue
 
             if kind == "chunk":
+                # streaming.run() emits its own generation event after acquiring
+                # the durable RUNNING claim. The ASGI transport already acknowledged
+                # the same Generation before queueing, so suppress only that duplicate.
+                if isinstance(value, str) and value.startswith("event: generation\n"):
+                    continue
                 yield _public_chunk(value)
                 continue
             if kind == "error":
