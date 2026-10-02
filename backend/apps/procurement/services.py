@@ -189,6 +189,12 @@ def record_purchase(
     unit = (total / credit).quantize(Decimal("0.00000001"), rounding=ROUND_UP)
     purchase_id = uuid.uuid4()
     document_number = f"API-{purchased_at:%Y%m%d}-{str(purchase_id).replace('-', '')[:8].upper()}"
+    # Update funded capacity before creating the immutable purchase document.
+    # ProviderPurchase.post_save may reopen a quota-blocked credential for a
+    # controlled probe; it must observe the newly funded balance, not the previous
+    # zero balance. The enclosing atomic() keeps both writes all-or-nothing.
+    account.funded_native += credit
+    account.save(update_fields=["funded_native", "updated_at"])
     purchase = ProviderPurchase.objects.create(
         id=purchase_id,
         document_number=document_number,
@@ -206,8 +212,6 @@ def record_purchase(
         purchased_at=purchased_at,
         created_by=created_by,
     )
-    account.funded_native += credit
-    account.save(update_fields=["funded_native", "updated_at"])
     return purchase
 
 
