@@ -315,6 +315,18 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
     detached = threading.Event()
 
     if not _STREAM_SLOTS.acquire(blocking=False):
+        # prepare() already created a durable customer turn. A transport-capacity
+        # rejection must acknowledge that turn before the terminal error; otherwise
+        # the browser restores the prompt as "not accepted" while history already
+        # contains the failed Generation, producing duplicate-looking UX.
+        yield sse(
+            "generation",
+            {
+                "id": str(generation.id),
+                "state": generation.state,
+                "accepted": True,
+            },
+        )
         await _finalize_async(generation)
         yield sse(
             "error",
@@ -334,6 +346,14 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
             _STREAM_EXECUTOR.submit(_produce_with_slot, generation, loop, queue, detached)
         except RuntimeError:
             _STREAM_SLOTS.release()
+            yield sse(
+                "generation",
+                {
+                    "id": str(generation.id),
+                    "state": generation.state,
+                    "accepted": True,
+                },
+            )
             await _finalize_async(generation)
             yield sse(
                 "error",
