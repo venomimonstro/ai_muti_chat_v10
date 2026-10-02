@@ -289,7 +289,20 @@ def install(*, services_module, signals_module, reliability_module) -> None:
     signals_module._ensure = ensure
 
     def procurement_ready(provider) -> bool:
+        """Keep procurement optional until an active funding account is configured.
+
+        Provider credentials and transport health are sufficient for customer traffic
+        when the owner has not opted into the purchasing ledger. Once at least one
+        active funding account exists, execution becomes strict/fail-closed and the
+        exact account must have a HEALTHY credential plus available native balance.
+        """
         try:
+            configured = ProviderFundingAccount.objects.filter(
+                provider=provider,
+                active=True,
+            ).exists()
+            if not configured:
+                return True
             return select_runtime_funding_account(
                 provider,
                 required_native=NATIVE_STEP,
