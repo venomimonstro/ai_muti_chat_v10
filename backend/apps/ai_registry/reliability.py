@@ -431,7 +431,13 @@ def record_success(provider: Provider, latency_ms: int, adapter=None):
 
 
 def check_provider(provider: Provider):
-    """Probe provider health independently from customer traffic."""
+    """Probe provider health independently from customer traffic.
+
+    Metadata endpoints such as /models are not proof that paid inference works.
+    A provider recovering from UNKNOWN/DEGRADED/OPEN must therefore complete a tiny
+    real inference before it is re-admitted to the customer model catalog. Healthy
+    providers keep using the cheaper transport probe during routine revalidation.
+    """
     if not provider.enabled or provider.emergency_disabled:
         provider.health_state = Provider.HealthState.DISABLED
         provider.last_checked_at = timezone.now()
@@ -439,8 +445,18 @@ def check_provider(provider: Provider):
         return None
 
     provider = _normalize_special_external_provider(provider)
+    recovery_probe_required = provider.health_state in {
+        Provider.HealthState.UNKNOWN,
+        Provider.HealthState.DEGRADED,
+        Provider.HealthState.OPEN,
+    }
     try:
-        model = provider.models.filter(enabled=True).first()
+        model = (
+            provider.models.filter(enabled=True)
+            .exclude(upstream_model="")
+            .order_by("priority", "slug")
+            .first()
+        )
         if model is None:
             raise ProviderError("Provider has no enabled models", code="no_models", retryable=False)
         from .dispatch import adapter_for as runtime_adapter_for
@@ -451,12 +467,44 @@ def check_provider(provider: Provider):
             require_funding_balance=False,
         )
         health = adapter.health_check()
+        if health.healthy and recovery_probe_required and not _is_test_echo_provider(provider):
+            started = timezone.now()
+            result = adapter.generate(
+                model=model.upstream_model,
+                messages=[{"role": "user", "content": "Ответь только: OK"}],
+                max_output_tokens=8,
+            )
+            if not str(getattr(result, "text", "") or "").strip():
+                raise ProviderError(
+                    "Provider recovery inference returned empty output",
+                    code="provider_empty_response",
+                    retryable=False,
+                )
+            elapsed = max(
+                0,
+                int((timezone.now() - started).total_seconds() * 1000),
+            )
+            health = type(health)(True, elapsed or health.latency_ms)
     except ProviderError as exc:
         record_failure(provider, exc, adapter=adapter if "adapter" in locals() else None)
         ProviderHealthSnapshot.objects.create(
             provider=provider, healthy=False, error_code=exc.code
         )
         return None
+    except Exception as exc:
+        error = ProviderError(
+            "Provider recovery probe failed",
+            code="provider_recovery_probe_failed",
+            retryable=True,
+        )
+        record_failure(provider, error, adapter=adapter if "adapter" in locals() else None)
+        ProviderHealthSnapshot.objects.create(
+            provider=provider,
+            healthy=False,
+            error_code=error.code,
+        )
+        return None
+
     ProviderHealthSnapshot.objects.create(
         provider=provider,
         healthy=health.healthy,
