@@ -149,13 +149,22 @@ def _detect_mime(content):
     raise ImageProviderError("Unsupported image type", code="invalid_image")
 
 
-def adapter_for(model):
+def adapter_for(model, *, funding_account_id=None):
     if model.adapter_type == model.AdapterType.ECHO:
         return EchoImageAdapter()
     if model.adapter_type == model.AdapterType.OPENAI_IMAGES:
-        credential = model.provider.get_api_key()
-        if not credential:
-            credential = os.getenv(model.provider.credential_env or "OPENAI_API_KEY", "").strip()
+        # Customer image traffic follows the same strict credential contract as chat:
+        # HEALTHY key only, and when procurement reserved a concrete account the
+        # provider request must use that exact account's key.
+        from apps.ai_registry.dispatch import select_runtime_api_key
+
+        credential, _key_id = select_runtime_api_key(
+            model.provider,
+            allow_probe=False,
+            touch=True,
+            funding_account_id=funding_account_id,
+            require_funding_balance=funding_account_id is None,
+        )
         return OpenAIImageAdapter(
             api_key=credential,
             base_url=model.provider.api_base_url
