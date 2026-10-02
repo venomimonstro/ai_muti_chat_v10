@@ -82,7 +82,12 @@ def _account_secret(account) -> str:
 
 
 def _paid_ready() -> bool:
-    if not _truthy("WEB_SEARCH_PAID_PROVIDERS_ENABLED", "true"):
+    # Paid search is fail-closed. A funded key alone must never activate customer
+    # charges; the operator must explicitly enable the provider and confirm that the
+    # unified billing path is ready.
+    if not _truthy("WEB_SEARCH_PAID_PROVIDERS_ENABLED", "false"):
+        return False
+    if not _truthy("WEB_SEARCH_PAID_BILLING_READY", "false"):
         return False
     try:
         _provider, account, _unit = _provider_and_account()
@@ -475,17 +480,23 @@ def install(*, streaming_module, web_tools_module) -> None:
             available = "0"
             unit_cost = Decimal("0")
             markup = ""
+        unified_billing_ready = _truthy("WEB_SEARCH_PAID_BILLING_READY", "false")
+        paid_ready = _paid_ready()
         return {
-            "provider_order": ["searx", "yandex"] if _paid_ready() else ["searx"],
+            "provider_order": ["searx", "yandex"] if paid_ready else ["searx"],
             "searx": web_tools_module.searx_search_status(),
             "yandex": {
                 **web_tools_module.yandex_search_status(),
-                "customer_traffic_enabled": _paid_ready(),
-                "billing_ready": configured,
+                "customer_traffic_enabled": paid_ready,
+                "billing_ready": bool(configured and unified_billing_ready),
                 "available_requests": available,
                 "acquisition_cost_rub_per_request": str(unit_cost),
                 "markup_percent": markup,
-                "billing_policy": "charge_only_when_answer_delivered",
+                "billing_policy": (
+                    "charge_only_when_answer_delivered"
+                    if unified_billing_ready
+                    else "blocked_until_unified_billing"
+                ),
             },
         }
 
