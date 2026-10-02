@@ -175,22 +175,35 @@ def record_api_key_success(provider: Provider, adapter, latency_ms: int):
 
 
 def _procurement_ready(provider: Provider) -> bool:
-    """Return whether a commercial provider has usable purchased capacity."""
+    """Return whether customer traffic has a HEALTHY funded execution account."""
     if _is_test_echo_provider(provider):
         return True
     try:
-        from apps.procurement.services import (
-            account_available_native,
-            credential_is_configured,
-            default_account,
+        from apps.procurement.account_routing import (
+            NATIVE_STEP,
+            select_runtime_funding_account,
         )
 
-        account = default_account(provider)
-        if account is None:
-            return not bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
-        if not credential_is_configured(account):
+        account = select_runtime_funding_account(
+            provider,
+            required_native=NATIVE_STEP,
+            allow_probe=False,
+            require_balance=True,
+        )
+        if account is not None:
+            return True
+
+        from apps.procurement.models import ProviderFundingAccount
+
+        configured = ProviderFundingAccount.objects.filter(
+            provider=provider,
+            active=True,
+        ).exists()
+        if configured:
             return False
-        return account_available_native(account) > 0
+        return not bool(
+            getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False)
+        )
     except Exception:
         return not bool(getattr(settings, "PROCUREMENT_RUNTIME_FAIL_CLOSED", False))
 
