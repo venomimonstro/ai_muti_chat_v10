@@ -63,7 +63,18 @@ def _alert_once(*, key: str, title: str, body: str, critical: bool = False):
 def chat_service_snapshot() -> dict:
     now = timezone.now()
     recent_since = now - timedelta(minutes=15)
-    stale_cutoff = now - timedelta(seconds=settings.OPERATION_STALE_TIMEOUT_SECONDS)
+    stale_cutoff = now - timedelta(
+        seconds=max(
+            60,
+            int(
+                getattr(
+                    settings,
+                    "CHAT_GENERATION_STALE_TIMEOUT_SECONDS",
+                    settings.OPERATION_STALE_TIMEOUT_SECONDS,
+                )
+            ),
+        )
+    )
 
     enabled_models = list(
         AIModel.objects.filter(enabled=True)
