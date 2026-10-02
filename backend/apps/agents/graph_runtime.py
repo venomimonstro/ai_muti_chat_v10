@@ -16,9 +16,13 @@ from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
 
 from .accounting import (
+    agent_provider_checkpoint_pending,
+    checkpoint_agent_provider_delivery,
+    mark_agent_provider_checkpoint_settled,
     release_agent_provider_spend,
     reserve_agent_provider_spend,
     settle_agent_provider_spend,
+    update_agent_provider_customer_charge,
 )
 from .file_context import project_file_context
 from .image_tool import generate_agent_image
@@ -71,6 +75,23 @@ def _fail(run, step, code, message, customer=None, provider=None):
     run.error_message = str(message)[:4000]
     run.finished_at = now
     run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+    return run
+
+
+def _defer_settlement_recovery(run, step, *, code):
+    run.state = AgentRun.State.REVIEWING
+    run.error_code = "agent_settlement_pending"
+    run.error_message = (
+        f"Provider delivery подтверждён, финансовое закрытие прервано ({code}). "
+        "Reconciliation продолжится без повторного вызова модели."
+    )[:4000]
+    run.finished_at = None
+    run.save(update_fields=["state", "error_code", "error_message", "finished_at", "updated_at"])
+    step.public_log = (
+        "Ответ провайдера получен. Финансовое закрытие восстанавливается автоматически; "
+        "повторный вызов модели не выполняется."
+    )
+    step.save(update_fields=["public_log"])
     return run
 
 
@@ -377,17 +398,30 @@ def _run_llm_node(run, agent, node, sequence, remaining_budget):
             )
         )
         actual = min(actual_quote.user_charge_rub, customer.amount_rub)
-        settle_agent_provider_spend(
+        source_id = f"{run.id}:{node_id}"
+        checkpoint_agent_provider_delivery(
+            step=step,
+            model=model,
+            result=result,
+            actual_quote=actual_quote,
+            provider_reservation=provider_reservation,
+            customer_reservation=customer,
+            source_id=source_id,
+            customer_charge=actual,
+        )
+        provider_spend = settle_agent_provider_spend(
             reservation=provider_reservation,
             model=model,
             result=result,
             actual_quote=actual_quote,
-            source_id=f"{run.id}:{node_id}",
-            customer_charge=actual,
+            source_id=source_id,
+            customer_charge=Decimal("0"),
         )
         provider_reservation = None
         settle(customer.id, actual)
         customer = None
+        update_agent_provider_customer_charge(provider_spend, actual)
+        mark_agent_provider_checkpoint_settled(step, provider_spend=provider_spend)
         run.refresh_from_db(fields=["state", "cost_actual_rub"])
         if run.state == AgentRun.State.CANCELED:
             step.state = AgentStepRun.State.COMPLETED
@@ -416,8 +450,12 @@ def _run_llm_node(run, agent, node, sequence, remaining_budget):
         run.save(update_fields=["cost_actual_rub", "step_count", "updated_at"])
         return None
     except ProviderError as exc:
+        if agent_provider_checkpoint_pending(step):
+            return _defer_settlement_recovery(run, step, code=exc.code)
         return _fail(run, step, exc.code, str(exc), customer, provider_reservation)
     except Exception as exc:
+        if agent_provider_checkpoint_pending(step):
+            return _defer_settlement_recovery(run, step, code="graph_node_failed")
         return _fail(run, step, "graph_node_failed", str(exc), customer, provider_reservation)
 
 
