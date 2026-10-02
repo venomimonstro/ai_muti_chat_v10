@@ -434,6 +434,15 @@ CURRENT_SHA="$(git -c safe.directory="${PROJECT_DIR}" rev-parse HEAD 2>/dev/null
 printf '%s\n' "$CURRENT_SHA" >"$DEPLOY_STATE_FILE"
 chmod 600 "$DEPLOY_STATE_FILE"
 
+# Keep the small production host from accumulating disposable BuildKit/container
+# layers across successful releases. Never prune volumes or images referenced by a
+# container. Cleanup is best-effort and cannot invalidate an otherwise healthy deploy.
+if [[ "$UPDATE_MODE" == "full" ]]; then
+  printf '[INFO] Reclaiming disposable Docker build cache after successful deploy...\n'
+  docker builder prune -af >/dev/null 2>&1 || true
+  docker image prune -f >/dev/null 2>&1 || true
+fi
+
 trap - ERR INT TERM HUP TSTP
 FINISHED_AT="$(date +%s)"
 DURATION="$((FINISHED_AT - STARTED_AT))"
