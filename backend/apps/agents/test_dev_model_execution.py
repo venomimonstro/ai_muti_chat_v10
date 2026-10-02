@@ -45,8 +45,10 @@ class DevModelExecutionTests(TestCase):
             patch("apps.agents.dev_model_execution.release") as release_customer,
             patch("apps.agents.dev_model_execution.release_agent_provider_spend") as release_provider,
             patch("apps.agents.dev_model_execution.active_price", return_value=SimpleNamespace()),
-            patch("apps.agents.dev_model_execution.quote", return_value=actual_quote),
-            patch("apps.agents.dev_model_execution.require_margin", side_effect=lambda value: value),
+            patch(
+                "apps.agents.dev_model_execution.actual_agent_quote_from_snapshot",
+                return_value=actual_quote,
+            ),
             patch("apps.agents.dev_model_execution.settle") as settle_customer,
             patch("apps.agents.dev_model_execution.settle_agent_provider_spend") as settle_provider,
         ):
@@ -153,10 +155,9 @@ class DevModelExecutionTests(TestCase):
                 return_value=True,
             ),
             patch("apps.agents.dev_model_execution.active_price", return_value=SimpleNamespace()),
-            patch("apps.agents.dev_model_execution.quote", return_value=actual_quote),
             patch(
-                "apps.agents.dev_model_execution.require_margin",
-                side_effect=lambda value: value,
+                "apps.agents.dev_model_execution.actual_agent_quote_from_snapshot",
+                return_value=actual_quote,
             ),
             patch("apps.agents.dev_model_execution.settle") as settle_customer,
             patch(
