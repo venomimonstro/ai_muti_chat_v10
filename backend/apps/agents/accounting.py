@@ -3,6 +3,10 @@ from decimal import ROUND_UP, Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db import transaction
+
+from apps.billing.models import BalanceReservation
+from apps.billing.services import release
 
 from apps.procurement.account_routing import reserve_provider_spend
 from apps.procurement.models import ProviderFundingAccount, ProviderSpend
@@ -113,6 +117,126 @@ def update_agent_provider_customer_charge(spend, customer_charge):
     charge = Decimal(str(customer_charge or 0)).quantize(Decimal("0.0001"))
     ProviderSpend.objects.filter(pk=spend.pk).update(customer_charge_rub=charge)
     spend.customer_charge_rub = charge
+    return spend
+
+
+def checkpoint_agent_provider_delivery(
+    *,
+    step,
+    model,
+    result,
+    actual_quote,
+    provider_reservation,
+    customer_reservation,
+    source_id,
+    customer_charge,
+):
+    """Persist enough evidence to reconcile a crash after provider delivery."""
+    if step is None or provider_reservation is None:
+        return None
+    fx = actual_quote.fx_snapshot
+    if not fx or fx.rate <= 0:
+        raise ValidationError("Не удалось сохранить checkpoint расхода без FX")
+    payload = dict(step.output_payload or {})
+    payload["_provider_settlement"] = {
+        "status": "pending",
+        "provider_reservation_id": str(provider_reservation.id),
+        "customer_reservation_id": (
+            str(customer_reservation.id) if customer_reservation is not None else ""
+        ),
+        "source_id": str(source_id),
+        "model_slug": str(model.slug),
+        "provider_request_id": str(result.provider_request_id or "")[:200],
+        "input_tokens": max(0, int(result.input_tokens or 0)),
+        "output_tokens": max(0, int(result.output_tokens or 0)),
+        "provider_cost_rub": str(actual_quote.provider_cost_rub),
+        "fx_rate": str(fx.rate),
+        "customer_charge_rub": str(customer_charge or 0),
+    }
+    step.output_payload = payload
+    step.save(update_fields=["output_payload"])
+    return payload["_provider_settlement"]
+
+
+def mark_agent_provider_checkpoint_settled(step, *, provider_spend=None):
+    if step is None:
+        return
+    payload = dict(step.output_payload or {})
+    checkpoint = dict(payload.get("_provider_settlement") or {})
+    if not checkpoint:
+        return
+    checkpoint["status"] = "settled"
+    if provider_spend is not None:
+        checkpoint["provider_spend_id"] = str(provider_spend.id)
+    payload["_provider_settlement"] = checkpoint
+    step.output_payload = payload
+    step.save(update_fields=["output_payload"])
+
+
+@transaction.atomic
+def reconcile_agent_provider_checkpoint(step):
+    """Recover confirmed external usage without guessing or charging after a crash.
+
+    Provider spend is authoritative once the provider returned usage. If customer
+    settlement was already durable, mirror its actual charge. Otherwise settle the
+    provider at zero customer revenue and release the still-active customer reserve.
+    """
+    payload = dict(step.output_payload or {})
+    checkpoint = dict(payload.get("_provider_settlement") or {})
+    if checkpoint.get("status") != "pending":
+        return None
+
+    reservation_id = checkpoint.get("provider_reservation_id")
+    if not reservation_id:
+        raise ValidationError("Provider settlement checkpoint lost reservation id")
+    reservation = ProviderSpendReservation.objects.select_for_update().filter(
+        pk=reservation_id
+    ).first()
+    if reservation is None:
+        raise ValidationError("Provider settlement checkpoint reservation is missing")
+
+    customer_charge = Decimal("0")
+    customer_id = checkpoint.get("customer_reservation_id")
+    customer = None
+    if customer_id:
+        customer = BalanceReservation.objects.select_for_update().filter(pk=customer_id).first()
+        if customer is not None and customer.state == BalanceReservation.State.SETTLED:
+            customer_charge = Decimal(customer.actual_rub or 0)
+
+    fx_rate = Decimal(str(checkpoint.get("fx_rate") or "0"))
+    provider_cost = Decimal(str(checkpoint.get("provider_cost_rub") or "0"))
+    if fx_rate <= 0 or provider_cost < 0:
+        raise ValidationError("Provider settlement checkpoint contains invalid cost data")
+    native = (provider_cost / fx_rate).quantize(NATIVE_STEP, rounding=ROUND_UP)
+
+    spend = ProviderSpend.objects.filter(
+        source_type="agent",
+        source_id=str(checkpoint.get("source_id") or ""),
+    ).first()
+    if spend is None:
+        if reservation.state != ProviderSpendReservation.State.ACTIVE:
+            raise ValidationError(
+                "Provider settlement checkpoint is closed without ProviderSpend"
+            )
+        spend = settle_provider_spend(
+            reservation_id=reservation.id,
+            actual_native=native,
+            nominal_cost_rub=provider_cost,
+            customer_charge_rub=customer_charge,
+            source_type="agent",
+            source_id=str(checkpoint.get("source_id") or ""),
+            model_slug=str(checkpoint.get("model_slug") or ""),
+            provider_request_id=str(checkpoint.get("provider_request_id") or ""),
+            input_tokens=max(0, int(checkpoint.get("input_tokens") or 0)),
+            output_tokens=max(0, int(checkpoint.get("output_tokens") or 0)),
+        )
+    elif spend.customer_charge_rub != customer_charge:
+        update_agent_provider_customer_charge(spend, customer_charge)
+
+    if customer is not None and customer.state == BalanceReservation.State.ACTIVE:
+        release(customer.id)
+
+    mark_agent_provider_checkpoint_settled(step, provider_spend=spend)
     return spend
 
 
