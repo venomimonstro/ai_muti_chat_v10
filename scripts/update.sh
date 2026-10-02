@@ -498,8 +498,9 @@ chmod 600 "$DEPLOY_STATE_FILE"
 # container. Cleanup is best-effort and cannot invalidate an otherwise healthy deploy.
 if [[ "$UPDATE_MODE" == "full" ]]; then
   printf '[INFO] Reclaiming disposable Docker build cache after successful deploy...\n'
+  docker container prune -f >/dev/null 2>&1 || true
   docker builder prune -af >/dev/null 2>&1 || true
-  docker image prune -f >/dev/null 2>&1 || true
+  docker image prune -af >/dev/null 2>&1 || true
 fi
 
 trap - ERR INT TERM HUP TSTP
