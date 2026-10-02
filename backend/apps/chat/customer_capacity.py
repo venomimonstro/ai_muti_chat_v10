@@ -73,7 +73,7 @@ def _friendly_capacity_error(exc):
 def install(*, streaming_module, cost_preview_module) -> None:
     """Apply one customer-funding eligibility rule to preview and real prepare."""
     raw_stream_capacity = streaming_module.quote_has_procurement_capacity
-    if not getattr(raw_stream_capacity, "_ai_workspace_customer_capacity", False):
+    if getattr(raw_stream_capacity, "_ai_workspace_customer_capacity", False) is not True:
 
         def stream_capacity(provider, value):
             if not raw_stream_capacity(provider, value):
@@ -91,7 +91,7 @@ def install(*, streaming_module, cost_preview_module) -> None:
         streaming_module.quote_has_procurement_capacity = stream_capacity
 
     raw_preview_capacity = cost_preview_module.quote_has_procurement_capacity
-    if not getattr(raw_preview_capacity, "_ai_workspace_customer_capacity", False):
+    if getattr(raw_preview_capacity, "_ai_workspace_customer_capacity", False) is not True:
 
         def preview_capacity(provider, value):
             if not raw_preview_capacity(provider, value):
@@ -109,7 +109,7 @@ def install(*, streaming_module, cost_preview_module) -> None:
         cost_preview_module.quote_has_procurement_capacity = preview_capacity
 
     raw_prepare = streaming_module.prepare
-    if not getattr(raw_prepare, "_ai_workspace_customer_capacity", False):
+    if getattr(raw_prepare, "_ai_workspace_customer_capacity", False) is not True:
 
         def prepare(*args, **kwargs):
             token_user = _current_user.set(kwargs.get("user"))
@@ -127,7 +127,7 @@ def install(*, streaming_module, cost_preview_module) -> None:
         streaming_module.prepare = prepare
 
     raw_preview = cost_preview_module.chat_cost_preview
-    if not getattr(raw_preview, "_ai_workspace_customer_capacity", False):
+    if getattr(raw_preview, "_ai_workspace_customer_capacity", False) is not True:
 
         def chat_cost_preview(*args, **kwargs):
             token_preview = _preview_mode.set(True)
