@@ -269,9 +269,28 @@ rollback_app() {
   cleanup_test_stack
   if [[ "$DEPLOY_STARTED" == true && "$CODE_UPDATED" == true && -n "$PREVIOUS_SHA" && "$UPDATE_MODE" == "full" ]]; then
     printf '[ROLLBACK] Full deployment уже начался. Возвращаем код на %s\n' "$PREVIOUS_SHA" >&2
-    git -c safe.directory="${PROJECT_DIR}" reset --hard "$PREVIOUS_SHA" || true
-    compose build || true
-    compose up -d --remove-orphans || true
+    local rollback_ok=true
+    local rollback_ready=false
+    git -c safe.directory="${PROJECT_DIR}" reset --hard "$PREVIOUS_SHA" || rollback_ok=false
+    compose build || rollback_ok=false
+    compose up -d --remove-orphans || rollback_ok=false
+
+    if [[ "$rollback_ok" == true ]]; then
+      for _rollback_attempt in $(seq 1 24); do
+        if compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5).read()" >/dev/null 2>&1; then
+          rollback_ready=true
+          break
+        fi
+        sleep 5
+      done
+    fi
+
+    if [[ "$rollback_ok" == true && "$rollback_ready" == true ]]; then
+      printf '[ROLLBACK] PASS: предыдущий backend снова прошёл readiness.\n' >&2
+    else
+      printf '[CRITICAL] ROLLBACK FAILED: предыдущий commit не подтверждён readiness. Требуется ручное восстановление.\n' >&2
+      printf '[CRITICAL] Проверка: docker compose --env-file %s -f %s ps\n' "$ENV_FILE" "$COMPOSE_FILE" >&2
+    fi
   else
     printf '[INFO] Production rollback не требуется или fast frontend deploy ещё не заменил backend.\n' >&2
   fi
