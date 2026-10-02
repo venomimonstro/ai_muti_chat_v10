@@ -200,8 +200,20 @@ def reserve_provider_spend(
         lock=True,
     )
     if not candidates:
+        credential_candidates = runtime_funding_accounts(
+            provider,
+            required_native=ZERO,
+            currency=currency,
+            allow_probe=False,
+            require_balance=False,
+            lock=True,
+        )
+        if credential_candidates:
+            raise ValidationError(
+                "Закупочный баланс провайдера исчерпан или недостаточен для этого запроса"
+            )
         raise ValidationError(
-            "Нет активного HEALTHY API-аккаунта с достаточным закупочным балансом"
+            "Нет активного HEALTHY API-аккаунта с доступным ключом"
         )
     account = candidates[0]
     account.reserved_native += amount
