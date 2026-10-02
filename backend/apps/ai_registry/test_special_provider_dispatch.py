@@ -12,11 +12,15 @@ class SpecialProviderDispatchTests(TestCase):
         self.assertIs(adapters.adapter_for, dispatch.adapter_for)
 
     def test_gigachat_never_falls_through_to_echo(self):
-        provider = Provider.objects.create(
+        provider, _created = Provider.objects.update_or_create(
             slug="gigachat",
-            name="GigaChat",
-            adapter_type=Provider.AdapterType.ECHO,
-            credential_secret="",
+            defaults={
+                "name": "GigaChat",
+                "adapter_type": Provider.AdapterType.ECHO,
+                "credential_secret": "",
+                "enabled": True,
+                "emergency_disabled": False,
+            },
         )
         model = AIModel.objects.create(
             provider=provider,
