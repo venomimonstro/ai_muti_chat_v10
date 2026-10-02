@@ -10,6 +10,7 @@ from django.db import close_old_connections
 
 from .managed_stream import _finalize_unhandled_failure, managed_run
 from .models import Generation
+from .pipeline_trace import trace as pipeline_trace
 from .streaming import sse
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,7 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
     queue = asyncio.Queue()
     detached = threading.Event()
 
+    pipeline_trace("SSE_ACCEPTED", generation=generation)
     yield sse(
         "generation",
         {
@@ -388,6 +390,14 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                 continue
 
             if kind == "chunk":
+                if isinstance(value, str) and value.startswith("event: "):
+                    event_name = value.splitlines()[0][7:].strip()
+                    if event_name in {"completed", "error", "cancelled", "snapshot"}:
+                        pipeline_trace(
+                            "SSE_CHUNK_READY",
+                            generation=generation,
+                            event=event_name,
+                        )
                 # streaming.run() emits its own generation event after acquiring
                 # the durable RUNNING claim. The ASGI transport already acknowledged
                 # the same Generation before queueing, so suppress only that duplicate.
@@ -408,6 +418,12 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                 yield _public_chunk(value)
                 continue
             if kind == "error":
+                pipeline_trace(
+                    "SSE_WORKER_ERROR",
+                    generation=generation,
+                    error_type=type(value).__name__,
+                    error=str(value)[:500],
+                )
                 yield sse(
                     "error",
                     {
@@ -418,6 +434,7 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
                 )
                 return
             if kind == "done":
+                pipeline_trace("SSE_DONE", generation=generation)
                 return
     except (asyncio.CancelledError, GeneratorExit):
         detached.set()
