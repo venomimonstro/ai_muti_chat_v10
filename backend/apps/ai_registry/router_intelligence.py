@@ -181,6 +181,8 @@ def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
         score += 0.22
     if multistep_hits >= 2:
         score += 0.12
+        if hard_reasoning:
+            score = max(score, 0.70)
     elif multistep_hits == 1:
         score += 0.05
     if signals.get("long_context"):
@@ -229,6 +231,12 @@ def install(router_module) -> None:
         base = raw_classify(content, conversation)
         normalized = re.sub(r"\s+", " ", str(content or "").casefold()).strip()
         taxonomy, matched = _resolved_intent(router_module, normalized, str(base.taxonomy))
+        # Debugging is a more specific intent than generic coding. A prompt that
+        # contains an explicit failure/traceback signal must not be downgraded just
+        # because it also mentions Python/API/code several times.
+        if _has_any(normalized, ("traceback", "stack trace", "ошибк", "баг", "debug", "отлад")):
+            if any(str(item[1]) == str(EvalCase.Taxonomy.DEBUGGING) for item in matched):
+                taxonomy = EvalCase.Taxonomy.DEBUGGING
         score, signals = _complexity(base, normalized, taxonomy)
         taxonomy = signals.get("resolved_taxonomy") or taxonomy
         confidence = float(base.confidence)
