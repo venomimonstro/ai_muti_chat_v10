@@ -23,6 +23,21 @@ def _cutoff():
     return timezone.now() - timedelta(seconds=settings.OPERATION_STALE_TIMEOUT_SECONDS)
 
 
+def _generation_cutoff():
+    return timezone.now() - timedelta(
+        seconds=max(
+            60,
+            int(
+                getattr(
+                    settings,
+                    "CHAT_GENERATION_STALE_TIMEOUT_SECONDS",
+                    settings.OPERATION_STALE_TIMEOUT_SECONDS,
+                )
+            ),
+        )
+    )
+
+
 def _release_provider_prefix(prefix):
     ids = ProviderSpendReservation.objects.filter(
         source_key__startswith=prefix,
@@ -37,7 +52,7 @@ def _recover_generation(pk):
     generation = (
         Generation.objects.select_for_update().select_related("assistant_message").get(pk=pk)
     )
-    cutoff = _cutoff()
+    cutoff = _generation_cutoff()
     if generation.state not in {
         Generation.State.QUEUED,
         Generation.State.RUNNING,
@@ -218,12 +233,13 @@ def _recover_file(pk):
 
 def recover_stale_operations():
     cutoff = _cutoff()
+    generation_cutoff = _generation_cutoff()
     groups = (
         (
             "generations",
             Generation.objects.filter(
                 state__in=[Generation.State.QUEUED, Generation.State.RUNNING],
-                created_at__lt=cutoff,
+                created_at__lt=generation_cutoff,
             ),
             _recover_generation,
         ),
