@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from decimal import Decimal
@@ -13,7 +14,7 @@ from apps.billing.services import credit
 from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import model_client_ready
 from apps.chat.cost_preview import chat_cost_preview
-from apps.chat.managed_stream import managed_run
+from apps.chat.asgi_stream import managed_run_async
 from apps.chat.models import Conversation, Generation
 from apps.chat.streaming import prepare
 from apps.procurement.models import ProviderSpendReservation
@@ -114,20 +115,29 @@ class Command(BaseCommand):
                 if not created:
                     raise RuntimeError("generation replayed unexpectedly")
 
-                seen = []
-                deltas = 0
-                terminal = ""
-                terminal_payload = {}
-                for chunk in managed_run(generation):
-                    name, payload = _event(chunk)
-                    if not name or name == "heartbeat":
-                        continue
-                    seen.append(name)
-                    if name == "delta":
-                        deltas += 1
-                    if name in {"completed", "cancelled", "error"}:
-                        terminal = name
-                        terminal_payload = payload
+                async def consume_customer_stream():
+                    seen = []
+                    deltas = 0
+                    terminal = ""
+                    terminal_payload = {}
+                    async for chunk in managed_run_async(
+                        generation,
+                        heartbeat_seconds=1.0,
+                    ):
+                        name, payload = _event(chunk)
+                        if not name or name == "heartbeat":
+                            continue
+                        seen.append(name)
+                        if name == "delta":
+                            deltas += 1
+                        if name in {"completed", "cancelled", "error"}:
+                            terminal = name
+                            terminal_payload = payload
+                    return seen, deltas, terminal, terminal_payload
+
+                seen, deltas, terminal, terminal_payload = asyncio.run(
+                    consume_customer_stream()
+                )
 
                 generation.refresh_from_db()
                 request_cost = RequestCost.objects.get(generation_id=generation.id)
