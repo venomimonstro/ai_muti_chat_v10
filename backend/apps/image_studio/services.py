@@ -379,6 +379,14 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
         actual_count = generation.images.count()
         native = Decimal(snapshot["provider_price_per_image"]) * actual_count
         provider_cost, charge, _profit, _margin = calculate_flat_from_snapshot(native, snapshot)
+
+        # Provider generation already completed. Persist confirmed external spend
+        # before the customer ceiling check so a FAILED operation settles provider
+        # procurement instead of falsely releasing it.
+        generation.provider_request_id = result.provider_request_id
+        generation.provider_cost_rub = provider_cost
+        generation.save(update_fields=["provider_request_id", "provider_cost_rub"])
+
         if charge > generation.reservation.amount_rub:
             _trip_image_provider(
                 model=model, generation=generation,
