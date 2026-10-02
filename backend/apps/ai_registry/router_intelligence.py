@@ -245,7 +245,7 @@ def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
 
 
 def install(router_module) -> None:
-    if getattr(router_module.classify_task, "_ai_workspace_router_v3", False):
+    if getattr(router_module.classify_task, "_ai_workspace_router_v3", False) is True:
         return
 
     raw_classify = router_module.classify_task
