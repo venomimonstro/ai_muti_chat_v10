@@ -260,9 +260,10 @@ DOCKER_BUILDKIT=1 docker build --progress=plain \
   -t ai-workspace-frontend-test frontend
 pass 18 'Frontend production build'
 
-step 19 'Frontend lint'
+step 19 'Frontend lint and chat reliability'
 docker run --rm ai-workspace-frontend-builder sh -c 'npm run lint'
-pass 19 'Frontend lint'
+docker run --rm ai-workspace-frontend-builder sh -c 'npm run test:chat'
+pass 19 'Frontend lint and chat reliability'
 
 step 20 'Frontend runtime route smoke'
 docker run -d --rm --name "$FRONTEND_SMOKE_CONTAINER" \
