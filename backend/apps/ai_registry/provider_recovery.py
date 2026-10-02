@@ -40,7 +40,7 @@ def install(reliability_module) -> None:
     duplicate paid probes if a slow upstream outlives the outer watcher lease.
     """
     raw_check = reliability_module.check_provider
-    if getattr(raw_check, "_ai_workspace_inference_recovery", False):
+    if getattr(raw_check, "_ai_workspace_inference_recovery", False) is True:
         return
 
     def _check_provider_unlocked(provider: Provider):
