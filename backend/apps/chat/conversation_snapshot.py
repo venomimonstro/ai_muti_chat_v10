@@ -5,7 +5,7 @@ from .models import Conversation
 
 def install(streaming_module) -> None:
     raw_prepare = streaming_module.prepare
-    if getattr(raw_prepare, "_ai_workspace_fresh_conversation", False):
+    if getattr(raw_prepare, "_ai_workspace_fresh_conversation", False) is True:
         return
 
     def prepare(*, user, conversation, **kwargs):
