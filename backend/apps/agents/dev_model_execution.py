@@ -10,6 +10,7 @@ from apps.billing.services import release, reserve, settle
 
 from .accounting import (
     actual_agent_quote_from_snapshot,
+    build_agent_provider_delivery_checkpoint,
     checkpoint_agent_provider_delivery,
     mark_agent_provider_checkpoint_settled,
     release_agent_provider_spend,
@@ -56,6 +57,7 @@ def _settlement_interrupted_error(
     provider_reservation,
     result,
     cause_code,
+    settlement_checkpoint=None,
 ):
     evidence.append(
         {
@@ -79,6 +81,7 @@ def _settlement_interrupted_error(
         retryable=False,
     )
     error.model_attempts = evidence
+    error.settlement_checkpoint = dict(settlement_checkpoint or {})
     return error
 
 
@@ -118,6 +121,7 @@ def execute_with_model_fallback(
         provider_reservation = None
         provider_delivered = False
         result = None
+        settlement_checkpoint = None
         customer_key = f"agent-run:{run.id}:step:{sequence}:model:{rank}"
         provider_key = f"agent:{run.id}:step:{sequence}:model:{rank}"
         source_id = f"{run.id}:step:{sequence}:model:{rank}"
@@ -191,6 +195,15 @@ def execute_with_model_fallback(
             )
             actual = min(actual_quote.user_charge_rub, customer_reservation.amount_rub)
 
+            settlement_checkpoint = build_agent_provider_delivery_checkpoint(
+                model=model,
+                result=result,
+                actual_quote=actual_quote,
+                provider_reservation=provider_reservation,
+                customer_reservation=customer_reservation,
+                source_id=source_id,
+                customer_charge=actual,
+            )
             checkpoint_agent_provider_delivery(
                 step=step,
                 model=model,
@@ -251,6 +264,7 @@ def execute_with_model_fallback(
                     provider_reservation=provider_reservation,
                     result=result,
                     cause_code=exc.code,
+                    settlement_checkpoint=settlement_checkpoint,
                 ) from exc
             last_error = exc
             _release_customer(customer_reservation)
@@ -279,6 +293,7 @@ def execute_with_model_fallback(
                     provider_reservation=provider_reservation,
                     result=result,
                     cause_code="validation_error",
+                    settlement_checkpoint=settlement_checkpoint,
                 ) from exc
             _release_customer(customer_reservation)
             customer_reservation = None
@@ -310,6 +325,7 @@ def execute_with_model_fallback(
                     provider_reservation=provider_reservation,
                     result=result,
                     cause_code="internal_error",
+                    settlement_checkpoint=settlement_checkpoint,
                 ) from exc
             _release_customer(customer_reservation)
             _release_provider(provider_reservation)
