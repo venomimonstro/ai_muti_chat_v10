@@ -6,6 +6,7 @@ APPS_DIR = Path(__file__).resolve().parents[1]
 COMMERCIAL_RUNTIME_FILES = (
     "b2b_api/services.py",
     "chat/compare.py",
+    "chat/paid_search_billing.py",
     "image_studio/services.py",
     "agents/runtime.py",
     "agents/generic_team_runtime.py",
@@ -48,6 +49,7 @@ def test_paid_runtime_binds_execution_to_reserved_funding_account():
     required_binding = {
         "b2b_api/services.py": "funding_account_id=funding_account_id",
         "chat/compare.py": "funding_account_id=funding_account_id",
+        "chat/paid_search_billing.py": "account_id=account.id",
         "image_studio/services.py": "funding_account_id=provider_reservation.account_id",
         "agents/runtime.py": "funding_account_id=(",
         "agents/generic_team_runtime.py": "funding_account_id=(",
