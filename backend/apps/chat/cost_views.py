@@ -214,10 +214,11 @@ def _authorize_customer_stream(generation):
 def _terminalize_stream_authorization_failure(generation, exc):
     """Fail one prepared turn instead of leaving a forever-QUEUED reservation.
 
-    Persist the terminal state in one clean transaction first. Customer refund is
-    attempted only after that transaction exits: catching a database error inside
-    atomic() would poison the transaction and recreate TransactionManagementError.
-    Generation terminal signals close provider/search reservations.
+    First persist the terminal state without firing post_save hooks inside our
+    select_for_update transaction. Billing/procurement hooks can perform their own
+    database work and catch errors; running them under an outer atomic block could
+    poison that outer transaction. After the state is durable, re-save the same
+    terminal fields outside atomic solely to run the normal idempotent cleanup hooks.
     """
     try:
         reservation_id = None
@@ -233,20 +234,36 @@ def _terminalize_stream_authorization_failure(generation, exc):
                 return locked
 
             reservation_id = locked.reservation_id
-            locked.state = Generation.State.FAILED
-            locked.error_code = "stream_authorization_failed"
-            locked.completed_at = timezone.now()
-            locked.save(update_fields=["state", "error_code", "completed_at"])
+            completed_at = timezone.now()
+            Generation.objects.filter(
+                pk=locked.pk,
+                state=Generation.State.QUEUED,
+            ).update(
+                state=Generation.State.FAILED,
+                error_code="stream_authorization_failed",
+                completed_at=completed_at,
+            )
             Message.objects.filter(pk=locked.assistant_message_id).update(
                 status=Message.Status.FAILED
+            )
+            locked.state = Generation.State.FAILED
+            locked.error_code = "stream_authorization_failed"
+            locked.completed_at = completed_at
+
+        # Fire ordinary terminal cleanup hooks only after the terminal state itself
+        # is committed. Hook failure can no longer roll the Generation back to QUEUED.
+        try:
+            locked.save(update_fields=["state", "error_code", "completed_at"])
+        except Exception:
+            logger.exception(
+                "Chat stream authorization terminal cleanup hooks failed generation_id=%s",
+                locked.id,
             )
 
         if reservation_id:
             try:
                 release(reservation_id)
             except Exception:
-                # Terminal state is already durable. Stale/billing recovery can
-                # retry the idempotent refund without ever executing the provider.
                 logger.exception(
                     "Chat stream authorization customer reserve release failed generation_id=%s",
                     locked.id,
