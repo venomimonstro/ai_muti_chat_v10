@@ -1,11 +1,13 @@
 import logging
 from decimal import ROUND_UP, Decimal
+from types import SimpleNamespace
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from apps.billing.models import BalanceReservation
+from apps.billing.pricing import calculate_from_snapshot
 from apps.billing.services import release
 
 from apps.procurement.account_routing import reserve_provider_spend
@@ -64,6 +66,27 @@ def reserve_agent_provider_spend(
             source_key,
         )
         return None
+
+
+def actual_agent_quote_from_snapshot(*, price, result, preflight):
+    """Price confirmed usage from the exact immutable preflight snapshot."""
+    snapshot = dict(getattr(preflight, "pricing_snapshot", {}) or {})
+    if not snapshot:
+        raise ValidationError("Отсутствует immutable pricing snapshot Agent-запроса")
+    provider_cost, charge, gross_profit, gross_margin = calculate_from_snapshot(
+        price,
+        max(0, int(result.input_tokens or 0)),
+        max(0, int(result.output_tokens or 0)),
+        snapshot,
+    )
+    return SimpleNamespace(
+        provider_cost_rub=provider_cost,
+        user_charge_rub=charge,
+        gross_profit_rub=gross_profit,
+        gross_margin_percent=gross_margin,
+        fx_snapshot=getattr(preflight, "fx_snapshot", None),
+        pricing_snapshot=snapshot,
+    )
 
 
 def settle_agent_provider_spend(
