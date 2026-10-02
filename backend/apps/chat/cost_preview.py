@@ -25,7 +25,11 @@ PUBLIC_SYSTEM_LEVELS = {
 
 
 def _actual_system_level(model, conversation):
-    identity = f"{model.slug} {model.display_name} {model.upstream_model}".casefold()
+    identity = (
+        f"{getattr(model, 'slug', '')} "
+        f"{getattr(model, 'display_name', '')} "
+        f"{getattr(model, 'upstream_model', '')}"
+    ).casefold()
     if "max" in identity:
         return "System Max"
     if "pro" in identity:
