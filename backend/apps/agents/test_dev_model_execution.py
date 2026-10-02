@@ -100,3 +100,89 @@ class DevModelExecutionTests(TestCase):
 
         release_customer.assert_called_once_with("customer-1")
         release_provider.assert_called_once_with(provider)
+
+
+    def test_retryable_key_failure_rebinds_provider_reservation_before_retry(self):
+        model = _model(1, "primary", "provider-a")
+        attempt = _attempt(model, 1, "10")
+        customer = SimpleNamespace(id="customer-1", amount_rub=Decimal("10"))
+        first_provider = SimpleNamespace(id="provider-1", account_id="account-1")
+        second_provider = SimpleNamespace(id="provider-2", account_id="account-2")
+        delivered = SimpleNamespace(
+            input_tokens=100,
+            output_tokens=50,
+            provider_request_id="req-2",
+            text="ok",
+        )
+        actual_quote = SimpleNamespace(
+            user_charge_rub=Decimal("9"),
+            provider_cost_rub=Decimal("1"),
+            fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        )
+
+        class FailingAdapter:
+            def generate(self, **_kwargs):
+                raise ProviderError("temporary", code="rate_limited", retryable=True)
+
+        class WorkingAdapter:
+            def generate(self, **_kwargs):
+                return delivered
+
+        with (
+            patch("apps.agents.dev_model_execution.plan_model_attempts", return_value=[attempt]),
+            patch("apps.agents.dev_model_execution.reserve", return_value=customer),
+            patch(
+                "apps.agents.dev_model_execution.reserve_agent_provider_spend",
+                side_effect=[first_provider, second_provider],
+            ) as reserve_provider,
+            patch(
+                "apps.agents.dev_model_execution.release_agent_provider_spend"
+            ) as release_provider,
+            patch(
+                "apps.agents.dev_model_execution.dispatch.adapter_for",
+                side_effect=[FailingAdapter(), WorkingAdapter()],
+            ) as adapter_factory,
+            patch(
+                "apps.agents.dev_provider_retry.record_failure"
+            ),
+            patch(
+                "apps.agents.dev_provider_retry.record_success"
+            ),
+            patch(
+                "apps.agents.dev_provider_retry.provider_available",
+                return_value=True,
+            ),
+            patch("apps.agents.dev_model_execution.active_price", return_value=SimpleNamespace()),
+            patch("apps.agents.dev_model_execution.quote", return_value=actual_quote),
+            patch(
+                "apps.agents.dev_model_execution.require_margin",
+                side_effect=lambda value: value,
+            ),
+            patch("apps.agents.dev_model_execution.settle") as settle_customer,
+            patch(
+                "apps.agents.dev_model_execution.settle_agent_provider_spend"
+            ) as settle_provider,
+        ):
+            result = execute_with_model_fallback(
+                run=SimpleNamespace(id="run-id", owner=SimpleNamespace()),
+                sequence=4,
+                primary_model=model,
+                messages=[],
+                estimated_input_tokens=100,
+                requested_output_tokens=1000,
+                remaining_budget_rub=Decimal("50"),
+                is_canceled=lambda: False,
+            )
+
+        self.assertEqual(result.model.slug, model.slug)
+        self.assertEqual(result.provider_attempts, 2)
+        self.assertEqual(adapter_factory.call_args_list[0].kwargs["funding_account_id"], "account-1")
+        self.assertEqual(adapter_factory.call_args_list[1].kwargs["funding_account_id"], "account-2")
+        self.assertEqual(
+            reserve_provider.call_args_list[1].kwargs["source_key"],
+            "agent:run-id:step:4:model:1:retry:2",
+        )
+        release_provider.assert_called_once_with(first_provider)
+        settle_provider.assert_called_once()
+        self.assertIs(settle_provider.call_args.kwargs["reservation"], second_provider)
+        settle_customer.assert_called_once_with("customer-1", Decimal("9"))
