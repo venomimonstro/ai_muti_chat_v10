@@ -1,7 +1,9 @@
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.billing.models import BalanceReservation
@@ -131,3 +133,28 @@ def test_terminal_hook_failure_cannot_restore_queued_authorization_state():
     assert generation.error_code == "stream_authorization_failed"
     assert reservation.state == BalanceReservation.State.RELEASED
     assert user.wallet.reserved_rub == Decimal("0.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_terminal_refund_uses_fast_cutoff_independent_from_generation_stale_timeout(settings):
+    from apps.admin_ops.recovery import recover_stale_chat_operations
+
+    settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS = 360
+    settings.CHAT_TERMINAL_REFUND_RECOVERY_SECONDS = 60
+    _user, generation, reservation = _prepared_generation("fast-terminal-refund")
+
+    Generation.objects.filter(pk=generation.pk).update(
+        state=Generation.State.FAILED,
+        error_code="synthetic_terminal_failure",
+        completed_at=timezone.now() - timedelta(minutes=2),
+    )
+    BalanceReservation.objects.filter(pk=reservation.pk).update(
+        created_at=timezone.now() - timedelta(minutes=2)
+    )
+
+    result = recover_stale_chat_operations()
+
+    reservation.refresh_from_db()
+    assert result["generations"] == 0
+    assert result["terminal_chat_reservations"]["released"] == 1
+    assert reservation.state == BalanceReservation.State.RELEASED
