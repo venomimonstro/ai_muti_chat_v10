@@ -1,6 +1,8 @@
+from contextlib import contextmanager
 from decimal import Decimal
 import time
 
+import httpx
 import pytest
 from django.utils import timezone
 
@@ -130,6 +132,71 @@ def test_gigachat_stream_headers_request_event_stream():
 
     assert adapter._headers(stream=True)["Accept"] == "text/event-stream"
     assert adapter._headers(stream=False)["Accept"] == "application/json"
+
+
+@pytest.mark.django_db
+def test_gigachat_streamed_400_is_normalized_without_response_not_read(monkeypatch):
+    provider, _ = Provider.objects.get_or_create(
+        slug="gigachat",
+        defaults={"name": "GigaChat API"},
+    )
+    provider.auth_config = {"scope": "GIGACHAT_API_PERS"}
+    provider.save(update_fields=["auth_config"])
+    adapter = GigaChatAPIAdapter(authorization_key="authorization-key")
+    adapter._token = "cached-token"
+    adapter._token_expires_at = time.time() + 600
+    calls = {"count": 0}
+
+    @contextmanager
+    def fake_stream(*args, **kwargs):
+        calls["count"] += 1
+        request = httpx.Request("POST", "https://api.giga.chat/v1/chat/completions")
+        response = httpx.Response(
+            400,
+            headers={"content-type": "application/json"},
+            stream=httpx.ByteStream(
+                b'{"message":"invalid request payload"}'
+            ),
+            request=request,
+        )
+        try:
+            yield response
+        finally:
+            response.close()
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+
+    with pytest.raises(Exception) as exc_info:
+        list(
+            adapter.stream(
+                model="GigaChat-2",
+                messages=[{"role": "user", "content": "test"}],
+                max_output_tokens=32,
+            )
+        )
+
+    error = exc_info.value
+    assert type(error).__name__ == "ProviderError"
+    assert getattr(error, "code", "") == "gigachat_bad_request"
+    assert "invalid request payload" in str(error)
+    assert "ResponseNotRead" not in str(error)
+    assert calls["count"] == 2
+
+
+def test_safe_stream_error_detail_does_not_raise_response_not_read():
+    from .gigachat_adapter import _safe_error_detail
+
+    response = httpx.Response(
+        400,
+        stream=httpx.ByteStream(b'{"message":"bad request"}'),
+        request=httpx.Request("POST", "https://api.giga.chat/v1/chat/completions"),
+    )
+    try:
+        # Helper itself remains defensive even when a caller passes an unread
+        # streaming response.
+        assert _safe_error_detail(response) == ""
+    finally:
+        response.close()
 
 
 @pytest.mark.django_db
