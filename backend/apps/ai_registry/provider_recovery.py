@@ -52,17 +52,23 @@ def install(reliability_module) -> None:
 
         provider = reliability_module._normalize_special_external_provider(provider)
         recovering = provider.health_state != Provider.HealthState.HEALTHY
-        all_models = list(
-            AIModel.objects.filter(provider=provider, enabled=True)
+        configured_models = list(
+            AIModel.objects.filter(provider=provider)
             .exclude(upstream_model="")
             .select_related("provider", "current_version")
             .order_by("slug")
         )
-        if not all_models:
-            error = ProviderError("Provider has no enabled models", code="no_models", retryable=False)
-            reliability_module.record_failure(provider, error, adapter=None)
+        all_models = [model for model in configured_models if model.enabled]
+
+        # Provider transport health and client model publication are separate
+        # concerns. An administrator may intentionally keep every model disabled
+        # while validating a new API key. Do not turn a working provider red merely
+        # because no model is currently published to customers.
+        if not configured_models:
             ProviderHealthSnapshot.objects.create(
-                provider=provider, healthy=False, error_code=error.code
+                provider=provider,
+                healthy=provider.health_state == Provider.HealthState.HEALTHY,
+                error_code="no_configured_models",
             )
             return None
 
@@ -72,7 +78,7 @@ def install(reliability_module) -> None:
         # intentionally bypasses model quarantine for this metadata-level check.
         health_adapter = None
         try:
-            health_adapter = dispatch.adapter_for(all_models[0], allow_probe=True)
+            health_adapter = dispatch.adapter_for(configured_models[0], allow_probe=True)
             health = health_adapter.health_check()
         except ProviderError as exc:
             reliability_module.record_failure(provider, exc, adapter=health_adapter)
@@ -101,14 +107,21 @@ def install(reliability_module) -> None:
             )
             return health
 
-        if not recovering:
+        if not recovering or not all_models:
             reliability_module.record_success(
                 provider, health.latency_ms, adapter=health_adapter
             )
             ProviderHealthSnapshot.objects.create(
-                provider=provider, healthy=True, latency_ms=health.latency_ms, error_code=""
+                provider=provider,
+                healthy=True,
+                latency_ms=health.latency_ms,
+                error_code="" if all_models else "no_enabled_models",
             )
-            return health
+            return AdapterHealth(
+                healthy=True,
+                latency_ms=health.latency_ms,
+                error_code="" if all_models else "no_enabled_models",
+            )
 
         # Already quarantined models are recovered by the dedicated model watcher.
         # They must not consume this provider-recovery batch repeatedly and starve a
