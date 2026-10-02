@@ -3,7 +3,7 @@ import uuid
 from decimal import Decimal, ROUND_UP
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -32,11 +32,16 @@ def account_available_native(account):
 
 
 def _purchase_remaining_rows(account):
-    purchases = list(
-        ProviderPurchase.objects.select_for_update()
-        .filter(account=account, state=ProviderPurchase.State.ACTIVE)
-        .order_by("purchased_at", "created_at", "id")
+    purchases_qs = ProviderPurchase.objects.filter(
+        account=account,
+        state=ProviderPurchase.State.ACTIVE,
     )
+    # Weighted-cost reads are used by previews/readiness as well as settlement.
+    # Row locks are meaningful only inside the settlement transaction; attempting
+    # SELECT FOR UPDATE in autocommit raises TransactionManagementError on PostgreSQL.
+    if connection.in_atomic_block:
+        purchases_qs = purchases_qs.select_for_update()
+    purchases = list(purchases_qs.order_by("purchased_at", "created_at", "id"))
     allocated = {
         row["purchase_id"]: row["value"] or ZERO
         for row in ProviderSpendAllocation.objects.filter(purchase__account=account)
