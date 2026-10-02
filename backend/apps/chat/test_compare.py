@@ -7,9 +7,11 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.ai_registry.models import AIModel, Provider
-from apps.billing.models import BalanceReservation, CostAnomaly, PriceVersion
+from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
+from apps.billing.models import BalanceReservation, CostAnomaly, FxRateSnapshot, PriceVersion
 from apps.billing.services import credit
+from apps.procurement.models import ProviderFundingAccount, ProviderSpend
+from apps.procurement.services import record_purchase
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
 from .compare import branch_from_variant, compare_preview, run_compare, synthesize_compare
@@ -227,3 +229,148 @@ def test_compare_preview_api_requires_two_models(settings):
         format="json",
     )
     assert response.status_code == 400
+
+
+@pytest.mark.django_db(transaction=True)
+def test_compare_synthesis_overrun_preserves_provider_spend_and_refunds_customer(settings, monkeypatch):
+    settings.COMPARE_CONFIRM_THRESHOLD_RUB = "999"
+    settings.COMPARE_MAX_OUTPUT_TOKENS = 16
+
+    user = User.objects.create_user(
+        username="compare-synthesis-overrun",
+        email="compare-synthesis-overrun@example.com",
+        password="password123",
+    )
+    credit(user, Decimal("100"), "test", "compare-synthesis-overrun")
+    conversation = Conversation.objects.create(owner=user)
+
+    variant_models = compare_registry()
+    run = CompareRun.objects.create(
+        owner=user,
+        conversation=conversation,
+        prompt="Собери итог",
+        idempotency_key="compare:synthesis:overrun",
+        state=CompareRun.State.COMPLETED,
+        model_slugs=[item.slug for item in variant_models],
+        expected_min_rub=Decimal("0"),
+        expected_max_rub=Decimal("1"),
+    )
+    for position, variant_model in enumerate(variant_models):
+        run.variants.create(
+            model=variant_model,
+            position=position,
+            state="completed",
+            output=f"Вариант {position}",
+            expected_min_rub=Decimal("0"),
+            expected_max_rub=Decimal("1"),
+            actual_cost_rub=Decimal("0"),
+            provider_cost_rub=Decimal("0"),
+            pricing_snapshot={},
+        )
+
+    provider = Provider.objects.create(
+        slug="compare-synthesis-paid",
+        name="Compare synthesis paid",
+        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    key = ProviderApiKey(
+        provider=provider,
+        label="primary",
+        enabled=True,
+        health_state=ProviderApiKey.HealthState.HEALTHY,
+    )
+    key.set_secret("sk-compare-synthesis")
+    key.save()
+    model = AIModel.objects.create(
+        provider=provider,
+        slug="compare-synthesis-paid-model",
+        display_name="Compare synthesis paid model",
+        upstream_model="paid-upstream",
+        enabled=True,
+        capabilities=["text"],
+        context_window=32768,
+        max_output_tokens=1024,
+    )
+    PriceVersion.objects.create(
+        model_slug=model.slug,
+        input_rub_per_million=Decimal("100"),
+        output_rub_per_million=Decimal("100"),
+        provider_currency="USD",
+        input_price_per_million=Decimal("1"),
+        output_price_per_million=Decimal("1"),
+        markup_percent=Decimal("100"),
+        active=True,
+        effective_from=timezone.now(),
+    )
+    FxRateSnapshot.objects.create(
+        base_currency="USD",
+        quote_currency="RUB",
+        rate=Decimal("100"),
+        source="test",
+        effective_at=timezone.now(),
+    )
+    account = ProviderFundingAccount.objects.create(
+        provider=provider,
+        api_key=key,
+        label="Paid USD",
+        currency="USD",
+        active=True,
+        is_default=True,
+        funded_native=Decimal("10"),
+    )
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+
+    def overrun_call(_model, _messages, funding_account_id=None):
+        assert str(funding_account_id) == str(account.id)
+        return (
+            "Не должен быть опубликован",
+            SimpleNamespace(
+                input_tokens=100,
+                output_tokens=100_000,
+                provider_request_id="compare-synthesis-overrun-provider",
+            ),
+            10,
+        )
+
+    monkeypatch.setattr("apps.chat.compare._provider_call", overrun_call)
+
+    with pytest.raises(ValidationError, match="превысила"):
+        synthesize_compare(
+            user=user,
+            compare_run=run,
+            model_slug=model.slug,
+            confirmed=True,
+        )
+
+    run.refresh_from_db()
+    model.refresh_from_db()
+    user.wallet.refresh_from_db()
+    account.refresh_from_db()
+
+    customer_reservation = BalanceReservation.objects.get(
+        pk=run.synthesis_reservation_id
+    )
+    spend = ProviderSpend.objects.get(
+        source_type="compare_synthesis",
+        source_id=str(run.id),
+    )
+
+    assert run.synthesis_output == ""
+    assert run.synthesis_cost_rub == Decimal("0.0000")
+    assert customer_reservation.state == BalanceReservation.State.RELEASED
+    assert customer_reservation.actual_rub is None
+    assert spend.customer_charge_rub == Decimal("0.0000")
+    assert spend.provider_request_id == "compare-synthesis-overrun-provider"
+    assert spend.native_cost > Decimal("0")
+    assert account.reserved_native == Decimal("0.000000")
+    assert account.spent_native == spend.native_cost
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert model.enabled is False
+    assert provider.emergency_disabled is False
