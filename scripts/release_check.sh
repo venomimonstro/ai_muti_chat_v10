@@ -235,6 +235,7 @@ step 17 'Agent Runtime billing integrity'
 run_pytest 'Agent/provider settlement and credential-binding regressions' \
   apps/ai_registry/test_commercial_dispatch_contract.py \
   apps/agents/test_agent_recovery.py \
+  apps/agents/test_ai_planner_billing.py \
   apps/agents/test_dev_model_execution.py \
   apps/agents/test_dev_settlement_integrity.py \
   apps/agents/test_generic_team_cancellation.py \
