@@ -773,7 +773,13 @@ def run(generation, *, adapter=None):
                 request_cost.save(update_fields=[
                     "provider_cost_rub", "charged_rub", "input_tokens", "output_tokens", "gross_profit_rub", "gross_margin_percent"
                 ])
-                record_cost_outcome(request_cost, model=selected_model)
+                try:
+                    record_cost_outcome(request_cost, model=selected_model)
+                except Exception:
+                    logger.exception(
+                        "Cost outcome reconciliation failed after provider delivery generation_id=%s",
+                        generation.id,
+                    )
                 generation.provider_request_id = completed.provider_request_id
                 generation.input_tokens = completed.input_tokens
                 generation.output_tokens = completed.output_tokens
@@ -793,7 +799,13 @@ def run(generation, *, adapter=None):
                 request_cost.save(update_fields=[
                     "provider_cost_rub", "charged_rub", "input_tokens", "output_tokens", "gross_profit_rub", "gross_margin_percent"
                 ])
-                record_cost_outcome(request_cost, model=selected_model)
+                try:
+                    record_cost_outcome(request_cost, model=selected_model)
+                except Exception:
+                    logger.exception(
+                        "Cost outcome reconciliation failed after provider delivery generation_id=%s",
+                        generation.id,
+                    )
                 assistant.content = full_text
                 assistant.status = Message.Status.COMPLETED
                 assistant.save(update_fields=["content", "status"])
@@ -819,7 +831,13 @@ def run(generation, *, adapter=None):
         if over_reservation:
             raise ValidationError("Provider usage exceeded reserved maximum")
         _index_history(assistant)
-        refresh_rolling_summary(generation.user_message.conversation)
+        try:
+            refresh_rolling_summary(generation.user_message.conversation)
+        except Exception:
+            logger.exception(
+                "Rolling summary refresh failed after completed answer generation_id=%s",
+                generation.id,
+            )
         yield sse(
             "completed",
             {
