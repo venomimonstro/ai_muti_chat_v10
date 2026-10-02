@@ -10,6 +10,7 @@ from apps.billing.services import release
 from apps.procurement.models import ProviderSpendReservation
 from apps.procurement.services import release_provider_spend
 
+from .accounting import agent_provider_checkpoint_pending, reconcile_agent_provider_checkpoint
 from .models import AgentApproval, AgentRun, AgentStepRun
 from .wait_runtime import wait_metadata
 
@@ -89,6 +90,16 @@ def recover_agent_run(run_id):
     if run.state not in RECOVERABLE_STATES or run.updated_at >= _cutoff():
         return False
 
+    reconciled_provider = 0
+    pending_steps = list(
+        run.steps.select_for_update().filter(state=AgentStepRun.State.RUNNING)
+    )
+    for step in pending_steps:
+        if not agent_provider_checkpoint_pending(step):
+            continue
+        reconcile_agent_provider_checkpoint(step)
+        reconciled_provider += 1
+
     released_customer = _release_customer_reservations(run.id)
     released_provider = _release_provider_reservations(run.id)
     now = timezone.now()
@@ -118,6 +129,7 @@ def recover_agent_run(run_id):
     run.error_code = "stale_agent_run_recovered"
     run.error_message = (
         "Запуск остановлен автоматически после потери активности worker. "
+        f"Восстановлено подтверждённых provider-расходов: {reconciled_provider}. "
         f"Освобождено резервов: user={released_customer}, provider={released_provider}."
         f"{branch_note} Можно безопасно запустить задачу повторно."
     )
