@@ -198,12 +198,12 @@ def _procurement_ready(provider: Provider) -> bool:
         configured = ProviderFundingAccount.objects.filter(
             provider=provider,
             active=True,
+            funded_native__gt=0,
         ).exists()
-        # Procurement is optional until the administrator explicitly creates a
-        # funding account for this provider. A verified HEALTHY API key must not
-        # be blocked merely because the optional purchasing ledger is unused.
-        # Once at least one active account exists, balance/key matching remains
-        # strict and fail-closed.
+        # A zero-balance account is only a draft configuration. Merely creating
+        # it must never take a verified provider out of customer traffic. The
+        # procurement ledger becomes authoritative after real provider credit
+        # has been recorded; exhausted purchased credit then remains fail-closed.
         return not configured
     except Exception:
         return False
