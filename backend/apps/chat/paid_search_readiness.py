@@ -12,7 +12,7 @@ def install(paid_search_module) -> None:
     their existing behavior because they have no ProviderApiKey health row.
     """
     raw_account_secret = paid_search_module._account_secret
-    if getattr(raw_account_secret, "_ai_workspace_paid_search_readiness", False):
+    if getattr(raw_account_secret, "_ai_workspace_paid_search_readiness", False) is True:
         return
 
     def account_secret(account) -> str:
