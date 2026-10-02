@@ -201,6 +201,15 @@ test("Transient empty model catalog never disables customer send", () => {
   const composerSource = readFileSync(new URL("../app/workspace/Composer.tsx", import.meta.url), "utf8");
   const submitLine = composerSource.split("\n").find(line => line.includes("const submit=async")) ?? "";
   assert.equal(submitLine.includes("noModelsAvailable"), false);
-  const sendButtonLine = composerSource.split("\n").find(line => line.includes('className="sendButton"')) ?? "";
-  assert.equal(sendButtonLine.includes("noModelsAvailable"), false);
+  assert.ok(
+    composerSource.includes(
+      'disabled={disabled||submitDisabled||!trimmed||offline||tooLong}'
+    )
+  );
+  assert.equal(
+    composerSource.includes(
+      'disabled={disabled||submitDisabled||!trimmed||offline||tooLong||noModelsAvailable}'
+    ),
+    false,
+  );
 });
