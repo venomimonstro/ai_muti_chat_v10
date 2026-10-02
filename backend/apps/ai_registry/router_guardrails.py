@@ -87,7 +87,7 @@ def install(router_module) -> None:
     """
 
     current_classify = router_module.classify_task
-    if getattr(current_classify, "_ai_workspace_router_guardrails", False):
+    if getattr(current_classify, "_ai_workspace_router_guardrails", False) is True:
         return
     current_auto_tier = router_module._auto_tier
 
