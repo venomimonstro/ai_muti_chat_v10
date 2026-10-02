@@ -17,13 +17,18 @@ from .signals import _require_procurement
     ],
 )
 def test_legacy_special_external_provider_cannot_use_echo_procurement_bypass(slug, name):
-    provider = Provider.objects.create(
+    provider, _created = Provider.objects.update_or_create(
         slug=slug,
-        name=name,
-        adapter_type=Provider.AdapterType.ECHO,
-        enabled=True,
-        health_state=Provider.HealthState.HEALTHY,
+        defaults={
+            "name": name,
+            "adapter_type": Provider.AdapterType.ECHO,
+            "enabled": True,
+            "health_state": Provider.HealthState.HEALTHY,
+        },
     )
+    # Catalog bootstrap may already own the canonical special-provider row. This
+    # regression specifically verifies the no-procurement legacy state.
+    provider.funding_accounts.all().delete()
 
     with pytest.raises(ValidationError):
         _require_procurement(provider)
