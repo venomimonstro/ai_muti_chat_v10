@@ -1,10 +1,11 @@
 import os
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase
 
 from . import adapters, dispatch
-from .models import AIModel, Provider
+from .models import AIModel, Provider, ProviderApiKey
 
 
 class HubAIProviderTests(TestCase):
@@ -54,3 +55,32 @@ class HubAIProviderTests(TestCase):
         self.assertIsInstance(adapter, adapters.DeepSeekChatAdapter)
         self.assertEqual(adapter.base_url, "https://hubai.loe.gg/v1")
         self.assertNotEqual(adapter.base_url, "https://api.deepseek.com")
+
+    def test_bootstrap_stores_key_encrypted_and_marks_transport_healthy(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HUBAI_API_KEY": "hubai-bootstrap-secret",
+                    "HUBAI_API_BASE_URL": "https://hubai.loe.gg/v1",
+                },
+                clear=False,
+            ),
+            patch.object(
+                adapters.DeepSeekChatAdapter,
+                "health_check",
+                return_value=adapters.AdapterHealth(healthy=True, latency_ms=42),
+            ),
+        ):
+            call_command("bootstrap_hubai")
+
+        provider = Provider.objects.get(slug="hubai")
+        key = ProviderApiKey.objects.get(provider=provider, label="HubAI primary")
+        self.assertEqual(key.get_secret(), "hubai-bootstrap-secret")
+        self.assertNotIn("hubai-bootstrap-secret", key.secret_encrypted)
+        self.assertEqual(key.health_state, ProviderApiKey.HealthState.HEALTHY)
+        self.assertEqual(provider.health_state, Provider.HealthState.HEALTHY)
+        self.assertFalse(provider.enabled)
+        self.assertFalse(
+            AIModel.objects.filter(provider=provider, enabled=True).exists()
+        )
