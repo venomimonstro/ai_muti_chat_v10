@@ -33,9 +33,15 @@ def test_asgi_capacity_rejection_never_submits_provider_work():
 
     executor.submit.assert_not_called()
     assert finalized == [generation.id]
-    assert len(chunks) == 1
-    payload = json.loads(
+    assert len(chunks) == 2
+    accepted = json.loads(
         next(line[6:] for line in chunks[0].splitlines() if line.startswith("data: "))
+    )
+    assert chunks[0].startswith("event: generation\n")
+    assert accepted["id"] == generation.id
+    assert accepted["accepted"] is True
+    payload = json.loads(
+        next(line[6:] for line in chunks[1].splitlines() if line.startswith("data: "))
     )
     assert payload["code"] == "AI-103"
     assert payload["support_code"] == "AI-103"
@@ -45,3 +51,41 @@ def test_asgi_capacity_rejection_never_submits_provider_work():
 def test_asgi_capacity_defaults_are_bounded():
     assert 4 <= asgi_stream.STREAM_EXECUTOR_WORKERS <= 128
     assert asgi_stream.STREAM_EXECUTOR_WORKERS <= asgi_stream.STREAM_MAX_INFLIGHT <= 512
+
+
+def test_asgi_executor_start_failure_still_acknowledges_durable_generation():
+    generation = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000100",
+        state="queued",
+    )
+    finalized = []
+
+    class Slot:
+        def acquire(self, *, blocking):
+            assert blocking is False
+            return True
+
+        def release(self):
+            return None
+
+    executor = Mock()
+    executor.submit.side_effect = RuntimeError("executor unavailable")
+
+    async def collect():
+        return [chunk async for chunk in asgi_stream.managed_run_async(generation)]
+
+    with (
+        patch.object(asgi_stream, "_STREAM_SLOTS", Slot()),
+        patch.object(asgi_stream, "_STREAM_EXECUTOR", executor),
+        patch.object(
+            asgi_stream,
+            "_finalize_unhandled_failure",
+            side_effect=lambda item: finalized.append(item.id),
+        ),
+    ):
+        chunks = asyncio.run(collect())
+
+    assert finalized == [generation.id]
+    assert len(chunks) == 2
+    assert chunks[0].startswith("event: generation\n")
+    assert chunks[1].startswith("event: error\n")
