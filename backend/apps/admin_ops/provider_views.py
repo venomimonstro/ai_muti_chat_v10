@@ -35,6 +35,10 @@ def _model_enable_blockers(model: AIModel):
     if not model.provider.enabled or model.provider.emergency_disabled:
         blockers.append("Провайдер модели выключен")
     blockers.extend(_provider_enable_blockers(model.provider))
+    if not provider_available(model.provider):
+        blockers.append(
+            "Клиентский runtime провайдера не готов: проверьте HEALTHY ключ и закупочный баланс"
+        )
     if not model.upstream_model.strip():
         blockers.append("Не указана модель провайдера")
     if not model.current_version_id:
