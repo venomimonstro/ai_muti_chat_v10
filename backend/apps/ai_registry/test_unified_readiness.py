@@ -70,3 +70,66 @@ class UnifiedReadinessTests(TestCase):
         )
         with patch.object(key, "get_secret", return_value="sk-test-readiness"):
             self.assertTrue(provider_available(provider))
+
+
+    @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+    def test_degraded_default_with_healthy_funded_backup_keeps_provider_available(self):
+        provider = Provider.objects.create(
+            slug="readiness-backup-provider",
+            name="Readiness Backup Provider",
+            adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
+            enabled=True,
+            health_state=Provider.HealthState.DEGRADED,
+        )
+        degraded = ProviderApiKey(
+            provider=provider,
+            label="degraded-default",
+            enabled=True,
+            health_state=ProviderApiKey.HealthState.DEGRADED,
+        )
+        degraded.set_secret("sk-degraded")
+        degraded.save()
+        healthy = ProviderApiKey(
+            provider=provider,
+            label="healthy-backup",
+            enabled=True,
+            health_state=ProviderApiKey.HealthState.HEALTHY,
+        )
+        healthy.set_secret("sk-healthy-backup")
+        healthy.save()
+        ProviderFundingAccount.objects.create(
+            provider=provider,
+            api_key=degraded,
+            label="Degraded default",
+            currency="USD",
+            active=True,
+            is_default=True,
+            funded_native=100,
+            priority=1,
+        )
+        backup = ProviderFundingAccount.objects.create(
+            provider=provider,
+            api_key=healthy,
+            label="Healthy backup",
+            currency="USD",
+            active=True,
+            is_default=False,
+            funded_native=100,
+            priority=10,
+        )
+
+        self.assertTrue(provider_available(provider))
+
+        from .dispatch import select_runtime_api_key
+
+        secret, key_id = select_runtime_api_key(
+            provider,
+            allow_probe=False,
+            touch=False,
+        )
+        self.assertEqual(secret, "sk-healthy-backup")
+        self.assertEqual(key_id, healthy.id)
+        self.assertEqual(
+            backup.api_key_id,
+            key_id,
+        )
