@@ -23,6 +23,30 @@ NATIVE_STEP = Decimal("0.000001")
 RUB_STEP = Decimal("0.0001")
 
 
+def provider_pricing_currency(provider, default="USD") -> str:
+    """Use the active model-cost currency as the funding-account native currency."""
+    try:
+        from apps.billing.models import PriceVersion
+
+        model_slugs = list(provider.models.values_list("slug", flat=True))
+        currencies = list(
+            PriceVersion.objects.filter(
+                model_slug__in=model_slugs,
+                active=True,
+                effective_from__lte=timezone.now(),
+            )
+            .exclude(provider_currency="")
+            .values_list("provider_currency", flat=True)
+            .distinct()
+        )
+        normalized = sorted({str(value or "").upper().strip() for value in currencies if value})
+        if len(normalized) == 1:
+            return normalized[0]
+    except Exception:
+        pass
+    return str(default or "USD").upper().strip()[:3] or "USD"
+
+
 def _d(value):
     return Decimal(str(value))
 
