@@ -2,7 +2,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import TestCase
 
 from apps.ai_registry.adapters import ProviderError
 
@@ -23,7 +23,7 @@ def _attempt(model, rank, charge):
     return DevModelAttempt(model=model, output_tokens=1000, preflight=preflight, estimated_charge_rub=Decimal(charge), rank=rank)
 
 
-class DevModelExecutionTests(SimpleTestCase):
+class DevModelExecutionTests(TestCase):
     def test_failed_primary_is_released_and_fallback_settles_once(self):
         primary = _model(1, "primary", "provider-a")
         fallback = _model(2, "fallback", "provider-b")
