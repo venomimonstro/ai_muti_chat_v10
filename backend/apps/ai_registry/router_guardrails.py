@@ -117,6 +117,9 @@ def install(router_module) -> None:
 
         if constraint_hits >= 3:
             score += 0.18
+            # A genuinely multi-constraint optimization/strategy problem belongs
+            # in the complex pool even when no single domain keyword is dominant.
+            score = max(score, 0.70)
         elif constraint_hits == 2 and analysis_hits:
             score += 0.10
 
