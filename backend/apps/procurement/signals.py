@@ -247,7 +247,9 @@ def api_usage_procurement(sender, instance, **kwargs):
         )
     elif instance.state == APIUsage.State.FAILED:
         if instance.provider_cost_rub is not None and (
-            instance.prompt_tokens or instance.completion_tokens
+            instance.provider_request_id
+            or instance.prompt_tokens
+            or instance.completion_tokens
         ):
             _settle(
                 reservation=reservation,
@@ -359,7 +361,9 @@ def compare_variant_procurement(sender, instance, **kwargs):
         )
     elif instance.state == CompareVariant.State.FAILED:
         if instance.provider_cost_rub is not None and (
-            instance.input_tokens or instance.output_tokens
+            instance.provider_request_id
+            or instance.input_tokens
+            or instance.output_tokens
         ):
             _settle(
                 reservation=reservation,
