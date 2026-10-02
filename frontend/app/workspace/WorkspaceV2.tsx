@@ -106,7 +106,7 @@ export default function WorkspaceV2(){
  const send=async()=>{
   const prompt=value.trim();if(!prompt||offline||uploading||attachmentState.blocked||conversationLoading)return;const sentAttachments=[...attachments];const sourceWasNew=!active;
   setError("");setNote("");let conversation=active;let accepted=false;let cancelled=false;
-  let assistantId="";let pending="";let timer:number|null=null;
+  let assistantId="";let optimisticUserId="";let pending="";let timer:number|null=null;
   const updateAssistant=(changes:Partial<ChatMessage>)=>setActive(current=>current&&current.id===conversation?.id?{...current,messages:current.messages.map(message=>message.id===assistantId?{...message,...changes}:message)}:current);
   const flush=()=>{timer=null;if(!pending)return;const chunk=pending;pending="";setActive(current=>current&&current.id===conversation?.id?{...current,messages:current.messages.map(message=>message.id===assistantId?{...message,content:message.content+chunk}:message)}:current)};
   try{
@@ -114,8 +114,9 @@ export default function WorkspaceV2(){
    if(!conversation||runningRef.current.has(conversation.id))return;
    const conversationId=conversation.id;
    const clientMessageId=crypto.randomUUID();
+   optimisticUserId=`local-user-${clientMessageId}`;
    setActivityByConversation(current=>({...current,[conversationId]:[{step:"prepare",state:"running",message:"Подготавливаю запрос…"}]}));
-   const userMessage:ChatMessage={id:`local-user-${clientMessageId}`,client_message_id:clientMessageId,branch:conversation.active_branch,role:"user",content:prompt,status:"saved",generation:null,created_at:nowIso()};
+   const userMessage:ChatMessage={id:optimisticUserId,client_message_id:clientMessageId,branch:conversation.active_branch,role:"user",content:prompt,status:"saved",generation:null,created_at:nowIso()};
    assistantId=`local-ai-${crypto.randomUUID()}`;
    const assistant:ChatMessage={id:assistantId,branch:conversation.active_branch,role:"assistant",content:"",status:"streaming",generation:null,created_at:nowIso()};
    setActive(current=>current&&current.id===conversationId?{...current,messages:[...current.messages,userMessage,assistant]}:current);
@@ -151,7 +152,7 @@ export default function WorkspaceV2(){
    }));
   }catch(reason){
    cancelled=reason instanceof DOMException&&reason.name==="AbortError";
-   if(!accepted){const targetId=conversation?.id??null;if(activeIdRef.current===targetId){setValue(current=>{const restored=current.trim()?current:prompt;persistLocal(targetId,restored);return restored})}else persistLocal(targetId,prompt);setActive(current=>current&&current.id===targetId?{...current,messages:current.messages.filter(message=>message.id!==assistantId&&message.id!==userMessage.id)}:current)}
+   if(!accepted){const targetId=conversation?.id??null;if(activeIdRef.current===targetId){setValue(current=>{const restored=current.trim()?current:prompt;persistLocal(targetId,restored);return restored})}else persistLocal(targetId,prompt);setActive(current=>current&&current.id===targetId?{...current,messages:current.messages.filter(message=>message.id!==assistantId&&message.id!==optimisticUserId)}:current)}
    if(reason instanceof ApiError&&reason.status===499)cancelled=true;
    if(cancelled&&!accepted&&conversation)setActivityByConversation(current=>{const next={...current};delete next[conversation!.id];return next});
    if(!cancelled){if(!conversation||activeIdRef.current===conversation.id)setError(reason instanceof Error?reason.message:"Соединение прервалось. Черновик сохранён.");if(conversation)recordActivity(conversation.id,{step:"connection",state:"failed",message:reason instanceof Error?reason.message:"Соединение прервалось. Ответ сохранён на сервере."})}
