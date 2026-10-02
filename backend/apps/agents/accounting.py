@@ -35,10 +35,9 @@ def reserve_agent_provider_spend(
         active=True,
     ).exists()
     if not configured:
-        if procurement_fail_closed():
-            raise ValidationError(
-                f"Для провайдера {model.provider.slug} не настроен закупочный аккаунт"
-            )
+        # A provider funding ledger is opt-in. Direct admin-managed API keys are
+        # valid for Agent/Dev execution until a purchasing account is created;
+        # once configured, all procurement reservations remain strict.
         return None
     if not fx_snapshot or fx_snapshot.rate <= 0:
         if procurement_fail_closed():
