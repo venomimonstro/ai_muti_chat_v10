@@ -176,6 +176,25 @@ def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
     multistep_hits = sum(marker in text for marker in MULTISTEP_MARKERS)
     simple_intent = _has_any(text, SIMPLE_INTENTS)
     needs_freshness = bool(signals.get("needs_tools")) or _has_any(text, FRESHNESS_MARKERS)
+    simple_fresh_lookup = bool(
+        needs_freshness
+        and tokens < 220
+        and not hard_reasoning
+        and multistep_hits == 0
+        and _has_any(
+            text,
+            (
+                "цена",
+                "стоимость",
+                "курс",
+                "ставка",
+                "погода",
+                "время",
+                "расписание",
+                "тариф",
+            ),
+        )
+    )
 
     if hard_reasoning:
         score += 0.22
@@ -202,6 +221,10 @@ def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
         score += 0.04
     if simple_intent and tokens < 700 and not hard_reasoning:
         score -= 0.10
+    if simple_fresh_lookup:
+        # A current-price/FX/rate lookup needs web freshness, not expensive
+        # reasoning. Keep the search/tool axis independent from model complexity.
+        score = min(score, 0.26)
 
     # Freshness/search itself is intentionally not a complexity upgrade. It is
     # recorded as a tool requirement and handled by the web pipeline.
@@ -210,6 +233,7 @@ def _complexity(base, text: str, taxonomy: str) -> tuple[float, dict]:
         **signals,
         "needs_tools": needs_freshness,
         "needs_freshness": needs_freshness,
+        "simple_fresh_lookup": simple_fresh_lookup,
         "complexity_score": round(score, 4),
         "complexity_version": "router-v3.2",
         "hard_reasoning": hard_reasoning,
