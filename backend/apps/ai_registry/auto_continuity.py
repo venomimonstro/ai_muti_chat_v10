@@ -25,7 +25,7 @@ def install(router_module) -> None:
     does it cross into the nearest continuity tier. The wrapper does not persist a
     different conversation mode and therefore preserves the user's AUTO choice.
     """
-    if getattr(router_module.select_route, "_ai_workspace_auto_continuity", False):
+    if getattr(router_module.select_route, "_ai_workspace_auto_continuity", False) is True:
         return
     raw_select_route = router_module.select_route
 
