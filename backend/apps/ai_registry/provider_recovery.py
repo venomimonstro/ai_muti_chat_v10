@@ -51,7 +51,11 @@ def install(reliability_module) -> None:
             return None
 
         provider = reliability_module._normalize_special_external_provider(provider)
-        recovering = provider.health_state != Provider.HealthState.HEALTHY
+        force_inference = bool(getattr(provider, "_force_inference_probe", False))
+        recovering = (
+            provider.health_state != Provider.HealthState.HEALTHY
+            or force_inference
+        )
         configured_models = list(
             AIModel.objects.filter(provider=provider)
             .exclude(upstream_model="")
@@ -118,7 +122,7 @@ def install(reliability_module) -> None:
         # untracked paid inference probe merely to restore a transport status.
         if recovering and not reliability_module._procurement_ready(provider):
             reliability_module.record_success(
-                provider, health.latency_ms, adapter=health_adapter
+                provider, health.latency_ms, adapter=health_adapter, inference_verified=False
             )
             ProviderHealthSnapshot.objects.create(
                 provider=provider,
@@ -134,7 +138,7 @@ def install(reliability_module) -> None:
 
         if not recovering or not all_models:
             reliability_module.record_success(
-                provider, health.latency_ms, adapter=health_adapter
+                provider, health.latency_ms, adapter=health_adapter, inference_verified=False
             )
             ProviderHealthSnapshot.objects.create(
                 provider=provider,
@@ -160,7 +164,7 @@ def install(reliability_module) -> None:
         # model-level quarantine. In that case it is safe to restore provider health:
         # model_client_ready() still hides every quarantined model from customers.
         if not batch:
-            reliability_module.record_success(provider, health.latency_ms, adapter=health_adapter)
+            reliability_module.record_success(provider, health.latency_ms, adapter=health_adapter, inference_verified=False)
             ProviderHealthSnapshot.objects.create(
                 provider=provider,
                 healthy=True,
@@ -224,7 +228,12 @@ def install(reliability_module) -> None:
                 )
 
             latency_ms = max(0, int((time.monotonic() - started) * 1000))
-            reliability_module.record_success(provider, latency_ms, adapter=adapter)
+            reliability_module.record_success(
+                provider,
+                latency_ms,
+                adapter=adapter,
+                inference_verified=True,
+            )
             ProviderHealthSnapshot.objects.create(
                 provider=provider, healthy=True, latency_ms=latency_ms, error_code=""
             )
