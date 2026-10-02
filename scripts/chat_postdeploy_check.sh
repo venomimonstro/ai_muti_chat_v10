@@ -29,21 +29,23 @@ if ! compose exec -T backend python manage.py chat_preflight_smoke --mode auto; 
 fi
 printf '[PASS] Client AUTO preflight\n'
 
-printf '[3/6] Explicit routing tiers configured by admin...\n'
-CONFIGURED_TIERS="$(compose exec -T backend python manage.py shell -c "from apps.ai_registry.models import RoutingTierAssignment; print(' '.join(sorted(set(RoutingTierAssignment.objects.filter(enabled=True).values_list('tier',flat=True)))))" | tail -n 1)"
+printf '[3/7] Effective routing tiers: preflight + real completion...\n'
 for mode in economy balanced maximum; do
-  if [[ " ${CONFIGURED_TIERS} " == *" ${mode} "* ]]; then
+  POOL="$(compose exec -T backend python manage.py shell -c "from apps.ai_registry.models import RoutingPolicyVersion; from apps.ai_registry.routing_pools import tier_pool; p=RoutingPolicyVersion.objects.filter(active=True).first(); print(' '.join(tier_pool((p.thresholds or {}) if p else {}, '$mode')))" | tail -n 1)"
+  if [[ -n "${POOL// }" ]]; then
     compose exec -T backend python manage.py chat_preflight_smoke --mode "$mode"
-    printf '[PASS] configured tier=%s\n' "$mode"
+    compose exec -T backend python manage.py chat_live_smoke --mode "$mode"
+    printf '[PASS] tier=%s live models=%s\n' "$mode" "$POOL"
   else
-    printf '[INFO] tier=%s intentionally has no enabled admin assignment; skipped.\n' "$mode"
+    printf '[INFO] tier=%s has no effective pool; skipped.\n' "$mode"
   fi
 done
 
 printf '[4/7] Real provider recovery + full customer chat generation...\n'
 compose exec -T backend python manage.py check_provider_health --live
 compose exec -T backend python manage.py chat_live_smoke --mode auto
-printf '[PASS] AUTO chat completed through provider, billing and stream\n'
+compose exec -T backend python manage.py chat_live_smoke --mode manual
+printf '[PASS] AUTO and manual chats completed through provider, billing and stream\n'
 
 printf '[5/7] Every customer-visible model must pass a minimal real inference...\n'
 compose exec -T backend python manage.py chat_runtime_check --live
