@@ -159,6 +159,20 @@ export default function LandingPage() {
       </article>)}</div>
     </section>
 
+    <section className={styles.platformSection}>
+      <div className={styles.platformIntro}>
+        <div className={styles.sectionLabel}>ОДНА ПЛАТФОРМА · ЧЕТЫРЕ УРОВНЯ РАБОТЫ</div>
+        <h2>Начните с чата.<br/>Дойдите до автономного процесса.</h2>
+        <p>Не нужно покупать четыре разных продукта. Используйте только тот уровень, который нужен задаче сейчас — остальные уже рядом.</p>
+      </div>
+      <div className={styles.platformRail}>
+        <article><span>01 · AI CHAT</span><h3>Спросить и получить результат</h3><p>Тексты, файлы, web-поиск, документы, анализ и ежедневные рабочие задачи.</p><Link href="/register">Начать с чата →</Link></article>
+        <article><span>02 · AGENT STUDIO</span><h3>Повторить процесс без ручной рутины</h3><p>Соберите workflow с AI, инструментами, интеграциями и расписанием.</p><Link href="/register">Создать агента →</Link></article>
+        <article><span>03 · DEV STUDIO</span><h3>Делегировать многошаговую разработку</h3><p>План, код, GitHub, проверки и контроль исполнения внутри проекта.</p><Link href="/register">Открыть Dev Studio →</Link></article>
+        <article><span>04 · API</span><h3>Встроить AI в собственный продукт</h3><p>Ключи, бюджеты, rate limits и контролируемое подключение к вашим приложениям.</p><Link href="/api">Посмотреть API →</Link></article>
+      </div>
+    </section>
+
     <section className={styles.workflowSection}>
       <div className={styles.workflowCopy}><div className={styles.sectionLabel}>КАК ЭТО РАБОТАЕТ</div><h2>Сначала задача. Технология — внутри.</h2><p>Не нужно настраивать провайдеров перед первым запросом или изучать десятки названий моделей.</p><Link href="/getting-started">Посмотреть начало работы →</Link></div>
       <div className={styles.workflowSteps}><article><b>01</b><div><h3>Опишите задачу</h3><p>Напишите запрос, прикрепите файл или продолжите работу внутри проекта.</p></div></article><article><b>02</b><div><h3>Выберите уровень</h3><p>Lite для простого, Pro для большинства задач, Max для самого сложного.</p></div></article><article><b>03</b><div><h3>Система выполняет работу</h3><p>Маршрутизация, поиск, контекст и расчёт стоимости происходят внутри.</p></div></article><article><b>04</b><div><h3>Масштабируйте удачный сценарий</h3><p>Оставьте его в проекте, перенесите в Agent Studio, Dev Studio или подключите через API.</p></div></article></div>
