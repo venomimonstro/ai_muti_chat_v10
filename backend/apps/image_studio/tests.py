@@ -5,9 +5,11 @@ from django.core.files.storage import default_storage
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.ai_registry.models import Provider
-from apps.billing.models import CostAnomaly
+from apps.ai_registry.models import Provider, ProviderApiKey
+from apps.billing.models import CostAnomaly, FxRateSnapshot
 from apps.billing.services import credit
+from apps.procurement.models import ProviderFundingAccount, ProviderSpend
+from apps.procurement.services import record_purchase
 
 from .adapters import (
     EchoImageAdapter,
@@ -268,3 +270,100 @@ def test_openai_adapter_uses_current_response_format_contract(monkeypatch):
     )
     assert "response_format" not in calls[0]
     assert calls[1]["response_format"] == "b64_json"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_external_partial_image_delivery_preserves_provider_spend_and_refunds_customer(tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+    settings.IMAGE_CONFIRM_THRESHOLD_RUB = "999"
+
+    provider = Provider.objects.create(
+        slug="image-paid-partial",
+        name="Image paid partial",
+        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    key = ProviderApiKey(
+        provider=provider,
+        label="primary",
+        enabled=True,
+        health_state=ProviderApiKey.HealthState.HEALTHY,
+    )
+    key.set_secret("sk-image-paid-partial")
+    key.save()
+    account = ProviderFundingAccount.objects.create(
+        provider=provider,
+        api_key=key,
+        label="USD image funding",
+        currency="USD",
+        active=True,
+        is_default=True,
+        funded_native=Decimal("0"),
+    )
+    user = User.objects.create_user(
+        username="image-paid-partial-user",
+        email="image-paid-partial@example.test",
+        password="password123",
+    )
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+    FxRateSnapshot.objects.create(
+        base_currency="USD",
+        quote_currency="RUB",
+        rate=Decimal("100"),
+        source="test",
+    )
+    model = ImageModel.objects.create(
+        provider=provider,
+        slug="image-paid-partial-model",
+        display_name="Image paid partial model",
+        upstream_model="gpt-image-test",
+        adapter_type=ImageModel.AdapterType.OPENAI_IMAGES,
+        provider_currency="USD",
+        provider_price_per_image=Decimal("0.200000"),
+        markup_percent=Decimal("100"),
+        supported_sizes=["1024x1024"],
+        supported_qualities=["standard"],
+        max_images=4,
+    )
+    credit(user, Decimal("100"), "test", "image-paid-partial-user")
+
+    from .services import generate
+
+    generation = generate(
+        user=user,
+        model_slug=model.slug,
+        prompt="Two images expected from paid provider",
+        size="1024x1024",
+        quality="standard",
+        count=2,
+        idempotency_key="image:paid:partial",
+        adapter=UnderDeliveringImageAdapter(),
+    )
+
+    generation.refresh_from_db()
+    account.refresh_from_db()
+    user.wallet.refresh_from_db()
+    spend = ProviderSpend.objects.get(
+        source_type="image",
+        source_id=str(generation.id),
+    )
+
+    assert generation.state == ImageGeneration.State.FAILED
+    assert generation.error_code == "image_count_mismatch"
+    assert generation.actual_cost_rub is None
+    assert generation.provider_request_id == "under-delivery"
+    assert generation.provider_cost_rub > Decimal("0")
+    assert spend.customer_charge_rub == Decimal("0.0000")
+    # Conservative checkpoint uses requested_count=2 rather than the single
+    # returned payload so an anomalous partial response cannot understate spend.
+    assert spend.native_cost == Decimal("0.400000")
+    assert account.reserved_native == Decimal("0.000000")
+    assert account.spent_native == Decimal("0.400000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert user.wallet.available_rub == Decimal("100.0000")
