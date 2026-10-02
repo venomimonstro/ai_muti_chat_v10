@@ -3,6 +3,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -221,7 +222,16 @@ def recover_terminal_chat_reservations(*, older_than_seconds=None, limit=500):
     deferred = 0
     for reservation in rows:
         generation_id = str(reservation.idempotency_key or "").split("generation:", 1)[-1]
-        generation = Generation.objects.filter(pk=generation_id).only("state").first()
+        try:
+            generation = Generation.objects.filter(pk=generation_id).only("state").first()
+        except (TypeError, ValueError, ValidationError):
+            logger.warning(
+                "Terminal chat reservation has malformed generation key reservation_id=%s key=%r",
+                reservation.id,
+                reservation.idempotency_key,
+            )
+            deferred += 1
+            continue
         if generation is None:
             deferred += 1
             continue
