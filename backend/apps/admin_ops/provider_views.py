@@ -146,6 +146,84 @@ def _models_url(provider: Provider):
     return f"{provider.api_base_url.rstrip('/')}/models"
 
 
+HUBAI_MODELS = (
+    ("deepseek-chat-fast", "DeepSeek V3 Fast"),
+    ("deepseek-reasoner-fast", "DeepSeek R1 Fast"),
+    ("deepseek-chat", "DeepSeek V3"),
+    ("deepseek-reasoner", "DeepSeek R1"),
+)
+
+
+def _hubai_catalog(provider: Provider):
+    configured = {
+        item.upstream_model: item
+        for item in AIModel.objects.filter(provider=provider)
+    }
+    return [
+        {
+            "id": model_id,
+            "display_name": display_name,
+            "purpose": _purpose(model_id),
+            "selected": model_id in configured,
+            "price": _price_for(provider, model_id),
+        }
+        for model_id, display_name in HUBAI_MODELS
+    ]
+
+
+def _check_hubai_key(provider: Provider, key: ProviderApiKey):
+    started = time.monotonic()
+    now = timezone.now()
+    headers = _headers(provider, key.get_secret())
+    error_code = ""
+    healthy = False
+    try:
+        response = httpx.get(
+            _models_url(provider),
+            headers=headers,
+            timeout=10,
+            follow_redirects=True,
+        )
+        if response.status_code in {404, 405}:
+            response = httpx.post(
+                f"{provider.api_base_url.rstrip('/')}/chat/completions",
+                headers={**headers, "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat-fast",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                    "stream": False,
+                },
+                timeout=10,
+                follow_redirects=True,
+            )
+        response.raise_for_status()
+        healthy = True
+    except httpx.TimeoutException:
+        error_code = "timeout"
+    except httpx.HTTPStatusError as exc:
+        error_code = _provider_error_code(exc.response, "hubai_http")
+    except httpx.HTTPError:
+        error_code = "network"
+    key.health_state = (
+        ProviderApiKey.HealthState.HEALTHY
+        if healthy
+        else ProviderApiKey.HealthState.DEGRADED
+    )
+    key.last_error_code = "" if healthy else error_code or "hubai_validation_failed"
+    key.last_latency_ms = int((time.monotonic() - started) * 1000)
+    key.last_checked_at = now
+    key.save(
+        update_fields=[
+            "health_state",
+            "last_error_code",
+            "last_latency_ms",
+            "last_checked_at",
+        ]
+    )
+    return healthy
+
+
 def _openrouter_key_url(provider: Provider):
     return f"{provider.api_base_url.rstrip('/')}/key"
 
@@ -217,6 +295,8 @@ def _provider_error_code(response: httpx.Response, prefix="http") -> str:
 def _check_key(provider: Provider, key: ProviderApiKey):
     started = time.monotonic()
     now = timezone.now()
+    if provider.slug == "hubai":
+        return _check_hubai_key(provider, key)
     if provider.slug == "gigachat":
         health = _gigachat_adapter(provider, key.get_secret()).health_check()
         key.health_state = ProviderApiKey.HealthState.HEALTHY if health.healthy else ProviderApiKey.HealthState.DEGRADED
@@ -347,7 +427,7 @@ class ProviderKeyCollectionView(AdminAPIView):
         item.set_secret(secret)
         item.save()
         healthy = _check_key(provider, item)
-        if provider.slug in {"openrouter", "gigachat"} and not healthy:
+        if provider.slug in {"openrouter", "gigachat", "hubai"} and not healthy:
             error_code = item.last_error_code or "key_validation_failed"
             item.delete()
             provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
@@ -362,6 +442,8 @@ class ProviderKeyCollectionView(AdminAPIView):
                     detail = "Не удалось соединиться с OAuth GigaChat. Проверьте сеть и доверенные сертификаты на сервере."
                 else:
                     detail = f"GigaChat не подтвердил авторизацию: {error_code}"
+            elif provider.slug == "hubai":
+                detail = f"HubAI не подтвердил API-ключ: {error_code}"
             else:
                 detail = f"OpenRouter не подтвердил ключ авторизации: {error_code}"
             return Response({"detail": detail, "code": error_code}, status=400)
@@ -406,6 +488,8 @@ class ProviderDiscoveredModelsView(AdminAPIView):
         api_key = key.get_secret() if key else provider.get_api_key()
         if not api_key:
             return Response({"detail": "Сначала добавьте рабочий API-ключ"}, status=409)
+        if provider.slug == "hubai":
+            return Response({"provider": provider.slug, "models": _hubai_catalog(provider)})
         try:
             if provider.slug == "gigachat":
                 adapter = _gigachat_adapter(provider, api_key)
