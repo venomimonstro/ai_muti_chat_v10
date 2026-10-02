@@ -17,11 +17,12 @@ printf '\n============================================================\n'
 printf 'PRODUCTION CHAT ACCEPTANCE\n'
 printf '============================================================\n'
 
-printf '[1/6] Backend readiness...\n'
+printf '[1/7] Backend readiness...\n'
 compose exec -T backend python -c "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/',timeout=8); assert r.status==200"
 printf '[PASS] Backend readiness\n'
 
-printf '[2/6] Client AUTO preflight: router + pricing + procurement + wallet reserve...\n'
+printf '[2/7] Native ASGI transport + client AUTO preflight...\n'
+compose exec -T backend python manage.py chat_asgi_transport_smoke
 if ! compose exec -T backend python manage.py chat_preflight_smoke --mode auto; then
   printf '[FAIL] Client AUTO preflight; dumping exact pipeline state...\n' >&2
   compose exec -T backend python manage.py chat_pipeline_trace --live || true
