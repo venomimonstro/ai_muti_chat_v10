@@ -66,6 +66,34 @@ test("CRLF event framing is accepted", async () => {
   await h.run(); assert.equal(h.sent.length, 1);
 });
 
+test("A terminal preflight SSE error rejects the send promise so the composer can restore the draft", async () => {
+  const h = harness(() => stream(frame("error", {
+    code: "validation_error",
+    message: "Контекст запроса отклонён",
+  })));
+  await assert.rejects(
+    h.run(),
+    error => error?.status === 422 && /Контекст запроса отклонён/.test(error.message),
+  );
+  assert.equal(h.events.at(-1).event, "error");
+  assert.equal(h.storage.size, 0);
+  assert.equal(h.cancellations(), 0);
+});
+
+test("A terminal error after generation acceptance stays an authoritative server result", async () => {
+  const h = harness(() => stream(
+    frame("generation", {id: "generation"}) +
+    frame("error", {code: "AI-102", message: "Провайдер недоступен"}),
+  ));
+  await h.run();
+  assert.equal(h.events[0].event, "activity");
+  assert.ok(h.events.some(event => event.event === "generation"));
+  assert.equal(h.events.at(-1).event, "activity");
+  assert.ok(h.events.some(event => event.event === "error"));
+  assert.equal(h.storage.size, 0);
+  assert.equal(h.cancellations(), 0);
+});
+
 const state = load("chat-state");
 const message = (id, changes = {}) => ({id, role: "assistant", content: "Ответ", status: "streaming", created_at: "2026-10-01T18:00:00Z", generation: null, ...changes});
 test("Long preflight and different response text cannot leave duplicate assistant bubbles", () => {
