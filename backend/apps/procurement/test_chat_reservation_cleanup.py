@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -102,3 +103,63 @@ class ChatProcurementCleanupTests(TestCase):
         self.generation.save(update_fields=["state"])
         reservation.refresh_from_db()
         self.assertEqual(reservation.state, ProviderSpendReservation.State.ACTIVE)
+
+
+    def test_confirmed_chat_procurement_failure_is_deferred_not_raised(self):
+        reservation = self._active_reservation()
+
+        with patch(
+            "apps.procurement.signals._settle",
+            side_effect=RuntimeError("temporary ledger failure"),
+        ):
+            self.request_cost.provider_cost_rub = Decimal("0.5")
+            self.request_cost.charged_rub = Decimal("0.8")
+            self.request_cost.input_tokens = 10
+            self.request_cost.output_tokens = 5
+            # A confirmed provider response must remain saveable even when the
+            # owner-side procurement ledger cannot settle synchronously.
+            self.request_cost.save(
+                update_fields=[
+                    "provider_cost_rub",
+                    "charged_rub",
+                    "input_tokens",
+                    "output_tokens",
+                ]
+            )
+
+        reservation.refresh_from_db()
+        self.request_cost.refresh_from_db()
+        self.assertEqual(
+            self.request_cost.provider_cost_rub,
+            Decimal("0.5000"),
+        )
+        self.assertEqual(
+            reservation.state,
+            ProviderSpendReservation.State.ACTIVE,
+        )
+
+    def test_confirmed_chat_procurement_recovery_defers_safely_until_ledger_heals(self):
+        from .chat_signals import reconcile_confirmed_chat_procurement
+
+        reservation = self._active_reservation()
+        RequestCost.objects.filter(pk=self.request_cost.pk).update(
+            provider_cost_rub=Decimal("0.5"),
+            charged_rub=Decimal("0.8"),
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        with patch(
+            "apps.procurement.signals._settle",
+            side_effect=RuntimeError("still unavailable"),
+        ):
+            result = reconcile_confirmed_chat_procurement(limit=10)
+
+        reservation.refresh_from_db()
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["settled"], 0)
+        self.assertEqual(result["deferred"], 1)
+        self.assertEqual(
+            reservation.state,
+            ProviderSpendReservation.State.ACTIVE,
+        )
