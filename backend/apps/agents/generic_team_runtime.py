@@ -223,7 +223,7 @@ def execute_generic_team_run(run_id):
                 fx_snapshot=preflight.fx_snapshot,
                 source_key=f"agent-team:{run.id}:step:{index}",
                 provider_currency=str(
-                    (preflight.pricing_snapshot or {}).get("provider_currency") or ""
+                    (getattr(preflight, "pricing_snapshot", {}) or {}).get("provider_currency") or ""
                 ),
             )
             run.state = AgentRun.State.RUNNING
