@@ -178,3 +178,27 @@ class ProviderClientActivationTests(APITestCase):
         self.assertEqual(len(response.data["blocked"]), 1)
         self.model.refresh_from_db()
         self.assertFalse(self.model.enabled)
+
+
+    def test_model_enable_is_blocked_when_provider_has_no_customer_runtime_capacity(self):
+        self.provider.enabled = True
+        self.provider.health_state = Provider.HealthState.HEALTHY
+        self.provider.save(update_fields=["enabled", "health_state"])
+        self.model.enabled = False
+        self.model.save(update_fields=["enabled"])
+
+        response = self.client.post(
+            "/api/v1/admin/providers/bulk/",
+            {
+                "target": "models",
+                "action": "enable",
+                "ids": [str(self.model.id)],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        blockers = response.data["blockers"][self.model.slug]
+        self.assertTrue(any("Клиентский runtime" in item for item in blockers))
+        self.model.refresh_from_db()
+        self.assertFalse(self.model.enabled)
