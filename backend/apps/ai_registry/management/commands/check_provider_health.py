@@ -13,6 +13,11 @@ class Command(BaseCommand):
             default="",
             help="Optional provider slug to check only one provider.",
         )
+        parser.add_argument(
+            "--live",
+            action="store_true",
+            help="Require a real minimal inference before declaring a provider healthy.",
+        )
 
     def handle(self, *_args, **options):
         failed = 0
@@ -22,6 +27,8 @@ class Command(BaseCommand):
         if provider_slug:
             providers = providers.filter(slug=provider_slug)
         for provider in providers:
+            if options.get("live"):
+                provider._force_inference_probe = True
             health = check_provider(provider)
             provider.refresh_from_db()
             if not provider.enabled or provider.emergency_disabled:
