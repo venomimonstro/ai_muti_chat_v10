@@ -44,7 +44,7 @@ def minimum_inference_fundable(model) -> bool:
 
 def install(reliability_module) -> None:
     raw_ready = reliability_module.model_client_ready
-    if getattr(raw_ready, "_ai_workspace_minimum_funding", False):
+    if getattr(raw_ready, "_ai_workspace_minimum_funding", False) is True:
         return
 
     def model_client_ready(model):
