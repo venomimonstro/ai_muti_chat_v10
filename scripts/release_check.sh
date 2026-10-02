@@ -232,6 +232,15 @@ run_pytest 'Dev Studio V2 runtime regressions' \
 pass 16 'Dev Studio readiness'
 
 step 17 'Agent Runtime billing integrity'
+run_pytest 'Agent/provider settlement and credential-binding regressions' \
+  apps/ai_registry/test_commercial_dispatch_contract.py \
+  apps/agents/test_agent_recovery.py \
+  apps/agents/test_dev_model_execution.py \
+  apps/agents/test_dev_settlement_integrity.py \
+  apps/agents/test_generic_team_cancellation.py \
+  apps/b2b_api/test_cost_guard.py \
+  apps/chat/test_compare_cost_guard.py \
+  apps/procurement/tests.py
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_billing_audit
 pass 17 'Agent Runtime billing integrity'
 
