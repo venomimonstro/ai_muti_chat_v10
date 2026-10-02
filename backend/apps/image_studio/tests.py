@@ -139,7 +139,7 @@ def test_provider_failure_releases_full_image_reservation(image_context):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_image_provider_over_delivery_is_fail_closed_and_disables_provider(image_context):
+def test_image_provider_over_delivery_is_fail_closed_and_disables_only_model(image_context):
     user, model, _client = image_context
     from .services import generate
 
@@ -155,12 +155,14 @@ def test_image_provider_over_delivery_is_fail_closed_and_disables_provider(image
     )
 
     generation.refresh_from_db()
+    model.refresh_from_db()
     model.provider.refresh_from_db()
     user.wallet.refresh_from_db()
     assert generation.state == ImageGeneration.State.FAILED
     assert generation.error_code == "image_count_mismatch"
     assert generation.images.count() == 0
-    assert model.provider.emergency_disabled is True
+    assert model.enabled is False
+    assert model.provider.emergency_disabled is False
     assert user.wallet.available_rub == Decimal("10.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
     assert CostAnomaly.objects.filter(
@@ -197,7 +199,7 @@ def test_image_provider_partial_delivery_is_not_charged_as_success(image_context
 
 
 @pytest.mark.django_db(transaction=True)
-def test_image_charge_above_reserved_amount_never_overdraws_customer_and_trips_provider(
+def test_image_charge_above_reserved_amount_never_overdraws_customer_and_trips_model(
     image_context, monkeypatch
 ):
     user, model, _client = image_context
@@ -225,11 +227,13 @@ def test_image_charge_above_reserved_amount_never_overdraws_customer_and_trips_p
     )
 
     generation.refresh_from_db()
+    model.refresh_from_db()
     model.provider.refresh_from_db()
     user.wallet.refresh_from_db()
     assert generation.state == ImageGeneration.State.FAILED
     assert generation.images.count() == 0
-    assert model.provider.emergency_disabled is True
+    assert model.enabled is False
+    assert model.provider.emergency_disabled is False
     assert user.wallet.available_rub == Decimal("10.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
     assert CostAnomaly.objects.filter(
