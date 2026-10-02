@@ -246,7 +246,7 @@ def recover_quarantined_models(*, limit: int = 8) -> dict:
 def install(*, dispatch_module, adapters_module, reliability_module, router_module) -> None:
     """Install model-level failure isolation without changing public APIs."""
     raw_adapter_for = dispatch_module.adapter_for
-    if not getattr(raw_adapter_for, "_ai_workspace_model_identity", False):
+    if getattr(raw_adapter_for, "_ai_workspace_model_identity", False) is not True:
         def adapter_for(model, *args, **kwargs):
             probe_mode = bool(kwargs.get("allow_probe", False))
             if not probe_mode and not model_runtime_available(model):
@@ -273,7 +273,7 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
     reliability_module.adapter_for = adapter_for
 
     raw_ready = reliability_module.model_client_ready
-    if not getattr(raw_ready, "_ai_workspace_model_quarantine", False):
+    if getattr(raw_ready, "_ai_workspace_model_quarantine", False) is not True:
         def model_client_ready(model):
             return model_runtime_available(model) and raw_ready(model)
 
@@ -282,7 +282,7 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
         reliability_module.model_client_ready = model_client_ready
 
     raw_failure = reliability_module.record_failure
-    if not getattr(raw_failure, "_ai_workspace_model_quarantine", False):
+    if getattr(raw_failure, "_ai_workspace_model_quarantine", False) is not True:
         def record_failure(provider, error, adapter=None):
             model_slug = str(getattr(adapter, "_ai_workspace_model_slug", "") or "").strip()
             probe_mode = bool(getattr(adapter, "_ai_workspace_probe_mode", False))
@@ -300,7 +300,7 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
         reliability_module.record_failure = record_failure
 
     raw_success = reliability_module.record_success
-    if not getattr(raw_success, "_ai_workspace_model_quarantine", False):
+    if getattr(raw_success, "_ai_workspace_model_quarantine", False) is not True:
         def record_success(provider, latency_ms, adapter=None):
             with transaction.atomic():
                 model_incident_ids = list(
@@ -323,7 +323,7 @@ def install(*, dispatch_module, adapters_module, reliability_module, router_modu
         reliability_module.record_success = record_success
 
     raw_route_row = router_module._route_row
-    if not getattr(raw_route_row, "_ai_workspace_model_quarantine", False):
+    if getattr(raw_route_row, "_ai_workspace_model_quarantine", False) is not True:
         def route_row(model, *args, **kwargs):
             row = raw_route_row(model, *args, **kwargs)
             if not model_runtime_available(model):
