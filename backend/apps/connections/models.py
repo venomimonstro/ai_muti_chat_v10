@@ -9,12 +9,13 @@ from django.db import models
 
 
 def _cipher():
-    material = f"ai-workspace-external-connection:{settings.SECRET_KEY}".encode("utf-8")
+    material = f"ai-workspace-external-connection:{settings.SECRET_KEY}".encode()
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(material).digest()))
 
 
 class ExternalConnection(models.Model):
     class Kind(models.TextChoices):
+        HTTP = "http", "HTTP API"
         WORDPRESS = "wordpress", "WordPress"
         VK = "vk", "ВКонтакте"
 

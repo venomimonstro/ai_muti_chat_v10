@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 
-BOOLEAN_TOOLS = {"web", "files", "images", "github", "write_code", "delegate", "approve"}
+BOOLEAN_TOOLS = {"browser", "http", "web", "files", "images", "github", "write_code", "delegate", "approve"}
 ENUM_TOOLS = {
     "publish": {"approval", "auto", "disabled"},
     "merge": {"approval", "disabled"},

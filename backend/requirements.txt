@@ -11,3 +11,5 @@ pypdf==6.1.1
 fastembed==0.8.0
 cryptography==46.0.1
 Pillow==12.3.0
+
+playwright==1.63.0

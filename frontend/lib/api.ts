@@ -133,7 +133,7 @@ export async function ensureCsrf() {
   return csrfToken;
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData) && init.body && !headers.has("Content-Type")) {
@@ -148,7 +148,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     method,
     headers,
     credentials: "include",
-  });
+  }, timeoutMs);
   if (["/auth/login/", "/auth/register/", "/auth/logout/", "/auth/logout-all/"].includes(path)) {
     csrfToken = "";
   }

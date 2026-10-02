@@ -1,103 +1,57 @@
 "use client";
-
-import {useMemo,useState} from "react";
-import AgentGraphMap from "./AgentGraphMap";
-
-type PublishStatus="draft"|"publish";
-type ConditionSource="previous_text"|"objective";
-type ConditionOperator="contains"|"not_contains"|"is_empty"|"not_empty";
-type Node={
- id:string;title:string;type:string;status?:PublishStatus;prompt?:string;post_title?:string;slug?:string;
- condition_source?:ConditionSource;operator?:ConditionOperator;value?:string;on_true?:string;on_false?:string;
- notification_title?:string;message?:string;wait_minutes?:number;
-};
-type Graph={version?:number;nodes?:Node[];edges?:Array<{from:string;to:string}>};
-type Props={graph:Graph;disabled?:boolean;onSave:(graph:Graph)=>Promise<void>};
-
-const types=[
- ["llm","AI-задача"],
- ["research","Исследование"],
- ["web","Интернет"],
- ["files","Файлы проекта"],
- ["image","Изображение"],
- ["review","Проверка"],
- ["analytics","Аналитика"],
- ["condition","Условие"],
- ["approval","Подтверждение пользователя"],
- ["wait","Подождать"],
- ["notify","Уведомить пользователя"],
- ["publish","Публикация"],
- ["finish","Завершить workflow"],
-] as const;
-const allowedTypes=new Set(types.map(([value])=>value));
-const promptTypes=new Set(["llm","research","web","files","image","review","analytics"]);
-const waitOptions=[[5,"5 минут"],[30,"30 минут"],[60,"1 час"],[360,"6 часов"],[1440,"1 день"]] as const;
-const promptPlaceholder:Record<string,string>={
- llm:"Например: составь контент-план на неделю и выдели 3 самые сильные темы",
- research:"Например: изучи рынок, конкурентов и свежие тенденции по теме",
- web:"Например: найди свежие новости и факты за последние 7 дней",
- files:"Например: изучи материалы проекта и найди данные для статьи",
- image:"Например: создай квадратный рекламный креатив без мелкого текста",
- review:"Например: проверь текст на фактические ошибки, повторы и слабые места",
- analytics:"Например: сравни результаты и сформулируй 5 выводов с приоритетами",
-};
-
-const normalize=(nodes:Node[],version=1):Graph=>({
- version,
- nodes,
- edges:nodes.slice(0,-1).map((node,index)=>({from:node.id,to:nodes[index+1].id})),
-});
-
-const safeId=(title:string,index:number)=>{
- const base=title.toLowerCase().replace(/[^a-zа-яё0-9]+/gi,"-").replace(/^-|-$/g,"").slice(0,48);
- return `${base||"step"}-${Date.now().toString(36)}-${index}`;
-};
-
-export default function AgentGraphEditor({graph,disabled,onSave}:Props){
- const initial=useMemo(()=>((graph.nodes||[]) as Node[]).map(item=>({...item,status:item.type==="publish"?(item.status||"draft"):item.status})),[graph]);
- const[nodes,setNodes]=useState<Node[]>(initial);const[busy,setBusy]=useState(false);const[error,setError]=useState("");
- const update=(index:number,patch:Partial<Node>)=>setNodes(current=>current.map((item,i)=>i===index?{...item,...patch}:item));
- const changeType=(index:number,type:string)=>setNodes(current=>current.map((item,i)=>i===index?{
-  ...item,type,
-  prompt:promptTypes.has(type)?(item.prompt||""):undefined,
-  status:type==="publish"?(item.status||"draft"):undefined,
-  condition_source:type==="condition"?(item.condition_source||"previous_text"):undefined,
-  operator:type==="condition"?(item.operator||"contains"):undefined,
-  value:type==="condition"?(item.value||""):undefined,
-  on_true:type==="condition"?item.on_true:undefined,
-  on_false:type==="condition"?item.on_false:undefined,
-  wait_minutes:type==="wait"?(item.wait_minutes||60):undefined,
- }:item));
- const move=(index:number,delta:number)=>setNodes(current=>{const target=index+delta;if(target<0||target>=current.length)return current;const next=[...current];[next[index],next[target]]=[next[target],next[index]];const positions=new Map(next.map((item,i)=>[item.id,i]));return next.map((item,i)=>item.type!=="condition"?item:{...item,on_true:item.on_true&&Number(positions.get(item.on_true))>i?item.on_true:undefined,on_false:item.on_false&&Number(positions.get(item.on_false))>i?item.on_false:undefined})});
- const remove=(index:number)=>setNodes(current=>{const removed=current[index]?.id;return current.filter((_,i)=>i!==index).map(node=>({...node,on_true:node.on_true===removed?undefined:node.on_true,on_false:node.on_false===removed?undefined:node.on_false}))});
- const add=()=>setNodes(current=>[...current,{id:safeId("Новый шаг",current.length),title:"Новый шаг",type:"llm",prompt:""}]);
- const save=async()=>{setBusy(true);setError("");try{const cleaned=nodes.map((node,index)=>{const type=allowedTypes.has(node.type as typeof types[number][0])?node.type:"llm";const next:Node={...node,id:node.id||safeId(node.title,index),title:node.title.trim()||`Шаг ${index+1}`,type};if(type==="publish")next.status=node.status==="publish"?"publish":"draft";else delete next.status;if(!promptTypes.has(type))delete next.prompt;else next.prompt=String(node.prompt||"").trim();if(type!=="condition"){delete next.condition_source;delete next.operator;delete next.value;delete next.on_true;delete next.on_false;}else{const validTargets=new Set(nodes.slice(index+1).map(item=>item.id));if(next.on_true&&!validTargets.has(next.on_true))delete next.on_true;if(next.on_false&&!validTargets.has(next.on_false))delete next.on_false;}if(type!=="notify"){delete next.notification_title;delete next.message;}if(type!=="wait")delete next.wait_minutes;return next});await onSave(normalize(cleaned,Number(graph.version||1)+1));}catch(reason){setError(reason instanceof Error?reason.message:"Не удалось сохранить карту")}finally{setBusy(false)}};
- const targets=(index:number)=>nodes.slice(index+1);
- return <div>
-  <div style={{padding:"10px 12px",border:"1px solid #e2e2e2",borderRadius:11,marginBottom:12,fontSize:13,opacity:.72}}>Карта исполняется сервером. Условие может направить работу только вперёд, поэтому случайный бесконечный цикл создать нельзя. «Подождать» переживает перезапуск worker, уведомление создаётся в AI Workspace. GitHub, код и sandbox настраиваются отдельно в Dev Studio.</div>
-  <div style={{border:"1px solid #ececec",borderRadius:16,padding:14,marginBottom:14}}><div style={{fontSize:12,fontWeight:700,opacity:.55,marginBottom:10}}>ВИЗУАЛЬНАЯ КАРТА</div><AgentGraphMap nodes={nodes}/></div>
-  <div style={{display:"grid",gap:10}}>{nodes.map((node,index)=><div key={node.id} style={{border:"1px solid #ddd",borderRadius:13,padding:10}}>
-   <div style={{display:"grid",gridTemplateColumns:"36px minmax(0,1fr) 190px auto",gap:8,alignItems:"center"}}>
-    <div style={{width:30,height:30,borderRadius:999,border:"1px solid #bbb",display:"grid",placeItems:"center",fontWeight:700}}>{index+1}</div>
-    <input aria-label={`Название шага ${index+1}`} value={node.title} onChange={event=>update(index,{title:event.target.value})} disabled={disabled||busy} style={{minWidth:0,padding:9,border:"1px solid #ccc",borderRadius:9}}/>
-    <select aria-label={`Тип шага ${index+1}`} value={allowedTypes.has(node.type as typeof types[number][0])?node.type:"llm"} onChange={event=>changeType(index,event.target.value)} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}>{types.map(([value,label])=><option key={value} value={value}>{label}</option>)}</select>
-    <div style={{display:"flex",gap:5}}><button type="button" onClick={()=>move(index,-1)} disabled={disabled||busy||index===0} aria-label="Поднять шаг">↑</button><button type="button" onClick={()=>move(index,1)} disabled={disabled||busy||index===nodes.length-1} aria-label="Опустить шаг">↓</button><button type="button" onClick={()=>remove(index)} disabled={disabled||busy||nodes.length<=1} aria-label="Удалить шаг">×</button></div>
-   </div>
-   {promptTypes.has(node.type)&&<label style={{display:"grid",gap:5,fontSize:13,margin:"10px 0 0 44px"}}><strong>Что должен сделать этот шаг?</strong><textarea rows={3} value={node.prompt||""} onChange={event=>update(index,{prompt:event.target.value})} placeholder={promptPlaceholder[node.type]||"Опишите результат этого шага простыми словами"} disabled={disabled||busy} style={{padding:10,border:"1px solid #ccc",borderRadius:9,resize:"vertical",font:"inherit"}}/><span style={{fontSize:11,opacity:.58}}>Эта инструкция передаётся только текущему шагу. Общая цель сотрудника остаётся неизменной.</span></label>}
-   {node.type==="condition"&&<div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(180px,1fr))",gap:10,margin:"10px 0 0 44px"}}>
-    <label style={{display:"grid",gap:5,fontSize:13}}>Что проверять<select value={node.condition_source||"previous_text"} onChange={event=>update(index,{condition_source:event.target.value as ConditionSource})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="previous_text">Результат предыдущих шагов</option><option value="objective">Исходную задачу</option></select></label>
-    <label style={{display:"grid",gap:5,fontSize:13}}>Условие<select value={node.operator||"contains"} onChange={event=>update(index,{operator:event.target.value as ConditionOperator})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="contains">Содержит текст</option><option value="not_contains">Не содержит текст</option><option value="is_empty">Пусто</option><option value="not_empty">Не пусто</option></select></label>
-    {!(["is_empty","not_empty"] as string[]).includes(node.operator||"contains")&&<label style={{display:"grid",gap:5,fontSize:13,gridColumn:"1 / -1"}}>Текст для проверки<input value={node.value||""} onChange={event=>update(index,{value:event.target.value})} placeholder="Например: одобрено" disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}/></label>}
-    <label style={{display:"grid",gap:5,fontSize:13}}>Если Да<select value={node.on_true||""} onChange={event=>update(index,{on_true:event.target.value||undefined})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="">Следующий шаг</option>{targets(index).map(target=><option key={target.id} value={target.id}>{target.title}</option>)}</select></label>
-    <label style={{display:"grid",gap:5,fontSize:13}}>Если Нет<select value={node.on_false||""} onChange={event=>update(index,{on_false:event.target.value||undefined})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="">Следующий шаг</option>{targets(index).map(target=><option key={target.id} value={target.id}>{target.title}</option>)}</select></label>
-    <div style={{gridColumn:"1 / -1",fontSize:11,opacity:.58}}>Для безопасности условие может переходить только на шаги ниже по карте. Циклические маршруты блокируются.</div>
-   </div>}
-   {node.type==="wait"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,.7fr) minmax(220px,1.3fr)",gap:10,margin:"10px 0 0 44px"}}><label style={{display:"grid",gap:5,fontSize:13}}>Сколько ждать<select value={waitOptions.some(([value])=>value===(node.wait_minutes||60))?node.wait_minutes||60:"custom"} onChange={event=>event.target.value!=="custom"&&update(index,{wait_minutes:Number(event.target.value)})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}>{waitOptions.map(([value,label])=><option key={value} value={value}>{label}</option>)}<option value="custom">Своё значение</option></select></label><label style={{display:"grid",gap:5,fontSize:13}}>Минуты<input type="number" min={1} max={10080} value={node.wait_minutes||60} onChange={event=>update(index,{wait_minutes:Math.max(1,Math.min(10080,Number(event.target.value)||1))})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}/><span style={{fontSize:11,opacity:.58}}>От 1 минуты до 7 дней. Worker во время ожидания не занят.</span></label></div>}
-   {node.type==="notify"&&<div style={{display:"grid",gap:9,margin:"10px 0 0 44px"}}><label style={{display:"grid",gap:5,fontSize:13}}>Заголовок уведомления<input value={node.notification_title||""} onChange={event=>update(index,{notification_title:event.target.value})} placeholder="Например: Пост готов к проверке" disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}/></label><label style={{display:"grid",gap:5,fontSize:13}}>Сообщение<textarea rows={2} value={node.message||""} onChange={event=>update(index,{message:event.target.value})} placeholder="Можно оставить пустым — будет использован результат предыдущего шага" disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9,resize:"vertical"}}/></label></div>}
-   {node.type==="finish"&&<div style={{fontSize:12,opacity:.65,margin:"10px 0 0 44px"}}>После этого блока workflow завершается успешно. Шаги ниже по этой ветке не выполняются.</div>}
-   {node.type==="publish"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,.8fr) minmax(220px,1.2fr)",gap:10,margin:"10px 0 0 44px"}}><label style={{display:"grid",gap:5,fontSize:13}}>Что сделать в WordPress<select value={node.status||"draft"} onChange={event=>update(index,{status:event.target.value as PublishStatus})} disabled={disabled||busy} style={{padding:9,border:"1px solid #ccc",borderRadius:9}}><option value="draft">Сохранить как черновик</option><option value="publish">Опубликовать сразу</option></select></label><div style={{fontSize:12,opacity:.65,alignSelf:"end",paddingBottom:8}}>{(node.status||"draft")==="publish"?"Материал станет публичным после выполнения policy/подтверждения.":"Безопасный режим: материал появится в WordPress как черновик."}</div></div>}
-  </div>)}</div>
-  {error&&<div style={{marginTop:10,color:"#b33140"}}>{error}</div>}
-  <div style={{display:"flex",justifyContent:"space-between",gap:10,marginTop:12}}><button type="button" onClick={add} disabled={disabled||busy} style={{padding:"9px 12px",border:"1px solid #ccc",borderRadius:9,background:"transparent"}}>+ Добавить шаг</button><button type="button" onClick={()=>void save()} disabled={disabled||busy||!nodes.length} style={{padding:"9px 13px",border:0,borderRadius:9,fontWeight:700}}>{busy?"Сохраняем…":"Сохранить карту"}</button></div>
- </div>;
+import Link from 'next/link';
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {ReactFlow,Background,Controls,Handle,Position,type NodeProps,type Node,type Connection,type NodeChange,type EdgeChange} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import {api} from '../../../lib/api';
+import type {AIModel} from '../../../lib/types';
+import {graphLinks,orderedGraph,workflowPlannerKey,typeLabel,workflowTypes,llmTypes,type WorkflowGraph,type WorkflowNode} from '../../../lib/agent-workflow';
+import styles from './workflow.module.css';
+type Props={graph:WorkflowGraph;agentId?:string;disabled?:boolean;onSave:(graph:WorkflowGraph)=>Promise<void>};
+type Binding={connection:string;connection_name:string;connection_kind:string;enabled:boolean;purpose:string};
+type Tile=Node<{node:WorkflowNode;first:boolean},'workflow'>;
+function WorkflowTile({data,selected}:NodeProps<Tile>){const node=data.node;return <div className={`${styles.tile} ${selected?styles.selected:''}`}>
+ {!data.first&&<Handle type="target" position={Position.Left}/>}<small>{data.first?'НАЧАЛО · ':''}{typeLabel(node.type)}</small><strong>{node.title}</strong><p>{node.selected_model||node.url||node.path||node.prompt||'Нажмите, чтобы настроить'}</p>
+ {node.type!=='finish'&&(node.type==='condition'?<><span className={styles.yes}>Да</span><Handle type="source" id="yes" position={Position.Right} style={{top:'38%'}}/><span className={styles.no}>Нет</span><Handle type="source" id="no" position={Position.Right} style={{top:'78%'}}/></>:<Handle type="source" position={Position.Right}/>)}
+ </div>}
+const nodeTypes={workflow:WorkflowTile};
+const positions=(graph:WorkflowGraph):WorkflowNode[]=>(graph.nodes??[]).map((node,i)=>({...node,...(node.type==='condition'?{on_true:node.on_true??graphLinks(graph).find(edge=>edge.from===node.id)?.to,on_false:node.on_false??graphLinks(graph).find(edge=>edge.from===node.id)?.to}:{}),position:node.position??{x:80+(i%4)*300,y:70+Math.floor(i/4)*200}}));
+export default function AgentGraphEditor({graph,agentId,disabled,onSave}:Props){
+ const draftKey=`aiws:agent-workflow:${agentId??'new'}:${graph.version??1}`;
+ const draft=useMemo(()=>{try{const saved=JSON.parse(localStorage.getItem(draftKey)??'null');return saved&&Array.isArray(saved.nodes)&&saved.nodes.length<=100&&saved.nodes.every((node:WorkflowNode)=>typeof node.id==='string'&&typeof node.title==='string'&&typeof node.type==='string')?saved as WorkflowGraph:null}catch{return null}},[draftKey]);
+ const flow=useRef<{fitView:(options:{duration:number;padding:number})=>Promise<boolean>}|null>(null);
+ const[nodes,setNodes]=useState<WorkflowNode[]>(()=>positions(draft??graph)),[links,setLinks]=useState(()=>graphLinks(draft??graph)),[selected,setSelected]=useState((draft??graph).nodes?.[0]?.id??'');const[models,setModels]=useState<AIModel[]>([]),[bindings,setBindings]=useState<Binding[]>([]),[edgeSelection,setEdgeSelection]=useState<string|null>(null),[busy,setBusy]=useState(''),[error,setError]=useState(''),[dirty,setDirty]=useState(!!draft),[description,setDescription]=useState(''),[proposal,setProposal]=useState<{graph:WorkflowGraph;cost_rub:string}|null>(null),[bodyText,setBodyText]=useState(''),[invalidBody,setInvalidBody]=useState(false);const gate=useRef(false),mounted=useRef(true);
+ useEffect(()=>{mounted.current=true;const controller=new AbortController();void Promise.allSettled([api<AIModel[]>('/models/',{signal:controller.signal}),agentId?api<Binding[]>(`/agent-connections/?agent=${agentId}`,{signal:controller.signal}):Promise.resolve([])]).then(([m,b])=>{if(controller.signal.aborted)return;if(m.status==='fulfilled')setModels(m.value);if(b.status==='fulfilled')setBindings(b.value);if(m.status==='rejected'||b.status==='rejected')setError('Каталог моделей или подключений не загрузился. Обновите страницу.')});return()=>{mounted.current=false;controller.abort()}},[agentId]);
+ useEffect(()=>{if(!dirty)return;const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue=''};window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn)},[dirty]);
+ useEffect(()=>{if(!dirty)return;const timer=window.setTimeout(()=>{try{localStorage.setItem(draftKey,JSON.stringify({routing:'explicit',nodes,edges:links}))}catch{}},200);return()=>window.clearTimeout(timer)},[nodes,links,dirty,draftKey]);
+ useEffect(()=>{const timer=window.setTimeout(()=>void flow.current?.fitView({duration:150,padding:0.18}),80);return()=>window.clearTimeout(timer)},[nodes.length]);
+ const latestDraft=useRef({dirty,nodes,edges:links});latestDraft.current={dirty,nodes,edges:links};
+ useEffect(()=>()=>{const draft=latestDraft.current;if(draft.dirty){try{localStorage.setItem(draftKey,JSON.stringify({routing:'explicit',nodes:draft.nodes,edges:draft.edges}))}catch{}}},[draftKey]);
+ const node=nodes.find(node=>node.id===selected);useEffect(()=>{setBodyText(JSON.stringify(node?.body??{},null,2));setInvalidBody(false)},[selected]);const locked=!!disabled||!!busy;const update=(patch:Partial<WorkflowNode>)=>{setNodes(rows=>rows.map(row=>row.id===selected?{...row,...patch}:row));setDirty(true)};
+ const flowNodes=useMemo(()=>nodes.map((node,i)=>({id:node.id,type:'workflow',position:node.position!,data:{node,first:i===0},deletable:false,selected:node.id===selected})),[nodes,selected]);
+ const flowEdges=useMemo(()=>[...links.filter(edge=>nodes.find(node=>node.id===edge.from)?.type!=='condition').map(edge=>({id:`next:${edge.from}`,source:edge.from,target:edge.to})),...nodes.filter(node=>node.type==='condition').flatMap(node=>['on_true','on_false'].flatMap(key=>{const target=String(node[key]||links.find(edge=>edge.from===node.id)?.to||'');return target?[{id:`${key}:${node.id}`,source:node.id,target,sourceHandle:key==='on_true'?'yes':'no',label:key==='on_true'?'Да':'Нет'}]:[]}))].map(edge=>({...edge,type:'smoothstep',style:{stroke:'#8b91a1',strokeWidth:2},selected:edge.id===edgeSelection})),[nodes,links,edgeSelection]);
+ const connect=(connection:Connection)=>{if(locked||!connection.source||!connection.target)return;try{let nextNodes=nodes,nextLinks=links;const source=nodes.find(node=>node.id===connection.source);if(source?.type==='condition'){nextNodes=nodes.map(node=>node.id===source.id?{...node,[connection.sourceHandle==='no'?'on_false':'on_true']:connection.target}:node);nextLinks=links.filter(edge=>edge.from!==source.id)}else nextLinks=[...links.filter(edge=>edge.from!==connection.source),{from:connection.source,to:connection.target}];const ordered=orderedGraph({nodes:nextNodes,edges:nextLinks});setNodes(positions(ordered));setLinks(nextLinks);setDirty(true);setError('')}catch(e){setError(e instanceof Error?e.message:'Не удалось соединить узлы')}};
+ const dropLink=(key:string,id:string)=>{if(key==='next')setLinks(rows=>rows.filter(row=>row.from!==id));else{setNodes(rows=>rows.map(row=>row.id===id?{...row,[key]:undefined}:row));setLinks(rows=>rows.filter(row=>row.from!==id))}setDirty(true)};
+ const onNodesChange=(changes:NodeChange[])=>{if(locked)return;for(const change of changes){if(change.type==='select'&&change.selected&&!invalidBody)setSelected(change.id);if(change.type==='position'&&change.position){setNodes(rows=>rows.map(row=>row.id===change.id?{...row,position:change.position!}:row));setDirty(true)}}};
+ const onEdgesChange=(changes:EdgeChange[])=>{if(locked)return;const chosen=changes.find(change=>change.type==='select'&&change.selected);if(chosen?.type==='select')setEdgeSelection(chosen.id);else if(changes.some(change=>change.type==='select'&&!change.selected&&change.id===edgeSelection))setEdgeSelection(null);for(const change of changes)if(change.type==='remove'){const separator=change.id.indexOf(':');dropLink(change.id.slice(0,separator),change.id.slice(separator+1));setEdgeSelection(null)}};
+ const add=(type:string)=>{const id=crypto.randomUUID();setNodes(rows=>[...rows,{id,title:typeLabel(type),type,position:{x:80+(rows.length%4)*300,y:70+Math.floor(rows.length/4)*200},...(type==='condition'?{operator:'contains',condition_source:'previous_text',value:''}:{}),...(type==='wait'?{wait_minutes:60}:{}),...(type==='http'?{method:'GET',body:{}}:{}),...(type==='publish'?{status:'draft'}:{})}]);setSelected(id);setDirty(true)};
+ const remove=()=>{if(!node||nodes.length<2)return;setNodes(rows=>rows.filter(row=>row.id!==selected).map(row=>({...row,on_true:row.on_true===selected?undefined:row.on_true,on_false:row.on_false===selected?undefined:row.on_false})));setLinks(rows=>rows.filter(row=>row.from!==selected&&row.to!==selected));setSelected(nodes.find(row=>row.id!==selected)?.id??'');setDirty(true)};
+ const save=async()=>{if(gate.current||invalidBody)return;gate.current=true;setBusy('save');setError('');try{await onSave(orderedGraph({version:Number(graph.version||1)+1,nodes,edges:links}));try{localStorage.removeItem(draftKey)}catch{}if(mounted.current)setDirty(false)}catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Не удалось сохранить')}finally{gate.current=false;if(mounted.current)setBusy('')}};
+ const plan=async()=>{if(gate.current||description.trim().length<20)return;gate.current=true;setBusy('plan');setError('');setProposal(null);try{const result=await api<{draft:{graph:WorkflowGraph};cost_rub:string}>('/agents/ai-planner/preview/',{method:'POST',headers:{'Idempotency-Key':await workflowPlannerKey(description,agentId)},body:JSON.stringify({description,agent:agentId})},90000);if(mounted.current)setProposal({graph:result.draft.graph,cost_rub:result.cost_rub})}catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Не удалось собрать схему')}finally{gate.current=false;if(mounted.current)setBusy('')}};
+ return <section className={styles.builder}><div className={styles.toolbar}><div><strong>Визуальный процесс</strong><small>{dirty?'Есть несохранённые изменения':'Схема сохранена'} · Первый узел — начало</small></div><button className={styles.primary} disabled={locked||!dirty||!nodes.length||invalidBody} onClick={()=>void save()}>{busy==='save'?'Сохраняем…':'Сохранить схему'}</button></div>
+ <details className={styles.prompt}><summary>Собрать схему по описанию задачи</summary><p>AI предложит черновик из поддерживаемых инструментов. Проектирование оплачивается с баланса по фактическому расходу LLM.</p><textarea aria-label="Задача для конструктора" value={description} disabled={locked} onChange={e=>{setDescription(e.target.value);setProposal(null)}} placeholder="Найди новости, подготовь обзор и отправь результат в подключённый сервис"/><button disabled={locked||description.trim().length<20} onClick={()=>void plan()}>{busy==='plan'?'Собираем…':'Предложить схему · платно'}</button>{proposal&&<div className={styles.proposal}><p>{proposal.graph.nodes?.length} узлов · расход {proposal.cost_rub} ₽</p><ol>{proposal.graph.nodes?.map(node=><li key={node.id}>{node.title} · {typeLabel(node.type)}</li>)}</ol><button disabled={locked} onClick={()=>{setNodes(positions(proposal.graph));setLinks(graphLinks(proposal.graph));setSelected(proposal.graph.nodes?.[0]?.id??'');setProposal(null);setDirty(true)}}>Применить черновик</button></div>}</details>
+ {error&&<div className={styles.error} role="alert">{error}</div>}{invalidBody&&<div className={styles.error}>Исправьте JSON перед сохранением или переключением узла.</div>}
+ <div className={styles.layout}><aside className={styles.palette}><strong>Добавить узел</strong>{workflowTypes.map(([type,title])=><button key={type} disabled={locked||invalidBody||nodes.length>=100} onClick={()=>add(type)}>+ {title}</button>)}<Link href="/app/connections">Подключения →</Link></aside>
+ <div className={styles.canvas} aria-label="Визуальная схема агента"><ReactFlow onInit={instance=>{flow.current=instance}} nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={connect} onNodeClick={(_,node)=>{if(!invalidBody)setSelected(node.id)}} nodesDraggable={!locked} nodesConnectable={!locked} edgesReconnectable={false} deleteKeyCode={locked?null:['Backspace','Delete']} fitView minZoom={0.3} maxZoom={1.8}><Background gap={20} color="#d9dce4"/><Controls showInteractive={false}/></ReactFlow><div className={styles.hint}>Соедините точки узлов. Для удаления связи выберите её и нажмите Delete.</div></div>
+ <aside className={styles.inspector}>{node?<><div className={styles.inspectorHeading}><strong>{typeLabel(node.type)}</strong><button disabled={locked||nodes.length<2} onClick={remove} aria-label="Удалить выбранный узел">×</button></div><label>Название<input disabled={locked} value={node.title} onChange={e=>update({title:e.target.value})}/></label>
+ {(llmTypes.has(node.type)||['search','browser','image'].includes(node.type))&&<label>{node.type==='browser'?'Найти текст (необязательно)':'Задача шага'}<textarea disabled={locked} value={node.prompt??''} rows={4} onChange={e=>update({prompt:e.target.value})}/></label>}
+ {llmTypes.has(node.type)&&<label>Модель LLM<select aria-label="Модель LLM" disabled={locked} value={node.selected_model??''} onChange={e=>update({selected_model:e.target.value||undefined})}><option value="">Авто · уровень агента</option>{node.selected_model&&!models.some(model=>model.slug===node.selected_model)&&<option value={node.selected_model}>Недоступная модель</option>}{models.map(model=><option key={model.slug} value={model.slug} disabled={!model.available}>{model.display_name}{!model.available?' · недоступна':''}</option>)}</select><small>Расход в пределах бюджета агента.</small></label>}
+ {node.type==='browser'&&<><label>URL страницы<input disabled={locked} value={node.url??''} placeholder="https://example.ru/news" onChange={e=>update({url:e.target.value})}/></label><small>Chromium читает публичную страницу. Без входа в аккаунты, JavaScript и отправки форм.</small></>}
+ {node.type==='http'&&<><label>Подключение<select aria-label="Подключение" disabled={locked} value={node.connection_id??''} onChange={e=>update({connection_id:e.target.value})}><option value="">Выберите HTTP API</option>{bindings.filter(row=>row.enabled&&row.connection_kind==='http'&&row.purpose==='http').map(row=><option key={row.connection} value={row.connection}>{row.connection_name}</option>)}</select></label><Link href="/app/connections">Добавить сервис и разрешить агенту →</Link><label>Метод<select aria-label="Метод" disabled={locked} value={node.method??'GET'} onChange={e=>update({method:e.target.value})}><option>GET</option><option>POST</option></select></label><label>Относительный путь<input disabled={locked} value={node.path??''} placeholder="v1/items" onChange={e=>update({path:e.target.value})}/></label>{node.method==='POST'&&<label>Тело JSON<textarea disabled={locked} rows={5} value={bodyText} onChange={e=>{setBodyText(e.target.value);try{update({body:JSON.parse(e.target.value)});setInvalidBody(false)}catch{setInvalidBody(true)}}}/><small>{'Подстановки: {{previous_text}}, {{objective}}. POST требует подтверждения.'}</small></label>}</>}
+ {node.type==='condition'&&<><label>Проверять<select disabled={locked} value={node.condition_source??'previous_text'} onChange={e=>update({condition_source:e.target.value})}><option value="previous_text">Результат предыдущих шагов</option><option value="objective">Исходную задачу</option></select></label><label>Условие<select disabled={locked} value={node.operator??'contains'} onChange={e=>update({operator:e.target.value})}>{[['contains','Содержит'],['not_contains','Не содержит'],['is_empty','Пусто'],['not_empty','Не пусто']].map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>{!['is_empty','not_empty'].includes(node.operator??'contains')&&<label>Текст<input disabled={locked} value={node.value??''} onChange={e=>update({value:e.target.value})}/></label>}</>}
+ {node.type==='wait'&&<label>Минуты<input disabled={locked} type="number" min={1} max={10080} value={node.wait_minutes??60} onChange={e=>update({wait_minutes:Number(e.target.value)})}/></label>}
+ {node.type==='notify'&&<label>Сообщение<textarea disabled={locked} value={node.message??''} onChange={e=>update({message:e.target.value})} placeholder="Пусто — результат предыдущих шагов"/></label>}
+ {node.type==='publish'&&<label>WordPress<select disabled={locked} value={node.status??'draft'} onChange={e=>update({status:e.target.value})}><option value="draft">Черновик</option><option value="publish">Опубликовать</option></select><small>Нужны подключённый WordPress и согласование в этой ветке.</small></label>}
+ <details><summary>Настроить переходы</summary>{(node.type==='condition'?['on_true','on_false']:['next']).map(key=><label key={key}>{key==='on_true'?'Если Да':key==='on_false'?'Если Нет':'Следующий узел'}<select aria-label={key==='on_true'?'Если Да':key==='on_false'?'Если Нет':'Следующий узел'} disabled={locked||node.type==='finish'} value={String(key==='next'?links.find(edge=>edge.from===node.id)?.to??'':node[key]??links.find(edge=>edge.from===node.id)?.to??'')} onChange={e=>{if(e.target.value)connect({source:node.id,target:e.target.value,sourceHandle:key==='on_false'?'no':key==='on_true'?'yes':null,targetHandle:null});else dropLink(key,node.id)}}><option value="">Завершить ветку</option>{nodes.filter(row=>row.id!==node.id).map(row=><option key={row.id} value={row.id}>{row.title}</option>)}</select></label>)}</details>
+ </>:<p>Добавьте или выберите узел.</p>}</aside></div></section>;
 }

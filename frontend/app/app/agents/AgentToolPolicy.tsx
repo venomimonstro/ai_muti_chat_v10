@@ -5,8 +5,10 @@ import {useMemo,useState} from "react";
 type Policy=Record<string,unknown>;
 type Props={policy:Policy;autonomy:string;onSave:(policy:Policy)=>Promise<void>;disabled?:boolean};
 
-type BoolTool={key:"web"|"files"|"images"|"github"|"write_code";label:string;description:string};
+type BoolTool={key:"browser"|"http"|"web"|"files"|"images"|"github"|"write_code";label:string;description:string};
 const generic:BoolTool[]=[
+ {key:"browser",label:"Браузер",description:"Читать публичные страницы в изолированном Chromium."},
+ {key:"http",label:"HTTP API",description:"Использовать разрешённые подключения сервисов. POST требует подтверждения."},
  {key:"web",label:"Интернет",description:"Искать актуальную информацию в интернете."},
  {key:"files",label:"Файлы проекта",description:"Читать доступные файлы и использовать их как контекст."},
  {key:"images",label:"Изображения",description:"Создавать изображения через Image Studio."},

@@ -143,3 +143,14 @@ test("Attachment restoration rejects corrupt data and limits duplicate selection
  assert.equal(selections.ids("bad").length,0);
  assert.equal(JSON.stringify(selections.ids("valid")),JSON.stringify(["a","b","c","d"]));
 });
+
+const workflow = load("agent-workflow");
+test("Visual workflow preserves explicit gaps and safely reorders DAG connections", () => {
+ const nodes=[{id:"start",type:"llm",title:"Start",selected_model:"chosen"},{id:"b",type:"notify",title:"B"},{id:"c",type:"notify",title:"C"}];
+ assert.equal(workflow.graphLinks({routing:"explicit",nodes,edges:[]}).length,0);
+ const result=workflow.orderedGraph({nodes,edges:[{from:"start",to:"c"},{from:"c",to:"b"}]});
+ assert.equal(JSON.stringify(result.nodes.map(node=>node.id)),JSON.stringify(["start","c","b"]));
+ assert.equal(result.nodes[0].selected_model,"chosen");
+ assert.throws(()=>workflow.orderedGraph({nodes,edges:[{from:"b",to:"c"},{from:"c",to:"b"}]}),/цикл/);
+ assert.throws(()=>workflow.orderedGraph({nodes,edges:[{from:"b",to:"start"}]}),/Начальный/);
+});

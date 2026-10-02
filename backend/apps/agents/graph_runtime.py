@@ -316,7 +316,7 @@ def _run_llm_node(run, agent, node, sequence, remaining_budget):
     customer = None
     provider_reservation = None
     try:
-        model = _model_for(agent)
+        model = _model_for(agent, str(node["selected_model"])) if node.get("selected_model") else _model_for(agent)
         messages = _messages(run, agent, node, web_context=web_context, file_context=file_context)
         output_tokens = min(OUTPUT_TOKENS, model.max_output_tokens)
         estimated_input = max(32, estimate_message_tokens(messages) + 16)
@@ -411,6 +411,8 @@ def _run_llm_node(run, agent, node, sequence, remaining_budget):
 
 
 def _planned_tool_calls(agent, node_type):
+    if node_type in {"browser", "http", "search"}:
+        return 1
     count = 0
     if node_type == "image" and bool((agent.tool_policy or {}).get("images")):
         count += 1
@@ -454,7 +456,7 @@ def _handle_condition(run, agent, node, sequence, node_index, id_to_index, defau
         return None, _fail(run, None, "condition_target_missing", f"Условие ссылается на неизвестный шаг {target_id}")
     if target_index is not None and target_index <= node_index:
         return None, _fail(run, None, "condition_backward_jump", "Условие может переходить только к следующему или более позднему шагу")
-    step = AgentStepRun.objects.create(
+    AgentStepRun.objects.create(
         run=run,
         agent=agent,
         sequence=sequence,

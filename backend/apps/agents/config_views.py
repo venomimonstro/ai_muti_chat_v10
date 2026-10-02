@@ -10,8 +10,8 @@ from .models import Agent, AgentVersion
 from .serializers import AgentSerializer, agent_has_active_run
 from .versioning import create_agent_version, restore_agent_version
 
-
 ALLOWED_NODE_TYPES = {
+    "browser", "http", "search",
     "llm",
     "research",
     "web",
@@ -31,7 +31,7 @@ ALLOWED_NODE_TYPES = {
     "sandbox",
     "handoff",
 }
-PROMPT_NODE_TYPES = {"llm", "research", "web", "files", "image", "review", "analytics"}
+PROMPT_NODE_TYPES = {"llm", "research", "web", "files", "image", "review", "analytics", "browser", "search"}
 CONDITION_OPERATORS = {"contains", "not_contains", "is_empty", "not_empty"}
 CONDITION_SOURCES = {"previous_text", "objective"}
 
@@ -104,7 +104,7 @@ def _validate_graph(graph):
             try:
                 minutes = int(node.get("wait_minutes") or 60)
             except (TypeError, ValueError):
-                raise ValidationError({"graph": f"У блока «{title}» неверное время ожидания"})
+                raise ValidationError({"graph": f"У блока «{title}» неверное время ожидания"}) from None
             if minutes < 1 or minutes > 10080:
                 raise ValidationError({"graph": "Ожидание должно быть от 1 минуты до 7 дней"})
             node["wait_minutes"] = minutes
@@ -124,6 +124,41 @@ def _validate_graph(graph):
             node.pop("notification_title", None)
             node.pop("message", None)
 
+        if node.get("selected_model"):
+            if node_type not in {"llm", "research", "web", "files", "review", "analytics"}:
+                raise ValidationError({"graph": "Модель можно выбрать только для AI-шагов"})
+            node["selected_model"] = str(node["selected_model"]).strip()[:160]
+        if node_type == "browser":
+            from urllib.parse import urlsplit
+            url = str(node.get("url") or "").strip()
+            parsed = urlsplit(url)
+            if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+                raise ValidationError({"graph": f"«{title}»: укажите URL публичной страницы"})
+            node["url"] = url[:2000]
+        if node_type == "http":
+            import json
+            from uuid import UUID
+            try:
+                node["connection_id"] = str(UUID(str(node.get("connection_id") or "")))
+            except ValueError:
+                raise ValidationError({"graph": f"«{title}»: выберите подключение HTTP API"}) from None
+            method = str(node.get("method") or "GET").upper()
+            if method not in {"GET", "POST"}:
+                raise ValidationError({"graph": "HTTP API поддерживает GET и POST"})
+            node["method"] = method
+            path = str(node.get("path") or "").strip()
+            if path.startswith(("/", "\\")) or "://" in path or ".." in path or "#" in path or len(path) > 2000:
+                raise ValidationError({"graph": "Укажите относительный путь сервиса без смены адреса"})
+            node["path"] = path
+            body = node.get("body", {})
+            if not isinstance(body, dict | list) or len(json.dumps(body)) > 65536:
+                raise ValidationError({"graph": "Тело HTTP-запроса должно быть JSON до 64 КБ"})
+            node["body"] = body
+        position = node.get("position")
+        if position is not None:
+            import math
+            if not isinstance(position, dict) or any(not isinstance(position.get(axis), float | int) or not math.isfinite(position[axis]) or abs(position[axis]) > 100000 for axis in ("x", "y")):
+                raise ValidationError({"graph": "Некорректное положение блока"})
         ids.append(node_id)
 
     if len(ids) != len(set(ids)):
@@ -171,8 +206,14 @@ def _validate_graph(graph):
     try:
         version = max(1, int(graph.get("version") or 1))
     except (TypeError, ValueError):
-        raise ValidationError({"graph": "Некорректная версия карты"})
-    return {"version": version, "nodes": nodes, "edges": edges}
+        raise ValidationError({"graph": "Некорректная версия карты"}) from None
+    routing = str(graph.get("routing") or "sequential")
+    if routing not in {"sequential", "explicit"}:
+        raise ValidationError({"graph": "Неизвестный режим связей"})
+    result = {"version": version, "nodes": nodes, "edges": edges}
+    if routing == "explicit":
+        result["routing"] = routing
+    return result
 
 
 def _ensure_agent_idle(agent):
@@ -186,6 +227,15 @@ class AgentConfigView(APIView):
         agent = get_object_or_404(Agent.objects.select_for_update(), id=agent_id, owner=request.user)
         _ensure_agent_idle(agent)
         payload = dict(request.data)
+        expected = payload.pop("expected_graph_version", None)
+        if expected is not None:
+            try:
+                current = int((agent.graph or {}).get("version") or 1)
+                matches = int(expected) == current
+            except (TypeError, ValueError):
+                matches = False
+            if not matches:
+                return Response({"detail": "Схема изменена в другой вкладке. Ваш черновик сохранён на устройстве. Обновите страницу и проверьте изменения перед сохранением."}, status=409)
         if "graph" in payload:
             payload["graph"] = _validate_graph(payload["graph"])
         serializer = AgentSerializer(agent, data=payload, partial=True, context={"request": request})

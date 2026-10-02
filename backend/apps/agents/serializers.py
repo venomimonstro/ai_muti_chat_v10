@@ -4,9 +4,17 @@ from django.conf import settings
 from django.db.models import Q
 from rest_framework import serializers
 
-from .models import Agent, AgentApproval, AgentHandoff, AgentRun, AgentStepRun, AgentTeam, AgentTeamMember, AgentVersion
+from .models import (
+    Agent,
+    AgentApproval,
+    AgentHandoff,
+    AgentRun,
+    AgentStepRun,
+    AgentTeam,
+    AgentTeamMember,
+    AgentVersion,
+)
 from .tool_policy import validate_tool_policy
-
 
 ACTIVE_RUN_STATES = {
     AgentRun.State.QUEUED,
@@ -75,6 +83,14 @@ class AgentSerializer(serializers.ModelSerializer):
         instance = self.instance or Agent(owner=self.context["request"].user)
         for field, value in attrs.items():
             setattr(instance, field, value)
+        if "graph" in attrs and attrs["graph"] != {}:
+            from .config_views import _validate_graph
+            attrs["graph"] = _validate_graph(attrs["graph"])
+            instance.graph = attrs["graph"]
+            from apps.connections.models import AgentConnectionBinding, ExternalConnection
+            for node in instance.graph["nodes"]:
+                if node["type"] == "http" and not AgentConnectionBinding.objects.filter(agent=instance, connection_id=node.get("connection_id"), connection__owner=self.context["request"].user, connection__kind=ExternalConnection.Kind.HTTP, enabled=True, purpose="http").exists():
+                    raise serializers.ValidationError({"graph": "HTTP-подключение не разрешено этому агенту"})
         instance.clean()
 
         policy = str((instance.tool_policy or {}).get("publish") or "disabled").strip().lower()
@@ -86,6 +102,7 @@ class AgentSerializer(serializers.ModelSerializer):
         graph = instance.graph if isinstance(instance.graph, dict) else {}
         nodes = list(graph.get("nodes") or [])
         edges = list(graph.get("edges") or [])
+        edges += [{"from": node["id"], "to": node[key]} for node in nodes if isinstance(node, dict) and node.get("type") == "condition" for key in ("on_true", "on_false") if node.get(key)]
         node_types = {
             str((node or {}).get("id") or "").strip(): str((node or {}).get("type") or "llm").strip().lower()
             for node in nodes

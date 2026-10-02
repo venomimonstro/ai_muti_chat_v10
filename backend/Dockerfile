@@ -8,6 +8,9 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && curl -kfsSL "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt" -w "\n" >> "$(python -m certifi)"
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/agent-browsers
+RUN python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/agent-browsers
 COPY . .
 RUN addgroup --system --gid 10001 app \
     && adduser --system --uid 10001 --ingroup app --home /app app \

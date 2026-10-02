@@ -56,6 +56,7 @@ def _wordpress_connection(agent):
 def _ancestor_node_ids(agent, node_id):
     graph = agent.graph or {}
     edges = graph.get("edges") or [] if isinstance(graph, dict) else []
+    edges = list(edges) + [{"from": node["id"], "to": node[key]} for node in (graph.get("nodes") or []) if isinstance(node, dict) and node.get("type") == "condition" for key in ("on_true", "on_false") if node.get(key)]
     reverse = {}
     for edge in edges:
         if not isinstance(edge, dict):

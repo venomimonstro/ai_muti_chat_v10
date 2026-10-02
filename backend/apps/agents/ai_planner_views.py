@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import uuid
@@ -23,12 +24,11 @@ from .accounting import (
     settle_agent_provider_spend,
 )
 from .config_views import _validate_graph
-from .models import Agent
+from .models import Agent, AgentPlanOperation
 from .planner import infer_kind
 from .readiness import RUNTIME_NODE_TYPES
 from .runtime import _model_for
 from .serializers import AgentSerializer
-
 
 PLANNER_OUTPUT_TOKENS = 1800
 PLANNER_ALLOWED_TYPES = set(RUNTIME_NODE_TYPES)
@@ -47,18 +47,18 @@ def _extract_json(text):
         start = raw.find("{")
         end = raw.rfind("}")
         if start < 0 or end <= start:
-            raise ValidationError({"detail": "AI-конструктор вернул некорректную структуру. Повторите запрос."})
+            raise ValidationError({"detail": "AI-конструктор вернул некорректную структуру. Повторите запрос."}) from None
         try:
             return json.loads(raw[start : end + 1])
         except json.JSONDecodeError as exc:
             raise ValidationError({"detail": "AI-конструктор вернул некорректный JSON. Повторите запрос."}) from exc
 
 
-def _messages(description):
+def _messages(description, connections=None):
     system = (
         "Ты проектировщик no-code AI-сотрудников Agent Studio. Верни ТОЛЬКО один JSON-объект без markdown. "
         "Не выполняй задачу пользователя — спроектируй сотрудника, который сможет её выполнять. "
-        "Разрешённые типы узлов: llm, research, web, files, image, review, analytics, condition, approval, wait, notify, publish, finish. "
+        "Разрешённые типы узлов: browser, search, http, llm, research, web, files, image, review, analytics, condition, approval, wait, notify, publish, finish. "
         "Запрещены github, code, shell, sandbox и любые произвольные инструменты. "
         "Внешняя публикация по умолчанию должна идти через approval и publish со status=draft. "
         "Не создавай циклы: все переходы только вперёд. Максимум 12 узлов. "
@@ -66,6 +66,7 @@ def _messages(description):
         "system_level:'economy|balanced|maximum', graph:{version:1,nodes:[{id,title,type,prompt?,status?,condition_source?,operator?,value?,on_true?,on_false?,wait_minutes?,notification_title?,message?}],edges:[{from,to}]}}. "
         "Используй понятные русские названия шагов. Делай минимальную достаточную карту, не раздувай количество LLM-шагов."
     )
+    system += " Браузер — только чтение публичной страницы: {type:'browser',url:'https://...',prompt:'точная строка для поиска либо пусто'}. Search выполняет поиск без LLM. HTTP — {type:'http',connection_id,method:'GET|POST',path:'относительный путь',body:{}}. POST запросит подтверждение. Не придумывай connection_id: если нужного подключения нет, предложи шаг notify с просьбой настроить сервис. Доступные HTTP-подключения: " + json.dumps(connections or [], ensure_ascii=False)
     user = f"Спроектируй AI-сотрудника по описанию:\n{description[:12000]}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -87,8 +88,12 @@ def _sanitize_draft(payload, description):
         level = "balanced"
 
     tools = {}
-    if node_types & {"web", "research"}:
+    if node_types & {"web", "research", "search"}:
         tools["web"] = True
+    if "browser" in node_types:
+        tools["browser"] = True
+    if "http" in node_types:
+        tools["http"] = True
     if "files" in node_types:
         tools["files"] = True
     if "image" in node_types:
@@ -126,6 +131,34 @@ def _project_for(user, raw_id):
 
 class AgentAIPlannerPreviewView(APIView):
     def post(self, request):
+        key = str(request.headers.get("Idempotency-Key") or "").strip()
+        if not key:
+            return self._generate(request)
+        if len(key) > 200:
+            raise ValidationError({"detail": "Слишком длинный ключ операции"})
+        fingerprint = hashlib.sha256(json.dumps(dict(request.data), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        operation, created = AgentPlanOperation.objects.get_or_create(owner=request.user, key=key, defaults={"fingerprint": fingerprint})
+        if not created:
+            if operation.fingerprint != fingerprint:
+                return Response({"detail": "Этот ключ уже использован для другого описания"}, status=409)
+            if operation.state == "completed":
+                return Response(operation.response)
+            if operation.state == "failed":
+                return Response(operation.response, status=400)
+            return Response({"detail": "Схема ещё проектируется. Повторите этот же запрос позже: повторного списания не будет."}, status=409)
+        try:
+            response = self._generate(request)
+        except Exception:
+            operation.state = "failed"
+            operation.response = {"detail": "Операция проектирования не завершилась. Повтор с тем же ключом не выполняет новое списание. Проверьте баланс и измените описание для нового проектирования."}
+            operation.save(update_fields=["state", "response", "updated_at"])
+            raise
+        operation.state = "completed"
+        operation.response = response.data
+        operation.save(update_fields=["state", "response", "updated_at"])
+        return response
+
+    def _generate(self, request):
         description = str(request.data.get("description") or "").strip()
         if len(description) < 20:
             raise ValidationError({"description": "Опишите сотрудника чуть подробнее"})
@@ -137,7 +170,15 @@ class AgentAIPlannerPreviewView(APIView):
         provider_reservation = None
         try:
             model = _model_for(SimpleNamespace(system_level="balanced"))
-            messages = _messages(description)
+            connections = []
+            if request.data.get("agent"):
+                from apps.connections.models import AgentConnectionBinding
+                agent = Agent.objects.filter(pk=request.data["agent"], owner=request.user).first()
+                if agent is None:
+                    raise ValidationError({"agent": "Агент недоступен"})
+                connections = list(AgentConnectionBinding.objects.filter(agent=agent, enabled=True, purpose="http", connection__enabled=True, connection__kind="http", connection__health_state="healthy").values("connection_id", "connection__name"))
+                connections = [{"id": str(item["connection_id"]), "name": item["connection__name"]} for item in connections]
+            messages = _messages(description, connections)
             max_output = min(PLANNER_OUTPUT_TOKENS, model.max_output_tokens)
             estimated_input = max(64, estimate_message_tokens(messages) + 32)
             price = active_price(model.slug)

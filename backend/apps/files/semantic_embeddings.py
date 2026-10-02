@@ -1,9 +1,6 @@
 import os
 import threading
 
-from fastembed import TextEmbedding
-from fastembed.common.model_description import ModelSource, PoolingType
-
 MODEL_NAME = os.getenv("RAG_SEMANTIC_MODEL", "intfloat/multilingual-e5-small")
 MODEL_VERSION = f"fastembed:{MODEL_NAME}:v1"
 _DIMENSIONS = 384
@@ -14,6 +11,8 @@ _registered = False
 
 def _build_model():
     global _registered
+    from fastembed import TextEmbedding
+    from fastembed.common.model_description import ModelSource, PoolingType
     if MODEL_NAME == "intfloat/multilingual-e5-small" and not _registered:
         TextEmbedding.add_custom_model(
             model=MODEL_NAME,

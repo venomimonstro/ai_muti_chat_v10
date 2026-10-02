@@ -262,3 +262,16 @@ class AgentArtifact(models.Model):
 
     class Meta:
         ordering = ["created_at"]
+
+
+class AgentPlanOperation(models.Model):
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    key = models.CharField(max_length=200)
+    fingerprint = models.CharField(max_length=64)
+    state = models.CharField(max_length=16, default="running")
+    response = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["owner", "key"], name="unique_owner_agent_plan_key")]

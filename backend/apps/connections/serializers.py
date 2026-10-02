@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .http_service import normalize_http_url
 from .models import AgentConnectionBinding, ExternalConnection
 from .wordpress import normalize_wordpress_url
 
@@ -20,7 +21,7 @@ class ExternalConnectionSerializer(serializers.ModelSerializer):
         return bool(obj.secret_encrypted)
 
     def validate_kind(self, value):
-        if value not in {ExternalConnection.Kind.WORDPRESS, ExternalConnection.Kind.VK}:
+        if value not in {ExternalConnection.Kind.WORDPRESS, ExternalConnection.Kind.VK, ExternalConnection.Kind.HTTP}:
             raise serializers.ValidationError("Этот тип подключения пока не поддерживается")
         return value
 
@@ -40,6 +41,8 @@ class ExternalConnectionSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"username": "Укажите пользователя WordPress"})
             if not has_secret:
                 raise serializers.ValidationError({"secret": "Укажите Application Password WordPress"})
+        elif kind == ExternalConnection.Kind.HTTP:
+            attrs["base_url"] = normalize_http_url(base_url)
         elif kind == ExternalConnection.Kind.VK:
             # VK credentials are normally stored by the OAuth callback. A placeholder
             # connection is valid before authorization and must never require users

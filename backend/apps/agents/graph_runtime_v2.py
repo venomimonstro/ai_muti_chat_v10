@@ -33,7 +33,7 @@ def _graph_parts(agent):
     node_ids = [_node_id(node, index) for index, node in enumerate(nodes)]
     by_id = {node_id: nodes[index] for index, node_id in enumerate(node_ids)}
     position = {node_id: index for index, node_id in enumerate(node_ids)}
-    outgoing = {}
+    outgoing = {"__explicit__": True} if graph.get("routing") == "explicit" else {}
     for edge in edges:
         source = str(edge.get("from") or "").strip()
         target = str(edge.get("to") or "").strip()
@@ -43,6 +43,8 @@ def _graph_parts(agent):
 
 
 def _default_next(node_id, node_ids, position, outgoing):
+    if outgoing.get("__explicit__") and not outgoing.get(node_id):
+        return None
     explicit = outgoing.get(node_id) or []
     if explicit:
         return explicit[0]
@@ -312,6 +314,13 @@ def execute_graph_run_v2(run_id):
             )
             return _budget_exceeded(run, message, code="agent_period_budget_exceeded")
 
+        if node_type in {"browser", "http", "search"}:
+            from .workflow_tools import run_workflow_tool
+            terminal = run_workflow_tool(run, agent, node, sequence)
+            if terminal is not None:
+                return terminal
+            current = default_next
+            continue
         if node_type == "approval":
             if _handle_approval(run, agent, node, sequence):
                 return run

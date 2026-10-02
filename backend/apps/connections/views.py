@@ -12,11 +12,11 @@ from rest_framework.response import Response
 
 from apps.agents.models import AgentRun
 
+from .http_service import check_http
 from .models import AgentConnectionBinding, ExternalConnection
 from .serializers import AgentConnectionBindingSerializer, ExternalConnectionSerializer
 from .vk import check_vk, exchange_code, oauth_authorize_url
 from .wordpress import check_wordpress
-
 
 ACTIVE_RUN_STATES = {
     AgentRun.State.QUEUED,
@@ -83,6 +83,8 @@ class ExternalConnectionViewSet(viewsets.ModelViewSet):
         try:
             if connection.kind == ExternalConnection.Kind.WORDPRESS:
                 metadata = check_wordpress(connection)
+            elif connection.kind == ExternalConnection.Kind.HTTP:
+                metadata = check_http(connection)
             elif connection.kind == ExternalConnection.Kind.VK:
                 metadata = _vk_metadata(check_vk(connection))
             else:

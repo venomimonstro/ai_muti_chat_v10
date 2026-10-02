@@ -6,8 +6,8 @@ from .models import Agent
 from .runtime import _model_for
 from .wait_runtime import MAX_WAIT_MINUTES, MIN_WAIT_MINUTES
 
-
 RUNTIME_NODE_TYPES = {
+    "browser", "http", "search",
     "llm",
     "research",
     "web",
@@ -56,6 +56,8 @@ def agent_readiness(agent: Agent):
     node_types = [str(node.get("type") or "llm").strip().lower() for node in nodes]
     visual_workflow = bool(nodes)
     checks["graph"] = visual_workflow
+    if not visual_workflow and agent.role == "Автоматизация":
+        blockers.append("Добавьте и сохраните узлы визуальной схемы перед запуском процесса")
 
     node_ids = [str(node.get("id") or "").strip() for node in nodes]
     known_ids = {node_id for node_id in node_ids if node_id}
@@ -156,6 +158,27 @@ def agent_readiness(agent: Agent):
             blockers.append("Карта использует интернет, но доступ к web-поиску выключен")
             add_action("enable_web", "Включите «Интернет и поиск» в разрешениях сотрудника")
 
+    for node in nodes:
+        if node.get("selected_model"):
+            try:
+                _model_for(agent, str(node["selected_model"]))
+            except ValidationError as exc:
+                blockers.append(str(exc))
+                checks["model"] = False
+        if node.get("type") == "browser":
+            from .browser_tool import browser_available
+            if not policy.get("browser") or not browser_available():
+                blockers.append("Для браузерного шага разрешите браузер и установите Chromium на сервере")
+        if node.get("type") == "search" and not policy.get("web"):
+            blockers.append("Разрешите интернет-поиск для поискового шага")
+        if node.get("type") == "http":
+            from .workflow_tools import workflow_connection
+            try:
+                if not policy.get("http"):
+                    raise ValidationError("Разрешите HTTP API в настройках агента")
+                workflow_connection(agent, node)
+            except (ValidationError, ValueError) as exc:
+                blockers.append(str(exc))
     if "files" in node_types:
         files_ok = bool(policy.get("files")) and bool(agent.project_id)
         checks["files"] = files_ok

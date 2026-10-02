@@ -23,7 +23,6 @@ from .limits import effective_remaining_budget
 from .memory import memory_context_for_agent
 from .models import AgentRun, AgentStepRun
 
-
 DEFAULT_MAX_OUTPUT_TOKENS = 1200
 MAX_TOOL_CONTEXT_CHARS = 18000
 
@@ -36,7 +35,12 @@ def _subject_agent(run: AgentRun):
     raise ValidationError("У запуска не назначен агент или команда")
 
 
-def _model_for(agent):
+def _model_for(agent, selected_model=""):
+    if selected_model:
+        model = AIModel.objects.filter(slug=selected_model, enabled=True).select_related("provider", "current_version").first()
+        if model and model.provider.health_state == Provider.HealthState.HEALTHY and provider_available(model.provider):
+            return model
+        raise ValidationError("Выбранная для шага модель недоступна. Измените модель в конструкторе")
     policy = RoutingPolicyVersion.objects.filter(active=True).first()
     pinned = ""
     if policy:
