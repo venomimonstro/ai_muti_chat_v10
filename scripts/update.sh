@@ -51,6 +51,33 @@ done
 command -v flock >/dev/null 2>&1 || { printf 'Команда flock не найдена\n' >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { printf 'openssl не найден\n' >&2; exit 1; }
 
+bootstrap_free_kb() {
+  df -Pk "${PROJECT_DIR}" | awk 'NR==2 {print $4}'
+}
+
+ensure_update_bootstrap_disk() {
+  local minimum_kb="${UPDATE_MIN_BOOTSTRAP_FREE_KB:-524288}" # 512 MiB
+  local free_kb
+  free_kb="$(bootstrap_free_kb)"
+  if (( free_kb >= minimum_kb )); then
+    return 0
+  fi
+
+  printf '[DISK] Свободно только %s MiB. Очищаю только disposable Docker cache...\n' "$((free_kb / 1024))" >&2
+  if command -v docker >/dev/null 2>&1; then
+    docker builder prune -af >/dev/null 2>&1 || true
+    docker image prune -f >/dev/null 2>&1 || true
+  fi
+  free_kb="$(bootstrap_free_kb)"
+  if (( free_kb < minimum_kb )); then
+    printf '[FAIL] Для безопасного запуска updater требуется минимум %s MiB, доступно %s MiB.\n'       "$((minimum_kb / 1024))" "$((free_kb / 1024))" >&2
+    printf '[INFO] Docker volumes, PostgreSQL и пользовательские данные не удалялись.\n' >&2
+    exit 1
+  fi
+}
+
+ensure_update_bootstrap_disk
+
 if [[ "${AI_WORKSPACE_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
   LOCK_CONFLICT_EXIT=75
   if flock --nonblock --close --conflict-exit-code "${LOCK_CONFLICT_EXIT}" "${LOCK_FILE}" \
