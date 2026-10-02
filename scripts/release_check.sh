@@ -39,6 +39,7 @@ ensure_release_disk() {
   printf '[DISK] Low free space: %s MiB. Reclaiming disposable Docker build cache...\n' "$((free_kb / 1024))" >&2
   docker container prune -f >/dev/null 2>&1 || true
   docker builder prune -af >/dev/null 2>&1 || true
+  docker buildx prune -af >/dev/null 2>&1 || true
   docker image prune -af >/dev/null 2>&1 || true
   free_kb="$(available_kb)"
   if (( free_kb < RELEASE_MIN_FREE_KB )); then
