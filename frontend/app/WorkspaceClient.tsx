@@ -159,13 +159,17 @@ export default function Home() {
   const refreshConversation = async (id: string) => replaceConversation(await api<Conversation>(`/conversations/${id}/`));
   const refreshWallet = async () => setWallet(await api<Wallet>("/wallet/"));
 
-  const createConversation = async () => {
+  const createConversation = async (): Promise<Conversation | null> => {
     try {
       const payload: Record<string, string> = {title: "Новый чат", routing_mode: "balanced"};
       if (models.find((item) => item.available)) payload.selected_model = models.find((item) => item.available)!.slug;
       const conversation = await api<Conversation>("/conversations/", {method: "POST", body: JSON.stringify(payload)});
       replaceConversation(conversation); setActiveId(conversation.id); setValue(""); setSidebarOpen(false);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось создать чат"); }
+      return conversation;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Не удалось создать чат");
+      return null;
+    }
   };
 
   const chooseConversation = (id: string, messageId?: string) => { setActiveId(id); setFocusMessageId(messageId ?? null); setSidebarOpen(false); setPanel(null); setError(""); };
@@ -175,9 +179,7 @@ export default function Home() {
     setError(""); setStreamNote("");
     let conversation = active;
     if (!conversation) {
-      await createConversation();
-      const latest = await api<Conversation[]>("/conversations/");
-      conversation = latest[0]; setConversations(latest); setActiveId(conversation?.id ?? null);
+      conversation = await createConversation();
     }
     if (!conversation) return;
     const clientMessageId = crypto.randomUUID();
