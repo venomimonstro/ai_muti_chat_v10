@@ -295,6 +295,13 @@ class AgentAIPlannerPreviewView(APIView):
                 customer_charge=Decimal("0"),
             )
             provider_reservation = None
+
+            # Validate the provider output before charging the customer. A malformed
+            # planner payload is our/provider-side failure: procurement cost remains
+            # real, but the customer reservation must be returned by reconciliation.
+            payload = _extract_json(result.text)
+            draft = _sanitize_draft(payload, description)
+
             settle(customer.id, actual)
             customer = None
             update_agent_provider_customer_charge(provider_spend, actual)
@@ -304,8 +311,6 @@ class AgentAIPlannerPreviewView(APIView):
                     checkpoint["provider_spend_id"] = str(provider_spend.id)
                 _save_planner_checkpoint(operation, checkpoint)
 
-            payload = _extract_json(result.text)
-            draft = _sanitize_draft(payload, description)
             return Response(
                 {
                     "draft": draft,
