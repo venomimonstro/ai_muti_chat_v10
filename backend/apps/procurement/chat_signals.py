@@ -11,6 +11,7 @@ import logging
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from apps.ai_registry.models import AIModel
 from apps.billing.models import RequestCost
 from apps.chat.models import Generation
 
@@ -18,6 +19,76 @@ from .models import ProviderSpend, ProviderSpendReservation
 from .services import release_provider_spend
 
 logger = logging.getLogger(__name__)
+
+
+def reconcile_confirmed_chat_procurement(*, limit: int = 200) -> dict:
+    """Retry owner-side procurement settlement without blocking customer chat.
+
+    Provider-confirmed usage can survive a transient local ledger/allocation error.
+    The request itself must stay completed; this sweep closes its still-ACTIVE
+    provider reservation later using the immutable RequestCost pricing snapshot.
+    """
+    from . import signals as procurement_signals
+
+    checked = settled = deferred = 0
+    reservations = list(
+        ProviderSpendReservation.objects.filter(
+            source_key__startswith="chat:",
+            state=ProviderSpendReservation.State.ACTIVE,
+        )
+        .select_related("account__provider")
+        .order_by("created_at")[: max(1, min(int(limit), 1000))]
+    )
+    for reservation in reservations:
+        parts = str(reservation.source_key or "").split(":", 2)
+        if len(parts) != 3:
+            continue
+        request_cost = (
+            RequestCost.objects.select_related("price_version")
+            .filter(pk=parts[1], provider_cost_rub__isnull=False)
+            .first()
+        )
+        if request_cost is None:
+            continue
+        if ProviderSpend.objects.filter(
+            source_type="chat", source_id=str(request_cost.id)
+        ).exists():
+            continue
+        model = (
+            AIModel.objects.select_related("provider")
+            .filter(slug=request_cost.price_version.model_slug)
+            .first()
+        )
+        if model is None:
+            deferred += 1
+            continue
+        checked += 1
+        try:
+            procurement_signals._settle(
+                reservation=reservation,
+                provider_cost_rub=request_cost.provider_cost_rub,
+                customer_charge_rub=request_cost.charged_rub or 0,
+                snapshot=request_cost.pricing_snapshot,
+                source_type="chat",
+                source_id=str(request_cost.id),
+                model_slug=model.slug,
+                input_tokens=request_cost.input_tokens,
+                output_tokens=request_cost.output_tokens,
+            )
+            if ProviderSpend.objects.filter(
+                source_type="chat", source_id=str(request_cost.id)
+            ).exists():
+                settled += 1
+            else:
+                deferred += 1
+        except Exception:
+            deferred += 1
+            logger.exception(
+                "Confirmed chat procurement reconciliation deferred request_cost=%s reservation=%s",
+                request_cost.id,
+                reservation.id,
+            )
+    return {"checked": checked, "settled": settled, "deferred": deferred}
 
 
 def release_stale_terminal_chat_reservations(*, limit: int = 500) -> int:
