@@ -127,7 +127,18 @@ def install(streaming_module) -> None:
                 if getattr(event, "kind", "") == "delta":
                     delivered_text += str(getattr(event, "text_delta", "") or "")
                 elif getattr(event, "kind", "") == "completed":
-                    _checkpoint(self.model, event, delivered_text=delivered_text)
+                    try:
+                        _checkpoint(self.model, event, delivered_text=delivered_text)
+                    except Exception:
+                        # Provider completion is authoritative for customer delivery.
+                        # Accounting/checkpoint failures must never destroy a valid
+                        # answer; the main settlement path and reconciliation worker
+                        # will retry/persist the financial side effects separately.
+                        logger.exception(
+                            "Provider delivery checkpoint failed but answer will continue generation_id=%s model=%s",
+                            _CURRENT_GENERATION_ID.get(),
+                            self.model.slug,
+                        )
                 yield event
 
     def checkpoint_adapter_for(model, *args, **kwargs):
