@@ -185,6 +185,7 @@ def chat_cost_preview(*, user, conversation, content, file_ids=None):
         "confirmation_required": maximum >= threshold,
         "confirmation_threshold_rub": threshold,
         "selected_model": selected_slug,
+        "selected_model_internal": selected_model.slug,
         "models": rows,
         "spend_guard": {
             "single_request_limit_rub": single_limit,
