@@ -646,12 +646,22 @@ def run(generation, *, adapter=None):
             reservation_amount = generation.user_message.conversation.owner.wallet.reservations.get(id=generation.reservation_id).amount_rub
             if charge > reservation_amount:
                 over_reservation = True
+                # Provider usage is confirmed, but the customer authorized only the
+                # preflight reserve. Settle exactly that maximum; never overdraw and
+                # never erase real provider spend by releasing the reservation.
+                settle(generation.reservation_id, reservation_amount)
+                bounded_profit = reservation_amount - provider_cost
+                bounded_margin = (
+                    bounded_profit / reservation_amount * 100
+                    if reservation_amount
+                    else Decimal("-100")
+                )
                 request_cost.provider_cost_rub = provider_cost
-                request_cost.charged_rub = charge * 0
+                request_cost.charged_rub = reservation_amount
                 request_cost.input_tokens = completed.input_tokens
                 request_cost.output_tokens = completed.output_tokens
-                request_cost.gross_profit_rub = -provider_cost
-                request_cost.gross_margin_percent = -100
+                request_cost.gross_profit_rub = bounded_profit
+                request_cost.gross_margin_percent = bounded_margin
                 request_cost.save(update_fields=[
                     "provider_cost_rub", "charged_rub", "input_tokens", "output_tokens", "gross_profit_rub", "gross_margin_percent"
                 ])
