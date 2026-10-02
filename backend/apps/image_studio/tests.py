@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 from django.core.files.storage import default_storage
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
@@ -317,6 +318,7 @@ def test_external_partial_image_delivery_preserves_provider_spend_and_refunds_cu
         quote_currency="RUB",
         rate=Decimal("100"),
         source="test",
+        effective_at=timezone.now(),
     )
     model = ImageModel.objects.create(
         provider=provider,
