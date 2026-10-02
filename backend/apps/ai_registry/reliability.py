@@ -32,6 +32,28 @@ PROVIDER_BLOCKING_ERROR_CODES = {
 }
 SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai"}
 
+# These failures describe one model/request payload, not credential transport health.
+# They must never poison a verified API key or hide the whole provider from customer
+# traffic. Authentication, permission and quota/balance failures remain blocking.
+REQUEST_SCOPED_ERROR_CODES = {
+    "bad_request",
+    "validation_error",
+    "request_too_large",
+    "model_not_found",
+    "provider_empty_response",
+    "gigachat_bad_request",
+    "gigachat_validation_error",
+    "gigachat_request_too_large",
+    "gigachat_model_not_found",
+}
+
+
+def _request_scoped_error(error: ProviderError) -> bool:
+    code = str(getattr(error, "code", "") or "").strip().casefold()
+    if code in REQUEST_SCOPED_ERROR_CODES:
+        return True
+    return code.endswith(("_bad_request", "_validation_error", "_request_too_large", "_model_not_found"))
+
 
 def _has_healthy_key(provider: Provider) -> bool:
     return ProviderApiKey.objects.filter(
@@ -142,7 +164,9 @@ def selected_api_key(provider: Provider, adapter=None):
 
 
 def record_api_key_failure(provider: Provider, adapter, error: ProviderError) -> bool:
-    """Degrade only the failing key and report a verified customer-safe spare."""
+    """Degrade only failures that actually prove a credential is unhealthy."""
+    if _request_scoped_error(error):
+        return False
     key = selected_api_key(provider, adapter)
     if key is None:
         return False
@@ -306,8 +330,15 @@ def candidate_models(primary: AIModel) -> list[AIModel]:
 
 @transaction.atomic
 def record_failure(provider: Provider, error: ProviderError, adapter=None):
-    """Record one runtime failure exactly once and preserve verified spare keys."""
+    """Record transport/credential health without poisoning it for request errors."""
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
+    if _request_scoped_error(error):
+        # A syntactically rejected request proves the provider was reachable and the
+        # credential was accepted far enough to validate the payload. Preserve the
+        # existing key/provider health; routing may try another compatible model.
+        locked.last_checked_at = timezone.now()
+        locked.save(update_fields=["last_checked_at"])
+        return
     has_spare_key = record_api_key_failure(locked, adapter, error)
     if has_spare_key:
         error.retryable = True
