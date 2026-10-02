@@ -10,7 +10,7 @@ from .models import Conversation
 def install(chat_serializers_module) -> None:
     serializer_cls = chat_serializers_module.ConversationSerializer
     raw_validate = serializer_cls.validate_selected_model
-    if getattr(raw_validate, "_ai_workspace_manual_selection_recovery", False):
+    if getattr(raw_validate, "_ai_workspace_manual_selection_recovery", False) is True:
         return
 
     def validate_selected_model(self, value):
