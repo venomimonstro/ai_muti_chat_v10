@@ -240,6 +240,7 @@ run_pytest 'Agent/provider settlement and credential-binding regressions' \
   apps/agents/test_dev_settlement_integrity.py \
   apps/agents/test_generic_team_cancellation.py \
   apps/b2b_api/test_cost_guard.py \
+  apps/chat/test_compare.py \
   apps/chat/test_compare_cost_guard.py \
   apps/procurement/tests.py
 docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python manage.py agent_billing_audit
