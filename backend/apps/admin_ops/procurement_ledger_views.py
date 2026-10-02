@@ -9,7 +9,7 @@ from rest_framework.response import Response
 
 from apps.ai_registry.models import ProviderApiKey
 from apps.procurement.models import ProviderFundingAccount, ProviderPurchase, ProviderSpendAllocation
-from apps.procurement.services import create_funding_account, funding_summary, record_purchase, set_default_account
+from apps.procurement.services import create_funding_account, funding_summary, provider_pricing_currency, record_purchase, set_default_account
 
 from .services import audit
 from .views import AdminAPIView
@@ -293,7 +293,10 @@ class ProcurementLedgerView(AdminAPIView):
                 return Response({"detail": "Неизвестное действие"}, status=400)
 
             key = ProviderApiKey.objects.select_related("provider").get(pk=request.data.get("api_key_id"))
-            credit_currency = str(request.data.get("credit_currency") or "USD").upper().strip()
+            credit_currency = str(
+                request.data.get("credit_currency")
+                or provider_pricing_currency(key.provider, key.balance_currency or "USD")
+            ).upper().strip()
             if len(credit_currency) != 3:
                 raise DjangoValidationError("Валюта API-баланса должна быть ISO 4217")
             try:
