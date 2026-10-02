@@ -32,6 +32,10 @@ def test_commercial_runtime_never_imports_legacy_adapter_dispatch():
                 violations.append(
                     f"{relative_path}:{line_number}: legacy adapters.adapter_for import"
                 )
+            if compact.startswith("from apps.ai_registry.dispatch import adapter_for"):
+                violations.append(
+                    f"{relative_path}:{line_number}: stale-prone adapter_for value import"
+                )
             if ".get_api_key()" in compact:
                 violations.append(
                     f"{relative_path}:{line_number}: direct provider.get_api_key() bypass"
