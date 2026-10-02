@@ -33,7 +33,7 @@ def install(streaming_module, managed_stream_module) -> None:
     """
 
     raw_run = streaming_module.run
-    if getattr(raw_run, "_ai_workspace_run_claim_safety", False):
+    if getattr(raw_run, "_ai_workspace_run_claim_safety", False) is True:
         return
     raw_finalize = managed_stream_module._finalize_incomplete_stream
 
