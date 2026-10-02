@@ -31,7 +31,7 @@ def install(*, streaming_module, paid_search_module) -> None:
     an incorrect terminal charge when the answer itself completes.
     """
     raw_enrich = streaming_module.enrich_snapshot_with_web
-    if getattr(raw_enrich, "_ai_workspace_search_delivery_billing", False):
+    if getattr(raw_enrich, "_ai_workspace_search_delivery_billing", False) is True:
         return
     raw_finish = paid_search_module._finish_customer_search_charge
 
