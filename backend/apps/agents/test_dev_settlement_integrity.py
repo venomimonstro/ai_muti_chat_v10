@@ -54,8 +54,10 @@ class DevSettlementIntegrityTests(SimpleTestCase):
             patch("apps.agents.dev_model_execution.reserve", return_value=customer),
             patch("apps.agents.dev_model_execution.reserve_agent_provider_spend", return_value=provider_reservation),
             patch("apps.agents.dev_model_execution.generate_with_key_failover", return_value=(delivered, 1)),
-            patch("apps.agents.dev_model_execution.quote", return_value=actual_quote),
-            patch("apps.agents.dev_model_execution.require_margin", side_effect=lambda value: value),
+            patch(
+                "apps.agents.dev_model_execution.actual_agent_quote_from_snapshot",
+                return_value=actual_quote,
+            ),
             patch(
                 "apps.agents.dev_model_execution.settle_agent_provider_spend",
                 side_effect=ValidationError("database unavailable"),
