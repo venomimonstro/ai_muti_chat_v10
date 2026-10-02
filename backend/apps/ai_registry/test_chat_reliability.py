@@ -246,3 +246,29 @@ def test_success_restores_key_and_provider_health():
     assert key.last_latency_ms == 123
     assert provider.health_state == Provider.HealthState.HEALTHY
     assert provider.consecutive_failures == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "code",
+    [
+        "gigachat_bad_request",
+        "gigachat_validation_error",
+        "gigachat_request_too_large",
+        "gigachat_model_not_found",
+    ],
+)
+def test_request_scoped_gigachat_error_does_not_poison_key_or_provider(code):
+    provider = _provider(slug=f"gigachat-{code}")
+    key = _key(provider, "healthy", "secret-one")
+    adapter = SimpleNamespace(authorization_key="secret-one")
+    error = ProviderError("request rejected", code=code, retryable=False)
+
+    record_failure(provider, error, adapter=adapter)
+
+    key.refresh_from_db()
+    provider.refresh_from_db()
+    assert key.health_state == ProviderApiKey.HealthState.HEALTHY
+    assert key.last_error_code == ""
+    assert provider.health_state == Provider.HealthState.HEALTHY
+    assert provider.consecutive_failures == 0
