@@ -7,6 +7,7 @@ from rest_framework.test import APITestCase
 from apps.accounts.models import User
 from apps.ai_registry.models import AIModel, ModelVersion, Provider, ProviderApiKey
 from apps.billing.models import MarginPolicyVersion, PriceVersion
+from apps.procurement.services import create_funding_account
 
 
 @override_settings(ADMIN_MFA_ENFORCED=False)
@@ -37,6 +38,7 @@ class ProviderClientActivationTests(APITestCase):
         )
         key.set_secret("secret-test-key")
         key.save()
+        self.key = key
         self.model = AIModel.objects.create(
             provider=self.provider,
             slug="activation-model",
@@ -143,6 +145,30 @@ class ProviderClientActivationTests(APITestCase):
         self.assertIn("закупочный баланс", response.data["detail"].lower())
         self.model.refresh_from_db()
         self.assertFalse(self.model.enabled)
+
+    def test_credentials_separate_transport_health_from_customer_traffic_readiness(self):
+        self.provider.enabled = True
+        self.provider.save(update_fields=["enabled"])
+        create_funding_account(
+            provider=self.provider,
+            api_key=self.key,
+            label="Empty funding",
+            currency="RUB",
+            is_default=True,
+        )
+
+        response = self.client.get(
+            f"/api/v1/admin/providers/{self.provider.slug}/credentials/"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["health_state"], Provider.HealthState.HEALTHY)
+        self.assertFalse(response.data["customer_traffic_ready"])
+        self.assertTrue(
+            any(
+                "закупочный баланс" in item.lower()
+                for item in response.data["customer_traffic_blockers"]
+            )
+        )
 
     def test_activation_reports_model_without_safe_price(self):
         PriceVersion.objects.filter(model_slug=self.model.slug).update(active=False)
