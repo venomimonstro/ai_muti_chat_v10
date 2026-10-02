@@ -10,7 +10,7 @@ from .models import ImageGeneration, ImageModel
 
 
 @pytest.mark.django_db
-def test_completed_image_with_negative_margin_disables_provider():
+def test_completed_image_with_negative_margin_disables_only_model():
     user = User.objects.create_user(
         username="image-loss", email="image-loss@example.test", password="password123"
     )
@@ -38,16 +38,17 @@ def test_completed_image_with_negative_margin_disables_provider():
         actual_cost_rub=Decimal("5"),
     )
 
+    model.refresh_from_db()
     provider.refresh_from_db()
-    assert provider.emergency_disabled is True
-    assert provider.health_state == Provider.HealthState.DISABLED
+    assert model.enabled is False
+    assert provider.emergency_disabled is False
     anomaly = CostAnomaly.objects.get(dedupe_key=f"image-critical-loss:{generation.id}")
     assert anomaly.severity == "critical"
     assert anomaly.details["reason"] == "image_provider_cost_above_customer_charge"
 
 
 @pytest.mark.django_db
-def test_profitable_image_does_not_disable_provider():
+def test_profitable_image_keeps_model_and_provider_enabled():
     user = User.objects.create_user(
         username="image-profit", email="image-profit@example.test", password="password123"
     )
@@ -75,6 +76,8 @@ def test_profitable_image_does_not_disable_provider():
         actual_cost_rub=Decimal("5"),
     )
 
+    model.refresh_from_db()
     provider.refresh_from_db()
+    assert model.enabled is True
     assert provider.emergency_disabled is False
     assert CostAnomaly.objects.filter(provider_slug=provider.slug).count() == 0
