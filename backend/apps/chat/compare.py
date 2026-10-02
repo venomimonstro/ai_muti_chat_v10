@@ -243,6 +243,12 @@ def run_compare(*, user, conversation, prompt, model_slugs, idempotency_key, sou
                 provider_cost, charge, _profit, _margin = calculate_from_snapshot(
                     row["price"], usage.input_tokens, usage.output_tokens, variant.pricing_snapshot
                 )
+                # Upstream usage is already confirmed. Persist it before enforcing
+                # the customer ceiling so FAILED cannot release a real provider cost.
+                variant.provider_request_id = usage.provider_request_id
+                variant.input_tokens = usage.input_tokens
+                variant.output_tokens = usage.output_tokens
+                variant.provider_cost_rub = provider_cost
                 if charge > variant.expected_max_rub:
                     _trip_compare_cost_guard(
                         model=row["model"],
