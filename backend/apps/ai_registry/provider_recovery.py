@@ -264,7 +264,12 @@ def install(reliability_module) -> None:
         # Credential/provider endpoint is healthy and all configured model ids have
         # now been quarantined. Provider health remains separate from model health;
         # customer catalog stays empty until the dedicated model recovery proves one.
-        reliability_module.record_success(provider, health.latency_ms, adapter=health_adapter)
+        reliability_module.record_success(
+            provider,
+            health.latency_ms,
+            adapter=health_adapter,
+            inference_verified=False,
+        )
         ProviderHealthSnapshot.objects.create(
             provider=provider,
             healthy=True,
