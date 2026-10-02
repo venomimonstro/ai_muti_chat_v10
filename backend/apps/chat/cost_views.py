@@ -214,10 +214,13 @@ def _authorize_customer_stream(generation):
 def _terminalize_stream_authorization_failure(generation, exc):
     """Fail one prepared turn instead of leaving a forever-QUEUED reservation.
 
-    This path runs strictly before provider execution. Marking the Generation
-    terminal also triggers existing procurement/search cleanup signals.
+    Persist the terminal state in one clean transaction first. Customer refund is
+    attempted only after that transaction exits: catching a database error inside
+    atomic() would poison the transaction and recreate TransactionManagementError.
+    Generation terminal signals close provider/search reservations.
     """
     try:
+        reservation_id = None
         with transaction.atomic():
             locked = (
                 Generation.objects.select_for_update()
@@ -229,15 +232,7 @@ def _terminalize_stream_authorization_failure(generation, exc):
                 generation.error_code = locked.error_code
                 return locked
 
-            if locked.reservation_id:
-                try:
-                    release(locked.reservation_id)
-                except Exception:
-                    logger.exception(
-                        "Chat stream authorization customer reserve release failed generation_id=%s",
-                        locked.id,
-                    )
-
+            reservation_id = locked.reservation_id
             locked.state = Generation.State.FAILED
             locked.error_code = "stream_authorization_failed"
             locked.completed_at = timezone.now()
@@ -245,10 +240,22 @@ def _terminalize_stream_authorization_failure(generation, exc):
             Message.objects.filter(pk=locked.assistant_message_id).update(
                 status=Message.Status.FAILED
             )
-            generation.state = locked.state
-            generation.error_code = locked.error_code
-            generation.completed_at = locked.completed_at
-            return locked
+
+        if reservation_id:
+            try:
+                release(reservation_id)
+            except Exception:
+                # Terminal state is already durable. Stale/billing recovery can
+                # retry the idempotent refund without ever executing the provider.
+                logger.exception(
+                    "Chat stream authorization customer reserve release failed generation_id=%s",
+                    locked.id,
+                )
+
+        generation.state = locked.state
+        generation.error_code = locked.error_code
+        generation.completed_at = locked.completed_at
+        return locked
     except Exception:
         logger.exception(
             "Chat stream authorization terminalization failed generation_id=%s original=%r",
@@ -256,8 +263,6 @@ def _terminalize_stream_authorization_failure(generation, exc):
             exc,
         )
         raise
-
-
 def _preparing_snapshot(generation_id):
     close_old_connections()
     try:
