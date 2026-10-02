@@ -102,6 +102,12 @@ fi
 
 ensure_update_bootstrap_disk
 
+# Small production hosts must never enter a BuildKit export while disk is already
+# under pressure. This cleanup is safe: named volumes/PostgreSQL/media are untouched.
+if [[ -x "${PROJECT_DIR}/scripts/disk_guard.sh" ]]; then
+  PROJECT_DIR="${PROJECT_DIR}" MIN_FREE_GB=6 TARGET_FREE_GB=8     bash "${PROJECT_DIR}/scripts/disk_guard.sh" || true
+fi
+
 docker_free_kb() {
   local root
   root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
@@ -156,7 +162,7 @@ prune_project_build_artifacts() {
 }
 
 ensure_full_build_disk_before_backup() {
-  local minimum_kb="${UPDATE_FULL_MIN_FREE_KB:-8388608}" # 8 GiB
+  local minimum_kb="${UPDATE_FULL_MIN_FREE_KB:-4194304}" # 4 GiB after slim-image cleanup
   local free_kb
   free_kb="$(docker_free_kb)"
   if (( free_kb < minimum_kb )); then
@@ -455,6 +461,9 @@ fi
 phase 4 'Проверка production-конфигурации'
 ensure_runtime_env
 printf '[PASS] Runtime env и secrets готовы.\n'
+if [[ -f "${PROJECT_DIR}/scripts/install_disk_guard.sh" ]] && command -v systemctl >/dev/null 2>&1; then
+  PROJECT_DIR="${PROJECT_DIR}" bash "${PROJECT_DIR}/scripts/install_disk_guard.sh" >/dev/null 2>&1 ||     printf '[WARN] Не удалось установить systemd disk-guard; update-time cleanup остаётся активным.\n'
+fi
 
 if [[ "$UPDATE_MODE" == "full" ]]; then
   phase 5 'FULL gate: место + backup + тесты + безопасность + frontend'
@@ -485,7 +494,14 @@ if [[ "$UPDATE_MODE" == "full" ]]; then
   # occupy several GiB. Reclaim disposable layers before the production image export.
   reclaim_disposable_docker_space
   ensure_full_build_disk_before_backup
-  compose build --pull
+  # Build sequentially on small hosts so BuildKit never needs several large export
+  # snapshots at once. backend/worker/beat reuse the same image.
+  COMPOSE_PARALLEL_LIMIT=1 compose build --pull backend
+  docker builder prune -af >/dev/null 2>&1 || true
+  COMPOSE_PARALLEL_LIMIT=1 compose build --pull sandbox
+  docker builder prune -af >/dev/null 2>&1 || true
+  COMPOSE_PARALLEL_LIMIT=1 compose build --pull frontend
+  docker builder prune -af >/dev/null 2>&1 || true
   compose pull searxng
   compose up -d postgres redis searxng
   compose run --rm backend python manage.py migration_safety_check
