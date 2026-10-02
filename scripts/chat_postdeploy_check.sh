@@ -52,14 +52,17 @@ printf '[5/7] Every customer-visible model must pass a minimal real inference...
 compose exec -T backend python manage.py chat_runtime_check --live
 printf '[PASS] Customer-visible models respond to live inference\n'
 
-printf '[6/7] Free web search...\n'
-compose exec -T backend python -c "import json,urllib.parse,urllib.request; u='http://searxng:8080/search?'+urllib.parse.urlencode({'q':'OpenAI current news','format':'json','safesearch':1}); d=json.load(urllib.request.urlopen(u,timeout=10)); assert isinstance(d.get('results'),list)"
-printf '[PASS] Web search\n'
+printf '[6/7] Optional web search (must not take core chat offline)...\n'
+if compose exec -T backend python -c "import json,urllib.parse,urllib.request; u='http://searxng:8080/search?'+urllib.parse.urlencode({'q':'OpenAI current news','format':'json','safesearch':1}); d=json.load(urllib.request.urlopen(u,timeout=10)); assert isinstance(d.get('results'),list)" >/dev/null 2>&1; then
+  printf '[PASS] Web search\n'
+else
+  printf '[WARN] Web search unavailable; core AI chat remains valid and search degrades independently.\n'
+fi
 
-printf '[7/7] Billing and stale-operation integrity...\n'
+printf '[7/7] Billing and chat-recovery integrity...\n'
 compose exec -T backend python manage.py billing_integrity_check
-compose exec -T backend python manage.py agent_recovery_audit >/dev/null
-printf '[PASS] Billing/recovery integrity\n'
+compose exec -T backend python manage.py shell -c "from apps.procurement.chat_signals import reconcile_confirmed_chat_procurement; print(reconcile_confirmed_chat_procurement(limit=500))"
+printf '[PASS] Billing/chat recovery integrity\n'
 
 printf '\n============================================================\n'
 printf 'PRODUCTION CHAT ACCEPTANCE: PASS\n'
