@@ -414,3 +414,66 @@ def test_failed_image_with_confirmed_usage_settles_provider_spend(procurement_co
     assert spend.customer_charge_rub == Decimal("0.0000")
     assert account.reserved_native == Decimal("0.000000")
     assert account.spent_native == Decimal("0.015000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_commercial_signal_reserve_uses_snapshot_currency_account(procurement_context, monkeypatch):
+    user, provider, model, usd_account = procurement_context
+    record_purchase(
+        account=usd_account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+    monkeypatch.setenv("VENDOR_EUR_KEY", "secret-eur-test")
+    eur_account = create_funding_account(
+        provider=provider,
+        label="EUR funding",
+        credential_env="VENDOR_EUR_KEY",
+        currency="EUR",
+        is_default=False,
+    )
+    record_purchase(
+        account=eur_account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1100"),
+        created_by=user,
+    )
+
+    conversation = Conversation.objects.create(
+        owner=user,
+        title="Currency routed compare",
+    )
+    run = CompareRun.objects.create(
+        owner=user,
+        conversation=conversation,
+        prompt="currency routing",
+        idempotency_key="compare-currency-routing",
+        state=CompareRun.State.RUNNING,
+        model_slugs=[model.slug],
+        expected_min_rub=Decimal("1"),
+        expected_max_rub=Decimal("4"),
+    )
+    variant = CompareVariant.objects.create(
+        compare_run=run,
+        model=model,
+        position=0,
+        state=CompareVariant.State.RUNNING,
+        expected_min_rub=Decimal("1"),
+        expected_max_rub=Decimal("4"),
+        pricing_snapshot={
+            "fx_rate": "100",
+            "provider_currency": "EUR",
+            "expected_provider_cost_rub": "2",
+        },
+    )
+
+    reservation = ProviderSpendReservation.objects.get(
+        source_key=f"compare:{variant.id}"
+    )
+    usd_account.refresh_from_db()
+    eur_account.refresh_from_db()
+
+    assert reservation.account_id == eur_account.id
+    assert eur_account.reserved_native == Decimal("0.020000")
+    assert usd_account.reserved_native == Decimal("0.000000")
