@@ -20,6 +20,7 @@ from apps.billing.services import release, reserve, settle
 from apps.projects.models import Project
 
 from .accounting import (
+    actual_agent_quote_from_snapshot,
     build_agent_provider_delivery_checkpoint,
     release_agent_provider_spend,
     reserve_agent_provider_spend,
@@ -269,15 +270,10 @@ class AgentAIPlannerPreviewView(APIView):
                 messages=messages,
                 max_output_tokens=max_output,
             )
-            actual_quote = require_margin(
-                quote(
-                    price,
-                    max(1, result.input_tokens),
-                    max(1, result.output_tokens),
-                    provider_slug=model.provider.slug,
-                    model_slug=model.slug,
-                    operation_type="agent",
-                )
+            actual_quote = actual_agent_quote_from_snapshot(
+                price=price,
+                result=result,
+                preflight=estimate,
             )
             actual = min(Decimal(actual_quote.user_charge_rub), Decimal(customer.amount_rub))
             checkpoint = build_agent_provider_delivery_checkpoint(
