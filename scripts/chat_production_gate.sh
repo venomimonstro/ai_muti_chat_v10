@@ -92,7 +92,11 @@ echo '============================================================'
 # transaction, then executes the same preview -> AUTO router -> pricing -> procurement
 # reserve -> customer reserve -> Generation path as the real chat. No provider call is
 # made and no test data or wallet mutation survives the command.
-compose exec -T backend python manage.py chat_preflight_smoke --mode auto
+if ! compose exec -T backend python manage.py chat_preflight_smoke --mode auto; then
+  echo '[FAIL] AUTO customer preflight failed; dumping exact provider/routing/procurement state.'
+  compose exec -T backend python manage.py chat_pipeline_trace --live || true
+  exit 1
+fi
 
 echo '============================================================'
 echo '[4/5] Live inference for every customer-visible model'
