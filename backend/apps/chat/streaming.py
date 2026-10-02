@@ -44,6 +44,7 @@ from .cancellation import cancel_requested
 from .context import assemble_context, refresh_rolling_summary
 from .models import Conversation, Generation, GenerationAttempt, Message, RoutingDecision
 from .partial_billing import settle_delivered_partial
+from .pipeline_trace import trace as pipeline_trace
 from .vision import attach_vision_to_messages, resolve_vision_assets, vision_metadata
 from .web_context import enrich_snapshot_with_web
 
@@ -191,6 +192,13 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
             model=locked.selected_model,
             idempotency_key=idempotency_key,
         )
+    pipeline_trace(
+        "GENERATION_CREATED",
+        generation=generation,
+        routing_mode=locked.routing_mode,
+        selected_model=locked.selected_model,
+        attachment_count=len(file_ids),
+    )
     _index_history(user_message)
 
     memory_action, suppress_memory = process_explicit_command(
@@ -212,6 +220,18 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
         if attachments and len(attachments) != len(vision_assets):
             routing_content += "\n[document attachment: файл документ таблица PDF]"
         route = select_route(conversation=locked, content=routing_content)
+        pipeline_trace(
+            "ROUTE_SELECTED",
+            generation=generation,
+            routing_mode=locked.routing_mode,
+            model=route.selected.slug,
+            provider=route.selected.provider.slug,
+            upstream=route.selected.upstream_model,
+            candidates=[
+                f"{row.get('model')}:{row.get('status')}:{','.join(row.get('reasons') or [])}"
+                for row in route.candidates
+            ],
+        )
         if vision_assets and "vision" not in set(route.selected.capabilities or []):
             raise ValidationError("Выбранная модель не поддерживает анализ изображений")
         generation.model = route.selected.slug
@@ -310,8 +330,22 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
                 continue
             priced.append((model, price, price_quote))
         if not priced:
+            pipeline_trace(
+                "PRICING_REJECTED_ALL",
+                generation=generation,
+                candidates=[
+                    f"{row.get('model')}:{row.get('status')}:{','.join(row.get('reasons') or [])}"
+                    for row in decision.candidate_snapshot
+                ],
+            )
             raise ValidationError("Сейчас нет модели с доступным API-балансом для этого запроса")
 
+        pipeline_trace(
+            "PRICING_READY",
+            generation=generation,
+            priced_models=[model.slug for model, _price, _quote in priced],
+            rejected_models=sorted(rejected),
+        )
         selected_model = priced[0][0]
         if selected_model.pk != decision.selected_model_id:
             decision.selected_model = selected_model
@@ -335,8 +369,14 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
         estimates = [item.user_charge_rub for _, _, item in priced]
         estimated = max(estimates)
         reservation = reserve(user, estimated, f"generation:{generation.id}")
+        pipeline_trace(
+            "CUSTOMER_BALANCE_RESERVED",
+            generation=generation,
+            reservation_id=reservation.id,
+            amount_rub=estimated,
+        )
         selected_quote = priced[0][2]
-        RequestCost.objects.create(
+        request_cost = RequestCost.objects.create(
             generation_id=generation.id,
             price_version=priced[0][1],
             estimated_rub=estimated,
@@ -344,6 +384,14 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
             fx_snapshot=selected_quote.fx_snapshot,
             pricing_snapshot=selected_quote.pricing_snapshot,
             model_version_id_snapshot=priced[0][0].current_version_id,
+        )
+        pipeline_trace(
+            "REQUEST_COST_CREATED",
+            generation=generation,
+            request_cost_id=request_cost.id,
+            model=priced[0][0].slug,
+            provider=priced[0][0].provider.slug,
+            expected_provider_cost_rub=selected_quote.provider_cost_rub,
         )
         generation.reservation_id = reservation.id
         generation.route_price_snapshot = {
@@ -358,7 +406,19 @@ def prepare(*, user, conversation, content, client_message_id, idempotency_key, 
         }
         generation.state = Generation.State.QUEUED
         generation.save(update_fields=["reservation_id", "route_price_snapshot", "state"])
-    except Exception:
+        pipeline_trace(
+            "PREPARE_QUEUED",
+            generation=generation,
+            model=generation.model,
+            reservation_id=generation.reservation_id,
+        )
+    except Exception as exc:
+        pipeline_trace(
+            "PREPARE_FAILED",
+            generation=generation,
+            error_type=type(exc).__name__,
+            error=str(exc)[:500],
+        )
         if reservation is not None:
             try:
                 release(reservation.id)
@@ -422,6 +482,7 @@ def run(generation, *, adapter=None):
         yield sse("error", {"code": generation.error_code or "generation_not_runnable"})
         return
 
+    pipeline_trace("RUN_START", generation=generation, model=generation.model)
     primary = AIModel.objects.select_related("provider", "fallback_model", "current_version").get(slug=generation.model)
     if adapter:
         candidates = [primary]
@@ -445,6 +506,11 @@ def run(generation, *, adapter=None):
         except RoutingDecision.DoesNotExist:
             candidates = candidate_models(primary)
 
+    pipeline_trace(
+        "RUNTIME_CANDIDATES",
+        generation=generation,
+        candidates=[f"{model.provider.slug}/{model.slug}" for model in candidates],
+    )
     history = generation.context_snapshot.get("provider_messages") or [
         {"role": generation.user_message.role, "content": generation.user_message.content}
     ]
@@ -576,7 +642,29 @@ def run(generation, *, adapter=None):
                 attempt_completed = None
                 provider_adapter = adapter
                 try:
-                    provider_adapter = adapter or adapter_for(model)
+                    pipeline_trace(
+                        "PROVIDER_ATTEMPT_START",
+                        generation=generation,
+                        sequence=sequence,
+                        provider=model.provider.slug,
+                        model=model.slug,
+                        upstream=model.upstream_model,
+                    )
+                    provider_adapter = adapter or adapter_for(
+                        model,
+                        require_funding_balance=False,
+                    )
+                    pipeline_trace(
+                        "PROVIDER_ADAPTER_READY",
+                        generation=generation,
+                        sequence=sequence,
+                        provider=model.provider.slug,
+                        model=model.slug,
+                        key_id=getattr(provider_adapter, "_ai_workspace_key_id", ""),
+                        funding_account_id=getattr(
+                            provider_adapter, "_ai_workspace_funding_account_id", ""
+                        ),
+                    )
                     max_output_tokens = min(
                         MAX_OUTPUT_TOKENS,
                         int(generation.context_snapshot.get("budget", {}).get("output_reserved") or MAX_OUTPUT_TOKENS),
@@ -604,11 +692,31 @@ def run(generation, *, adapter=None):
                     latency = int((time.monotonic() - started) * 1000)
                     _finish_attempt(attempt, state=GenerationAttempt.State.COMPLETED, started=started)
                     record_success(model.provider, latency, adapter=provider_adapter)
+                    pipeline_trace(
+                        "PROVIDER_ATTEMPT_OK",
+                        generation=generation,
+                        sequence=sequence,
+                        provider=model.provider.slug,
+                        model=model.slug,
+                        latency_ms=latency,
+                        input_tokens=attempt_completed.input_tokens,
+                        output_tokens=attempt_completed.output_tokens,
+                    )
                     completed = attempt_completed
                     selected_model = model
                     break
                 except ProviderError as exc:
                     last_error = exc
+                    pipeline_trace(
+                        "PROVIDER_ATTEMPT_FAILED",
+                        generation=generation,
+                        sequence=sequence,
+                        provider=model.provider.slug,
+                        model=model.slug,
+                        error_code=exc.code,
+                        retryable=exc.retryable,
+                        error=str(exc)[:500],
+                    )
                     _finish_attempt(attempt, state=GenerationAttempt.State.FAILED, started=started, error=exc)
                     record_failure(model.provider, exc, adapter=provider_adapter)
                     if emitted:
@@ -700,6 +808,14 @@ def run(generation, *, adapter=None):
                 generation.save(update_fields=[
                     "state", "provider_request_id", "input_tokens", "output_tokens", "actual_cost_rub", "routed_model", "provider_slug", "completed_at"
                 ])
+                pipeline_trace(
+                    "GENERATION_COMPLETED",
+                    generation=generation,
+                    provider=selected_model.provider.slug,
+                    model=selected_model.slug,
+                    charge_rub=charge,
+                    provider_request_id=completed.provider_request_id,
+                )
         if over_reservation:
             raise ValidationError("Provider usage exceeded reserved maximum")
         _index_history(assistant)
@@ -734,6 +850,13 @@ def run(generation, *, adapter=None):
         generation.save(update_fields=["state", "error_code", "actual_cost_rub", "completed_at"])
         return
     except Exception as exc:
+        pipeline_trace(
+            "GENERATION_FAILED",
+            generation=generation,
+            error_type=type(exc).__name__,
+            error_code=getattr(exc, "code", ""),
+            error=str(exc)[:500],
+        )
         release(generation.reservation_id)
         assistant.content = full_text
         assistant.status = Message.Status.PARTIAL if full_text else Message.Status.FAILED
