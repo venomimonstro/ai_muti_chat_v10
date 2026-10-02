@@ -270,3 +270,28 @@ PAYMENTS_VAT_CODE = int(os.getenv("PAYMENTS_VAT_CODE", "1"))
 PAYMENT_MIN_RUB = os.getenv("PAYMENT_MIN_RUB", "100.00")
 PAYMENT_MAX_RUB = os.getenv("PAYMENT_MAX_RUB", "100000.00")
 ADMIN_MFA_ENFORCED = os.getenv("ADMIN_MFA_ENFORCED", "false").lower() == "true"
+
+
+# Structured customer-chat production tracing. These records contain IDs/statuses
+# only; pipeline_trace explicitly strips secrets and authorization material.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "chat.pipeline": {
+            "handlers": ["console"],
+            "level": os.getenv("CHAT_PIPELINE_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+        "apps.chat": {
+            "handlers": ["console"],
+            "level": os.getenv("CHAT_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+    },
+}
