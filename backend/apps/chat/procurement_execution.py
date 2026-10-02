@@ -156,7 +156,7 @@ def _rebind_failed_provider_reservation(generation_id, provider) -> bool:
 
 def install(streaming_module) -> None:
     """Bind one chat Generation to its exact purchased API account."""
-    if getattr(streaming_module.run, "_ai_workspace_procurement_execution", False):
+    if getattr(streaming_module.run, "_ai_workspace_procurement_execution", False) is True:
         return
 
     raw_run = streaming_module.run
