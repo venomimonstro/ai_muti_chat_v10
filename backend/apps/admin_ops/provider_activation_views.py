@@ -28,8 +28,11 @@ def _procurement_blocker(provider):
     ):
         return ""
     account = default_account(provider)
+    # Funding-account bookkeeping is optional until explicitly configured.
+    # Do not block an otherwise verified provider/key merely because the owner
+    # has not enabled the procurement ledger for that provider.
     if account is None:
-        return "Не записан закупочный баланс API для этого провайдера"
+        return ""
     if not credential_is_configured(account):
         return "Закупочный аккаунт не связан с рабочим API-ключом"
     if account_available_native(account) <= 0:
