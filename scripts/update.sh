@@ -76,8 +76,6 @@ ensure_update_bootstrap_disk() {
   fi
 }
 
-ensure_update_bootstrap_disk
-
 if [[ "${AI_WORKSPACE_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
   LOCK_CONFLICT_EXIT=75
   if flock --nonblock --close --conflict-exit-code "${LOCK_CONFLICT_EXIT}" "${LOCK_FILE}" \
@@ -101,6 +99,8 @@ if [[ "${AI_WORKSPACE_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
     exit "$status"
   fi
 fi
+
+ensure_update_bootstrap_disk
 
 mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
 touch "${UPDATE_LOG}"
