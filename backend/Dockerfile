@@ -31,6 +31,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/agent-browsers
 
 COPY . .
+RUN python -m compileall -q /app \
+    && find /app -type d -name '__pycache__' -prune -exec rm -rf {} + \
+    && find /app -type f -name '*.pyc' -delete
+
 RUN addgroup --system --gid 10001 app \
     && adduser --system --uid 10001 --ingroup app --home /app app \
     && mkdir -p /app/media /app/staticfiles /app/logs \
