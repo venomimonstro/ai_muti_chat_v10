@@ -13,7 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.ai_registry.adapters import ProviderError
-from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry import dispatch
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
@@ -204,7 +204,7 @@ class AgentAIPlannerPreviewView(APIView):
                     (estimate.pricing_snapshot or {}).get("provider_currency") or ""
                 ),
             )
-            result = adapter_for(
+            result = dispatch.adapter_for(
                 model,
                 funding_account_id=(
                     getattr(provider_reservation, "account_id", None)
