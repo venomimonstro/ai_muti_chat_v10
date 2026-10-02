@@ -59,11 +59,18 @@ def search_required(query: str) -> bool:
     if any(int(year) >= current_year - 1 for year in YEAR_RE.findall(text)):
         return True
     dynamic = any(marker in text for marker in DYNAMIC_SUBJECTS)
+    decision = any(marker in text for marker in DECISION_MARKERS)
+    local = any(marker in text for marker in LOCAL_MARKERS)
     if "сейчас" in text and dynamic:
         return True
-    if dynamic and any(marker in text for marker in DECISION_MARKERS):
+    if dynamic and decision:
         return True
-    if dynamic and any(marker in text for marker in LOCAL_MARKERS):
+    if dynamic and local:
+        return True
+    # Local recommendations and business decisions depend on a changing market
+    # even when the noun itself is not in DYNAMIC_SUBJECTS (for example
+    # "что лучше открыть в Москве с бюджетом ...").
+    if decision and local:
         return True
     # A pure creation/transformation request must not become a paid search merely
     # because the user says "сейчас" as an imperative/adverb.
