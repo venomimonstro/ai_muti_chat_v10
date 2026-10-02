@@ -10,8 +10,9 @@ SECRET_PATTERNS = (
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b")),
     ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
-    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{24,}\b")),
+    # Specific sk-* vendors must be checked before the generic OpenAI shape.
     ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
+    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{24,}\b")),
     ("stripe_live_key", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b")),
     ("slack_token", re.compile(r"\bxox(?:b|p|a|r|s)-[A-Za-z0-9-]{20,}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
