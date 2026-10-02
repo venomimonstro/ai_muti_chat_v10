@@ -390,6 +390,61 @@
 .moneyPanel b { font-size: 12px; }
 .moneyPanel span { color: #666277; font-size: 9px; line-height: 1.4; }
 
+.trustSection {
+  width: min(1180px, calc(100% - 56px));
+  margin: 0 auto;
+  padding: 92px 0 24px;
+}
+.trustHead {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: 1.15fr .85fr;
+  gap: 70px;
+  align-items: end;
+}
+.trustHead h2 {
+  margin: 0;
+  font-size: clamp(38px,4vw,58px);
+  line-height: 1.02;
+  letter-spacing: -.055em;
+}
+.trustHead p {
+  margin: 0;
+  color: #6e716f;
+  font-size: 14px;
+  line-height: 1.72;
+}
+.trustGrid {
+  margin-top: 40px;
+  display: grid;
+  grid-template-columns: repeat(4,1fr);
+  gap: 9px;
+}
+.trustGrid article {
+  min-height: 220px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(251,250,247,.78);
+}
+.trustGrid span {
+  color: #7567ff;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .12em;
+}
+.trustGrid h3 {
+  margin: 58px 0 9px;
+  font-size: 18px;
+  letter-spacing: -.03em;
+}
+.trustGrid p {
+  margin: 0;
+  color: #717471;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
 .apiSection { width: min(1180px, calc(100% - 56px)); margin: 0 auto; padding: 104px 0 116px; display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: center; }
 .apiCard { overflow: hidden; border: 1px solid #292d33; border-radius: 22px; color: #d9dde3; background: #121519; box-shadow: 0 26px 60px rgba(14,16,18,.18); }
 .apiTop { height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid #282c32; }
@@ -441,6 +496,7 @@
 .footerBottom span:last-child { max-width: 580px; text-align: right; }
 
 @media (max-width: 1120px) {
+  .trustGrid { grid-template-columns: repeat(2,1fr); }
   .platformRail { grid-template-columns: repeat(2,1fr); }
   .platformRail article { min-height: 280px; }
 
@@ -462,6 +518,12 @@
 }
 
 @media (max-width: 760px) {
+  .trustSection { width: calc(100% - 34px); padding: 72px 0 16px; }
+  .trustHead { grid-template-columns: 1fr; gap: 18px; }
+  .trustHead h2 { font-size: 36px; }
+  .trustGrid { grid-template-columns: 1fr; margin-top: 30px; }
+  .trustGrid article { min-height: 190px; }
+  .trustGrid h3 { margin-top: 42px; }
   .platformSection { width: calc(100% - 16px); padding: 52px 10px 10px; border-radius: 24px; }
   .platformIntro { grid-template-columns: 1fr; gap: 20px; padding: 0 12px 34px; }
   .platformIntro .sectionLabel { grid-column: auto; }
