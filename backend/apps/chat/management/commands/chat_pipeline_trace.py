@@ -3,7 +3,8 @@ from __future__ import annotations
 from django.core.management.base import BaseCommand
 
 from apps.ai_registry.dispatch import adapter_for, runtime_credential_ready, select_runtime_api_key
-from apps.ai_registry.models import AIModel, Provider, RoutingTierAssignment
+from apps.ai_registry.models import AIModel, Provider, RoutingPolicyVersion, RoutingTierAssignment
+from apps.ai_registry.routing_pools import tier_pool
 from apps.ai_registry.reliability import model_client_ready, provider_available
 from apps.billing.pricing import active_price, quote
 from apps.procurement.account_routing import account_available_native, account_credential_ready
@@ -65,36 +66,35 @@ class Command(BaseCommand):
         ).count()
         self.stdout.write(f"ACTIVE_PROVIDER_RESERVATIONS={active_reservations}")
 
-        self.stdout.write("\n[3] ADMIN ROUTING TIERS")
+        self.stdout.write("\n[3] EFFECTIVE ROUTING TIERS")
+        policy = RoutingPolicyVersion.objects.filter(active=True).first()
+        thresholds = (policy.thresholds or {}) if policy else {}
+        effective_pools = {}
         for tier in (
             RoutingTierAssignment.Tier.SIMPLE,
             RoutingTierAssignment.Tier.MEDIUM,
             RoutingTierAssignment.Tier.COMPLEX,
         ):
-            rows = list(
-                RoutingTierAssignment.objects.filter(tier=tier)
-                .select_related("model", "model__provider")
-                .order_by("priority", "model__provider__priority", "model__slug")
+            pool = tier_pool(thresholds, tier)
+            effective_pools[tier] = pool
+            source = "db" if RoutingTierAssignment.objects.filter(enabled=True).exists() else "policy"
+            self.stdout.write(
+                f"TIER {tier} source={source} models={pool}"
             )
-            if not rows:
-                self.stdout.write(f"TIER {tier}: EMPTY")
-            for row in rows:
-                self.stdout.write(
-                    f"TIER {tier} priority={row.priority} assignment_enabled={row.enabled} "
-                    f"model={row.model.slug} model_enabled={row.model.enabled} provider={row.model.provider.slug}"
-                )
 
         self.stdout.write("\n[4] MODEL READINESS / PRICE / PROCUREMENT")
-        assigned_ids = set(
-            RoutingTierAssignment.objects.filter(enabled=True).values_list("model_id", flat=True)
-        )
+        routed_slugs = {
+            slug
+            for pool in effective_pools.values()
+            for slug in pool
+        }
         models = (
             AIModel.objects.filter(enabled=True)
             .select_related("provider")
             .order_by("provider__priority", "provider__slug", "slug")
         )
         for model in models:
-            if assigned_ids and model.id not in assigned_ids:
+            if routed_slugs and model.slug not in routed_slugs:
                 continue
             price_ok = False
             margin_allowed = False
@@ -151,17 +151,14 @@ class Command(BaseCommand):
 
         self.stdout.write("\n[5] RESULT")
         simple_ready = []
-        for assignment in (
-            RoutingTierAssignment.objects.filter(
-                tier=RoutingTierAssignment.Tier.SIMPLE,
-                enabled=True,
-                model__enabled=True,
-            )
-            .select_related("model", "model__provider")
-            .order_by("priority")
+        simple_pool = effective_pools.get(RoutingTierAssignment.Tier.SIMPLE, [])
+        for model in (
+            AIModel.objects.filter(slug__in=simple_pool, enabled=True)
+            .select_related("provider")
+            .order_by("provider__priority", "slug")
         ):
-            if model_client_ready(assignment.model):
-                simple_ready.append(assignment.model.slug)
+            if model_client_ready(model):
+                simple_ready.append(model.slug)
         self.stdout.write(f"SIMPLE_READY_MODELS={simple_ready}")
         if not simple_ready:
             self.stdout.write(self.style.ERROR("CHAT_PIPELINE_BROKEN: SIMPLE tier has no client-ready model"))
