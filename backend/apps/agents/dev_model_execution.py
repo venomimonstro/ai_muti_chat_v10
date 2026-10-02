@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from apps.ai_registry.adapters import ProviderError
-from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry import dispatch
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
 
@@ -145,7 +145,7 @@ def execute_with_model_fallback(
             )
 
             def reserved_adapter_factory(candidate):
-                return adapter_for(
+                return dispatch.adapter_for(
                     candidate,
                     funding_account_id=funding_account_id,
                 )
