@@ -99,15 +99,18 @@ if ! compose exec -T backend python manage.py chat_preflight_smoke --mode auto; 
 fi
 
 echo '============================================================'
-echo '[4/5] Live inference for every customer-visible model'
+echo '[4/6] Full real customer chat generation'
 echo '============================================================'
-# Direct live inference is complementary to the synthetic customer preflight above:
-# preflight proves the commercial/chat path, while this proves every model currently
-# advertised to users can actually answer through its production credential.
+compose exec -T backend python manage.py check_provider_health --live
+compose exec -T backend python manage.py chat_live_smoke --mode auto
+
+echo '============================================================'
+echo '[5/6] Live inference for every customer-visible model'
+echo '============================================================'
 compose exec -T backend python manage.py chat_runtime_check --live
 
 echo '============================================================'
-echo '[5/5] Full customer HTTP journey when E2E account is configured'
+echo '[6/6] Full customer HTTP journey when E2E account is configured'
 echo '============================================================'
 E2E_USERNAME="$(env_value E2E_USERNAME)"
 E2E_PASSWORD="$(env_value E2E_PASSWORD)"
