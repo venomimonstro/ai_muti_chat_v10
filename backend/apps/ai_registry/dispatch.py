@@ -218,6 +218,18 @@ def adapter_for(
             allow_probe=allow_probe,
             funding_account_id=funding_account_id,
         )
+    if provider.slug == "hubai":
+        adapter = adapters.HubAIChatAdapter(
+            api_key=api_key,
+            base_url=provider.api_base_url or "https://hubai.loe.gg/v1",
+        )
+        return _bind_runtime_identity(
+            adapter,
+            key_id=key_id,
+            model=model,
+            allow_probe=allow_probe,
+            funding_account_id=funding_account_id,
+        )
 
     if provider.adapter_type == Provider.AdapterType.ECHO:
         return _bind_runtime_identity(
@@ -240,17 +252,10 @@ def adapter_for(
             or os.getenv("ANTHROPIC_API_BASE_URL", "https://api.anthropic.com/v1"),
         )
     elif provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT:
-        base_url = (
-            provider.api_base_url
-            or (
-                os.getenv("HUBAI_API_BASE_URL", "https://hubai.loe.gg/v1")
-                if provider.slug == "hubai"
-                else os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com")
-            )
-        )
         adapter = adapters.DeepSeekChatAdapter(
             api_key=api_key,
-            base_url=base_url,
+            base_url=provider.api_base_url
+            or os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
         )
     elif provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT:
         adapter = adapters.GeminiGenerateContentAdapter(
