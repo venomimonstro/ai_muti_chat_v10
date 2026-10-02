@@ -33,7 +33,9 @@ def test_yandex_search_decodes_raw_data(monkeypatch):
     monkeypatch.setattr(web_tools, "_assert_public_http_url", lambda _url: None)
     monkeypatch.setattr(web_tools.httpx, "post", lambda *args, **kwargs: Response())
 
-    results = web_tools.search_web("test", limit=1)
+    # This regression verifies the Yandex wire/decoding contract itself. Provider
+    # selection and paid-search billing policy are covered separately.
+    results = web_tools._search_yandex("test", limit=1)
     assert len(results) == 1
     assert results[0].title == "Example"
     assert results[0].snippet == "Result"
