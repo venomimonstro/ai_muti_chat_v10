@@ -283,9 +283,10 @@ def install(*, streaming_module, web_tools_module) -> None:
     def billed_yandex(query: str, *, limit: int):
         context = _ctx.get()
         if not context:
-            raise web_tools_module.WebToolError(
-                "Paid search requires a billable chat context"
-            )
+            # Registry diagnostics and explicit internal search are not customer
+            # chat operations. Preserve the transport contract outside chat; the
+            # provider-order billing gate still controls whether Yandex is enabled.
+            return raw_yandex(query, limit=limit)
         from apps.chat.models import Generation
 
         generation = Generation.objects.filter(
