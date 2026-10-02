@@ -122,10 +122,15 @@ def system_heartbeat_task():
 @shared_task
 def recover_stale_operations_task():
     result = recover_stale_operations()
-    from apps.agents.recovery import expire_stale_agent_approvals, recover_stale_agent_runs
+    from apps.agents.recovery import (
+        expire_stale_agent_approvals,
+        recover_stale_agent_plan_operations,
+        recover_stale_agent_runs,
+    )
     from apps.ai_registry.model_quarantine import recover_quarantined_models
 
     result["agent_runs"] = recover_stale_agent_runs()
+    result["agent_planner_operations"] = recover_stale_agent_plan_operations()
     result["agent_approvals"] = expire_stale_agent_approvals()
     # This task already runs every five minutes. Reuse that cadence for model
     # recovery so temporary upstream removals heal automatically without probing
