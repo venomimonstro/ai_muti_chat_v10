@@ -13,7 +13,7 @@ from django.db.models import Avg, Count, Sum
 from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError
-from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry import dispatch
 from apps.ai_registry.model_quarantine import model_runtime_available
 from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
@@ -355,7 +355,7 @@ def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key=
         runtime_adapter = adapter
         if runtime_adapter is None:
             funding_account_id = _funding_account_id_for_usage(usage)
-            runtime_adapter = adapter_for(
+            runtime_adapter = dispatch.adapter_for(
                 model,
                 funding_account_id=funding_account_id,
             )
