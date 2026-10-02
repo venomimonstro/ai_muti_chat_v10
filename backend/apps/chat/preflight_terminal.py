@@ -114,7 +114,7 @@ def install(streaming_module) -> None:
     original client turn before any state change.
     """
     raw_prepare = streaming_module.prepare
-    if getattr(raw_prepare, "_ai_workspace_preflight_terminal", False):
+    if getattr(raw_prepare, "_ai_workspace_preflight_terminal", False) is True:
         return
 
     def prepare(*, user, conversation, content, client_message_id, idempotency_key, file_ids=None):
