@@ -78,7 +78,11 @@ def install(reliability_module) -> None:
         # intentionally bypasses model quarantine for this metadata-level check.
         health_adapter = None
         try:
-            health_adapter = dispatch.adapter_for(configured_models[0], allow_probe=True)
+            health_adapter = dispatch.adapter_for(
+                configured_models[0],
+                allow_probe=True,
+                require_funding_balance=False,
+            )
             health = health_adapter.health_check()
         except ProviderError as exc:
             reliability_module.record_failure(provider, exc, adapter=health_adapter)
@@ -106,6 +110,27 @@ def install(reliability_module) -> None:
                 error_code=error.code,
             )
             return health
+
+        # Funding readiness is a commercial/customer gate, not provider transport
+        # health. If an explicitly configured purchasing ledger is empty, keep the
+        # provider API green and let provider_available()/model_client_ready() block
+        # customer traffic with the precise procurement reason. Do not spend an
+        # untracked paid inference probe merely to restore a transport status.
+        if recovering and not reliability_module._procurement_ready(provider):
+            reliability_module.record_success(
+                provider, health.latency_ms, adapter=health_adapter
+            )
+            ProviderHealthSnapshot.objects.create(
+                provider=provider,
+                healthy=True,
+                latency_ms=health.latency_ms,
+                error_code="procurement_not_ready",
+            )
+            return AdapterHealth(
+                healthy=True,
+                latency_ms=health.latency_ms,
+                error_code="procurement_not_ready",
+            )
 
         if not recovering or not all_models:
             reliability_module.record_success(
