@@ -4,7 +4,6 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
 
-from apps.ai_registry.models import Provider
 from apps.billing.models import CostAnomaly
 
 from .models import CompareVariant, Conversation, Generation, GenerationAttempt, Message
@@ -103,7 +102,8 @@ def fail_closed_on_compare_cost_overrun(sender, instance, **kwargs):
             "provider_slug": model.provider.slug,
         },
     )
-    Provider.objects.filter(pk=model.provider_id).update(
-        emergency_disabled=True,
-        health_state=Provider.HealthState.DISABLED,
-    )
+    # Economic anomalies are model-scoped. Disabling the entire provider here
+    # would take healthy sibling models out of service and can make customer chat
+    # unavailable because one Compare model is mispriced.
+    type(model).objects.filter(pk=model.pk).update(enabled=False)
+    model.enabled = False
