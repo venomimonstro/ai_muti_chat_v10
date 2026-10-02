@@ -125,7 +125,7 @@ def recover_stale_chat_operations_task():
     # Beat normally emits one task per minute, but a slow database or delayed worker
     # can overlap deliveries. Avoid duplicate scans; per-row select_for_update remains
     # the authoritative concurrency guard inside recovery itself.
-    if not cache.add(CHAT_RECOVERY_LOCK, "1", timeout=55):
+    if not cache.add(CHAT_RECOVERY_LOCK, "1", timeout=120):
         return {"status": "skipped", "reason": "already_running"}
     try:
         result = recover_stale_chat_operations()
