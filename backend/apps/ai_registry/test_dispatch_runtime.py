@@ -76,7 +76,7 @@ def test_customer_dispatch_never_uses_unknown_or_degraded_pool_key():
 
 
 @pytest.mark.django_db
-def test_default_funding_account_blocks_customer_use_until_its_key_is_healthy():
+def test_unbound_chat_transport_can_use_healthy_spare_when_funding_key_is_not_ready():
     provider = _provider("funding-key-contract")
     funding_key = _key(
         provider,
@@ -84,13 +84,13 @@ def test_default_funding_account_blocks_customer_use_until_its_key_is_healthy():
         "funding-secret",
         ProviderApiKey.HealthState.UNKNOWN,
     )
-    _key(
+    spare = _key(
         provider,
         "healthy-spare",
         "spare-secret",
         ProviderApiKey.HealthState.HEALTHY,
     )
-    ProviderFundingAccount.objects.create(
+    account = ProviderFundingAccount.objects.create(
         provider=provider,
         api_key=funding_key,
         label="Основной закупочный аккаунт",
@@ -100,10 +100,36 @@ def test_default_funding_account_blocks_customer_use_until_its_key_is_healthy():
         funded_native=100,
     )
 
-    secret, key_id = dispatch.select_runtime_api_key(provider, allow_probe=False, touch=False)
-    assert secret == ""
-    assert key_id == funding_key.id
-    assert dispatch.runtime_credential_ready(provider) is False
+    # Strict procurement selection still refuses the not-yet-verified funded key.
+    strict_secret, strict_key_id = dispatch.select_runtime_api_key(
+        provider, allow_probe=False, touch=False
+    )
+    assert strict_secret == ""
+    assert strict_key_id == funding_key.id
+
+    # Customer transport readiness is independent until an exact provider-spend
+    # reservation pins execution to a funding account.
+    assert dispatch.runtime_credential_ready(provider) is True
+    transport_secret, transport_key_id = dispatch.select_runtime_api_key(
+        provider,
+        allow_probe=False,
+        touch=False,
+        require_funding_balance=False,
+    )
+    assert transport_secret == "spare-secret"
+    assert transport_key_id == spare.id
+
+    # Once a concrete reservation/account is specified, exact-account identity is
+    # still fail-closed and cannot silently switch to the spare key.
+    pinned_secret, pinned_key_id = dispatch.select_runtime_api_key(
+        provider,
+        allow_probe=False,
+        touch=False,
+        funding_account_id=account.id,
+        require_funding_balance=False,
+    )
+    assert pinned_secret == ""
+    assert pinned_key_id == funding_key.id
 
     probe_secret, probe_key_id = dispatch.select_runtime_api_key(
         provider, allow_probe=True, touch=False
