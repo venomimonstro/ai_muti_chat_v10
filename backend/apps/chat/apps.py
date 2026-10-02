@@ -58,6 +58,7 @@ class ChatConfig(AppConfig):
             reasoning_trace,
             response_safety,
             run_claim_safety,
+            runtime_bindings,
             runtime_readiness,
             search_cost_public,
             search_delivery_billing,
@@ -176,9 +177,14 @@ class ChatConfig(AppConfig):
             serializers_module=serializers,
             managed_stream_module=managed_stream,
         )
-        # activity_stream imported these functions by value. Rebind after every
-        # runtime wrapper so the actual HTTP/SSE request path cannot keep stale logic.
-        activity_stream.prepare = streaming.prepare
-        activity_stream.needs_web_search = live_tools.needs_web_search
         # Show a concise verifiable execution trace, never hidden chain-of-thought.
         reasoning_trace.install(activity_stream)
+        # FINALIZATION MUST STAY LAST. Several HTTP/SSE modules import prepare/run
+        # by value before AppConfig.ready(). Publish the fully wrapped runtime to
+        # every entrypoint only after all safety/accounting wrappers are installed.
+        runtime_bindings.synchronize(
+            streaming_module=streaming,
+            managed_stream_module=managed_stream,
+            activity_stream_module=activity_stream,
+            live_tools_module=live_tools,
+        )
