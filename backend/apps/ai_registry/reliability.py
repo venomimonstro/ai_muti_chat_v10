@@ -30,7 +30,7 @@ PROVIDER_BLOCKING_ERROR_CODES = {
     "gigachat_quota_exhausted",
     "gigachat_permission_denied",
 }
-SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter"}
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai"}
 
 
 def _has_healthy_key(provider: Provider) -> bool:
