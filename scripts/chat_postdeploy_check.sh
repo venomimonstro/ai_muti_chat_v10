@@ -22,7 +22,11 @@ compose exec -T backend python -c "import urllib.request; r=urllib.request.urlop
 printf '[PASS] Backend readiness\n'
 
 printf '[2/6] Client AUTO preflight: router + pricing + procurement + wallet reserve...\n'
-compose exec -T backend python manage.py chat_preflight_smoke --mode auto
+if ! compose exec -T backend python manage.py chat_preflight_smoke --mode auto; then
+  printf '[FAIL] Client AUTO preflight; dumping exact pipeline state...\n' >&2
+  compose exec -T backend python manage.py chat_pipeline_trace --live || true
+  exit 1
+fi
 printf '[PASS] Client AUTO preflight\n'
 
 printf '[3/6] Explicit routing tiers configured by admin...\n'
