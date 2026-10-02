@@ -8,7 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.ai_registry.adapters import ProviderError
-from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry import dispatch
 from apps.ai_registry.model_quarantine import model_runtime_available
 from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
@@ -135,7 +135,7 @@ def _provider_call(model, messages, funding_account_id=None):
     started = time.monotonic()
     text = ""
     completed = None
-    runtime_adapter = adapter_for(
+    runtime_adapter = dispatch.adapter_for(
         model,
         funding_account_id=funding_account_id,
     )
