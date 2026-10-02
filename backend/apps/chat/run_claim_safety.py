@@ -58,7 +58,7 @@ def install(streaming_module, managed_stream_module) -> None:
         "_ai_workspace_cooperative_cancel",
         "_ai_workspace_procurement_execution",
     ):
-        if getattr(raw_run, marker, False):
+        if getattr(raw_run, marker, False) is True:
             setattr(run, marker, True)
 
     finalize_incomplete._ai_workspace_run_claim_safety = True
