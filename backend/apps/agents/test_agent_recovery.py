@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.billing.models import BalanceReservation
-from apps.billing.services import credit, reserve
+from apps.billing.services import credit, reserve, settle
 from apps.procurement.models import ProviderSpend, ProviderSpendReservation
 from apps.procurement.services import create_funding_account, record_purchase
 
@@ -462,3 +462,124 @@ def test_stale_planner_operation_reconciles_provider_spend_and_releases_customer
     assert account.reserved_native == Decimal("0.000000")
     assert account.spent_native == Decimal("0.015000")
     assert user.wallet.available_rub == Decimal("20.0000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stale_agent_preserves_already_settled_customer_charge_in_reconciliation(monkeypatch):
+    monkeypatch.setenv("AGENT_STALE_TIMEOUT_SECONDS", "1200")
+    user = get_user_model().objects.create_user(
+        username="agent-post-customer-settlement",
+        email="agent-post-customer-settlement@example.test",
+        password="test-password",
+    )
+    credit(user, Decimal("20"), "test", "agent-post-customer-settlement")
+    agent = Agent.objects.create(
+        owner=user,
+        name="Post-settlement Recovery Agent",
+        objective="Recover split settlement",
+        status=Agent.Status.ACTIVE,
+    )
+    run = AgentRun.objects.create(
+        owner=user,
+        agent=agent,
+        objective="Recover split settlement",
+        state=AgentRun.State.REVIEWING,
+        error_code="agent_settlement_pending",
+        started_at=timezone.now() - timedelta(hours=1),
+    )
+    step = AgentStepRun.objects.create(
+        run=run,
+        agent=agent,
+        sequence=1,
+        node_id="llm",
+        title="LLM",
+        action_type="llm",
+        state=AgentStepRun.State.RUNNING,
+        started_at=timezone.now() - timedelta(hours=1),
+    )
+
+    provider = Provider.objects.create(
+        slug="agent-post-settlement-provider",
+        name="Agent post-settlement provider",
+        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    key = ProviderApiKey(
+        provider=provider,
+        label="healthy",
+        enabled=True,
+        health_state=ProviderApiKey.HealthState.HEALTHY,
+    )
+    key.set_secret("sk-agent-post-settlement")
+    key.save()
+    model = AIModel.objects.create(
+        provider=provider,
+        slug="agent-post-settlement-model",
+        display_name="Agent post-settlement model",
+        upstream_model="upstream-post-settlement",
+        enabled=True,
+    )
+    account = create_funding_account(
+        provider=provider,
+        api_key=key,
+        label="Post-settlement funding",
+        currency="USD",
+        is_default=True,
+    )
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+
+    customer = reserve(user, Decimal("3"), f"agent-run:{run.id}")
+    provider_reservation = reserve_agent_provider_spend(
+        model=model,
+        provider_cost_rub=Decimal("2"),
+        fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        source_key=f"agent:{run.id}",
+        provider_currency="USD",
+    )
+    checkpoint_agent_provider_delivery(
+        step=step,
+        model=model,
+        result=SimpleNamespace(
+            provider_request_id="provider-post-settlement",
+            input_tokens=100,
+            output_tokens=50,
+        ),
+        actual_quote=SimpleNamespace(
+            provider_cost_rub=Decimal("1.5"),
+            fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        ),
+        provider_reservation=provider_reservation,
+        customer_reservation=customer,
+        source_id=run.id,
+        customer_charge=Decimal("2.4"),
+    )
+
+    # Simulate the exact crash window: customer wallet committed, then worker died
+    # before provider settlement / step and run totals were persisted.
+    settle(customer.id, Decimal("2.4"))
+    AgentRun.objects.filter(pk=run.pk).update(
+        updated_at=timezone.now() - timedelta(hours=1)
+    )
+
+    assert recover_stale_agent_runs() == 1
+
+    run.refresh_from_db()
+    step.refresh_from_db()
+    customer.refresh_from_db()
+    provider_reservation.refresh_from_db()
+    spend = ProviderSpend.objects.get(source_type="agent", source_id=str(run.id))
+
+    assert customer.state == BalanceReservation.State.SETTLED
+    assert customer.actual_rub == Decimal("2.4000")
+    assert provider_reservation.state == ProviderSpendReservation.State.SETTLED
+    assert spend.customer_charge_rub == Decimal("2.4000")
+    assert step.cost_rub == Decimal("2.4000")
+    assert run.cost_actual_rub == Decimal("2.4000")
+    assert run.cost_reserved_rub == Decimal("0.0000")
+    assert run.state == AgentRun.State.FAILED
