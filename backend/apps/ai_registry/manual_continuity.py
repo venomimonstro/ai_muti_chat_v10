@@ -73,7 +73,7 @@ def _fallback_manual_route(router_module, policy, classification, conversation, 
 
 
 def install(router_module) -> None:
-    if getattr(router_module._manual_route, "_ai_workspace_manual_continuity", False):
+    if getattr(router_module._manual_route, "_ai_workspace_manual_continuity", False) is True:
         return
     raw_manual_route = router_module._manual_route
 
