@@ -183,3 +183,71 @@ def test_blank_automation_cannot_start_as_implicit_llm(monkeypatch):
     agent = Agent.objects.create(owner=user, name='New process', role='Автоматизация', objective='Build a workflow', graph={})
     readiness = agent_readiness(agent)
     assert any('Добавьте и сохраните узлы' in blocker for blocker in readiness['blockers'])
+
+
+@pytest.mark.django_db
+def test_unkeyed_planner_preview_does_not_leave_completed_internal_operation(monkeypatch):
+    from rest_framework.response import Response
+
+    from .ai_planner_views import AgentAIPlannerPreviewView
+    from .models import AgentPlanOperation
+
+    calls = Mock(
+        return_value=Response(
+            {"draft": {"graph": {"nodes": []}}, "cost_rub": "0.12"}
+        )
+    )
+    monkeypatch.setattr(AgentAIPlannerPreviewView, "_generate", calls)
+    user = User.objects.create_user(
+        username="planner-unkeyed-cleanup",
+        email="planner-unkeyed-cleanup@example.test",
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.post(
+        "/api/v1/agents/ai-planner/preview/",
+        {"description": "Build a supported workflow with safe approval steps"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert calls.call_count == 1
+    assert AgentPlanOperation.objects.filter(owner=user).count() == 0
+
+
+@pytest.mark.django_db
+def test_planner_cleanup_failure_never_turns_successful_preview_into_500(monkeypatch):
+    from rest_framework.response import Response
+
+    from .ai_planner_views import AgentAIPlannerPreviewView
+    from .models import AgentPlanOperation
+
+    calls = Mock(
+        return_value=Response(
+            {"draft": {"graph": {"nodes": []}}, "cost_rub": "0.12"}
+        )
+    )
+    monkeypatch.setattr(AgentAIPlannerPreviewView, "_generate", calls)
+
+    def broken_delete(self, *args, **kwargs):
+        raise RuntimeError("cleanup unavailable")
+
+    monkeypatch.setattr(AgentPlanOperation, "delete", broken_delete)
+
+    user = User.objects.create_user(
+        username="planner-cleanup-failure",
+        email="planner-cleanup-failure@example.test",
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+
+    response = client.post(
+        "/api/v1/agents/ai-planner/preview/",
+        {"description": "Build a supported workflow with safe approval steps"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data["cost_rub"] == "0.12"
+    assert AgentPlanOperation.objects.filter(owner=user, state="completed").count() == 1
