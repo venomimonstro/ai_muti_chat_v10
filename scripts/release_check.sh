@@ -242,6 +242,8 @@ run_pytest 'Agent/provider settlement and credential-binding regressions' \
   apps/b2b_api/test_cost_guard.py \
   apps/chat/test_compare.py \
   apps/chat/test_compare_cost_guard.py \
+  apps/chat/test_paid_search_customer_billing.py \
+  apps/chat/test_paid_search_key_readiness.py \
   apps/image_studio/test_cost_guard.py \
   apps/image_studio/tests.py \
   apps/procurement/tests.py
