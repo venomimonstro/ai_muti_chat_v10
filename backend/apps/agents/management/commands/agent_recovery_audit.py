@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from apps.agents.models import AgentRun
+from apps.agents.models import AgentPlanOperation, AgentRun
 
 
 CHECKED_STATES = {
@@ -41,7 +41,23 @@ class Command(BaseCommand):
             elif now > reference + timedelta(seconds=max(60, allowed_seconds // 2)):
                 warnings.append(f"run={run.id}: long-running state={run.state}")
 
-        self.stdout.write(f"active_checked={queryset.count()}")
+        planner_cutoff = now - timedelta(minutes=15)
+        stale_planner = list(
+            AgentPlanOperation.objects.filter(
+                state="reconciling",
+                updated_at__lt=planner_cutoff,
+            )
+            .order_by("updated_at")
+            .values_list("id", flat=True)[:200]
+        )
+        for operation_id in stale_planner:
+            failures.append(
+                f"planner_operation={operation_id}: settlement reconciliation exceeded 15m"
+            )
+
+        self.stdout.write(
+            f"active_checked={queryset.count()} planner_reconciling_stale={len(stale_planner)}"
+        )
         for warning in warnings:
             self.stdout.write(self.style.WARNING(f"[WARN] {warning}"))
         for failure in failures:
