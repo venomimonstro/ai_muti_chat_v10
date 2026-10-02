@@ -347,8 +347,12 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
                 quality=generation.quality,
                 count=generation.requested_count,
             )
+        confirmed_count = max(
+            int(generation.requested_count),
+            len(result.images),
+        )
         confirmed_native = (
-            Decimal(snapshot["provider_price_per_image"]) * Decimal(len(result.images))
+            Decimal(snapshot["provider_price_per_image"]) * Decimal(confirmed_count)
         )
         confirmed_provider_cost, _confirmed_charge, _confirmed_profit, _confirmed_margin = (
             calculate_flat_from_snapshot(confirmed_native, snapshot)
