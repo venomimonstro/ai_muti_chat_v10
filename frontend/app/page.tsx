@@ -189,6 +189,20 @@ export default function LandingPage() {
       <div className={styles.moneyPanel}><div><small>ДО ЗАПРОСА</small><b>Резерв</b><span>Баланс не уходит в минус</span></div><div><small>ПОСЛЕ ОТВЕТА</small><b>Списание по факту</b><span>Видно в истории операций</span></div><div><small>ПРИ СБОЕ</small><b>Защита остатка</b><span>Незавершённая операция не считается успешной</span></div></div>
     </section>
 
+    <section className={styles.trustSection}>
+      <div className={styles.sectionLabel}>ДОВЕРИЕ К ОПЕРАЦИИ</div>
+      <div className={styles.trustHead}>
+        <h2>AI может ошибаться.<br/>Финансовый контур — не должен.</h2>
+        <p>Платформа отделяет техническую доступность AI от готовности к клиентскому трафику, контролирует резервы и не считает незавершённую операцию успешной.</p>
+      </div>
+      <div className={styles.trustGrid}>
+        <article><span>01</span><h3>До запуска</h3><p>Проверяется доступный маршрут, лимиты и безопасный максимум стоимости.</p></article>
+        <article><span>02</span><h3>Во время работы</h3><p>Запрос имеет устойчивое состояние, а повторное подключение не должно создавать второй платный запуск.</p></article>
+        <article><span>03</span><h3>После завершения</h3><p>Фиксируется фактический расход. Неиспользованный резерв возвращается в доступный баланс.</p></article>
+        <article><span>04</span><h3>При сбое</h3><p>Незавершённая операция терминализируется и попадает в recovery-контур вместо вечного «зависло».</p></article>
+      </div>
+    </section>
+
     <section className={styles.apiSection}>
       <div className={styles.apiCard}><div className={styles.apiTop}><span>API</span><b>OpenAI-compatible</b></div><pre>{`POST /v1/chat/completions\nAuthorization: Bearer ••••••••\n\n{\n  "messages": [\n    {"role": "user", "content": "..."}\n  ]\n}`}</pre><div className={styles.apiStatus}><i/> API ready</div></div>
       <div className={styles.apiCopy}><div className={styles.sectionLabel}>ДЛЯ ПРОДУКТОВ И КОМАНД</div><h2>Встройте тот же контролируемый AI в свой продукт</h2><p>API-ключи, бюджеты, rate limits и история расходов — без отдельного зоопарка интеграций для каждого сценария.</p><ul><li>единый контроль доступа</li><li>лимиты и бюджеты</li><li>история расходов</li><li>совместимый API</li></ul><Link className={styles.darkCta} href="/register">Создать аккаунт <span>→</span></Link></div>
