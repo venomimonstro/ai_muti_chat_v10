@@ -304,7 +304,11 @@ def test_retry_then_fallback_records_attempts(monkeypatch, settings):
             markup_percent=Decimal("100"),
             effective_from=timezone.now(),
         )
-    conversation = Conversation.objects.create(owner=user, selected_model=primary_model.slug)
+    conversation = Conversation.objects.create(
+        owner=user,
+        selected_model=primary_model.slug,
+        routing_mode=Conversation.RoutingMode.MANUAL,
+    )
     generation, _ = prepare(
         user=user,
         conversation=conversation,
