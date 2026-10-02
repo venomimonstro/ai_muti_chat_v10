@@ -10,6 +10,8 @@ from django.db import transaction
 from apps.accounts.models import User
 from apps.billing.models import BalanceReservation, RequestCost
 from apps.billing.services import credit
+from apps.ai_registry.models import AIModel
+from apps.ai_registry.reliability import model_client_ready
 from apps.chat.cost_preview import chat_cost_preview
 from apps.chat.managed_stream import managed_run
 from apps.chat.models import Conversation, Generation
@@ -58,7 +60,19 @@ class Command(BaseCommand):
         mode = options["mode"]
         model_slug = str(options.get("model") or "").strip()
         if mode == "manual" and not model_slug:
-            raise CommandError("--model обязателен для --mode manual")
+            model = next(
+                (
+                    item
+                    for item in AIModel.objects.filter(enabled=True)
+                    .select_related("provider", "current_version")
+                    .order_by("provider__priority", "slug")
+                    if model_client_ready(item)
+                ),
+                None,
+            )
+            if model is None:
+                raise CommandError("Нет client-ready модели для manual smoke")
+            model_slug = model.slug
 
         marker = uuid.uuid4().hex
         try:
