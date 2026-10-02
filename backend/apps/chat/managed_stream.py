@@ -9,6 +9,7 @@ from apps.billing.services import release
 
 from .models import Generation, Message
 from .partial_billing import settle_delivered_partial
+from .pipeline_trace import trace as pipeline_trace
 from .streaming import run
 
 logger = logging.getLogger(__name__)
@@ -283,6 +284,7 @@ def _publicize_sse_chunk(generation, chunk):
 
 def managed_run(generation, *, adapter=None):
     passive_follower = False
+    pipeline_trace("MANAGED_STREAM_START", generation=generation)
     try:
         for chunk in run(generation, adapter=adapter):
             payload = _parse_error_chunk(chunk)
@@ -291,12 +293,28 @@ def managed_run(generation, *, adapter=None):
                 # a follower and must never terminalize or settle the producer's work.
                 passive_follower = True
             chunk = _rewrite_error_chunk_if_needed(generation, chunk)
-            yield _publicize_sse_chunk(generation, chunk)
+            public_chunk = _publicize_sse_chunk(generation, chunk)
+            if isinstance(public_chunk, str) and public_chunk.startswith("event: "):
+                event_name = public_chunk.splitlines()[0][7:].strip()
+                if event_name in {"completed", "error", "cancelled", "snapshot"}:
+                    pipeline_trace(
+                        "MANAGED_STREAM_EVENT",
+                        generation=generation,
+                        event=event_name,
+                    )
+            yield public_chunk
     except GeneratorExit:
+        pipeline_trace("MANAGED_STREAM_DISCONNECT", generation=generation)
         if not passive_follower:
             _finalize_unhandled_disconnect(generation)
         raise
-    except BaseException:
+    except BaseException as exc:
+        pipeline_trace(
+            "MANAGED_STREAM_EXCEPTION",
+            generation=generation,
+            error_type=type(exc).__name__,
+            error=str(exc)[:500],
+        )
         if not passive_follower:
             _finalize_unhandled_failure(generation)
         raise
