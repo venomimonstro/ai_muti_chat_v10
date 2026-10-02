@@ -143,7 +143,9 @@ services:
     depends_on: {backend: {condition: service_healthy}}
     networks: [private, sandbox_net, egress]
     init: true
-    stop_grace_period: 45s
+    # Agent/Dev provider calls share the same upstream timeout envelope as chat.
+    # Let Celery finish acknowledged-in-progress work before Docker forces a requeue.
+    stop_grace_period: 165s
     logging: *default-logging
   beat:
     build: ./backend
