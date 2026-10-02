@@ -571,16 +571,17 @@ def adapter_for(model: AIModel):
         return OpenAIResponsesAdapter(api_key=api_key, base_url=provider.api_base_url or os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1"))
     if provider.adapter_type == Provider.AdapterType.ANTHROPIC_MESSAGES:
         return AnthropicMessagesAdapter(api_key=api_key, base_url=provider.api_base_url or os.getenv("ANTHROPIC_API_BASE_URL", "https://api.anthropic.com/v1"))
-    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT:
-        base_url = (
-            provider.api_base_url
-            or (
-                os.getenv("HUBAI_API_BASE_URL", "https://hubai.loe.gg/v1")
-                if provider.slug == "hubai"
-                else os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com")
-            )
+    if provider.slug == "hubai":
+        return HubAIChatAdapter(
+            api_key=api_key,
+            base_url=provider.api_base_url or "https://hubai.loe.gg/v1",
         )
-        return DeepSeekChatAdapter(api_key=api_key, base_url=base_url)
+    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT:
+        return DeepSeekChatAdapter(
+            api_key=api_key,
+            base_url=provider.api_base_url
+            or os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
+        )
     if provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT:
         return GeminiGenerateContentAdapter(api_key=api_key, base_url=provider.api_base_url or os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"))
     if provider.adapter_type == Provider.AdapterType.XAI_CHAT:
