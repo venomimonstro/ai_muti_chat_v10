@@ -20,7 +20,7 @@ const modes=[
 const PROVIDERS:Record<string,{label:string;order:number}>={
  "llm-system":{label:"LLM System",order:10},system:{label:"LLM System",order:10},gigachat:{label:"LLM System",order:10},
  yandexgpt:{label:"YandexGPT",order:20},yandex:{label:"YandexGPT",order:20},
- openai:{label:"ChatGPT",order:30},chatgpt:{label:"ChatGPT",order:30},deepseek:{label:"DeepSeek",order:40},
+ openai:{label:"ChatGPT",order:30},chatgpt:{label:"ChatGPT",order:30},deepseek:{label:"DeepSeek",order:40},hubai:{label:"HubAI",order:45},
  anthropic:{label:"Claude",order:50},claude:{label:"Claude",order:50},gemini:{label:"Gemini",order:60},google:{label:"Gemini",order:60},
  xai:{label:"Grok",order:70},grok:{label:"Grok",order:70},openrouter:{label:"OpenRouter",order:80},
 };
