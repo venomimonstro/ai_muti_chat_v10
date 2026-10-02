@@ -159,6 +159,7 @@ class AgentAIPlannerPreviewView(APIView):
             json.dumps(dict(request.data), sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
 
+        ephemeral_operation = not bool(key)
         if key:
             operation, created = AgentPlanOperation.objects.get_or_create(
                 owner=request.user,
@@ -207,10 +208,14 @@ class AgentAIPlannerPreviewView(APIView):
                     )
                 }
                 operation.save(update_fields=["state", "response", "updated_at"])
+                if ephemeral_operation:
+                    operation.delete()
             raise
         operation.state = "completed"
         operation.response = response.data
         operation.save(update_fields=["state", "response", "updated_at"])
+        if ephemeral_operation:
+            operation.delete()
         return response
 
     def _generate(self, request, *, operation):
