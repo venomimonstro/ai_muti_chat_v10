@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 STEP = Decimal("0.000001")
-SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter"}
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai"}
 
 
 def _decimal(value, default="0"):
