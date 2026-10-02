@@ -157,6 +157,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_provider_delivery_checkpoint.py \
   apps/chat/test_generation_status.py \
   apps/chat/test_asgi_capacity.py \
+  apps/chat/test_asgi_transport_selection.py \
   apps/chat/test_asgi_backpressure.py \
   apps/chat/test_chat_health_watch.py \
   apps/chat/test_cost_preview_runtime_parity.py \
