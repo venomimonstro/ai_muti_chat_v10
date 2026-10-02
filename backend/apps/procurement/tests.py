@@ -204,7 +204,7 @@ def test_request_cost_signal_reserves_and_settles_vendor_balance(procurement_con
 
 
 @pytest.mark.django_db(transaction=True)
-def test_procurement_overrun_records_actual_spend_and_disables_provider(procurement_context):
+def test_procurement_overrun_records_actual_spend_and_isolates_model(procurement_context):
     user, provider, model, account = procurement_context
     record_purchase(
         account=account,
@@ -226,8 +226,11 @@ def test_procurement_overrun_records_actual_spend_and_disables_provider(procurem
     assert result is not None
     assert result.native_cost == Decimal("0.200000")
     provider.refresh_from_db()
+    model.refresh_from_db()
     account.refresh_from_db()
-    assert provider.emergency_disabled is True
+    assert provider.emergency_disabled is False
+    assert model.enabled is False
+    assert account.active is True
     assert account.spent_native == Decimal("0.200000")
     assert account.reserved_native == Decimal("0.000000")
 
