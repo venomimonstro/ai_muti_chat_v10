@@ -64,7 +64,7 @@ def install(streaming_module) -> None:
     global _raw_adapter_for, _raw_record_failure
 
     current_adapter_for = streaming_module.adapter_for
-    if getattr(current_adapter_for, "_ai_workspace_nonempty_response", False):
+    if getattr(current_adapter_for, "_ai_workspace_nonempty_response", False) is True:
         return
 
     _raw_adapter_for = current_adapter_for
