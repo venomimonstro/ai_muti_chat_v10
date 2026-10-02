@@ -185,9 +185,11 @@ def _model_is_internal(slug):
 
 
 def _generation_route_is_internal(generation):
-    if str(generation.provider_slug or "").casefold() == "gigachat":
+    if str(getattr(generation, "provider_slug", "") or "").casefold() == "gigachat":
         return True
-    if _model_is_internal(generation.routed_model or generation.model):
+    if _model_is_internal(
+        getattr(generation, "routed_model", "") or getattr(generation, "model", "")
+    ):
         return True
     try:
         selected = generation.routing_decision.selected_model
@@ -199,6 +201,17 @@ def _generation_route_is_internal(generation):
 def _public_system_level(model_slug, *, fallback_mode="balanced"):
     slug = str(model_slug or "").strip()
     haystack = slug.casefold()
+
+    # The common SSE path already carries enough public identity in the model slug.
+    # Resolve it without a database round-trip; the fallback lookup is only needed
+    # for an internally branded model whose slug itself is opaque.
+    if "max" in haystack:
+        return "System Max"
+    if "pro" in haystack:
+        return "System Pro"
+    if "lite" in haystack or "gigachat-2" in haystack or "gigachat" in haystack:
+        return "System Lite"
+
     if slug:
         model = (
             AIModel.objects.filter(slug=slug)
@@ -207,12 +220,12 @@ def _public_system_level(model_slug, *, fallback_mode="balanced"):
         )
         if model is not None:
             haystack = f"{model.slug} {model.display_name} {model.upstream_model}".casefold()
-    if "max" in haystack:
-        return "System Max"
-    if "pro" in haystack:
-        return "System Pro"
-    if "lite" in haystack or "gigachat-2" in haystack or "gigachat" in haystack:
-        return "System Lite"
+            if "max" in haystack:
+                return "System Max"
+            if "pro" in haystack:
+                return "System Pro"
+            if "lite" in haystack or "gigachat-2" in haystack or "gigachat" in haystack:
+                return "System Lite"
     return PUBLIC_SYSTEM_LEVELS.get(str(fallback_mode or ""), "System Pro")
 
 
@@ -232,10 +245,18 @@ def _publicize_sse_chunk(generation, chunk):
         return chunk
 
     provider_internal = str(payload.get("provider") or "").casefold() == "gigachat"
-    model_slug = payload.get("model") or generation.routed_model or generation.model
+    model_slug = (
+        payload.get("model")
+        or getattr(generation, "routed_model", "")
+        or getattr(generation, "model", "")
+    )
     from_model_slug = payload.get("from_model")
-    model_internal = _model_is_internal(model_slug)
-    from_model_internal = _model_is_internal(from_model_slug)
+    # If the event already declares the internal provider, do not perform redundant
+    # database identity lookups in the latency-sensitive SSE loop.
+    model_internal = provider_internal or _model_is_internal(model_slug)
+    from_model_internal = bool(from_model_slug) and (
+        provider_internal or _model_is_internal(from_model_slug)
+    )
     if event == "routing" and not model_internal:
         model_internal = _generation_route_is_internal(generation)
 
