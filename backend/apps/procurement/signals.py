@@ -98,8 +98,14 @@ def _ensure(*, provider, expected_rub, snapshot, source_key):
         if _commercial_fail_closed() and _decimal(expected_rub) > ZERO:
             raise ValidationError("Не удалось рассчитать закупочный резерв провайдера")
         return None
+    currency = str((snapshot or {}).get("provider_currency") or "").upper().strip()
     try:
-        return reserve_provider_spend(provider=provider, amount_native=native, source_key=source_key)
+        return reserve_provider_spend(
+            provider=provider,
+            amount_native=native,
+            source_key=source_key,
+            currency=currency,
+        )
     except ValidationError as exc:
         if _commercial_fail_closed():
             raise
