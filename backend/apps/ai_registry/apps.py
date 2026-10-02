@@ -1,4 +1,42 @@
 from django.apps import AppConfig
+from django.core.checks import Error, register
+
+
+@register()
+def ai_registry_customer_readiness_wiring_check(app_configs, **kwargs):
+    """Customer catalog/manual-selection surfaces must share one final predicate."""
+    from apps.chat import serializers as chat_serializers
+    from . import reliability, serializers, views
+
+    final_ready = reliability.model_client_ready
+    errors = []
+    if getattr(final_ready, "_ai_workspace_minimum_funding", False) is not True:
+        errors.append(
+            Error(
+                "AI customer readiness is missing the minimum-funding guard.",
+                hint="Keep client_readiness.install(reliability) in AIRegistryConfig.ready().",
+                id="ai_registry.E001",
+            )
+        )
+    stale = []
+    if views.model_client_ready is not final_ready:
+        stale.append("views")
+    if serializers.model_client_ready is not final_ready:
+        stale.append("serializers")
+    if chat_serializers.model_client_ready is not final_ready:
+        stale.append("chat.serializers")
+    if stale:
+        errors.append(
+            Error(
+                "AI customer readiness surfaces retain stale predicates: "
+                + ", ".join(stale),
+                hint="Rebind every customer-facing model_client_ready import after final readiness installation.",
+                id="ai_registry.E002",
+            )
+        )
+    return errors
+
+
 
 
 class AIRegistryConfig(AppConfig):
