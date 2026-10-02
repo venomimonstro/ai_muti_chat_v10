@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
+from apps.ai_registry.adapters import ProviderError
+from apps.ai_registry.dispatch import adapter_for
 from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
 
@@ -123,6 +124,12 @@ def execute_with_model_fallback(
                 provider_cost_rub=attempt.preflight.provider_cost_rub,
                 fx_snapshot=attempt.preflight.fx_snapshot,
                 source_key=provider_key,
+                provider_currency=str(
+                    (getattr(attempt.preflight, "pricing_snapshot", {}) or {}).get(
+                        "provider_currency"
+                    )
+                    or ""
+                ),
             )
             if is_canceled():
                 _release_customer(customer_reservation)
@@ -131,11 +138,23 @@ def execute_with_model_fallback(
                 provider_reservation = None
                 raise DevStageCanceled()
 
+            funding_account_id = (
+                getattr(provider_reservation, "account_id", None)
+                if provider_reservation is not None
+                else None
+            )
+
+            def reserved_adapter_factory(candidate):
+                return adapter_for(
+                    candidate,
+                    funding_account_id=funding_account_id,
+                )
+
             result, provider_attempts = generate_with_key_failover(
                 model=model,
                 messages=messages,
                 max_output_tokens=attempt.output_tokens,
-                adapter_factory=adapter_for,
+                adapter_factory=reserved_adapter_factory,
             )
             provider_delivered = True
 
