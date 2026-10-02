@@ -367,6 +367,19 @@ if [[ "$UPDATE_MODE" == "full" ]]; then
   compose exec -T backend python manage.py customer_ai_readiness_check
   compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=5)"
 
+  printf '[CHECK] Celery beat + worker heartbeat...\n'
+  compose exec -T backend python -c "from django.core.cache import cache; cache.delete('system:celery-worker-heartbeat')"
+  WORKER_HEARTBEAT_OK=false
+  for _attempt in $(seq 1 18); do
+    if compose exec -T backend python -c "from django.core.cache import cache; assert cache.get('system:celery-worker-heartbeat')" >/dev/null 2>&1; then
+      WORKER_HEARTBEAT_OK=true
+      break
+    fi
+    sleep 5
+  done
+  [[ "${WORKER_HEARTBEAT_OK}" == true ]] || { printf '[FAIL] Celery beat/worker не подтвердили свежий heartbeat\n' >&2; exit 1; }
+  printf '[PASS] Celery beat и worker выполняют фоновые задачи.\n'
+
   printf '[CHECK] Бесплатный web-search...\n'
   SEARCH_OK=false
   for _attempt in $(seq 1 12); do
