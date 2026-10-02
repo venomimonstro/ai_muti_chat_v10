@@ -86,10 +86,17 @@ class Command(BaseCommand):
                     raise RuntimeError(
                         f"preview blocked by spend guard: {preview.get('spend_guard_message')}"
                     )
-                if str(preview.get("selected_model") or "") != decision.selected_model.slug:
+                preview_internal = str(
+                    preview.get("selected_model_internal")
+                    or preview.get("selected_model")
+                    or ""
+                )
+                if preview_internal != decision.selected_model.slug:
                     raise RuntimeError(
                         "preview/runtime routing mismatch: "
-                        f"preview={preview.get('selected_model')} runtime={decision.selected_model.slug}"
+                        f"preview_internal={preview_internal} "
+                        f"preview_public={preview.get('selected_model')} "
+                        f"runtime={decision.selected_model.slug}"
                     )
                 self.stdout.write(
                     self.style.SUCCESS(
