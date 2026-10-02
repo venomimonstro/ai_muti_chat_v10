@@ -300,8 +300,11 @@ def install(*, services_module, signals_module, reliability_module) -> None:
             configured = ProviderFundingAccount.objects.filter(
                 provider=provider,
                 active=True,
+                funded_native__gt=ZERO,
             ).exists()
             if not configured:
+                # Zero-balance rows are drafts. Do not block a HEALTHY provider
+                # until a real provider-credit purchase activates the ledger.
                 return True
             return select_runtime_funding_account(
                 provider,
