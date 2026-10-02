@@ -8,7 +8,7 @@ from apps.ai_registry.reliability import model_client_ready
 def install(compare_module) -> None:
     raw_models = compare_module._models
     raw_one_model = compare_module._one_model
-    if getattr(raw_models, "_ai_workspace_client_readiness", False):
+    if getattr(raw_models, "_ai_workspace_client_readiness", False) is True:
         return
 
     def _models(slugs):
