@@ -462,6 +462,8 @@ phase 7 'Health-check production'
 if [[ "$UPDATE_MODE" == "full" ]]; then
   compose exec -T backend python manage.py check --deploy
   compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/readiness/', timeout=5)"
+  printf '[CHECK] Обновляю transport health внешних LLM перед клиентским readiness...\n'
+  compose exec -T backend python manage.py check_provider_health
   compose exec -T backend python manage.py customer_ai_readiness_check
   compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=5)"
 
