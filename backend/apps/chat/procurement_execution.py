@@ -98,9 +98,11 @@ def _rebind_failed_provider_reservation(generation_id, provider) -> bool:
     if request_cost is None or request_cost.provider_cost_rub is not None:
         return False
     prefix = f"chat:{request_cost.id}:"
+    # Lock only the reservation row. account.api_key is nullable and joining it
+    # under SELECT FOR UPDATE makes PostgreSQL attempt to lock the nullable side of
+    # an OUTER JOIN, which aborts fallback before another healthy key can be tried.
     reservation = (
-        ProviderSpendReservation.objects.select_for_update()
-        .select_related("account", "account__api_key")
+        ProviderSpendReservation.objects.select_for_update(of=("self",))
         .filter(
             source_key__startswith=prefix,
             state=ProviderSpendReservation.State.ACTIVE,
@@ -109,6 +111,11 @@ def _rebind_failed_provider_reservation(generation_id, provider) -> bool:
         .order_by("-created_at")
         .first()
     )
+    if reservation is not None:
+        reservation = (
+            ProviderSpendReservation.objects.select_related("account", "account__api_key")
+            .get(pk=reservation.pk)
+        )
     if reservation is None:
         return False
     if account_credential_ready(reservation.account, allow_probe=False):
