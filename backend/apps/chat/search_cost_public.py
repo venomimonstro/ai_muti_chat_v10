@@ -24,7 +24,7 @@ def _total(generation):
 def install(*, serializers_module, managed_stream_module) -> None:
     raw_generation = serializers_module.MessageSerializer.get_generation
     raw_publicize = managed_stream_module._publicize_sse_chunk
-    if getattr(raw_generation, "_ai_workspace_search_cost_public", False):
+    if getattr(raw_generation, "_ai_workspace_search_cost_public", False) is True:
         return
 
     def get_generation(self, obj):
