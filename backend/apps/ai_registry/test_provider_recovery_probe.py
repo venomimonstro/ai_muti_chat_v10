@@ -211,3 +211,29 @@ def test_provider_transport_stays_healthy_when_models_are_not_published(monkeypa
     snapshot = ProviderHealthSnapshot.objects.filter(provider=provider).latest("checked_at")
     assert snapshot.healthy is True
     assert snapshot.error_code == "no_enabled_models"
+
+
+@pytest.mark.django_db
+def test_empty_procurement_does_not_turn_transport_health_red(monkeypatch):
+    provider = _provider("transport-vs-procurement", Provider.HealthState.DEGRADED)
+    _model(provider, "transport-vs-procurement-model")
+    adapter = FakeAdapter()
+    success = Mock()
+    failure = Mock()
+
+    monkeypatch.setattr(dispatch, "adapter_for", lambda selected, **_kwargs: adapter)
+    monkeypatch.setattr(reliability, "record_success", success)
+    monkeypatch.setattr(reliability, "record_failure", failure)
+    monkeypatch.setattr(reliability, "_procurement_ready", lambda _provider: False)
+
+    health = reliability.check_provider(provider)
+
+    assert health.healthy is True
+    assert health.error_code == "procurement_not_ready"
+    assert adapter.health_calls == 1
+    assert adapter.generate_calls == 0
+    success.assert_called_once()
+    failure.assert_not_called()
+    snapshot = ProviderHealthSnapshot.objects.filter(provider=provider).latest("checked_at")
+    assert snapshot.healthy is True
+    assert snapshot.error_code == "procurement_not_ready"
