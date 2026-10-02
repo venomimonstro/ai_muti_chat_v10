@@ -7,7 +7,7 @@ from .yandexgpt_adapter import DEFAULT_BASE_URL, YandexGPTAdapter
 
 def install(dispatch_module) -> None:
     raw_adapter_for = dispatch_module.adapter_for
-    if getattr(raw_adapter_for, "_ai_workspace_yandexgpt", False):
+    if getattr(raw_adapter_for, "_ai_workspace_yandexgpt", False) is True:
         return
 
     def adapter_for(
