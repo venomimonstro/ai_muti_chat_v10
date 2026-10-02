@@ -5,7 +5,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 
 from apps.procurement.account_routing import reserve_provider_spend
-from apps.procurement.models import ProviderFundingAccount
+from apps.procurement.models import ProviderFundingAccount, ProviderSpend
 from apps.procurement.services import release_provider_spend, settle_provider_spend
 
 logger = logging.getLogger(__name__)
@@ -94,22 +94,26 @@ def settle_agent_provider_spend(
             output_tokens=result.output_tokens,
         )
     except Exception:
-        if procurement_fail_closed():
-            raise
+        # A result object means the external provider already completed usage.
+        # Never release that procurement reservation as "unused" merely because
+        # local financial settlement failed. Keep the evidence/reserve intact for
+        # reconciliation and fail the caller closed in every environment.
         logger.exception(
-            "Optional agent provider settlement failed provider=%s source=%s",
+            "Agent provider settlement failed after confirmed delivery provider=%s source=%s",
             model.provider.slug,
             source_id,
         )
-        try:
-            release_provider_spend(reservation.id)
-        except Exception:
-            logger.exception(
-                "Optional agent provider reservation release failed provider=%s source=%s",
-                model.provider.slug,
-                source_id,
-            )
+        raise
+
+
+def update_agent_provider_customer_charge(spend, customer_charge):
+    """Attach customer revenue only after the wallet settlement is durable."""
+    if spend is None:
         return None
+    charge = Decimal(str(customer_charge or 0)).quantize(Decimal("0.0001"))
+    ProviderSpend.objects.filter(pk=spend.pk).update(customer_charge_rub=charge)
+    spend.customer_charge_rub = charge
+    return spend
 
 
 def release_agent_provider_spend(reservation):
