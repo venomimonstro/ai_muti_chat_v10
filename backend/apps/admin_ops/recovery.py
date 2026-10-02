@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 from decimal import Decimal
 
@@ -17,6 +18,7 @@ from apps.procurement.models import ProviderSpendReservation
 from apps.procurement.services import release_provider_spend
 
 ZERO = Decimal("0.0000")
+logger = logging.getLogger(__name__)
 
 
 def _cutoff():
@@ -230,8 +232,14 @@ def recover_terminal_chat_reservations(*, older_than_seconds=None, limit=500):
             release(reservation.id)
             released += 1
         except Exception:
+            logger.exception(
+                "Terminal chat reservation recovery failed reservation_id=%s generation_id=%s",
+                reservation.id,
+                generation_id,
+            )
             deferred += 1
     return {"checked": len(rows), "released": released, "deferred": deferred}
+
 
 def recover_stale_api_usages(*, api_key=None):
     cutoff = timezone.now() - timedelta(seconds=settings.B2B_API_RUNNING_TIMEOUT_SECONDS)
@@ -279,6 +287,7 @@ def recover_stale_chat_operations():
     """
     generation_cutoff = _generation_cutoff()
     recovered = 0
+    errors = 0
     queryset = Generation.objects.filter(
         state__in=[Generation.State.QUEUED, Generation.State.RUNNING],
         created_at__lt=generation_cutoff,
@@ -288,9 +297,13 @@ def recover_stale_chat_operations():
             recovered += int(_recover_generation(pk))
         except Generation.DoesNotExist:
             continue
+        except Exception:
+            errors += 1
+            logger.exception("Stale chat generation recovery failed generation_id=%s", pk)
 
     return {
         "generations": recovered,
+        "generation_errors": errors,
         "terminal_chat_reservations": recover_terminal_chat_reservations(
             older_than_seconds=settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS
         ),
