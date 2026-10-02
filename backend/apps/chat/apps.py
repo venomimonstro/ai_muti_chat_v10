@@ -4,6 +4,75 @@ from django.core.checks import Error, register
 
 
 @register()
+def chat_runtime_wiring_check(app_configs, **kwargs):
+    """Release/production check for the final customer chat runtime identity."""
+    from . import activity_stream, managed_stream, services, streaming
+
+    errors = []
+    if not (
+        services.prepare is streaming.prepare
+        and activity_stream.prepare is streaming.prepare
+    ):
+        errors.append(
+            Error(
+                "Chat prepare entrypoints are not bound to one final runtime.",
+                hint="Keep runtime_bindings.synchronize(...) last in ChatConfig.ready().",
+                id="chat.E002",
+            )
+        )
+    if not (
+        services.run is streaming.run
+        and managed_stream.run is streaming.run
+    ):
+        errors.append(
+            Error(
+                "Chat run entrypoints are not bound to one final runtime.",
+                hint="Rebind all HTTP/SSE entrypoints after installing runtime wrappers.",
+                id="chat.E003",
+            )
+        )
+
+    prepare_markers = (
+        "_ai_workspace_customer_capacity",
+        "_ai_workspace_single_flight",
+        "_ai_workspace_preflight_terminal",
+        "_ai_workspace_attachment_durability",
+    )
+    missing_prepare = [
+        marker for marker in prepare_markers
+        if getattr(streaming.prepare, marker, False) is not True
+    ]
+    if missing_prepare:
+        errors.append(
+            Error(
+                "Chat prepare runtime is missing required safety guards: "
+                + ", ".join(missing_prepare),
+                id="chat.E004",
+            )
+        )
+
+    run_markers = (
+        "_ai_workspace_procurement_execution",
+        "_ai_workspace_terminal_recovery",
+        "_ai_workspace_error_contract",
+        "_ai_workspace_execution_fence_outer",
+    )
+    missing_run = [
+        marker for marker in run_markers
+        if getattr(streaming.run, marker, False) is not True
+    ]
+    if missing_run:
+        errors.append(
+            Error(
+                "Chat run runtime is missing required safety guards: "
+                + ", ".join(missing_run),
+                id="chat.E005",
+            )
+        )
+    return errors
+
+
+@register()
 def chat_production_configuration_check(app_configs, **kwargs):
     """Fail production checks when cross-process chat coordination is not shared."""
     if settings.DEBUG:
