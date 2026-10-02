@@ -169,6 +169,23 @@ ensure_runtime_env() {
   ensure_env_default WEB_SEARCH_TRUSTED_HOSTS searxng
   upsert_env_if_missing WEB_SEARCH_MAX_RESULTS 8
   upsert_env_if_missing WEB_CONTEXT_MAX_TOKENS 2200
+
+  local procurement_fail_closed
+  procurement_fail_closed="$(sed -n 's/^PROCUREMENT_RUNTIME_FAIL_CLOSED=//p' "${ENV_FILE}" | head -n 1 | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "${procurement_fail_closed}" ]]; then
+    printf 'PROCUREMENT_RUNTIME_FAIL_CLOSED=1\n' >>"${ENV_FILE}"
+    procurement_fail_closed="1"
+    printf '[ENV] Добавлен обязательный production fail-closed для закупочного контура.\n'
+  fi
+  case "${procurement_fail_closed}" in
+    1|true|yes|on) ;;
+    *)
+      printf '[FAIL] PROCUREMENT_RUNTIME_FAIL_CLOSED=%s несовместим с production readiness.\n' "${procurement_fail_closed}" >&2
+      printf '[INFO] Установите PROCUREMENT_RUNTIME_FAIL_CLOSED=1 в %s и повторите обновление.\n' "${ENV_FILE}" >&2
+      exit 1
+      ;;
+  esac
+
   chmod 600 "${ENV_FILE}"
 }
 
