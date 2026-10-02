@@ -83,7 +83,7 @@ def test_compare_runs_models_and_settles_one_hard_reservation(settings):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_compare_disables_provider_when_reported_usage_exceeds_reserved_maximum(settings, monkeypatch):
+def test_compare_isolates_only_model_when_reported_usage_exceeds_reserved_maximum(settings, monkeypatch):
     settings.COMPARE_CONFIRM_THRESHOLD_RUB = "999"
     settings.COMPARE_MAX_OUTPUT_TOKENS = 128
     user = User.objects.create_user(
@@ -93,7 +93,7 @@ def test_compare_disables_provider_when_reported_usage_exceeds_reserved_maximum(
     conversation = Conversation.objects.create(owner=user)
     models = compare_registry()
 
-    def abusive_provider_call(_model, _messages):
+    def abusive_provider_call(_model, _messages, _funding_account_id=None):
         return (
             "unexpected huge result",
             SimpleNamespace(
@@ -114,11 +114,15 @@ def test_compare_disables_provider_when_reported_usage_exceeds_reserved_maximum(
     )
 
     run.refresh_from_db()
+    models[0].refresh_from_db()
+    models[1].refresh_from_db()
     models[0].provider.refresh_from_db()
     user.wallet.refresh_from_db()
     reservation = BalanceReservation.objects.get(pk=run.reservation_id)
     assert run.state == CompareRun.State.FAILED
-    assert models[0].provider.emergency_disabled is True
+    assert models[0].enabled is False
+    assert models[1].enabled is True
+    assert models[0].provider.emergency_disabled is False
     assert reservation.state == BalanceReservation.State.SETTLED
     assert reservation.actual_rub == Decimal("0.0000")
     assert user.wallet.reserved_rub == Decimal("0.0000")
