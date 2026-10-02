@@ -31,6 +31,10 @@ def test_customer_can_select_branded_llm_system_model_manually():
             "name", "enabled", "emergency_disabled", "health_state", "circuit_opened_until"
         ]
     )
+    # Bootstrap/data migrations may already have historical funding accounts for
+    # the branded provider. Keep this regression deterministic: only the new funded
+    # HEALTHY key/account below participates in customer readiness.
+    provider.funding_accounts.update(active=False, is_default=False)
     provider.api_keys.all().delete()
     key = ProviderApiKey(
         provider=provider,
