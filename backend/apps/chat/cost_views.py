@@ -280,6 +280,8 @@ def _terminalize_stream_authorization_failure(generation, exc):
             exc,
         )
         raise
+
+
 def _preparing_snapshot(generation_id):
     close_old_connections()
     try:
