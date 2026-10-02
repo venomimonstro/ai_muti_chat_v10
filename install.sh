@@ -257,6 +257,19 @@ for service in postgres redis backend worker beat frontend caddy; do
   [[ "${running}" == "true" ]] || fail "контейнер ${service} не работает"
 done
 
+printf '[CHECK] Celery beat + worker heartbeat...\n'
+compose exec -T backend python -c "from django.core.cache import cache; cache.delete('system:celery-worker-heartbeat')"
+WORKER_HEARTBEAT_OK=false
+for _attempt in $(seq 1 18); do
+  if compose exec -T backend python -c "from django.core.cache import cache; assert cache.get('system:celery-worker-heartbeat')" >/dev/null 2>&1; then
+    WORKER_HEARTBEAT_OK=true
+    break
+  fi
+  sleep 5
+done
+[[ "${WORKER_HEARTBEAT_OK}" == true ]] || fail "Celery beat/worker не подтвердили свежий heartbeat"
+printf '[PASS] Celery beat и worker выполняют фоновые задачи.\n'
+
 compose exec -T backend python manage.py check --fail-level ERROR >/dev/null
 
 touch "${INSTALL_MARKER}"
