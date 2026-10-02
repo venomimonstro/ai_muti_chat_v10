@@ -12,8 +12,11 @@ from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, Sum
 from django.utils import timezone
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
-from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.adapters import ProviderError
+from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry.model_quarantine import model_runtime_available
+from apps.ai_registry.models import AIModel
+from apps.ai_registry.reliability import provider_available
 from apps.billing.models import CostAnomaly
 from apps.billing.pricing import (
     active_price,
@@ -23,6 +26,7 @@ from apps.billing.pricing import (
     require_margin,
 )
 from apps.billing.services import release, reserve, settle
+from apps.procurement.models import ProviderSpendReservation
 
 from .keys import key_is_active
 from .models import APIKey, APIUsage
@@ -66,12 +70,11 @@ def _trip_b2b_cost_guard(*, usage, model, provider_cost, charge, result):
             },
         },
     )
-    Provider.objects.filter(pk=model.provider_id).update(
-        emergency_disabled=True,
-        health_state=Provider.HealthState.DISABLED,
-    )
-    model.provider.emergency_disabled = True
-    model.provider.health_state = Provider.HealthState.DISABLED
+    # Usage overrun is scoped to the exact commercial model. Keeping healthy
+    # sibling models online prevents one pricing/estimation defect from becoming a
+    # provider-wide B2B outage.
+    AIModel.objects.filter(pk=model.pk).update(enabled=False)
+    model.enabled = False
     usage.provider_cost_rub = provider_cost
     usage.prompt_tokens = result.input_tokens
     usage.completion_tokens = result.output_tokens
@@ -194,6 +197,12 @@ def _model_for(key, model_slug):
     )
     if model is None:
         raise PublicAPIError("The requested model does not exist", code="model_not_found", status_code=404)
+    if not model_runtime_available(model) or not provider_available(model.provider):
+        raise PublicAPIError(
+            "The requested model is temporarily unavailable",
+            code="provider_unavailable",
+            status_code=503,
+        )
     return model
 
 
@@ -282,6 +291,18 @@ def _fail(usage, code, started):
     usage.save(update_fields=["state", "error_code", "latency_ms", "completed_at"])
 
 
+def _funding_account_id_for_usage(usage):
+    reservation = (
+        ProviderSpendReservation.objects.filter(
+            source_key=f"b2b:{usage.id}",
+            state=ProviderSpendReservation.State.ACTIVE,
+        )
+        .only("account_id")
+        .first()
+    )
+    return reservation.account_id if reservation is not None else None
+
+
 def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key="", adapter=None):
     require_scope(key, "chat.completions")
     if key.allowed_endpoints and "chat.completions" not in key.allowed_endpoints:
@@ -311,11 +332,15 @@ def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key=
     )
     request_hash = _request_hash(model.slug, normalized, max_tokens)
     try:
+        usage_snapshot = {
+            **value.pricing_snapshot,
+            "expected_provider_cost_rub": str(value.provider_cost_rub),
+        }
         usage, cached = _begin(
             key,
             model,
             value.user_charge_rub,
-            value.pricing_snapshot,
+            usage_snapshot,
             idempotency_key,
             request_hash,
         )
@@ -327,7 +352,14 @@ def create_completion(*, key, model_slug, messages, max_tokens, idempotency_key=
         return CompletionResult(usage, True)
     started = time.monotonic()
     try:
-        result = (adapter or adapter_for(model)).generate(
+        runtime_adapter = adapter
+        if runtime_adapter is None:
+            funding_account_id = _funding_account_id_for_usage(usage)
+            runtime_adapter = adapter_for(
+                model,
+                funding_account_id=funding_account_id,
+            )
+        result = runtime_adapter.generate(
             model=(model.current_version.exact_api_id if model.current_version else model.upstream_model),
             messages=normalized,
             max_output_tokens=max_tokens,
