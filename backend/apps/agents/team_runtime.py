@@ -300,9 +300,15 @@ def _run_llm_stage(*, run, agent, role, repository_context, previous, sequence, 
         return None, total, run
     except ProviderError as exc:
         attempts = getattr(exc, "model_attempts", None)
-        if attempts:
+        settlement_checkpoint = dict(
+            getattr(exc, "settlement_checkpoint", {}) or {}
+        )
+        if attempts or settlement_checkpoint:
             payload = dict(step.output_payload or {})
-            payload["model_attempts"] = attempts
+            if attempts:
+                payload["model_attempts"] = attempts
+            if settlement_checkpoint:
+                payload["_provider_settlement"] = settlement_checkpoint
             step.output_payload = payload
             step.save(update_fields=["output_payload"])
         if agent_provider_checkpoint_pending(step):
