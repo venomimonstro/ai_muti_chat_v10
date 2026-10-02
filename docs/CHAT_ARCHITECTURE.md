@@ -248,6 +248,25 @@ The assistant message is periodically persisted during streaming so reconnect ca
 
 A reconnect endpoint must never call the provider again for a `RUNNING` generation.
 
+### 7.1 Runtime binding is single-source and finalized last
+
+Chat safety is implemented as a wrapper chain around `prepare`, `run`, provider readiness,
+procurement, cancellation, terminal recovery and execution fencing. Python modules that
+import those callables by value can otherwise retain an older pre-guard function.
+
+Invariant:
+
+- `ChatConfig.ready()` installs every runtime/accounting/safety wrapper first;
+- `apps.chat.runtime_bindings.synchronize(...)` runs **last**;
+- HTTP, native ASGI/SSE, activity stream, non-streaming service and cost endpoints must
+  reference the same final `prepare` / `run` objects where applicable;
+- no endpoint may keep a stale pre-single-flight, pre-procurement or pre-terminal-recovery
+  callable;
+- release regressions must assert entrypoint identity and required guard markers.
+
+A new wrapper added after runtime finalization is an architecture defect unless the
+finalization step is deliberately moved after it and regression coverage is updated.
+
 ## 8. Partial output and failures
 
 ### No provider usage confirmed
