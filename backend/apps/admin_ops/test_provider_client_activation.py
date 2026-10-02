@@ -138,7 +138,22 @@ class ProviderClientActivationTests(APITestCase):
         self.assertNotIn(self.model.slug, [item["slug"] for item in models.data])
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
-    def test_production_activation_requires_procurement_balance(self):
+    def test_production_activation_allows_verified_key_without_procurement_ledger(self):
+        response = self._activate()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["activated"]), 1)
+        self.model.refresh_from_db()
+        self.assertTrue(self.model.enabled)
+
+    @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+    def test_production_activation_blocks_configured_empty_procurement_balance(self):
+        create_funding_account(
+            provider=self.provider,
+            api_key=self.key,
+            label="Empty funding",
+            currency="RUB",
+            is_default=True,
+        )
         response = self._activate()
         self.assertEqual(response.status_code, 409, response.data)
         self.assertEqual(response.data["code"], "provider_procurement_not_ready")
@@ -180,7 +195,7 @@ class ProviderClientActivationTests(APITestCase):
         self.assertFalse(self.model.enabled)
 
 
-    def test_model_enable_is_blocked_when_provider_has_no_customer_runtime_capacity(self):
+    def test_model_enable_allows_healthy_provider_without_procurement_ledger(self):
         self.provider.enabled = True
         self.provider.health_state = Provider.HealthState.HEALTHY
         self.provider.save(update_fields=["enabled", "health_state"])
@@ -197,8 +212,6 @@ class ProviderClientActivationTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 409, response.data)
-        blockers = response.data["blockers"][self.model.slug]
-        self.assertTrue(any("Клиентский runtime" in item for item in blockers))
+        self.assertEqual(response.status_code, 200, response.data)
         self.model.refresh_from_db()
-        self.assertFalse(self.model.enabled)
+        self.assertTrue(self.model.enabled)
