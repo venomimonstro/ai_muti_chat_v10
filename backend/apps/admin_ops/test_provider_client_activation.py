@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import override_settings
 from django.utils import timezone
@@ -215,3 +216,63 @@ class ProviderClientActivationTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.model.refresh_from_db()
         self.assertTrue(self.model.enabled)
+
+
+    def test_disabled_configured_provider_can_be_enabled_for_health_recovery(self):
+        self.provider.enabled = False
+        self.provider.health_state = Provider.HealthState.DISABLED
+        self.provider.save(update_fields=["enabled", "health_state"])
+
+        response = self.client.post(
+            "/api/v1/admin/providers/bulk/",
+            {
+                "target": "providers",
+                "action": "enable",
+                "ids": [str(self.provider.id)],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.provider.refresh_from_db()
+        self.assertTrue(self.provider.enabled)
+        self.assertEqual(self.provider.health_state, Provider.HealthState.UNKNOWN)
+
+    @patch("apps.admin_ops.provider_views._refresh_balance")
+    @patch("apps.admin_ops.provider_views._check_key")
+    def test_recheck_key_updates_provider_transport_health(self, check_key, refresh_balance):
+        self.provider.enabled = False
+        self.provider.health_state = Provider.HealthState.DISABLED
+        self.provider.consecutive_failures = 4
+        self.provider.save(
+            update_fields=["enabled", "health_state", "consecutive_failures"]
+        )
+
+        def mark_healthy(_provider, item):
+            item.health_state = ProviderApiKey.HealthState.HEALTHY
+            item.last_error_code = ""
+            item.last_latency_ms = 17
+            item.save(
+                update_fields=[
+                    "health_state",
+                    "last_error_code",
+                    "last_latency_ms",
+                ]
+            )
+            return True
+
+        check_key.side_effect = mark_healthy
+
+        response = self.client.patch(
+            f"/api/v1/admin/providers/{self.provider.slug}/keys/{self.key.id}/",
+            {"recheck": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.provider.refresh_from_db()
+        self.assertFalse(self.provider.enabled)
+        self.assertEqual(self.provider.health_state, Provider.HealthState.HEALTHY)
+        self.assertEqual(self.provider.consecutive_failures, 0)
+        self.assertEqual(self.provider.last_latency_ms, 17)
+        refresh_balance.assert_called_once()
