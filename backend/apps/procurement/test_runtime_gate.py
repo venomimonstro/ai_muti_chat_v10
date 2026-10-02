@@ -24,10 +24,11 @@ class ProcurementRuntimeGateTests(TestCase):
         self.assertFalse(_require_procurement(self.provider))
 
     @override_settings(PAYMENTS_LIVE_ENABLED=True, PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
-    def test_explicit_strict_procurement_still_blocks_missing_funding_account(self):
+    def test_strict_setting_does_not_activate_unconfigured_procurement_ledger(self):
         self.assertTrue(_commercial_fail_closed())
-        with self.assertRaises(ValidationError):
-            _require_procurement(self.provider)
+        # Fail-closed applies after real provider credit has been recorded. A
+        # provider without a funded ledger remains usable through its verified key.
+        self.assertFalse(_require_procurement(self.provider))
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=False)
     @patch("apps.procurement.signals._require_procurement", return_value=True)
