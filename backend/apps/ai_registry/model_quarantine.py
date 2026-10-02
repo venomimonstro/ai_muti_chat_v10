@@ -187,7 +187,11 @@ def _recover_quarantined_models(*, limit: int = 8) -> dict:
         try:
             # Recovery is the only path allowed to bypass customer quarantine and
             # touch the upstream model again.
-            adapter = dispatch.adapter_for(model, allow_probe=True)
+            adapter = dispatch.adapter_for(
+                    model,
+                    allow_probe=True,
+                    require_funding_balance=False,
+                )
             adapter.generate(
                 model=model.upstream_model,
                 messages=[{"role": "user", "content": "Ответь только: OK"}],
