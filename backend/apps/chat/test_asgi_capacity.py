@@ -89,3 +89,63 @@ def test_asgi_executor_start_failure_still_acknowledges_durable_generation():
     assert len(chunks) == 2
     assert chunks[0].startswith("event: generation\n")
     assert chunks[1].startswith("event: error\n")
+
+
+def test_asgi_losing_reconnect_claim_becomes_read_only_follower():
+    generation = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000101",
+        state="queued",
+    )
+
+    class Slot:
+        def acquire(self, *, blocking):
+            assert blocking is False
+            return True
+
+        def release(self):
+            return None
+
+    class ClaimLosingExecutor:
+        def submit(self, _fn, _generation, _loop, queue, _detached):
+            queue.put_nowait((
+                "chunk",
+                'event: error\ndata: {"code":"generation_in_progress"}\n\n',
+            ))
+            queue.put_nowait(("done", None))
+            return Mock()
+
+    snapshots = iter([
+        {
+            "state": "running",
+            "error_code": "",
+            "cost_rub": "0",
+            "text": "Уже идёт ответ",
+            "message_status": "streaming",
+        },
+        {
+            "state": "completed",
+            "error_code": "",
+            "cost_rub": "0.5000",
+            "text": "Готовый ответ",
+            "message_status": "completed",
+        },
+    ])
+
+    async def collect():
+        return [chunk async for chunk in asgi_stream.managed_run_async(generation)]
+
+    with (
+        patch.object(asgi_stream, "_STREAM_SLOTS", Slot()),
+        patch.object(asgi_stream, "_STREAM_EXECUTOR", ClaimLosingExecutor()),
+        patch.object(
+            asgi_stream,
+            "_generation_snapshot",
+            side_effect=lambda _generation_id: next(snapshots),
+        ),
+    ):
+        chunks = asyncio.run(collect())
+
+    assert chunks[0].startswith("event: generation\n")
+    assert not any("generation_in_progress" in chunk for chunk in chunks)
+    assert any(chunk.startswith("event: snapshot\n") for chunk in chunks)
+    assert any('"state": "completed"' in chunk for chunk in chunks)
