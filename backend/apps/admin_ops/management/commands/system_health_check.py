@@ -30,6 +30,8 @@ class Command(BaseCommand):
         blockers = []
         if analysis["state"] == "critical":
             blockers.append("Система находится в критическом состоянии")
+        if options["strict"] and analysis.get("models", {}).get("customer_ai_outage"):
+            blockers.append("Нет ни одной AI-модели, готовой к клиентскому трафику")
         if options["strict"] and not infrastructure["critical_ok"]:
             if not infrastructure["database"]["ok"]:
                 blockers.append("PostgreSQL не прошёл проверку")
@@ -53,6 +55,10 @@ class Command(BaseCommand):
             "critical_investigating_issues": len(critical_investigating),
             "warning_open_issues": len(warning_open),
             "unhealthy_providers": analysis["providers"]["unhealthy_count"],
+            "customer_unready_providers": analysis["providers"].get("customer_unready_count", 0),
+            "enabled_models": analysis.get("models", {}).get("enabled_count", 0),
+            "customer_ready_models": analysis.get("models", {}).get("customer_ready_count", 0),
+            "customer_ai_outage": analysis.get("models", {}).get("customer_ai_outage", False),
             "ai_error_rate_24h_percent": analysis["ai"]["error_rate_24h_percent"],
             "payment_failures_24h": analysis["payments"]["failed_or_canceled_24h"],
             "infrastructure": infrastructure,
