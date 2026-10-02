@@ -186,6 +186,7 @@ CELERY_BEAT_SCHEDULE = {
     "smm-publish-dispatch": {"task": "apps.connections.tasks.publish_due_smm_posts", "schedule": 30.0},
     "daily-financial-reconciliation": {"task": "apps.billing.tasks.daily_financial_reconciliation", "schedule": 86400.0},
     "payment-reconciliation": {"task": "apps.admin_ops.tasks.payment_reconciliation_task", "schedule": 300.0},
+    "recover-stale-chat-operations": {"task": "apps.admin_ops.tasks.recover_stale_chat_operations_task", "schedule": 60.0},
     "recover-stale-operations": {"task": "apps.admin_ops.tasks.recover_stale_operations_task", "schedule": 300.0},
     "economic-safety-watch": {"task": "apps.admin_ops.tasks.economic_safety_watch_task", "schedule": 300.0},
     "billing-integrity-watch": {"task": "apps.admin_ops.tasks.billing_integrity_watch_task", "schedule": 900.0},
