@@ -52,6 +52,10 @@ def _fallback_manual_route(router_module, policy, classification, conversation, 
         if row["fallback_allowed"]:
             row["rank"] = len(allowed) + 1
             allowed.append(row)
+        else:
+            row["status"] = "rejected"
+            if "fallback_price_requires_consent" not in row["reasons"]:
+                row["reasons"].append("fallback_price_requires_consent")
 
     lookup = {model.slug: model for model in ordered}
     selected = lookup[selected_row["model"]]
