@@ -6,6 +6,7 @@ from decimal import Decimal
 import httpx
 from django.core.validators import URLValidator
 from django.db import transaction
+from django.db.models import F
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.text import slugify
@@ -13,6 +14,7 @@ from rest_framework.response import Response
 
 from apps.ai_registry.gigachat_adapter import GigaChatAPIAdapter, VALID_SCOPES
 from apps.ai_registry.models import AIModel, ModelVersion, Provider, ProviderApiKey
+from apps.ai_registry.reliability import provider_available
 from apps.billing.models import PriceVersion
 
 from .services import audit
@@ -49,6 +51,41 @@ def _model_enable_blockers(model: AIModel):
     return list(dict.fromkeys(blockers))
 
 
+def _customer_traffic_blockers(provider: Provider):
+    """Explain why a transport-healthy provider is still unavailable to customers."""
+    if provider_available(provider):
+        return []
+    blockers = []
+    if not provider.enabled:
+        blockers.append("Провайдер выключен")
+    if provider.emergency_disabled:
+        blockers.append("Включён аварийный запрет клиентского трафика")
+    if provider.health_state not in {
+        Provider.HealthState.HEALTHY,
+        Provider.HealthState.DEGRADED,
+    }:
+        blockers.append(f"Runtime health: {provider.health_state}")
+    if provider.adapter_type != Provider.AdapterType.ECHO:
+        has_healthy_key = provider.api_keys.filter(
+            enabled=True,
+            health_state=ProviderApiKey.HealthState.HEALTHY,
+        ).exists()
+        if provider.api_keys.filter(enabled=True).exists() and not has_healthy_key:
+            blockers.append("Нет HEALTHY API-ключа для клиентского трафика")
+        active_accounts = provider.funding_accounts.filter(active=True)
+        if active_accounts.exists():
+            funded = active_accounts.filter(
+                funded_native__gt=F("spent_native") + F("reserved_native")
+            ).exists()
+            if not funded:
+                blockers.append("Закупочный баланс провайдера исчерпан")
+    if not blockers:
+        blockers.append(
+            "Клиентский runtime не готов: проверьте ключ, funding account, закупочный баланс и pricing"
+        )
+    return blockers
+
+
 def _key_payload(item: ProviderApiKey):
     return {
         "id": str(item.id),
@@ -74,6 +111,7 @@ def _gigachat_scope(provider: Provider) -> str:
 
 
 def _credential_payload(provider: Provider):
+    customer_blockers = _customer_traffic_blockers(provider)
     return {
         "id": str(provider.id),
         "slug": provider.slug,
@@ -83,6 +121,8 @@ def _credential_payload(provider: Provider):
         "credential_configured": provider.credential_configured(),
         "credential_source": provider.credential_source(),
         "health_state": provider.health_state,
+        "customer_traffic_ready": not customer_blockers,
+        "customer_traffic_blockers": customer_blockers,
         "last_checked_at": provider.last_checked_at,
         "last_latency_ms": provider.last_latency_ms,
         "gigachat_scope": _gigachat_scope(provider) if provider.slug == "gigachat" else None,
