@@ -25,8 +25,9 @@ def _provider_enable_blockers(provider: Provider):
     blockers = []
     if not provider.credential_configured() and provider.adapter_type != Provider.AdapterType.ECHO:
         blockers.append("Не настроен API-ключ провайдера")
-    if provider.health_state != Provider.HealthState.HEALTHY:
-        blockers.append("Провайдер должен успешно пройти проверку связи")
+    # Enabling transport and admitting customer traffic are separate transitions.
+    # A disabled provider is deliberately marked DISABLED by the watcher, so requiring
+    # HEALTHY here creates an impossible enable -> health recovery deadlock.
     return blockers
 
 
@@ -468,6 +469,29 @@ class ProviderKeyDetailView(AdminAPIView):
             item.save(update_fields=["enabled"])
             _check_key(item.provider, item)
             _refresh_balance(item.provider, item)
+            provider = item.provider
+            healthy_key = provider.api_keys.filter(
+                enabled=True,
+                health_state=ProviderApiKey.HealthState.HEALTHY,
+            ).exists()
+            provider.health_state = (
+                Provider.HealthState.HEALTHY
+                if healthy_key
+                else Provider.HealthState.DEGRADED
+            )
+            provider.last_checked_at = timezone.now()
+            provider.last_latency_ms = item.last_latency_ms
+            provider.consecutive_failures = 0 if healthy_key else provider.consecutive_failures
+            provider.circuit_opened_until = None if healthy_key else provider.circuit_opened_until
+            provider.save(
+                update_fields=[
+                    "health_state",
+                    "last_checked_at",
+                    "last_latency_ms",
+                    "consecutive_failures",
+                    "circuit_opened_until",
+                ]
+            )
         else:
             item.save()
         return Response(_key_payload(item))
@@ -579,7 +603,18 @@ class SafeProviderBulkActionView(AdminAPIView):
                     blocked = {provider.slug: _provider_enable_blockers(provider) for provider in providers if _provider_enable_blockers(provider)}
                     if blocked:
                         return Response({"detail": "Провайдера нельзя включить до успешной настройки", "blockers": blocked}, status=409)
-                count = queryset.update(enabled=action == "enable")
+                    # Re-admission remains fail-closed: background/admin health probe
+                    # must prove the provider after it is enabled.
+                    count = queryset.update(
+                        enabled=True,
+                        health_state=Provider.HealthState.UNKNOWN,
+                        circuit_opened_until=None,
+                    )
+                else:
+                    count = queryset.update(
+                        enabled=False,
+                        health_state=Provider.HealthState.DISABLED,
+                    )
             elif action in {"emergency_disable", "emergency_enable"}:
                 count = queryset.update(emergency_disabled=action == "emergency_disable")
             else:
