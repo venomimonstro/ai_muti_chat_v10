@@ -76,6 +76,33 @@ def _request_timeout() -> httpx.Timeout:
     return httpx.Timeout(total, connect=min(10.0, total), read=total, write=min(20.0, total), pool=min(10.0, total))
 
 
+def _safe_error_detail(response: httpx.Response) -> str:
+    """Return a short upstream error detail without headers/credentials."""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            raw = (
+                payload.get("message")
+                or payload.get("detail")
+                or payload.get("error")
+                or payload.get("status")
+                or ""
+            )
+            if isinstance(raw, dict):
+                raw = raw.get("message") or raw.get("detail") or raw.get("code") or raw
+            detail = str(raw or "").strip()
+        else:
+            detail = ""
+    except (ValueError, TypeError):
+        detail = ""
+    if not detail:
+        try:
+            detail = str(response.text or "").strip()
+        except Exception:
+            detail = ""
+    return " ".join(detail.split())[:500]
+
+
 def _http_provider_error(response: httpx.Response, *, oauth: bool = False) -> ProviderError:
     status = response.status_code
     prefix = "gigachat_oauth" if oauth else "gigachat"
@@ -119,6 +146,9 @@ def _http_provider_error(response: httpx.Response, *, oauth: bool = False) -> Pr
         code = f"{prefix}_http_{status}"
         retryable = status >= 500
         message = "GigaChat request rejected"
+    detail = _safe_error_detail(response)
+    if detail:
+        message = f"{message}: {detail}"
     return ProviderError(message, code=code, retryable=retryable)
 
 
@@ -179,20 +209,48 @@ class GigaChatAPIAdapter:
 
     @staticmethod
     def _messages(messages: list[dict]) -> list[dict]:
-        return [
-            {"role": item["role"], "content": _text_only(item.get("content", ""))}
-            for item in messages
-            if item.get("role") in {"system", "user", "assistant"}
-        ]
+        normalized = []
+        for item in messages:
+            role = str(item.get("role") or "").strip()
+            if role not in {"system", "user", "assistant"}:
+                continue
+            content = _text_only(item.get("content", "")).strip()
+            # GigaChat rejects malformed/empty history entries. The customer runtime
+            # may contain an empty placeholder assistant message while a response is
+            # being prepared; never forward that placeholder upstream.
+            if not content:
+                continue
+            normalized.append({"role": role, "content": content})
+        return normalized
 
-    def _request_stream(self, *, model: str, messages: list[dict], max_output_tokens: int, force_token: bool = False) -> Iterator[ProviderStreamEvent]:
+    def _request_stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        max_output_tokens: int,
+        force_token: bool = False,
+        compatibility_retry: bool = False,
+    ) -> Iterator[ProviderStreamEvent]:
         upstream_model = normalize_model_id(model)
+        normalized_messages = self._messages(messages)
+        if not normalized_messages:
+            raise ProviderError(
+                "GigaChat request contains no usable messages",
+                code="gigachat_validation_error",
+                retryable=False,
+            )
         payload = {
             "model": upstream_model,
-            "messages": self._messages(messages),
-            "max_tokens": max_output_tokens,
+            "messages": normalized_messages,
             "stream": True,
         }
+        # Older/current GigaChat deployments differ in how strictly they validate
+        # max_tokens. Use it normally, then retry a 400 once with the provider's
+        # default output limit. A 400 means no inference was accepted, so this retry
+        # cannot duplicate a charged generation.
+        if not compatibility_retry:
+            payload["max_tokens"] = max(1, int(max_output_tokens))
         request_id = ""
         usage = {}
         finished = False
@@ -206,7 +264,23 @@ class GigaChatAPIAdapter:
         ) as response:
             if response.status_code == 401 and not force_token:
                 response.close()
-                yield from self._request_stream(model=upstream_model, messages=messages, max_output_tokens=max_output_tokens, force_token=True)
+                yield from self._request_stream(
+                    model=upstream_model,
+                    messages=messages,
+                    max_output_tokens=max_output_tokens,
+                    force_token=True,
+                    compatibility_retry=compatibility_retry,
+                )
+                return
+            if response.status_code == 400 and not compatibility_retry:
+                response.close()
+                yield from self._request_stream(
+                    model=upstream_model,
+                    messages=messages,
+                    max_output_tokens=max_output_tokens,
+                    force_token=force_token,
+                    compatibility_retry=True,
+                )
                 return
             try:
                 response.raise_for_status()
