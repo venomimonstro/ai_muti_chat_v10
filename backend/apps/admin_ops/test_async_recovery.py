@@ -8,7 +8,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.ai_registry.models import Provider
 from apps.billing.models import BalanceReservation
-from apps.billing.services import credit
+from apps.billing.services import credit, reserve
 from apps.chat.models import Conversation, Generation, Message
 from apps.files.models import FileAsset
 from apps.image_studio.models import ImageGeneration, ImageModel
@@ -201,3 +201,49 @@ def test_chat_recovery_task_releases_lock_after_failure():
             tasks.recover_stale_chat_operations_task.run()
 
     lock_delete.assert_called_once_with(tasks.CHAT_RECOVERY_LOCK)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_terminal_chat_reservation_recovery_isolates_malformed_generation_key(settings):
+    from apps.admin_ops.recovery import recover_terminal_chat_reservations
+
+    settings.CHAT_GENERATION_STALE_TIMEOUT_SECONDS = 0
+    user = User.objects.create_user(
+        username="terminal-reserve-isolation",
+        email="terminal-reserve-isolation@example.test",
+        password="password123",
+    )
+    credit(user, Decimal("20"), "test", "terminal-reserve-isolation")
+
+    malformed = reserve(user, Decimal("1"), "generation:not-a-uuid")
+
+    conversation = Conversation.objects.create(owner=user)
+    user_message = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.USER,
+        content="terminal reserve",
+    )
+    assistant = Message.objects.create(
+        conversation=conversation,
+        role=Message.Role.ASSISTANT,
+        status=Message.Status.FAILED,
+    )
+    generation = Generation.objects.create(
+        owner=user,
+        user_message=user_message,
+        assistant_message=assistant,
+        state=Generation.State.FAILED,
+        model="test-model",
+        idempotency_key="terminal-reserve-isolation",
+    )
+    valid = reserve(user, Decimal("2"), f"generation:{generation.id}")
+
+    result = recover_terminal_chat_reservations(older_than_seconds=0)
+
+    malformed.refresh_from_db()
+    valid.refresh_from_db()
+    assert result["checked"] >= 2
+    assert result["released"] >= 1
+    assert result["deferred"] >= 1
+    assert malformed.state == BalanceReservation.State.ACTIVE
+    assert valid.state == BalanceReservation.State.RELEASED
