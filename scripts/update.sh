@@ -525,6 +525,7 @@ if [[ "$UPDATE_MODE" == "full" ]]; then
   printf '[CHECK] Проверяю реальный inference внешних LLM перед клиентским readiness...\n'
   compose exec -T backend python manage.py check_provider_health --live
   compose exec -T backend python manage.py customer_ai_readiness_check
+  compose exec -T backend python manage.py chat_asgi_transport_smoke
   compose exec -T backend python manage.py chat_preflight_smoke --mode auto
   compose exec -T backend python manage.py chat_live_smoke --mode auto
   compose exec -T backend python manage.py chat_live_smoke --mode manual
