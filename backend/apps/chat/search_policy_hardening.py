@@ -71,7 +71,7 @@ def install(paid_search_module) -> None:
       confirmed auth/credit failures do; temporary/no-result errors stay local to
       the request and may fall back to SearXNG.
     """
-    if getattr(paid_search_module, "_ai_workspace_search_policy_hardened", False):
+    if getattr(paid_search_module, "_ai_workspace_search_policy_hardened", False) is True:
         return
 
     raw_secret = paid_search_module._account_secret
