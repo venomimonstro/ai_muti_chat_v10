@@ -3,23 +3,23 @@ import Link from "next/link";
 import styles from "./landing.module.css";
 
 export const metadata: Metadata = {
-  title: "AI Workspace — рабочая AI-система для бизнеса и ежедневных задач",
-  description: "Один рабочий интерфейс для текстов, документов, web-поиска, кода, изображений и проектов. System Lite, Pro и Max, прозрачный рублёвый баланс и API для бизнеса.",
+  title: "AI Workspace — единая AI-среда для работы, агентов и разработки",
+  description: "Чат, web-поиск, файлы, проекты, AI-агенты, Dev Studio, изображения и API в одном рабочем пространстве с понятным рублёвым балансом.",
   openGraph: {
-    title: "AI Workspace — работайте, а не переключайте нейросети",
-    description: "AI для документов, поиска, кода, изображений и проектов в одном рабочем пространстве.",
+    title: "AI Workspace — одна AI-среда вместо набора разрозненных сервисов",
+    description: "Работайте с AI, запускайте агентов, ведите проекты и разработку в одном пространстве.",
     type: "website",
     locale: "ru_RU",
   },
 };
 
 const capabilityCards = [
-  {tag:"01", title:"Документы", text:"PDF, DOCX, XLSX, CSV и текстовые файлы остаются рядом с задачей и проектом.", tone:"violet"},
-  {tag:"02", title:"Актуальный web-поиск", text:"Когда нужны свежие данные, система подключает web-поиск и возвращает результат с источниками.", tone:"blue"},
-  {tag:"03", title:"Код и разработка", text:"Разбор ошибок, архитектура, ревью, прототипы и работа с GitHub без отдельного набора инструментов.", tone:"dark"},
-  {tag:"04", title:"Изображения", text:"Генерация и анализ изображений в том же рабочем пространстве, где уже лежит контекст задачи.", tone:"peach"},
-  {tag:"05", title:"Проекты и память", text:"Чаты, файлы и результаты объединяются вокруг проекта, чтобы не начинать работу заново.", tone:"mint"},
-  {tag:"06", title:"API для бизнеса", text:"Ключи, бюджеты, rate limits и контроль расходов для подключения AI к вашим продуктам.", tone:"sand"},
+  {tag:"01", title:"AI Chat + проекты", text:"Чаты, документы, файлы и история работы остаются внутри проекта — без постоянной пересборки контекста.", tone:"violet"},
+  {tag:"02", title:"Agent Studio", text:"Собирайте повторяемые AI-процессы, подключайте инструменты, web-действия, расписания и интеграции.", tone:"mint"},
+  {tag:"03", title:"Dev Studio", text:"Планирование, код, проверка изменений и GitHub-сценарии в отдельной среде для сложной разработки.", tone:"dark"},
+  {tag:"04", title:"Актуальный web-поиск", text:"Для задач со свежими данными система подключает поиск и возвращает результат вместе с источниками.", tone:"blue"},
+  {tag:"05", title:"Image Studio + Compare", text:"Генерируйте изображения и сравнивайте подходы нескольких AI-моделей без ухода из рабочего пространства.", tone:"peach"},
+  {tag:"06", title:"API для бизнеса", text:"Подключайте AI к своим продуктам: ключи, бюджеты, rate limits, история расходов и единый контроль.", tone:"sand"},
 ];
 
 const levels = [
@@ -29,12 +29,12 @@ const levels = [
 ];
 
 const useCases = [
-  ["Маркетинг", "Исследования, реклама, контент, гипотезы и конкурентный анализ."],
-  ["Разработка", "Архитектура, отладка, ревью, документация и помощь с кодом."],
-  ["Документы", "Договоры, таблицы, отчёты, инструкции и большие массивы текста."],
-  ["Исследования", "Сбор данных, web-поиск, сравнение вариантов и выводы."],
-  ["Операционная работа", "Письма, планы, расчёты, встречи и подготовка материалов."],
-  ["Команды и продукты", "Проекты, API, единый баланс и повторяемые AI-сценарии."],
+  ["Маркетинг", "Исследования, реклама, контент, гипотезы, web-поиск и конкурентный анализ."],
+  ["Разработка", "Архитектура, отладка, ревью, GitHub и многошаговая работа в Dev Studio."],
+  ["Бизнес-процессы", "Повторяемые задачи, AI-агенты, расписания, интеграции и контроль запусков."],
+  ["Документы и аналитика", "PDF, таблицы, отчёты, инструкции, исследования и проектный контекст."],
+  ["Креатив и изображения", "Image Studio, идеи, визуальные концепции и работа с изображениями."],
+  ["Команды и продукты", "Проекты, API, лимиты, бюджеты и единый контроль расходов."],
 ];
 
 const faq = [
@@ -84,25 +84,25 @@ export default function LandingPage() {
       <div className={styles.heroGlowTwo} aria-hidden="true" />
       <div className={styles.heroCopy}>
         <div className={styles.heroBadge}><span>●</span> AI ДЛЯ РЕАЛЬНОЙ РАБОТЫ</div>
-        <h1>Работайте,<br/><em>а не переключайте</em><br/>нейросети.</h1>
-        <p>Тексты, документы, актуальный web-поиск, код, изображения и проекты — в одном интерфейсе. Выбираете только <strong>Lite, Pro или Max</strong>. Остальное система берёт на себя.</p>
+        <h1>Одна AI-среда.<br/><em>От первого вопроса</em><br/>до выполненной работы.</h1>
+        <p>Чат, актуальный web-поиск, файлы, проекты, <strong>AI-агенты, Dev Studio, изображения и API</strong> — в одном рабочем пространстве с понятным рублёвым балансом.</p>
         <div className={styles.heroActions}>
-          <Link className={styles.heroPrimary} href="/register">Начать работу <span>↗</span></Link>
-          <a className={styles.heroSecondary} href="#product">Посмотреть возможности</a>
+          <Link className={styles.heroPrimary} href="/register">Начать работу бесплатно <span>↗</span></Link>
+          <a className={styles.heroSecondary} href="#product">Посмотреть продукт</a>
         </div>
-        <div className={styles.heroTrust}><span>Без обязательной подписки</span><span>Оплата в рублях</span><span>Контроль расходов</span></div>
+        <div className={styles.heroTrust}><span>Без обязательной подписки</span><span>Расходы в рублях, а не токенах</span><span>Один аккаунт: чат, агенты, dev и API</span></div>
       </div>
 
       <div className={styles.heroProduct} aria-label="Пример рабочего пространства AI Workspace">
-        <div className={styles.browserTop}><div><i/><i/><i/></div><span>workspace.ai</span><b>•••</b></div>
+        <div className={styles.browserTop}><div><i/><i/><i/></div><span>ailegend.ru</span><b>•••</b></div>
         <div className={styles.productBody}>
           <aside className={styles.productSidebar}>
             <div className={styles.miniBrand}><span>✦</span><b>Workspace</b></div>
             <button type="button">＋ Новый чат</button>
-            <small>ПРОЕКТЫ</small>
-            <p>▣ Запуск продукта</p><p>▣ Маркетинг</p><p>▣ Исследование рынка</p>
-            <small>ИСТОРИЯ</small>
-            <p className={styles.activeRow}>Анализ стратегии</p><p>План продвижения</p>
+            <small>РАБОЧЕЕ ПРОСТРАНСТВО</small>
+            <p className={styles.activeRow}>✦ AI Chat</p><p>▣ Проекты</p><p>◇ Agent Studio</p><p>⌘ Dev Studio</p>
+            <small>НЕДАВНЕЕ</small>
+            <p>Запуск продукта</p><p>SEO стратегия</p>
           </aside>
           <div className={styles.productChat}>
             <div className={styles.chatTop}><div><b>Анализ стратегии</b><span>Проект · Запуск продукта</span></div><em>System Pro</em></div>
@@ -124,19 +124,19 @@ export default function LandingPage() {
     </section>
 
     <section className={styles.signalBar} aria-label="Ключевые свойства продукта">
-      <div><b>01</b><span><strong>Один интерфейс</strong>для всех AI-задач</span></div>
-      <div><b>02</b><span><strong>3 уровня</strong>вместо списка моделей</span></div>
+      <div><b>01</b><span><strong>Одна среда</strong>от чата до Dev Studio</span></div>
+      <div><b>02</b><span><strong>AI-агенты</strong>для повторяемой работы</span></div>
       <div><b>03</b><span><strong>₽ баланс</strong>без обязательной подписки</span></div>
-      <div><b>04</b><span><strong>Контроль</strong>расходов и операций</span></div>
+      <div><b>04</b><span><strong>Контроль</strong>расходов, запусков и API</span></div>
     </section>
 
     <section className={styles.whySection} id="why">
-      <div className={styles.sectionLabel}>ПОЧЕМУ ЭТО ПРОЩЕ</div>
-      <div className={styles.whyHeader}><h2>AI должен убирать работу.<br/>Не добавлять новую.</h2><p>Вместо десятка сервисов, подписок и технических названий — одно рабочее пространство и понятный выбор мощности.</p></div>
+      <div className={styles.sectionLabel}>ЗАЧЕМ ЕЩЁ ОДНА AI-ПЛАТФОРМА</div>
+      <div className={styles.whyHeader}><h2>AI должен доводить задачу до результата.<br/>Не создавать ещё один набор вкладок.</h2><p>Начните с чата. Добавьте файлы и проект. Повторяемую работу перенесите в Agent Studio, сложную разработку — в Dev Studio, а нужный сценарий встроите через API.</p></div>
       <div className={styles.comparison}>
-        <article className={styles.oldWay}><span>ОБЫЧНО</span><h3>Вы управляете нейросетями</h3><ul><li>какую модель выбрать?</li><li>где остался нужный контекст?</li><li>какая подписка ещё активна?</li><li>где искать файлы и историю?</li></ul></article>
+        <article className={styles.oldWay}><span>ОБЫЧНО</span><h3>Работа разбросана по сервисам</h3><ul><li>отдельный чат и отдельный поиск</li><li>файлы и история живут в разных местах</li><li>для автоматизации нужен ещё один сервис</li><li>для разработки — ещё один AI-инструмент</li></ul></article>
         <div className={styles.switchArrow}>→</div>
-        <article className={styles.newWay}><span>AI WORKSPACE</span><h3>Нейросеть работает на вас</h3><ul><li>опишите задачу обычным языком</li><li>выберите Lite, Pro или Max</li><li>получите результат в проекте</li><li>продолжайте с тем же контекстом</li></ul></article>
+        <article className={styles.newWay}><span>AI WORKSPACE</span><h3>Одна среда вокруг вашей работы</h3><ul><li>чат и web-поиск в одном контексте</li><li>проекты, документы и история рядом</li><li>Agent Studio для повторяемых процессов</li><li>Dev Studio и API для следующего уровня</li></ul></article>
       </div>
     </section>
 
@@ -153,20 +153,20 @@ export default function LandingPage() {
 
     <section className={styles.productSection} id="product">
       <div className={styles.sectionLabel}>ВОЗМОЖНОСТИ</div>
-      <div className={styles.sectionHeader}><h2>Не просто чат.<br/>Рабочая AI-система.</h2><p>Инструменты остаются в одном контексте и помогают доводить задачу до результата.</p></div>
+      <div className={styles.sectionHeader}><h2>Не просто чат.<br/>AI-операционная система для работы.</h2><p>Один продукт закрывает путь от вопроса и файла до автоматизированного процесса, разработки и API-интеграции.</p></div>
       <div className={styles.bento}>{capabilityCards.map((item,index)=><article key={item.title} className={`${styles.bentoCard} ${styles[item.tone]} ${index===2?styles.bentoWide:""}`}>
         <span>{item.tag}</span><h3>{item.title}</h3><p>{item.text}</p><i>↗</i>
       </article>)}</div>
     </section>
 
     <section className={styles.workflowSection}>
-      <div className={styles.workflowCopy}><div className={styles.sectionLabel}>КАК ЭТО РАБОТАЕТ</div><h2>От задачи до результата — четыре простых шага</h2><p>Никакой настройки провайдеров перед первым запросом.</p><Link href="/getting-started">Посмотреть начало работы →</Link></div>
-      <div className={styles.workflowSteps}><article><b>01</b><div><h3>Опишите задачу</h3><p>Напишите запрос, прикрепите файл или продолжите работу внутри проекта.</p></div></article><article><b>02</b><div><h3>Выберите уровень</h3><p>Lite для простого, Pro для большинства задач, Max для самого сложного.</p></div></article><article><b>03</b><div><h3>Система выполняет работу</h3><p>Маршрутизация, поиск, контекст и расчёт стоимости происходят внутри.</p></div></article><article><b>04</b><div><h3>Продолжайте с контекстом</h3><p>История, файлы и результаты остаются рядом с проектом.</p></div></article></div>
+      <div className={styles.workflowCopy}><div className={styles.sectionLabel}>КАК ЭТО РАБОТАЕТ</div><h2>Сначала задача. Технология — внутри.</h2><p>Не нужно настраивать провайдеров перед первым запросом или изучать десятки названий моделей.</p><Link href="/getting-started">Посмотреть начало работы →</Link></div>
+      <div className={styles.workflowSteps}><article><b>01</b><div><h3>Опишите задачу</h3><p>Напишите запрос, прикрепите файл или продолжите работу внутри проекта.</p></div></article><article><b>02</b><div><h3>Выберите уровень</h3><p>Lite для простого, Pro для большинства задач, Max для самого сложного.</p></div></article><article><b>03</b><div><h3>Система выполняет работу</h3><p>Маршрутизация, поиск, контекст и расчёт стоимости происходят внутри.</p></div></article><article><b>04</b><div><h3>Масштабируйте удачный сценарий</h3><p>Оставьте его в проекте, перенесите в Agent Studio, Dev Studio или подключите через API.</p></div></article></div>
     </section>
 
     <section className={styles.useSection}>
       <div className={styles.sectionLabel}>СЦЕНАРИИ</div>
-      <div className={styles.sectionHeader}><h2>Один продукт для разных типов работы</h2><p>От разового вопроса до ежедневной рабочей среды команды.</p></div>
+      <div className={styles.sectionHeader}><h2>Один продукт для работы, которая обычно разбросана по десятку сервисов.</h2><p>Начать можно с одного чата. Использовать глубже — по мере роста задач.</p></div>
       <div className={styles.useGrid}>{useCases.map(([title,text],index)=><article key={title}><span>0{index+1}</span><div><h3>{title}</h3><p>{text}</p></div></article>)}</div>
     </section>
 
@@ -177,7 +177,7 @@ export default function LandingPage() {
 
     <section className={styles.apiSection}>
       <div className={styles.apiCard}><div className={styles.apiTop}><span>API</span><b>OpenAI-compatible</b></div><pre>{`POST /v1/chat/completions\nAuthorization: Bearer ••••••••\n\n{\n  "messages": [\n    {"role": "user", "content": "..."}\n  ]\n}`}</pre><div className={styles.apiStatus}><i/> API ready</div></div>
-      <div className={styles.apiCopy}><div className={styles.sectionLabel}>ДЛЯ БИЗНЕСА</div><h2>Встройте тот же AI в свой продукт</h2><p>API-ключи, бюджеты, rate limits и контроль расходов — без создания отдельной AI-инфраструктуры для каждого сценария.</p><ul><li>единый контроль доступа</li><li>лимиты и бюджеты</li><li>история расходов</li><li>совместимый API</li></ul><Link className={styles.darkCta} href="/register">Создать аккаунт <span>→</span></Link></div>
+      <div className={styles.apiCopy}><div className={styles.sectionLabel}>ДЛЯ ПРОДУКТОВ И КОМАНД</div><h2>Встройте тот же контролируемый AI в свой продукт</h2><p>API-ключи, бюджеты, rate limits и история расходов — без отдельного зоопарка интеграций для каждого сценария.</p><ul><li>единый контроль доступа</li><li>лимиты и бюджеты</li><li>история расходов</li><li>совместимый API</li></ul><Link className={styles.darkCta} href="/register">Создать аккаунт <span>→</span></Link></div>
     </section>
 
     <section className={styles.faqSection} id="faq">
@@ -189,7 +189,7 @@ export default function LandingPage() {
 
     <section className={styles.finalCta}>
       <div className={styles.finalOrb} aria-hidden="true" />
-      <span>НАЧНИТЕ С РЕАЛЬНОЙ ЗАДАЧИ</span><h2>Откройте чат.<br/>Выберите System Pro.<br/>И просто работайте.</h2><p>Без изучения моделей, сложных настроек и обязательной ежемесячной подписки.</p>
+      <span>НАЧНИТЕ С ОДНОЙ РЕАЛЬНОЙ ЗАДАЧИ</span><h2>Не меняйте весь процесс.<br/>Сначала проверьте,<br/>как AI работает на вас.</h2><p>Создайте аккаунт, отправьте первый запрос и оцените единое пространство для чатов, проектов, агентов и разработки.</p>
       <div><Link className={styles.finalPrimary} href="/register">Создать аккаунт <b>↗</b></Link><Link className={styles.finalSecondary} href="/login">Уже есть аккаунт</Link></div><small>AI Workspace · продукт BBTEC</small>
     </section>
 
