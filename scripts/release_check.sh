@@ -251,6 +251,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test python mana
 pass 17 'Agent Runtime billing integrity'
 
 step 18 'Frontend production build'
+ensure_release_disk
 DOCKER_BUILDKIT=1 docker build --progress=plain \
   --target builder \
   --build-arg NEXT_PUBLIC_SITE_URL=http://127.0.0.1:${FRONTEND_SMOKE_PORT} \
