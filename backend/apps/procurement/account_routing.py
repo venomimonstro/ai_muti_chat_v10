@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from decimal import Decimal, ROUND_UP
@@ -10,6 +11,8 @@ from django.db import transaction
 from apps.ai_registry.models import ProviderApiKey
 
 from .models import ProviderFundingAccount, ProviderSpendReservation
+
+logger = logging.getLogger("chat.pipeline")
 
 ZERO = Decimal("0")
 NATIVE_STEP = Decimal("0.000001")
@@ -252,6 +255,12 @@ def install(*, services_module, signals_module, reliability_module) -> None:
     # USD/EUR funding pools can never be charged with the wrong FX basis.
     def ensure(*, provider, expected_rub, snapshot, source_key):
         if not signals_module._require_procurement(provider):
+            if str(source_key).startswith("chat:"):
+                logger.info(
+                    "[CHAT_PIPELINE] stage=PROVIDER_RESERVE_SKIPPED provider=%s source=%s reason=no_funded_ledger",
+                    provider.slug,
+                    source_key,
+                )
             return None
         fx = signals_module._fx(snapshot)
         if fx is None:
@@ -269,12 +278,30 @@ def install(*, services_module, signals_module, reliability_module) -> None:
             return None
         currency = str((snapshot or {}).get("provider_currency") or "").upper().strip()
         try:
-            return reserve_provider_spend(
+            if str(source_key).startswith("chat:"):
+                logger.info(
+                    "[CHAT_PIPELINE] stage=PROVIDER_RESERVE_START provider=%s source=%s amount_native=%s currency=%s",
+                    provider.slug,
+                    source_key,
+                    native,
+                    currency,
+                )
+            reservation = reserve_provider_spend(
                 provider=provider,
                 amount_native=native,
                 source_key=source_key,
                 currency=currency,
             )
+            if str(source_key).startswith("chat:"):
+                logger.info(
+                    "[CHAT_PIPELINE] stage=PROVIDER_RESERVE_OK provider=%s source=%s reservation_id=%s account_id=%s amount_native=%s",
+                    provider.slug,
+                    source_key,
+                    getattr(reservation, "id", ""),
+                    getattr(reservation, "account_id", ""),
+                    native,
+                )
+            return reservation
         except ValidationError as exc:
             # Procurement is owner-side accounting, not provider transport
             # authorization. Never take the customer chat offline solely because
@@ -289,6 +316,13 @@ def install(*, services_module, signals_module, reliability_module) -> None:
                 source_key,
                 exc,
             )
+            if str(source_key).startswith("chat:"):
+                logger.warning(
+                    "[CHAT_PIPELINE] stage=PROVIDER_RESERVE_SKIPPED provider=%s source=%s reason=%s",
+                    provider.slug,
+                    source_key,
+                    str(exc)[:500],
+                )
             return None
 
     signals_module._ensure = ensure
