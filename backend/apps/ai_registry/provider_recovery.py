@@ -185,7 +185,11 @@ def install(reliability_module) -> None:
             adapter = None
             started = time.monotonic()
             try:
-                adapter = dispatch.adapter_for(model, allow_probe=True)
+                adapter = dispatch.adapter_for(
+                    model,
+                    allow_probe=True,
+                    require_funding_balance=False,
+                )
                 adapter.generate(
                     model=model.upstream_model,
                     messages=[{"role": "user", "content": RECOVERY_PROMPT}],
