@@ -344,6 +344,49 @@ class DeepSeekChatAdapter(HTTPAdapter):
         return {"text", "streaming"}
 
 
+class HubAIChatAdapter(DeepSeekChatAdapter):
+    """HubAI OpenAI-compatible DeepSeek transport.
+
+    Some compatible gateways do not expose GET /models even though
+    /chat/completions works. Runtime health therefore falls back to a tiny
+    non-stream completion instead of incorrectly blocking customer traffic.
+    """
+
+    def __init__(self, *, api_key: str, base_url: str = "https://hubai.loe.gg/v1"):
+        super().__init__(api_key=api_key, base_url=base_url)
+
+    def health_check(self):
+        started = time.monotonic()
+        try:
+            response = httpx.get(
+                f"{self.base_url}/models",
+                headers=self.headers,
+                timeout=min(settings.AI_PROVIDER_TIMEOUT_SECONDS, 10),
+                follow_redirects=True,
+            )
+            if response.status_code in {404, 405}:
+                response = httpx.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self.headers,
+                    json={
+                        "model": "deepseek-chat-fast",
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                        "stream": False,
+                    },
+                    timeout=min(settings.AI_PROVIDER_TIMEOUT_SECONDS, 10),
+                    follow_redirects=True,
+                )
+            response.raise_for_status()
+            return AdapterHealth(True, int((time.monotonic() - started) * 1000))
+        except httpx.HTTPError as exc:
+            return AdapterHealth(
+                False,
+                int((time.monotonic() - started) * 1000),
+                _http_error(exc).code,
+            )
+
+
 class XAIChatAdapter(DeepSeekChatAdapter):
     def __init__(self, *, api_key: str, base_url: str = "https://api.x.ai/v1"):
         super().__init__(api_key=api_key, base_url=base_url)
