@@ -1,13 +1,18 @@
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.billing.models import BalanceReservation
 from apps.billing.services import credit, reserve
+from apps.procurement.models import ProviderSpend, ProviderSpendReservation
+from apps.procurement.services import create_funding_account, record_purchase
 
+from .accounting import checkpoint_agent_provider_delivery, reserve_agent_provider_spend
 from .models import Agent, AgentApproval, AgentRun, AgentStepRun
 from .recovery import expire_stale_agent_approvals, recover_stale_agent_runs
 
@@ -214,3 +219,128 @@ def test_decided_approval_is_never_expired(monkeypatch):
     run.refresh_from_db()
     assert approval.status == AgentApproval.Status.APPROVED
     assert run.state == AgentRun.State.RUNNING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stale_agent_reconciles_confirmed_provider_delivery_before_releasing_customer(monkeypatch):
+    monkeypatch.setenv("AGENT_STALE_TIMEOUT_SECONDS", "1200")
+    user = get_user_model().objects.create_user(
+        username="agent-settlement-recovery",
+        email="agent-settlement-recovery@example.test",
+        password="test-password",
+    )
+    credit(user, Decimal("20"), "test", "agent-settlement-recovery")
+    agent = Agent.objects.create(
+        owner=user,
+        name="Settlement Recovery Agent",
+        objective="Recover confirmed provider usage",
+        status=Agent.Status.ACTIVE,
+    )
+    run = AgentRun.objects.create(
+        owner=user,
+        agent=agent,
+        objective="Recover provider settlement",
+        state=AgentRun.State.REVIEWING,
+        started_at=timezone.now() - timedelta(hours=1),
+    )
+    step = AgentStepRun.objects.create(
+        run=run,
+        agent=agent,
+        sequence=1,
+        node_id="llm",
+        title="LLM",
+        action_type="llm",
+        state=AgentStepRun.State.RUNNING,
+        started_at=timezone.now() - timedelta(hours=1),
+    )
+
+    provider = Provider.objects.create(
+        slug="agent-recovery-provider",
+        name="Agent recovery provider",
+        adapter_type=Provider.AdapterType.OPENAI_RESPONSES,
+        enabled=True,
+        health_state=Provider.HealthState.HEALTHY,
+    )
+    key = ProviderApiKey(
+        provider=provider,
+        label="healthy",
+        enabled=True,
+        health_state=ProviderApiKey.HealthState.HEALTHY,
+    )
+    key.set_secret("sk-agent-recovery")
+    key.save()
+    model = AIModel.objects.create(
+        provider=provider,
+        slug="agent-recovery-model",
+        display_name="Agent recovery model",
+        upstream_model="upstream-recovery",
+        enabled=True,
+    )
+    account = create_funding_account(
+        provider=provider,
+        api_key=key,
+        label="Recovery funding",
+        currency="USD",
+        is_default=True,
+    )
+    record_purchase(
+        account=account,
+        credit_native=Decimal("10"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+    )
+
+    customer = reserve(user, Decimal("3"), f"agent-run:{run.id}")
+    provider_reservation = reserve_agent_provider_spend(
+        model=model,
+        provider_cost_rub=Decimal("2"),
+        fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        source_key=f"agent:{run.id}",
+        provider_currency="USD",
+    )
+    assert provider_reservation is not None
+
+    checkpoint_agent_provider_delivery(
+        step=step,
+        model=model,
+        result=SimpleNamespace(
+            provider_request_id="provider-recovery-1",
+            input_tokens=100,
+            output_tokens=50,
+        ),
+        actual_quote=SimpleNamespace(
+            provider_cost_rub=Decimal("1.5"),
+            fx_snapshot=SimpleNamespace(rate=Decimal("100")),
+        ),
+        provider_reservation=provider_reservation,
+        customer_reservation=customer,
+        source_id=run.id,
+        customer_charge=Decimal("3"),
+    )
+    AgentRun.objects.filter(pk=run.pk).update(
+        updated_at=timezone.now() - timedelta(hours=1)
+    )
+
+    assert recover_stale_agent_runs() == 1
+
+    run.refresh_from_db()
+    step.refresh_from_db()
+    customer.refresh_from_db()
+    provider_reservation.refresh_from_db()
+    account.refresh_from_db()
+    user.wallet.refresh_from_db()
+    spend = ProviderSpend.objects.get(source_type="agent", source_id=str(run.id))
+
+    assert run.state == AgentRun.State.FAILED
+    assert run.error_code == "stale_agent_run_recovered"
+    assert step.state == AgentStepRun.State.FAILED
+    assert (step.output_payload["_provider_settlement"]["status"]) == "settled"
+    assert customer.state == BalanceReservation.State.RELEASED
+    assert customer.actual_rub is None
+    assert provider_reservation.state == ProviderSpendReservation.State.SETTLED
+    assert spend.native_cost == Decimal("0.015000")
+    assert spend.customer_charge_rub == Decimal("0.0000")
+    assert account.reserved_native == Decimal("0.000000")
+    assert account.spent_native == Decimal("0.015000")
+    assert user.wallet.reserved_rub == Decimal("0.0000")
+    assert user.wallet.available_rub == Decimal("20.0000")
