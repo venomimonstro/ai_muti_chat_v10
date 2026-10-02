@@ -1,3 +1,4 @@
+from unittest.mock import patch
 from datetime import timedelta
 from decimal import Decimal
 
@@ -148,3 +149,55 @@ def test_chat_recovery_isolates_one_broken_generation_and_continues(settings, mo
     assert result["generation_errors"] == 1
     assert result["generations"] == 1
     assert set(calls) == {item.id for item in generations}
+
+
+def test_chat_recovery_task_skips_when_distributed_lock_is_held():
+    from apps.admin_ops import tasks
+
+    with (
+        patch.object(tasks.cache, "add", return_value=False) as lock_add,
+        patch.object(tasks, "recover_stale_chat_operations") as recover,
+    ):
+        result = tasks.recover_stale_chat_operations_task.run()
+
+    assert result == {"status": "skipped", "reason": "already_running"}
+    lock_add.assert_called_once_with(tasks.CHAT_RECOVERY_LOCK, "1", timeout=55)
+    recover.assert_not_called()
+
+
+def test_chat_recovery_task_releases_lock_after_success():
+    from apps.admin_ops import tasks
+
+    with (
+        patch.object(tasks.cache, "add", return_value=True),
+        patch.object(tasks.cache, "delete") as lock_delete,
+        patch.object(
+            tasks,
+            "recover_stale_chat_operations",
+            return_value={"generations": 2, "generation_errors": 0},
+        ) as recover,
+    ):
+        result = tasks.recover_stale_chat_operations_task.run()
+
+    assert result["status"] == "ok"
+    assert result["generations"] == 2
+    recover.assert_called_once_with()
+    lock_delete.assert_called_once_with(tasks.CHAT_RECOVERY_LOCK)
+
+
+def test_chat_recovery_task_releases_lock_after_failure():
+    from apps.admin_ops import tasks
+
+    with (
+        patch.object(tasks.cache, "add", return_value=True),
+        patch.object(tasks.cache, "delete") as lock_delete,
+        patch.object(
+            tasks,
+            "recover_stale_chat_operations",
+            side_effect=RuntimeError("synthetic recovery failure"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="synthetic recovery failure"):
+            tasks.recover_stale_chat_operations_task.run()
+
+    lock_delete.assert_called_once_with(tasks.CHAT_RECOVERY_LOCK)
