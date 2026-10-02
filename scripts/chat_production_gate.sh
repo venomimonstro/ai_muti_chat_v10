@@ -99,10 +99,12 @@ if ! compose exec -T backend python manage.py chat_preflight_smoke --mode auto; 
 fi
 
 echo '============================================================'
-echo '[4/6] Full real customer chat generation'
+echo '[4/6] Native ASGI transport + full real customer chat generation'
 echo '============================================================'
+compose exec -T backend python manage.py chat_asgi_transport_smoke
 compose exec -T backend python manage.py check_provider_health --live
 compose exec -T backend python manage.py chat_live_smoke --mode auto
+compose exec -T backend python manage.py chat_live_smoke --mode manual
 
 echo '============================================================'
 echo '[5/6] Live inference for every customer-visible model'
