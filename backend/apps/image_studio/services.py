@@ -311,12 +311,15 @@ def execute_generation(generation, *, adapter=None, claim_queued=True):
     snapshot = generation.price_snapshot or {}
     try:
         provider_reservation = _ensure_provider_reservation(generation)
-        image_adapter = adapter or adapter_for(
-            model,
-            funding_account_id=(
-                provider_reservation.account_id if provider_reservation is not None else None
-            ),
-        )
+        if adapter is not None:
+            image_adapter = adapter
+        elif provider_reservation is not None:
+            image_adapter = adapter_for(
+                model,
+                funding_account_id=provider_reservation.account_id,
+            )
+        else:
+            image_adapter = adapter_for(model)
         if snapshot.get("operation", "generate") == "edit":
             source = _source_for_edit(generation)
             with source.blob.open("rb") as stream:
