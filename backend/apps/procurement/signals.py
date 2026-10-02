@@ -240,7 +240,23 @@ def api_usage_procurement(sender, instance, **kwargs):
             output_tokens=instance.completion_tokens,
         )
     elif instance.state == APIUsage.State.FAILED:
-        release_provider_spend(reservation.id)
+        if instance.provider_cost_rub is not None and (
+            instance.prompt_tokens or instance.completion_tokens
+        ):
+            _settle(
+                reservation=reservation,
+                provider_cost_rub=instance.provider_cost_rub,
+                customer_charge_rub=instance.charged_rub or ZERO,
+                snapshot=instance.pricing_snapshot,
+                source_type="b2b",
+                source_id=str(instance.id),
+                model_slug=model.slug,
+                provider_request_id=instance.provider_request_id,
+                input_tokens=instance.prompt_tokens,
+                output_tokens=instance.completion_tokens,
+            )
+        else:
+            release_provider_spend(reservation.id)
 
 
 @receiver(post_save, sender=ImageGeneration)
@@ -281,7 +297,19 @@ def image_generation_procurement(sender, instance, **kwargs):
             provider_request_id=instance.provider_request_id,
         )
     elif instance.state == ImageGeneration.State.FAILED:
-        release_provider_spend(reservation.id)
+        if instance.provider_cost_rub is not None:
+            _settle(
+                reservation=reservation,
+                provider_cost_rub=instance.provider_cost_rub,
+                customer_charge_rub=instance.actual_cost_rub or ZERO,
+                snapshot=instance.price_snapshot,
+                source_type="image",
+                source_id=str(instance.id),
+                model_slug=instance.model.slug,
+                provider_request_id=instance.provider_request_id,
+            )
+        else:
+            release_provider_spend(reservation.id)
 
 
 @receiver(post_save, sender=CompareVariant)
@@ -324,4 +352,20 @@ def compare_variant_procurement(sender, instance, **kwargs):
             output_tokens=instance.output_tokens,
         )
     elif instance.state == CompareVariant.State.FAILED:
-        release_provider_spend(reservation.id)
+        if instance.provider_cost_rub is not None and (
+            instance.input_tokens or instance.output_tokens
+        ):
+            _settle(
+                reservation=reservation,
+                provider_cost_rub=instance.provider_cost_rub,
+                customer_charge_rub=instance.actual_cost_rub or ZERO,
+                snapshot=instance.pricing_snapshot,
+                source_type="compare",
+                source_id=str(instance.id),
+                model_slug=instance.model.slug,
+                provider_request_id=instance.provider_request_id,
+                input_tokens=instance.input_tokens,
+                output_tokens=instance.output_tokens,
+            )
+        else:
+            release_provider_spend(reservation.id)
