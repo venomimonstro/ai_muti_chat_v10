@@ -94,6 +94,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_stream_completion_integrity.py \
   apps/ai_registry/test_credential_save_continuity.py \
   apps/chat/test_preflight_reconnect_authorization.py \
+  apps/chat/test_stream_authorization_recovery.py \
   apps/chat/test_draft_concurrency.py \
   apps/files/test_rag_outage_fallback.py \
   apps/ai_registry/test_chat_reliability.py \
