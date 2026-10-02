@@ -123,8 +123,11 @@ def enforce_spend_limits(wallet, next_reservation):
             "Запрос остановлен до обращения к провайдеру, деньги не списаны."
         )
 
+    # This function is also used by read-only chat cost/capacity previews outside
+    # an explicit transaction. The wallet row is already serialized by billing.reserve()
+    # on the mutating path, so locking UserPreference here is both unnecessary and
+    # invalid for previews (PostgreSQL rejects SELECT FOR UPDATE outside atomic()).
     preference, _ = UserPreference.objects.get_or_create(user=wallet.user)
-    preference = UserPreference.objects.select_for_update().get(pk=preference.pk)
     active_reserved = guard["active_reserved_rub"]
 
     burst_limit = guard["burst_limit_rub"]
