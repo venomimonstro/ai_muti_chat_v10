@@ -239,7 +239,7 @@ def install(*, streaming_module, web_tools_module) -> None:
     raw_config = web_tools_module._yandex_search_config
     raw_searx = web_tools_module._search_searx
     raw_search_web = web_tools_module.search_web
-    if getattr(raw_prepare, "_ai_workspace_paid_search_billing", False):
+    if getattr(raw_prepare, "_ai_workspace_paid_search_billing", False) is True:
         return
 
     def yandex_config():
