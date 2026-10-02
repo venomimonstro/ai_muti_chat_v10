@@ -414,7 +414,11 @@ def check_provider(provider: Provider):
             raise ProviderError("Provider has no enabled models", code="no_models", retryable=False)
         from .dispatch import adapter_for as runtime_adapter_for
 
-        adapter = runtime_adapter_for(model, allow_probe=True)
+        adapter = runtime_adapter_for(
+            model,
+            allow_probe=True,
+            require_funding_balance=False,
+        )
         health = adapter.health_check()
     except ProviderError as exc:
         record_failure(provider, exc, adapter=adapter if "adapter" in locals() else None)
