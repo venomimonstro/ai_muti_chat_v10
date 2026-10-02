@@ -63,6 +63,8 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
     apps/agents/test_dev_model_execution.py \
     apps/agents/test_dev_settlement_integrity.py \
     apps/agents/test_team_runtime_v2_activation.py \
+    apps/agents/test_agent_recovery.py \
+    apps/ai_registry/test_commercial_dispatch_contract.py \
     apps/agents/test_dev_recovery.py \
     apps/agents/test_dev_security.py \
     apps/agents/test_dev_prompt_boundary.py \
