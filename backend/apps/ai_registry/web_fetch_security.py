@@ -26,7 +26,7 @@ def _enabled() -> bool:
 
 def install(web_tools_module) -> None:
     raw = web_tools_module._fetch_page_excerpt
-    if getattr(raw, "_ai_workspace_safe_egress", False):
+    if getattr(raw, "_ai_workspace_safe_egress", False) is True:
         return
 
     def fetch_page_excerpt(url: str) -> str:
