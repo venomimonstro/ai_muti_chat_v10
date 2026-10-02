@@ -4,7 +4,8 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
+from apps.ai_registry.adapters import ProviderError
+from apps.ai_registry.dispatch import adapter_for
 from apps.ai_registry.token_estimator import estimate_message_tokens
 from apps.ai_registry.web_tools import WebToolError, search_context
 from apps.billing.pricing import active_price, quote, require_margin
@@ -221,10 +222,24 @@ def execute_generic_team_run(run_id):
                 provider_cost_rub=preflight.provider_cost_rub,
                 fx_snapshot=preflight.fx_snapshot,
                 source_key=f"agent-team:{run.id}:step:{index}",
+                provider_currency=str(
+                    (preflight.pricing_snapshot or {}).get("provider_currency") or ""
+                ),
             )
             run.state = AgentRun.State.RUNNING
             run.save(update_fields=["state", "updated_at"])
-            result = adapter_for(model).generate(model=model.upstream_model or model.slug, messages=messages, max_output_tokens=output_tokens)
+            result = adapter_for(
+                model,
+                funding_account_id=(
+                    getattr(provider_reservation, "account_id", None)
+                    if provider_reservation is not None
+                    else None
+                ),
+            ).generate(
+                model=model.upstream_model or model.slug,
+                messages=messages,
+                max_output_tokens=output_tokens,
+            )
             actual_quote = require_margin(
                 quote(price, max(1, result.input_tokens), max(1, result.output_tokens), provider_slug=model.provider.slug, model_slug=model.slug, operation_type="agent")
             )
