@@ -145,8 +145,14 @@ def _settle(*, reservation, provider_cost_rub, customer_charge_rub, snapshot, so
     if existing is not None:
         return existing
     if reservation is None:
-        if _commercial_fail_closed() and _decimal(provider_cost_rub) > ZERO:
+        if _commercial_fail_closed() and _decimal(provider_cost_rub) > ZERO and source_type != "chat":
             raise ValidationError("Фактический расход провайдера не имеет закупочного резерва")
+        if source_type == "chat" and _decimal(provider_cost_rub) > ZERO:
+            logger.warning(
+                "Chat provider usage completed without local procurement reservation source_id=%s provider_cost_rub=%s",
+                source_id,
+                provider_cost_rub,
+            )
         return None
     fx = _fx(snapshot)
     if fx is None:
