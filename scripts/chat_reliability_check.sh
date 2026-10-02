@@ -103,6 +103,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/ai_registry/test_provider_key_selection.py \
   apps/ai_registry/test_dispatch_runtime.py \
   apps/ai_registry/test_special_provider_dispatch.py \
+  apps/ai_registry/test_hubai_provider.py \
   apps/ai_registry/test_yandexgpt_runtime.py \
   apps/ai_registry/test_provider_recovery_probe.py \
   apps/ai_registry/test_provider_recovery_lock.py \
