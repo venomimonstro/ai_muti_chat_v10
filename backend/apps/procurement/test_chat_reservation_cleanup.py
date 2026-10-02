@@ -13,7 +13,11 @@ from .models import ProviderFundingAccount, ProviderSpendReservation
 
 class ChatProcurementCleanupTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(email="cleanup@example.com", password="test-pass-123")
+        self.user = User.objects.create_user(
+            username="cleanup-user",
+            email="cleanup@example.com",
+            password="test-pass-123",
+        )
         self.provider = Provider.objects.create(
             slug="cleanup-provider",
             name="Cleanup provider",
