@@ -98,7 +98,7 @@ def _consume_generation_reservation_after_provider_delivery(reservation, wallet)
 
 def install() -> None:
     current = billing_services._consume_generation_reservation_after_provider_delivery
-    if getattr(current, "_ai_workspace_safe_confirmed_usage", False):
+    if getattr(current, "_ai_workspace_safe_confirmed_usage", False) is True:
         return
     _consume_generation_reservation_after_provider_delivery._ai_workspace_safe_confirmed_usage = True
     billing_services._consume_generation_reservation_after_provider_delivery = (
