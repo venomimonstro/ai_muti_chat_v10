@@ -337,7 +337,7 @@ def _refresh_balance(provider: Provider, key: ProviderApiKey):
     key.balance_supported = False
     key.balance_amount = None
     key.balance_currency = ""
-    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT and provider.slug not in {"openrouter", "gigachat"}:
+    if provider.adapter_type == Provider.AdapterType.DEEPSEEK_CHAT and provider.slug not in {"openrouter", "gigachat", "hubai"}:
         try:
             response = httpx.get(f"{provider.api_base_url.rstrip('/')}/user/balance", headers=_headers(provider, key.get_secret()), timeout=10)
             response.raise_for_status()
