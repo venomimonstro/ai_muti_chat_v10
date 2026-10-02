@@ -99,8 +99,9 @@ def provider_health_watch_task():
                 dedupe_key=f"ai-provider-outage:{bucket}",
                 title="Нет доступных AI-провайдеров",
                 body=(
-                    "Автоматическая проверка не нашла ни одного подтверждённо рабочего "
-                    "AI-канала. Клиентские модели скрыты до успешного health-check."
+                    "Автоматическая проверка не нашла ни одного AI-канала, готового "
+                    "к клиентскому трафику. Проверьте transport health, HEALTHY API-ключи, "
+                    "funding accounts и закупочный баланс."
                 ),
                 action_url="/admin-console/chat-diagnostics",
                 level=Notification.Level.WARNING,
