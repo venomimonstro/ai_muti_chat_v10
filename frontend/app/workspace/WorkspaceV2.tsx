@@ -151,7 +151,7 @@ export default function WorkspaceV2(){
    }));
   }catch(reason){
    cancelled=reason instanceof DOMException&&reason.name==="AbortError";
-   if(!accepted){const targetId=conversation?.id??null;if(activeIdRef.current===targetId){setValue(current=>{const restored=current.trim()?current:prompt;persistLocal(targetId,restored);return restored})}else persistLocal(targetId,prompt);setActive(current=>current&&current.id===targetId?{...current,messages:current.messages.filter(message=>message.id!==assistantId&&!message.id.startsWith("local-user-"))}:current)}
+   if(!accepted){const targetId=conversation?.id??null;if(activeIdRef.current===targetId){setValue(current=>{const restored=current.trim()?current:prompt;persistLocal(targetId,restored);return restored})}else persistLocal(targetId,prompt);setActive(current=>current&&current.id===targetId?{...current,messages:current.messages.filter(message=>message.id!==assistantId&&message.id!==userMessage.id)}:current)}
    if(reason instanceof ApiError&&reason.status===499)cancelled=true;
    if(cancelled&&!accepted&&conversation)setActivityByConversation(current=>{const next={...current};delete next[conversation!.id];return next});
    if(!cancelled){if(!conversation||activeIdRef.current===conversation.id)setError(reason instanceof Error?reason.message:"Соединение прервалось. Черновик сохранён.");if(conversation)recordActivity(conversation.id,{step:"connection",state:"failed",message:reason instanceof Error?reason.message:"Соединение прервалось. Ответ сохранён на сервере."})}
