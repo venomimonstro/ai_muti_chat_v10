@@ -120,9 +120,8 @@ def update_agent_provider_customer_charge(spend, customer_charge):
     return spend
 
 
-def checkpoint_agent_provider_delivery(
+def build_agent_provider_delivery_checkpoint(
     *,
-    step,
     model,
     result,
     actual_quote,
@@ -131,14 +130,13 @@ def checkpoint_agent_provider_delivery(
     source_id,
     customer_charge,
 ):
-    """Persist enough evidence to reconcile a crash after provider delivery."""
-    if step is None or provider_reservation is None:
+    """Build durable provider-delivery evidence independent of the owning surface."""
+    if provider_reservation is None:
         return None
     fx = actual_quote.fx_snapshot
     if not fx or fx.rate <= 0:
         raise ValidationError("Не удалось сохранить checkpoint расхода без FX")
-    payload = dict(step.output_payload or {})
-    payload["_provider_settlement"] = {
+    return {
         "status": "pending",
         "provider_reservation_id": str(provider_reservation.id),
         "customer_reservation_id": (
@@ -153,9 +151,38 @@ def checkpoint_agent_provider_delivery(
         "fx_rate": str(fx.rate),
         "customer_charge_rub": str(customer_charge or 0),
     }
+
+
+def checkpoint_agent_provider_delivery(
+    *,
+    step,
+    model,
+    result,
+    actual_quote,
+    provider_reservation,
+    customer_reservation,
+    source_id,
+    customer_charge,
+):
+    """Persist enough evidence to reconcile a crash after provider delivery."""
+    if step is None:
+        return None
+    checkpoint = build_agent_provider_delivery_checkpoint(
+        model=model,
+        result=result,
+        actual_quote=actual_quote,
+        provider_reservation=provider_reservation,
+        customer_reservation=customer_reservation,
+        source_id=source_id,
+        customer_charge=customer_charge,
+    )
+    if checkpoint is None:
+        return None
+    payload = dict(step.output_payload or {})
+    payload["_provider_settlement"] = checkpoint
     step.output_payload = payload
     step.save(update_fields=["output_payload"])
-    return payload["_provider_settlement"]
+    return checkpoint
 
 
 def agent_provider_checkpoint_pending(step) -> bool:
@@ -182,15 +209,9 @@ def mark_agent_provider_checkpoint_settled(step, *, provider_spend=None):
 
 
 @transaction.atomic
-def reconcile_agent_provider_checkpoint(step):
-    """Recover confirmed external usage without guessing or charging after a crash.
-
-    Provider spend is authoritative once the provider returned usage. If customer
-    settlement was already durable, mirror its actual charge. Otherwise settle the
-    provider at zero customer revenue and release the still-active customer reserve.
-    """
-    payload = dict(step.output_payload or {})
-    checkpoint = dict(payload.get("_provider_settlement") or {})
+def reconcile_agent_provider_checkpoint_data(checkpoint):
+    """Reconcile one raw checkpoint and return the authoritative ProviderSpend."""
+    checkpoint = dict(checkpoint or {})
     if checkpoint.get("status") != "pending":
         return None
 
@@ -244,6 +265,17 @@ def reconcile_agent_provider_checkpoint(step):
     if customer is not None and customer.state == BalanceReservation.State.ACTIVE:
         release(customer.id)
 
+    return spend
+
+
+@transaction.atomic
+def reconcile_agent_provider_checkpoint(step):
+    """Recover confirmed external usage without guessing or charging after a crash."""
+    payload = dict(step.output_payload or {})
+    checkpoint = dict(payload.get("_provider_settlement") or {})
+    if checkpoint.get("status") != "pending":
+        return None
+    spend = reconcile_agent_provider_checkpoint_data(checkpoint)
     mark_agent_provider_checkpoint_settled(step, provider_spend=spend)
     return spend
 
