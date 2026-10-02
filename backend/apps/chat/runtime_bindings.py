@@ -90,6 +90,9 @@ def synchronize(*, streaming_module, managed_stream_module, activity_stream_modu
     # managed_run must itself call the same final run() object. Rebinding the module
     # global closes the common Python "from x import run" stale-reference trap.
     managed_stream_module.run = final_run
+    # ASGI imported managed_run by value during module import. Keep the transport on
+    # the final cost/publicization wrapper too, not only on the final core run().
+    _bind("apps.chat.asgi_stream", managed_run=managed_stream_module.managed_run)
     activity_stream_module.managed_run = managed_stream_module.managed_run
     activity_stream_module.prepare = final_prepare
     activity_stream_module.needs_web_search = live_tools_module.needs_web_search
