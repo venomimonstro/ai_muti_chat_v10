@@ -58,7 +58,7 @@ def test_generic_team_cancel_after_provider_accounts_cost_and_stops_next_member(
     quoted = SimpleNamespace(
         user_charge_rub=Decimal("2.0000"),
         provider_cost_rub=Decimal("1.0000"),
-        fx_snapshot=None,
+        fx_snapshot=SimpleNamespace(rate=Decimal("100")),
     )
     customer_reservation = SimpleNamespace(id="customer-reservation", amount_rub=Decimal("2.0000"))
     provider_reservation = SimpleNamespace(id="provider-reservation")
