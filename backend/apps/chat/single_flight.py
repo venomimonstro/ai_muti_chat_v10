@@ -136,7 +136,7 @@ def install(streaming_module) -> None:
     reserving money or starting providers concurrently for the same conversation.
     """
     raw_prepare = streaming_module.prepare
-    if getattr(raw_prepare, "_ai_workspace_single_flight", False):
+    if getattr(raw_prepare, "_ai_workspace_single_flight", False) is True:
         return
 
     def execute_after_lock(*, user, conversation, content, client_message_id, idempotency_key, file_ids=None):
