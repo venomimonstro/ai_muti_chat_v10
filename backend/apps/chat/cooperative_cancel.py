@@ -126,7 +126,7 @@ def _cancelled_event(generation):
 
 def install(streaming_module) -> None:
     raw_run = streaming_module.run
-    if getattr(raw_run, "_ai_workspace_cooperative_cancel", False):
+    if getattr(raw_run, "_ai_workspace_cooperative_cancel", False) is True:
         return
 
     def run(generation, *args, **kwargs):
