@@ -98,6 +98,7 @@ def _run_llm_stage_v2(*, run, agent, role, repository_context, previous, sequenc
             requested_output_tokens=requested_output,
             remaining_budget_rub=effective_remaining,
             is_canceled=lambda: legacy._is_canceled(run),
+            step=step,
         )
         result = execution.result
         actual = Decimal(execution.actual_rub)
@@ -141,10 +142,24 @@ def _run_llm_stage_v2(*, run, agent, role, repository_context, previous, sequenc
     except ProviderError as exc:
         attempts = getattr(exc, "model_attempts", None)
         if attempts:
-            step.output_payload = {"model_attempts": attempts}
+            payload = dict(step.output_payload or {})
+            payload["model_attempts"] = attempts
+            step.output_payload = payload
             step.save(update_fields=["output_payload"])
+        if legacy.agent_provider_checkpoint_pending(step):
+            return None, total, legacy._defer_settlement_recovery(
+                run,
+                step,
+                code=exc.code,
+            )
         return None, total, legacy._fail(run, step, exc.code, str(exc))
     except Exception as exc:
+        if legacy.agent_provider_checkpoint_pending(step):
+            return None, total, legacy._defer_settlement_recovery(
+                run,
+                step,
+                code="team_runtime_failed",
+            )
         return None, total, legacy._fail(run, step, "team_runtime_failed", str(exc))
 
 
