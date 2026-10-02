@@ -16,6 +16,7 @@ from apps.billing.pricing import active_price, quote, require_margin
 from apps.billing.services import release, reserve, settle
 
 from .accounting import (
+    actual_agent_quote_from_snapshot,
     agent_provider_checkpoint_pending,
     checkpoint_agent_provider_delivery,
     mark_agent_provider_checkpoint_settled,
@@ -387,15 +388,10 @@ def _run_llm_node(run, agent, node, sequence, remaining_budget):
             messages=messages,
             max_output_tokens=output_tokens,
         )
-        actual_quote = require_margin(
-            quote(
-                price,
-                max(1, result.input_tokens),
-                max(1, result.output_tokens),
-                provider_slug=model.provider.slug,
-                model_slug=model.slug,
-                operation_type="agent",
-            )
+        actual_quote = actual_agent_quote_from_snapshot(
+            price=price,
+            result=result,
+            preflight=preflight,
         )
         actual = min(actual_quote.user_charge_rub, customer.amount_rub)
         source_id = f"{run.id}:{node_id}"
