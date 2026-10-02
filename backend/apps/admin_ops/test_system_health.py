@@ -79,6 +79,8 @@ def test_background_failure_is_visible_in_analysis():
 
 @pytest.mark.django_db
 def test_enabled_models_with_zero_customer_ready_capacity_are_critical():
+    AIModel.objects.all().update(enabled=False)
+    Provider.objects.all().update(enabled=False)
     provider = Provider.objects.create(
         slug="customer-outage-provider",
         name="Customer outage provider",
