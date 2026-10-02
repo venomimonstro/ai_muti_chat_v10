@@ -5,10 +5,11 @@ from django.db import transaction
 
 from apps.ai_registry.adapters import ProviderError
 from apps.ai_registry import dispatch
-from apps.billing.pricing import active_price, quote, require_margin
+from apps.billing.pricing import active_price
 from apps.billing.services import release, reserve, settle
 
 from .accounting import (
+    actual_agent_quote_from_snapshot,
     release_agent_provider_spend,
     reserve_agent_provider_spend,
     settle_agent_provider_spend,
@@ -180,15 +181,10 @@ def execute_with_model_fallback(
             provider_delivered = True
 
             price = attempt.price or active_price(model.slug)
-            actual_quote = require_margin(
-                quote(
-                    price,
-                    max(1, result.input_tokens),
-                    max(1, result.output_tokens),
-                    provider_slug=model.provider.slug,
-                    model_slug=model.slug,
-                    operation_type="agent",
-                )
+            actual_quote = actual_agent_quote_from_snapshot(
+                price=price,
+                result=result,
+                preflight=attempt.preflight,
             )
             actual = min(actual_quote.user_charge_rub, customer_reservation.amount_rub)
 
