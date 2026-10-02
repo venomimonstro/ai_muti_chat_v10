@@ -87,9 +87,10 @@ services:
     build: ./backend
     restart: unless-stopped
     env_file: .env.production
-    command: ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers $${UVICORN_WORKERS:-2} --proxy-headers"]
+    command: ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2} --proxy-headers --timeout-graceful-shutdown ${UVICORN_GRACEFUL_SHUTDOWN_SECONDS:-150}"]
     environment:
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      UVICORN_GRACEFUL_SHUTDOWN_SECONDS: ${UVICORN_GRACEFUL_SHUTDOWN_SECONDS:-150}
       SANDBOX_URL: http://sandbox:8090
       SANDBOX_SHARED_SECRET: ${SANDBOX_SHARED_SECRET:-}
       WEB_SEARCH_BASE_URL: ${WEB_SEARCH_BASE_URL:-http://searxng:8080}
@@ -118,7 +119,10 @@ services:
     depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
     networks: [private, sandbox_net, edge]
     init: true
-    stop_grace_period: 30s
+    # One provider request may legitimately run for up to 120 seconds. Give Uvicorn
+    # time to finish accepted SSE requests and terminal billing before Docker sends
+    # SIGKILL during a production update.
+    stop_grace_period: 165s
     logging: *default-logging
   worker:
     build: ./backend
