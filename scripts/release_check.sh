@@ -242,6 +242,7 @@ run_pytest 'Agent/provider settlement and credential-binding regressions' \
   apps/ai_registry/test_provider_recovery_probe.py \
   apps/ai_registry/test_unified_readiness.py \
   apps/admin_ops/test_customer_ai_readiness_check.py \
+  apps/admin_ops/test_provider_client_activation.py \
   apps/agents/test_agent_recovery.py \
   apps/agents/test_ai_planner_billing.py \
   apps/agents/test_dev_model_execution.py \
