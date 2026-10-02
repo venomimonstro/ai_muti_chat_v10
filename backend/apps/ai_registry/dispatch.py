@@ -72,7 +72,11 @@ def _funding_credential(
                 require_balance=require_funding_balance,
             )
             if account is None:
-                return "", None
+                # When no concrete reservation pins execution to a funding account,
+                # local procurement metadata must not shadow a valid HEALTHY API key.
+                # Strict balance enforcement belongs to provider-spend reservation,
+                # while transport readiness may fall back to the verified key pool.
+                return ("", None) if require_funding_balance else None
 
         value, key_id = account_secret(account)
         if value and touch and key_id:
@@ -138,11 +142,15 @@ def select_runtime_api_key(
 
 
 def runtime_credential_ready(provider: Provider) -> bool:
+    # Transport readiness answers only whether customer traffic has a verified
+    # credential. Procurement capacity is checked/reserved separately. Coupling
+    # these two concerns made a healthy provider disappear from routing whenever
+    # local procurement accounting lagged the real upstream account.
     value, _key_id = select_runtime_api_key(
         provider,
         allow_probe=False,
         touch=False,
-        require_funding_balance=True,
+        require_funding_balance=False,
     )
     return bool(value)
 
