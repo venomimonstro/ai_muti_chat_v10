@@ -84,7 +84,11 @@ services:
     init: true
     logging: *default-logging
   backend:
-    build: ./backend
+    image: ai-workspace-backend:latest
+    build:
+      context: ./backend
+      args:
+        INSTALL_AGENT_BROWSER: "${INSTALL_AGENT_BROWSER:-0}"
     restart: unless-stopped
     env_file: .env.production
     command: ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2} --proxy-headers --timeout-graceful-shutdown ${UVICORN_GRACEFUL_SHUTDOWN_SECONDS:-150}"]
@@ -125,7 +129,7 @@ services:
     stop_grace_period: 165s
     logging: *default-logging
   worker:
-    build: ./backend
+    image: ai-workspace-backend:latest
     restart: unless-stopped
     env_file: .env.production
     command: ["sh", "-c", "exec celery -A config worker -l INFO --concurrency=$${CELERY_CONCURRENCY:-2}"]
@@ -148,7 +152,7 @@ services:
     stop_grace_period: 165s
     logging: *default-logging
   beat:
-    build: ./backend
+    image: ai-workspace-backend:latest
     restart: unless-stopped
     env_file: .env.production
     command: celery -A config beat -l INFO
