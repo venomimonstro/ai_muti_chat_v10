@@ -1,3 +1,5 @@
+import json
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -13,6 +15,8 @@ from apps.procurement.readiness import quote_has_procurement_capacity
 from .models import AIModel, Provider, RoutingPolicyVersion
 from .reliability import provider_available
 from .token_estimator import estimate_text_tokens
+
+logger = logging.getLogger("chat.pipeline")
 
 OUTPUT_TOKENS = max(512, min(8192, int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "4096"))))
 CONTEXT_SAFETY_TOKENS = 64
@@ -459,6 +463,33 @@ def select_route(*, conversation, content):
     eligible = [item for item in candidates if item["status"] == "eligible"]
     if not eligible:
         label = MODE_LABELS.get(effective_tier, effective_tier)
+        logger.error(
+            "[CHAT_PIPELINE] %s",
+            json.dumps(
+                {
+                    "stage": "ROUTER_NO_ELIGIBLE",
+                    "requested_mode": requested_mode,
+                    "effective_tier": effective_tier,
+                    "tier_label": label,
+                    "configured_pools": configured_pools,
+                    "pool": pool,
+                    "candidates": [
+                        {
+                            "model": item.get("model"),
+                            "provider": item.get("provider"),
+                            "status": item.get("status"),
+                            "reasons": item.get("reasons"),
+                            "health": item.get("health"),
+                            "estimated_cost_rub": item.get("estimated_cost_rub"),
+                            "gross_margin_percent": item.get("gross_margin_percent"),
+                        }
+                        for item in candidates
+                    ],
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
         raise ValidationError(f"В уровне «{label}» сейчас нет доступных моделей")
 
     costs = [float(item["estimated_cost_rub"]) for item in eligible]
@@ -520,6 +551,22 @@ def select_route(*, conversation, content):
     selected_item = eligible[0]
     selected = model_lookup[selected_item["model"]]
     selected_cost = Decimal(selected_item["estimated_cost_rub"])
+    logger.info(
+        "[CHAT_PIPELINE] %s",
+        json.dumps(
+            {
+                "stage": "ROUTER_SELECTED",
+                "requested_mode": requested_mode,
+                "effective_tier": effective_tier,
+                "pool": pool,
+                "model": selected.slug,
+                "provider": selected.provider.slug,
+                "eligible": [item.get("model") for item in eligible],
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+    )
     multiplier = Decimal(str(thresholds.get("fallback_price_multiplier", 1.5)))
 
     ordered_models = []
