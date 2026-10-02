@@ -296,7 +296,7 @@ def execute_run(run_id):
             fx_snapshot=preflight.fx_snapshot,
             source_key=f"agent:{run.id}",
             provider_currency=str(
-                (preflight.pricing_snapshot or {}).get("provider_currency") or ""
+                (getattr(preflight, "pricing_snapshot", {}) or {}).get("provider_currency") or ""
             ),
         )
         run.cost_reserved_rub = preflight.user_charge_rub
