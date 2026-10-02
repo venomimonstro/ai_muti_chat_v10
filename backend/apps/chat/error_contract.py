@@ -26,7 +26,7 @@ def install(streaming_module) -> None:
     GenerationAttempt/diagnostics and are never sent to the customer transport.
     """
     raw_run = streaming_module.run
-    if getattr(raw_run, "_ai_workspace_error_contract", False):
+    if getattr(raw_run, "_ai_workspace_error_contract", False) is True:
         return
 
     def run(generation, *args, **kwargs):
