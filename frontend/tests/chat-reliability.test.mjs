@@ -88,8 +88,8 @@ test("A terminal error after generation acceptance stays an authoritative server
   await h.run();
   assert.equal(h.events[0].event, "activity");
   assert.ok(h.events.some(event => event.event === "generation"));
-  assert.equal(h.events.at(-1).event, "activity");
-  assert.ok(h.events.some(event => event.event === "error"));
+  assert.ok(h.events.some(event => event.event === "activity" && event.data.step === "error"));
+  assert.equal(h.events.at(-1).event, "error");
   assert.equal(h.storage.size, 0);
   assert.equal(h.cancellations(), 0);
 });
