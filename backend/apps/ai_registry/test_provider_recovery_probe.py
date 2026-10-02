@@ -184,3 +184,30 @@ def test_recovery_batch_never_releases_unprobed_sibling_to_customer_traffic(monk
     assert good[models[4].pk].generate_calls == 1
     success.assert_called_once()
     failure.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_provider_transport_stays_healthy_when_models_are_not_published(monkeypatch):
+    provider = _provider("unpublished-models", Provider.HealthState.DEGRADED)
+    model = _model(provider, "unpublished-model")
+    model.enabled = False
+    model.save(update_fields=["enabled"])
+    adapter = FakeAdapter()
+    success = Mock()
+    failure = Mock()
+
+    monkeypatch.setattr(dispatch, "adapter_for", lambda selected, **_kwargs: adapter)
+    monkeypatch.setattr(reliability, "record_success", success)
+    monkeypatch.setattr(reliability, "record_failure", failure)
+
+    health = reliability.check_provider(provider)
+
+    assert health.healthy is True
+    assert health.error_code == "no_enabled_models"
+    assert adapter.health_calls == 1
+    assert adapter.generate_calls == 0
+    success.assert_called_once()
+    failure.assert_not_called()
+    snapshot = ProviderHealthSnapshot.objects.filter(provider=provider).latest("checked_at")
+    assert snapshot.healthy is True
+    assert snapshot.error_code == "no_enabled_models"
