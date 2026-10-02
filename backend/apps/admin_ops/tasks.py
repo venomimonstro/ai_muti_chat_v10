@@ -15,6 +15,7 @@ from .recovery import recover_stale_chat_operations, recover_stale_operations
 
 WORKER_HEARTBEAT_KEY = "system:celery-worker-heartbeat"
 PROVIDER_HEALTH_WATCH_LOCK = "system:provider-health-watch-lock"
+CHAT_RECOVERY_LOCK = "system:chat-recovery-lock"
 
 
 @shared_task
@@ -121,7 +122,16 @@ def system_heartbeat_task():
 
 @shared_task
 def recover_stale_chat_operations_task():
-    return recover_stale_chat_operations()
+    # Beat normally emits one task per minute, but a slow database or delayed worker
+    # can overlap deliveries. Avoid duplicate scans; per-row select_for_update remains
+    # the authoritative concurrency guard inside recovery itself.
+    if not cache.add(CHAT_RECOVERY_LOCK, "1", timeout=55):
+        return {"status": "skipped", "reason": "already_running"}
+    try:
+        result = recover_stale_chat_operations()
+        return {"status": "ok", **result}
+    finally:
+        cache.delete(CHAT_RECOVERY_LOCK)
 
 
 @shared_task
