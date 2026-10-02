@@ -48,6 +48,7 @@ def test_paid_runtime_binds_execution_to_reserved_funding_account():
     required_binding = {
         "b2b_api/services.py": "funding_account_id=funding_account_id",
         "chat/compare.py": "funding_account_id=funding_account_id",
+        "image_studio/services.py": "funding_account_id=provider_reservation.account_id",
         "agents/runtime.py": "funding_account_id=(",
         "agents/generic_team_runtime.py": "funding_account_id=(",
         "agents/graph_runtime.py": "funding_account_id=(",
