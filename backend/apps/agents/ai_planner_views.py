@@ -201,7 +201,7 @@ class AgentAIPlannerPreviewView(APIView):
                 fx_snapshot=estimate.fx_snapshot,
                 source_key=source_key,
                 provider_currency=str(
-                    (estimate.pricing_snapshot or {}).get("provider_currency") or ""
+                    (getattr(estimate, "pricing_snapshot", {}) or {}).get("provider_currency") or ""
                 ),
             )
             result = dispatch.adapter_for(
