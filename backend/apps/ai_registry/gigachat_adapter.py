@@ -209,7 +209,8 @@ class GigaChatAPIAdapter:
 
     @staticmethod
     def _messages(messages: list[dict]) -> list[dict]:
-        normalized = []
+        system_parts = []
+        dialogue = []
         for item in messages:
             role = str(item.get("role") or "").strip()
             if role not in {"system", "user", "assistant"}:
@@ -220,7 +221,24 @@ class GigaChatAPIAdapter:
             # being prepared; never forward that placeholder upstream.
             if not content:
                 continue
-            normalized.append({"role": role, "content": content})
+            if role == "system":
+                system_parts.append(content)
+                continue
+            dialogue.append({"role": role, "content": content})
+
+        # Customer context assembly can legitimately create several internal system
+        # blocks (base prompt, project context, memory, retrieval metadata). GigaChat
+        # requires the system message to be first and rejects multiple system
+        # messages. Collapse all internal blocks into one provider-compatible prompt.
+        normalized = []
+        if system_parts:
+            normalized.append(
+                {
+                    "role": "system",
+                    "content": "\n\n".join(system_parts),
+                }
+            )
+        normalized.extend(dialogue)
         return normalized
 
     def _request_stream(
