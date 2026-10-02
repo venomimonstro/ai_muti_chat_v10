@@ -402,9 +402,19 @@ def record_failure(provider: Provider, error: ProviderError, adapter=None):
 
 
 @transaction.atomic
-def record_success(provider: Provider, latency_ms: int, adapter=None):
+def record_success(
+    provider: Provider,
+    latency_ms: int,
+    adapter=None,
+    *,
+    inference_verified: bool = True,
+):
     locked = Provider.objects.select_for_update().get(pk=provider.pk)
-    record_api_key_success(locked, adapter, latency_ms)
+    # Runtime generation success proves the exact credential can perform paid
+    # inference. A metadata-only /models probe must not refresh key last_used_at or
+    # erase a blocking quota/billing error.
+    if inference_verified:
+        record_api_key_success(locked, adapter, latency_ms)
     was_unhealthy = locked.health_state in {
         Provider.HealthState.OPEN,
         Provider.HealthState.DEGRADED,
@@ -450,6 +460,8 @@ def check_provider(provider: Provider):
         Provider.HealthState.DEGRADED,
         Provider.HealthState.OPEN,
     }
+    force_inference = bool(getattr(provider, "_force_inference_probe", False))
+    inference_verified = False
     try:
         model = (
             provider.models.filter(enabled=True)
@@ -467,7 +479,21 @@ def check_provider(provider: Provider):
             require_funding_balance=False,
         )
         health = adapter.health_check()
-        if health.healthy and recovery_probe_required and not _is_test_echo_provider(provider):
+        key = selected_api_key(provider, adapter)
+        key_needs_proof = bool(
+            key is not None
+            and (
+                key.health_state != ProviderApiKey.HealthState.HEALTHY
+                or key.last_used_at is None
+                or key.last_used_at < timezone.now() - timedelta(minutes=30)
+            )
+        )
+        inference_probe_required = (
+            force_inference
+            or recovery_probe_required
+            or key_needs_proof
+        )
+        if health.healthy and inference_probe_required and not _is_test_echo_provider(provider):
             started = timezone.now()
             result = adapter.generate(
                 model=model.upstream_model,
@@ -485,6 +511,7 @@ def check_provider(provider: Provider):
                 int((timezone.now() - started).total_seconds() * 1000),
             )
             health = type(health)(True, elapsed or health.latency_ms)
+            inference_verified = True
     except ProviderError as exc:
         record_failure(provider, exc, adapter=adapter if "adapter" in locals() else None)
         ProviderHealthSnapshot.objects.create(
@@ -512,7 +539,12 @@ def check_provider(provider: Provider):
         error_code=health.error_code,
     )
     if health.healthy:
-        record_success(provider, health.latency_ms, adapter=adapter)
+        record_success(
+            provider,
+            health.latency_ms,
+            adapter=adapter,
+            inference_verified=inference_verified,
+        )
     else:
         error = ProviderError("Health check failed", code=health.error_code)
         record_failure(provider, error, adapter=adapter)
