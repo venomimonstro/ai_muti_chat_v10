@@ -16,6 +16,42 @@ mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 cd "$PROJECT_DIR"
 
+# FULL release builds backend/sandbox/frontend images side-by-side with the running
+# production stack. Fail early (and reclaim only disposable build cache) instead of
+# dying halfway through a Playwright/containerd layer with ENOSPC.
+RELEASE_MIN_FREE_KB="${RELEASE_MIN_FREE_KB:-8388608}" # 8 GiB
+DOCKER_STORAGE_PATH="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+if [[ -z "$DOCKER_STORAGE_PATH" || ! -e "$DOCKER_STORAGE_PATH" ]]; then
+  DOCKER_STORAGE_PATH="/var/lib/containerd"
+fi
+[[ -e "$DOCKER_STORAGE_PATH" ]] || DOCKER_STORAGE_PATH="$PROJECT_DIR"
+
+available_kb() {
+  df -Pk "$DOCKER_STORAGE_PATH" | awk 'NR==2 {print $4}'
+}
+
+ensure_release_disk() {
+  local free_kb
+  free_kb="$(available_kb)"
+  if (( free_kb >= RELEASE_MIN_FREE_KB )); then
+    printf '[DISK] Free space before release build: %s MiB\n' "$((free_kb / 1024))"
+    return 0
+  fi
+
+  printf '[DISK] Low free space: %s MiB. Reclaiming disposable Docker build cache...\n' "$((free_kb / 1024))" >&2
+  docker builder prune -af >/dev/null 2>&1 || true
+  docker image prune -f >/dev/null 2>&1 || true
+  free_kb="$(available_kb)"
+  if (( free_kb < RELEASE_MIN_FREE_KB )); then
+    printf '[FAIL] Недостаточно свободного места для FULL release: %s MiB; требуется минимум %s MiB.\n'       "$((free_kb / 1024))" "$((RELEASE_MIN_FREE_KB / 1024))" >&2
+    printf '[INFO] Production volumes не удалялись. Освободите диск и повторите update.\n' >&2
+    exit 1
+  fi
+  printf '[DISK] Free space after safe cache cleanup: %s MiB\n' "$((free_kb / 1024))"
+}
+
+ensure_release_disk
+
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 cleanup() {
