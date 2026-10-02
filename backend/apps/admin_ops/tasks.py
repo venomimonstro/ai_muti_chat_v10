@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from apps.accounts.models import Notification, SupportRequest, User
 
-from .recovery import recover_stale_operations
+from .recovery import recover_stale_chat_operations, recover_stale_operations
 
 WORKER_HEARTBEAT_KEY = "system:celery-worker-heartbeat"
 PROVIDER_HEALTH_WATCH_LOCK = "system:provider-health-watch-lock"
@@ -117,6 +117,11 @@ def system_heartbeat_task():
     # watcher separately so a slow external API can never block worker liveness.
     provider_health_watch_task.delay()
     return now
+
+
+@shared_task
+def recover_stale_chat_operations_task():
+    return recover_stale_chat_operations()
 
 
 @shared_task
