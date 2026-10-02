@@ -207,13 +207,16 @@ def provider_available(provider: Provider) -> bool:
         return False
     if provider.health_state == Provider.HealthState.DISABLED:
         return False
-    if _is_test_echo_provider(provider):
-        return True
+    # Circuit/health state is authoritative for every provider, including local
+    # Echo/test channels. Echo may bypass external credentials/procurement, but it
+    # must never bypass an OPEN circuit.
     if provider.health_state not in {
         Provider.HealthState.HEALTHY,
         Provider.HealthState.DEGRADED,
     }:
         return False
+    if _is_test_echo_provider(provider):
+        return True
     if not provider.credential_configured():
         return False
     from .dispatch import runtime_credential_ready
