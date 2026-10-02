@@ -144,6 +144,7 @@ docker compose --ansi never -f "$TEST_COMPOSE" run --rm backend-test \
   apps/chat/test_paid_search_key_readiness.py \
   apps/chat/test_runtime_safety_wiring.py \
   apps/chat/test_runtime_entrypoint_wiring.py \
+  apps/chat/test_runtime_installer_contract.py \
   apps/chat/test_customer_capacity.py \
   apps/chat/test_context_safety.py \
   apps/chat/test_context_trust_boundary.py \
