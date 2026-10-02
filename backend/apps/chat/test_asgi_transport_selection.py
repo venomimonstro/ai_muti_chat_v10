@@ -47,3 +47,15 @@ def test_customer_stream_keeps_sync_fallback_for_wsgi_request():
     assert selected is sync_sentinel
     sync_run.assert_called_once_with(generation)
     async_run.assert_not_called()
+
+
+def test_streaming_response_preserves_async_iterator_contract():
+    async def iterator():
+        yield "event: heartbeat\ndata: {}\n\n"
+
+    response = cost_views._stream_response(iterator())
+
+    assert response.streaming is True
+    assert response.is_async is True
+    assert response["Cache-Control"] == "no-cache, no-transform"
+    assert response["X-Accel-Buffering"] == "no"
