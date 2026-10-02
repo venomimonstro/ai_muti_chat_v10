@@ -125,7 +125,14 @@ def chat_service_health_watch_task():
     if not cache.add(CHAT_HEALTH_LOCK, "1", timeout=55):
         return {"status": "skipped", "reason": "already_running"}
     try:
+        try:
+            from apps.procurement.chat_signals import release_stale_terminal_chat_reservations
+
+            repaired = release_stale_terminal_chat_reservations()
+        except Exception:
+            repaired = 0
         snapshot = chat_service_snapshot()
+        snapshot["repaired_stale_provider_reservations"] = repaired
         alerts = 0
         if snapshot["ready_models"] == 0:
             alerts += _alert_once(
