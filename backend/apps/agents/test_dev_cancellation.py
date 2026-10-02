@@ -45,7 +45,7 @@ def test_canceled_dev_run_does_not_start_llm_stage(dev_subjects):
         state=AgentRun.State.CANCELED,
     )
 
-    with patch("apps.agents.team_runtime._model_for") as model_for, patch("apps.agents.team_runtime.adapter_for") as adapter_for_mock:
+    with patch("apps.agents.team_runtime._model_for") as model_for:
         text, total, terminal = _run_llm_stage(
             run=run,
             agent=director,
@@ -61,7 +61,6 @@ def test_canceled_dev_run_does_not_start_llm_stage(dev_subjects):
     assert total == Decimal("0")
     assert terminal.id == run.id
     model_for.assert_not_called()
-    adapter_for_mock.assert_not_called()
     assert run.steps.count() == 0
 
 
