@@ -8,6 +8,7 @@ from django.core.handlers.asgi import ASGIRequest
 from django.db import close_old_connections, transaction
 from django.db.models import Q
 from django.http import StreamingHttpResponse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import ValidationError as APIValidationError
 from rest_framework.response import Response
@@ -15,12 +16,13 @@ from rest_framework.views import APIView
 
 from apps.ai_registry.models import AIModel
 from apps.billing.models import BalanceReservation
+from apps.billing.services import release
 
 from .asgi_stream import follow_generation_async, managed_run_async
 from .cost_preview import chat_cost_preview
 from .durable_follow import follow_existing_generation
 from .managed_stream import managed_run
-from .models import Conversation, Generation
+from .models import Conversation, Generation, Message
 from .paid_search_billing import public_search_charge
 from .preflight_terminal import classify_preflight_exception
 from .product_identity import (
@@ -185,7 +187,14 @@ def _held_confirmation_response(request, generation):
         error_code=COST_CONFIRMATION_CHANGED,
     ).update(error_code="")
     generation.error_code = ""
-    _authorize_customer_stream(generation)
+    try:
+        _authorize_customer_stream(generation)
+    except Exception as exc:
+        logger.exception(
+            "Chat held-confirmation authorization failed generation_id=%s",
+            generation.id,
+        )
+        generation = _terminalize_stream_authorization_failure(generation, exc)
     return _stream_response(_customer_stream(request, generation, created=False))
 
 
@@ -200,6 +209,53 @@ def _authorize_customer_stream(generation):
         locked.context_snapshot = context
         locked.save(update_fields=["context_snapshot"])
         generation.context_snapshot = context
+
+
+def _terminalize_stream_authorization_failure(generation, exc):
+    """Fail one prepared turn instead of leaving a forever-QUEUED reservation.
+
+    This path runs strictly before provider execution. Marking the Generation
+    terminal also triggers existing procurement/search cleanup signals.
+    """
+    try:
+        with transaction.atomic():
+            locked = (
+                Generation.objects.select_for_update()
+                .select_related("assistant_message")
+                .get(pk=generation.pk)
+            )
+            if locked.state != Generation.State.QUEUED:
+                generation.state = locked.state
+                generation.error_code = locked.error_code
+                return locked
+
+            if locked.reservation_id:
+                try:
+                    release(locked.reservation_id)
+                except Exception:
+                    logger.exception(
+                        "Chat stream authorization customer reserve release failed generation_id=%s",
+                        locked.id,
+                    )
+
+            locked.state = Generation.State.FAILED
+            locked.error_code = "stream_authorization_failed"
+            locked.completed_at = timezone.now()
+            locked.save(update_fields=["state", "error_code", "completed_at"])
+            Message.objects.filter(pk=locked.assistant_message_id).update(
+                status=Message.Status.FAILED
+            )
+            generation.state = locked.state
+            generation.error_code = locked.error_code
+            generation.completed_at = locked.completed_at
+            return locked
+    except Exception:
+        logger.exception(
+            "Chat stream authorization terminalization failed generation_id=%s original=%r",
+            getattr(generation, "id", None),
+            exc,
+        )
+        raise
 
 
 def _preparing_snapshot(generation_id):
@@ -503,7 +559,15 @@ class ConfirmedConversationStreamView(APIView):
                 )
                 return Response(payload, status=status.HTTP_409_CONFLICT)
 
-        _authorize_customer_stream(generation)
+        try:
+            _authorize_customer_stream(generation)
+        except Exception as exc:
+            logger.exception(
+                "Chat customer stream authorization failed generation_id=%s",
+                generation.id,
+            )
+            generation = _terminalize_stream_authorization_failure(generation, exc)
+            created = False
         return _stream_response(
             _customer_stream(request, generation, created=created)
         )
