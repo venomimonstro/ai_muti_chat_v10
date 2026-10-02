@@ -52,7 +52,14 @@ def _is_test_echo_provider(provider):
 
 
 def _provider_has_procurement(provider):
-    return ProviderFundingAccount.objects.filter(provider=provider, active=True).exists()
+    # Creating a funding-account row is configuration, not proof that provider
+    # credit was actually purchased. Only a funded ledger becomes authoritative
+    # for fail-closed runtime spend control.
+    return ProviderFundingAccount.objects.filter(
+        provider=provider,
+        active=True,
+        funded_native__gt=ZERO,
+    ).exists()
 
 
 def _require_procurement(provider):
