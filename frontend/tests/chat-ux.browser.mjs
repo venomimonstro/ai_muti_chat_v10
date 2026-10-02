@@ -4,7 +4,7 @@ import {chromium} from "playwright";
 
 const base = process.env.CHAT_UX_BASE_URL ?? "http://127.0.0.1:3000";
 const browser = await chromium.launch({headless:true, executablePath:process.env.CHAT_UX_CHROMIUM || undefined,
-  args:process.env.CHAT_UX_CHROMIUM ? ["--disable-gpu","--use-gl=disabled","--single-process"] : []});
+  args:process.env.CHAT_UX_CHROMIUM ? ["--disable-gpu","--disable-software-rasterizer","--disable-features=Vulkan","--single-process"] : []});
 const context = await browser.newContext({viewport:{width:1440,height:960}});
 const page = await context.newPage();page.setDefaultTimeout(10000);
 const errors=[];page.on("pageerror",error=>errors.push(error.message));
@@ -12,7 +12,7 @@ const created="2026-10-01T10:00:00Z";
 const message=(id,role,content,status="completed",generation=null)=>({id,role,content,status,generation,created_at:created});
 const conversations = new Map(["a","b"].map(id=>[`chat-${id}`,{id:`chat-${id}`,title:id==="a"?"План на неделю":"Идеи для контента",routing_mode:"auto",selected_model:"",project:null,active_branch:null,memory_enabled:true,created_at:created,updated_at:created,messages:[message(`user-${id}`,"user","Помоги составить план запуска проекта."),message(`answer-${id}`,"assistant","## План запуска\n\nНачните с проверки продукта.\n\n1. Проверьте основные сценарии.\n2. Пригласите первых пользователей.\n\n| День | Задача |\n| --- | --- |\n| Понедельник | Проверка продукта |\n| Вторник | Первые пользователи |")]}]));
 const drafts=new Map([["chat-a","Черновик чата А"],["chat-b","Черновик чата Б"]]);
-let slowB=false, requireConfirmation=false, holdStream=false, sends=0, cancellations=0, currentGeneration=null;
+let slowUpload=false, slowB=false, requireConfirmation=false, holdStream=false, sends=0, cancellations=0, currentGeneration=null;
 const sse=(event,data)=>`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 await page.route("**/api/v1/**",async route=>{
  const request=route.request(), path=new URL(request.url()).pathname, method=request.method();let data={};
@@ -27,7 +27,7 @@ await page.route("**/api/v1/**",async route=>{
  else if(path.includes("/projects/"))data=[{id:"project-files",name:"Файлы чата",role:"owner",archived_at:null}];
  else if(path.includes("/conversation-folders/"))data=[];
  else if(path.match(/\/conversations\/chat-[ab]\/$/) && method==="PATCH"){Object.assign(conversations.get(id),request.postDataJSON());data=conversations.get(id);}
- else if(path.includes("/files/"))data={id:"file-1",original_name:"notes.txt",detected_type:"txt",status:method==="POST"?"parsing":"ready",project:"project-files",size_bytes:16};
+ else if(path.includes("/files/")){if(slowUpload&&method==="POST")await new Promise(r=>setTimeout(r,700));data={id:"file-1",original_name:"notes.txt",detected_type:"txt",status:method==="POST"?"parsing":"ready",project:"project-files",size_bytes:16};}
  else if(path.includes("/messages/preview/"))data={estimated_min_rub:"0",estimated_max_rub:"12.50",confirmation_required:requireConfirmation,confirmation_threshold_rub:"10"};
  else if(path.includes("/messages/status/"))data={found:false};
  else if(path.includes("/messages/cancel/")){cancellations++;if(currentGeneration){currentGeneration.state="cancelled";const chat=conversations.get(id);const answer=chat.messages.at(-1);answer.status="partial";}data={state:"cancelled"};}
@@ -45,6 +45,7 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 try{
  await page.goto(`${base}/app`);await editor().waitFor();await page.waitForFunction(()=>document.querySelector('textarea[aria-label="Сообщение"]')?.value==="Черновик чата А");
  assert.equal(drafts.get("chat-a"),"Черновик чата А");
+ assert.notEqual(await page.locator(".profileButton").evaluate(node=>getComputedStyle(node).color),"rgb(255, 255, 255)");
  const shell=await page.locator(".composerShell").boundingBox();assert(shell.y+shell.height<=960,"composer must fit viewport");
  await page.locator(".chatTitle button").click();await page.getByRole("dialog",{name:"Переименовать чат",exact:true}).waitFor();assert.equal(await page.getByRole("textbox",{name:"Новое название"}).inputValue(),"План на неделю");await page.keyboard.press("Escape");assert.equal(await page.locator("dialog[open]").count(),0);
  console.log("PASS initial draft hydration, rename dialog and desktop viewport");
@@ -60,6 +61,15 @@ try{
  requireConfirmation=false;
  await editor().fill("Проверь приложенный документ");await page.locator('input[type="file"]').first().setInputFiles({name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("План проекта")});await page.getByText("Обрабатывается",{exact:true}).waitFor();assert.equal(await page.getByRole("button",{name:"Отправить",exact:true}).isEnabled(),false);await editor().fill("Проверь документ и предложи правки");await page.getByText("Готов",{exact:true}).waitFor();assert.equal(await page.getByRole("button",{name:"Отправить",exact:true}).isEnabled(),true);assert.equal(await editor().inputValue(),"Проверь документ и предложи правки");
  console.log("PASS file extraction gates send while draft remains editable");
+ await page.getByRole("button",{name:"Идеи для контента",exact:true}).click();await page.waitForFunction(()=>document.querySelector('.chatTitle')?.textContent==="Идеи для контента");assert.equal(await page.locator(".attachmentChip").count(),0);
+ await page.getByRole("button",{name:"План на неделю",exact:true}).first().click();await page.getByText("notes.txt",{exact:true}).waitFor();assert.equal(await editor().inputValue(),"Проверь документ и предложи правки");
+ await page.reload();await page.getByText("notes.txt",{exact:true}).waitFor();assert.equal(await page.locator(".attachmentChip").count(),1);
+ await page.getByRole("button",{name:"Убрать файл notes.txt",exact:true}).click();await page.reload();await editor().waitFor();await wait(200);assert.equal(await page.locator(".attachmentChip").count(),0);
+ drafts.set("chat-b","");await page.evaluate(()=>localStorage.removeItem("aiws:draft:chat-b"));
+ slowUpload=true;await page.locator('input[type="file"]').nth(1).setInputFiles({name:"photo.png",mimeType:"image/png",buffer:Buffer.from("image fixture")});await wait(150);
+ await page.getByRole("button",{name:"Идеи для контента",exact:true}).click();await page.waitForFunction(()=>document.querySelector('.chatTitle')?.textContent==="Идеи для контента");const otherDraft=await editor().inputValue();assert.equal(otherDraft,"");await wait(850);assert.equal(await editor().inputValue(),otherDraft);assert.equal(await page.locator(".attachmentChip").count(),0);
+ slowUpload=false;await page.getByRole("button",{name:"План на неделю",exact:true}).first().click();await page.getByText("notes.txt",{exact:true}).waitFor();
+ console.log("PASS attachment selection survives navigation/reload/removal and late image upload stays in its chat");
  holdStream=true;await editor().fill("Длинный ответ");await page.getByRole("button",{name:"Отправить",exact:true}).click();await page.locator(".message.assistant.streaming").filter({hasText:"Полезный ответ."}).waitFor();await page.getByRole("button",{name:"Остановить ответ",exact:true}).click();await wait(300);assert.equal(cancellations,1);
  console.log("PASS live Stop sends one cancellation");
  // Reloading an in-flight persisted response exposes the same Stop action.

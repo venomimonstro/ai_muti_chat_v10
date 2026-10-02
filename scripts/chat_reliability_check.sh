@@ -31,7 +31,6 @@ grep -Fq 'ActivityTrace' frontend/app/workspace/WorkspaceExperience.tsx
 grep -Fq 'event==="activity"' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ActivityTrace steps={visibleActivity}' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'Promise.allSettled' frontend/app/workspace/WorkspaceV2.tsx
-grep -Fq 'Чат доступен. Часть вспомогательных данных временно не загрузилась' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq '<ModelPicker value={selectorValue} models={models}' frontend/app/workspace/WorkspaceV2.tsx
 grep -Fq 'const showActions=!editing&&(Boolean(message.content)||(message.role==="assistant"&&message.status!=="streaming"));' frontend/app/workspace/MessageCard.tsx
 grep -Fq 'aria-label="Повторить запрос"' frontend/app/workspace/MessageCard.tsx

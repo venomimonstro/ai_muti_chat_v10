@@ -103,3 +103,6 @@
 .workspaceApp .composerStatus{width:min(100%,760px);margin:0 auto 8px;padding:0 4px;font-size:12px;line-height:1.5;color:#707078}
 .workspaceApp .composerShell textarea:focus{outline:none;box-shadow:none;border-radius:0}.workspaceApp .message.user{margin-bottom:24px}.workspaceApp .message.assistant{margin-bottom:28px}
 .renameDialog{max-width:calc(100% - 32px);margin:auto;padding:20px;border:1px solid #e2e2e7}.renameDialog::backdrop{background:rgba(25,25,30,.32)}.renameDialog form>input{width:100%;box-sizing:border-box;border:1px solid #dddde2;border-radius:10px;padding:10px 12px;margin:12px 0}.renameDialog form>footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+/* The shared legacy shell also styles profileRow buttons; keep chat text readable. */
+.workspaceApp .workspaceSidebar .profileRow .profileButton{color:var(--text);border:0;background:transparent}
+.workspaceApp .workspaceSidebar .profileRow .profileButton:hover{background:var(--hover)}

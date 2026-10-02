@@ -122,3 +122,24 @@ test("Attachments wait for extraction, accept partial extraction and surface a f
   assert.match(workspace.attachmentReadiness([{status:"failed"}]).message, /Уберите/);
   assert.equal(workspace.attachmentReadiness([]).blocked, false);
 });
+
+test("Attachment drafts belong to their conversation and survive reload as IDs only", () => {
+ const saved=new Map();const storage={getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)};
+ const selections=workspace.createAttachmentDrafts(storage);
+ selections.update("a",()=>[{id:"file-a",original_name:"Private name"}]);
+ selections.update("b",()=>[{id:"file-b"}]);
+ selections.update("a",files=>[...files,{id:"late-upload"}]);
+ assert.equal(JSON.stringify(selections.ids("a")),JSON.stringify(["file-a","late-upload"]));
+ assert.equal(JSON.stringify(selections.ids("b")),JSON.stringify(["file-b"]));
+ assert.ok([...saved.values()].every(value=>!value.includes("Private name")));
+ const restored=workspace.createAttachmentDrafts(storage);
+ assert.equal(JSON.stringify(restored.ids("a")),JSON.stringify(["file-a","late-upload"]));
+ selections.update("a",files=>files.filter(file=>file.id!=="file-a"));
+ assert.equal(JSON.stringify(workspace.createAttachmentDrafts(storage).ids("a")),JSON.stringify(["late-upload"]));
+});
+
+test("Attachment restoration rejects corrupt data and limits duplicate selections", () => {
+ const selections=workspace.createAttachmentDrafts({getItem:key=>key.endsWith("bad")?"broken":JSON.stringify(["a","a",null,4,"","b","c","d","e"]),setItem:()=>{}});
+ assert.equal(selections.ids("bad").length,0);
+ assert.equal(JSON.stringify(selections.ids("valid")),JSON.stringify(["a","b","c","d"]));
+});
