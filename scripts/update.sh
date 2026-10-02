@@ -118,6 +118,27 @@ reclaim_disposable_docker_space() {
   docker image prune -af >/dev/null 2>&1 || true
 }
 
+prune_old_update_artifacts() {
+  local keep="${UPDATE_BACKUP_KEEP:-3}" file
+  mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
+  if [[ "${keep}" =~ ^[0-9]+$ ]] && (( keep >= 1 )); then
+    while IFS= read -r file; do
+      [[ -n "${file}" ]] || continue
+      rm -f -- "${file}" "${file}.sha256"
+      printf '[DISK] Удалён старый DB backup: %s\n' "${file}"
+    done < <(ls -1t "${BACKUP_DIR}"/pre-update-*.dump 2>/dev/null | tail -n "+$((keep + 1))" || true)
+
+    while IFS= read -r file; do
+      [[ -n "${file}" ]] || continue
+      rm -f -- "${file}" "${file}.sha256"
+      printf '[DISK] Удалён старый media backup: %s\n' "${file}"
+    done < <(ls -1t "${BACKUP_DIR}"/pre-update-media-*.tar.gz 2>/dev/null | tail -n "+$((keep + 1))" || true)
+  fi
+  find "${LOG_DIR}" -maxdepth 1 -type f \
+    \( -name 'update-*.log' -o -name 'release-check-*.log' \) \
+    -mtime +14 -delete 2>/dev/null || true
+}
+
 ensure_full_build_disk_before_backup() {
   local minimum_kb="${UPDATE_FULL_MIN_FREE_KB:-8388608}" # 8 GiB
   local free_kb
@@ -125,6 +146,11 @@ ensure_full_build_disk_before_backup() {
   if (( free_kb < minimum_kb )); then
     printf '[DISK] До backup/build свободно только %s MiB; запускаю безопасную очистку.\n' "$((free_kb / 1024))"
     reclaim_disposable_docker_space
+    free_kb="$(docker_free_kb)"
+  fi
+  if (( free_kb < minimum_kb )); then
+    printf '[DISK] Docker cache cleanup недостаточен; ротирую только старые pre-update backups/logs.\n'
+    prune_old_update_artifacts
     free_kb="$(docker_free_kb)"
   fi
   if (( free_kb < minimum_kb )); then
