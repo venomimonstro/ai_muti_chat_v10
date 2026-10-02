@@ -62,4 +62,8 @@ def quote_has_procurement_capacity(provider: Provider, price_quote) -> bool:
         account = None
     if account is not None:
         return True
-    return not _strict_runtime() and not provider.funding_accounts.filter(active=True).exists()
+    # No purchasing ledger configured: customer pricing still applies and the
+    # verified provider key may be used directly. If an administrator has opted
+    # into procurement by creating an active account, its balance becomes
+    # authoritative and insufficient capacity blocks the request.
+    return not provider.funding_accounts.filter(active=True).exists()
