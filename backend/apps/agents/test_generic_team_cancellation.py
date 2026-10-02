@@ -84,7 +84,7 @@ def test_generic_team_cancel_after_provider_accounts_cost_and_stops_next_member(
         "apps.agents.generic_team_runtime.reserve_agent_provider_spend", return_value=provider_reservation
     ), patch("apps.agents.generic_team_runtime.settle_agent_provider_spend"), patch(
         "apps.agents.generic_team_runtime.settle"
-    ), patch("apps.agents.generic_team_runtime.adapter_for", return_value=Adapter()):
+    ), patch("apps.agents.generic_team_runtime.dispatch.adapter_for", return_value=Adapter()):
         result = execute_generic_team_run(run.id)
 
     result.refresh_from_db()
