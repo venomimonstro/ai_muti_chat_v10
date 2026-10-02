@@ -780,14 +780,35 @@ def run(generation, *, adapter=None):
                         "Cost outcome reconciliation failed after provider delivery generation_id=%s",
                         generation.id,
                     )
+                assistant.content = full_text
+                assistant.status = Message.Status.COMPLETED
+                assistant.save(update_fields=["content", "status"])
+                generation.state = Generation.State.COMPLETED
                 generation.provider_request_id = completed.provider_request_id
                 generation.input_tokens = completed.input_tokens
                 generation.output_tokens = completed.output_tokens
+                generation.actual_cost_rub = reservation_amount
                 generation.routed_model = selected_model.slug
                 generation.provider_slug = selected_model.provider.slug
+                generation.completed_at = timezone.now()
                 generation.save(update_fields=[
-                    "provider_request_id", "input_tokens", "output_tokens", "routed_model", "provider_slug"
+                    "state", "provider_request_id", "input_tokens", "output_tokens",
+                    "actual_cost_rub", "routed_model", "provider_slug", "completed_at"
                 ])
+                # The customer authorized only the reservation maximum. Preserve the
+                # valid AI answer and cap the customer charge; any provider overrun is
+                # a platform reconciliation/anomaly concern, never a reason to turn a
+                # successfully delivered answer into a customer-visible failure.
+                charge = reservation_amount
+                pipeline_trace(
+                    "GENERATION_COMPLETED_CAPPED",
+                    generation=generation,
+                    provider=selected_model.provider.slug,
+                    model=selected_model.slug,
+                    charge_rub=charge,
+                    provider_cost_rub=provider_cost,
+                    provider_request_id=completed.provider_request_id,
+                )
             else:
                 settle(generation.reservation_id, charge)
                 request_cost.provider_cost_rub = provider_cost
@@ -829,7 +850,11 @@ def run(generation, *, adapter=None):
                     provider_request_id=completed.provider_request_id,
                 )
         if over_reservation:
-            raise ValidationError("Provider usage exceeded reserved maximum")
+            logger.warning(
+                "Provider usage exceeded customer reservation; answer preserved and charge capped generation_id=%s charge_rub=%s",
+                generation.id,
+                charge,
+            )
         _index_history(assistant)
         try:
             refresh_rolling_summary(generation.user_message.conversation)
