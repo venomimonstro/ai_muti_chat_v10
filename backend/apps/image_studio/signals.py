@@ -1,7 +1,6 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from apps.ai_registry.models import Provider
 from apps.billing.models import CostAnomaly
 
 from .models import ImageGeneration
@@ -34,7 +33,5 @@ def fail_closed_on_image_negative_margin(sender, instance, **kwargs):
             },
         },
     )
-    Provider.objects.filter(pk=model.provider_id).update(
-        emergency_disabled=True,
-        health_state=Provider.HealthState.DISABLED,
-    )
+    # Model-scoped economics must not disable every image model on the provider.
+    # The central billing loss watchdog disables the exact losing model.
