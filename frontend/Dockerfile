@@ -13,7 +13,8 @@ ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
-RUN npm run build \
+RUN npm run test:chat \
+    && npm run build \
     && rm -rf /root/.npm /tmp/*
 
 FROM node:22-alpine AS runner
