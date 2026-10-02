@@ -40,15 +40,20 @@ for mode in economy balanced maximum; do
   fi
 done
 
-printf '[4/6] Every customer-visible model must pass a minimal real inference...\n'
+printf '[4/7] Real provider recovery + full customer chat generation...\n'
+compose exec -T backend python manage.py check_provider_health --live
+compose exec -T backend python manage.py chat_live_smoke --mode auto
+printf '[PASS] AUTO chat completed through provider, billing and stream\n'
+
+printf '[5/7] Every customer-visible model must pass a minimal real inference...\n'
 compose exec -T backend python manage.py chat_runtime_check --live
 printf '[PASS] Customer-visible models respond to live inference\n'
 
-printf '[5/6] Free web search...\n'
+printf '[6/7] Free web search...\n'
 compose exec -T backend python -c "import json,urllib.parse,urllib.request; u='http://searxng:8080/search?'+urllib.parse.urlencode({'q':'OpenAI current news','format':'json','safesearch':1}); d=json.load(urllib.request.urlopen(u,timeout=10)); assert isinstance(d.get('results'),list)"
 printf '[PASS] Web search\n'
 
-printf '[6/6] Billing and stale-operation integrity...\n'
+printf '[7/7] Billing and stale-operation integrity...\n'
 compose exec -T backend python manage.py billing_integrity_check
 compose exec -T backend python manage.py agent_recovery_audit >/dev/null
 printf '[PASS] Billing/recovery integrity\n'
