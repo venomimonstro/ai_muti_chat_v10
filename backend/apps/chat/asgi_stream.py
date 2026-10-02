@@ -323,7 +323,7 @@ async def managed_run_async(generation, *, heartbeat_seconds=DEFAULT_HEARTBEAT_S
         "generation",
         {
             "id": str(generation.id),
-            "state": generation.state,
+            "state": getattr(generation, "state", "queued"),
             "accepted": True,
         },
     )
