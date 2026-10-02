@@ -74,7 +74,7 @@ def test_database_rejects_negative_or_bucket_inconsistent_wallet_even_if_service
 
 
 @pytest.mark.django_db
-def test_guaranteed_negative_margin_trips_provider_circuit_immediately():
+def test_guaranteed_negative_margin_quarantines_only_losing_model():
     MarginPolicyVersion.objects.create(
         minimum_gross_margin_percent=25,
         anomaly_cost_deviation_percent=20,
@@ -108,7 +108,9 @@ def test_guaranteed_negative_margin_trips_provider_circuit_immediately():
     record_cost_outcome(request_cost, model=model)
 
     provider.refresh_from_db()
-    assert provider.emergency_disabled is True
+    model.refresh_from_db()
+    assert model.enabled is False
+    assert provider.emergency_disabled is False
     anomaly = CostAnomaly.objects.get(dedupe_key=f"critical-loss:{request_cost.id}")
     assert anomaly.severity == "critical"
     assert anomaly.provider_slug == provider.slug
