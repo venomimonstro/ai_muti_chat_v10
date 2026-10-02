@@ -71,7 +71,7 @@ def install(streaming_module) -> None:
     from apps.admin_ops import recovery as recovery_module
 
     raw_recover_generation = recovery_module._recover_generation
-    if getattr(raw_recover_generation, "_ai_workspace_execution_fence", False):
+    if getattr(raw_recover_generation, "_ai_workspace_execution_fence", False) is True:
         return
 
     def recover_generation(pk):
@@ -113,7 +113,7 @@ def install(streaming_module) -> None:
 def install_outer_guard(streaming_module, managed_stream_module) -> None:
     """Swallow a revoked worker only after recovery made the Generation terminal."""
     raw_run = streaming_module.run
-    if getattr(raw_run, "_ai_workspace_execution_fence_outer", False):
+    if getattr(raw_run, "_ai_workspace_execution_fence_outer", False) is True:
         return
 
     def run(generation, *args, **kwargs):
