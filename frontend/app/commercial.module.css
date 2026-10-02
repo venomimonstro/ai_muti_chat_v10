@@ -38,7 +38,7 @@
 .nav{margin-left:auto;display:flex;align-items:center;gap:22px;flex-wrap:wrap}
 .nav a{color:#686b69;text-decoration:none;font-size:12px;font-weight:760}
 .nav a:hover{color:#111314}
-.nav a:first-child{
+.nav a[href="/register"],.nav a[href="/app"]{
   min-height:39px;padding:0 14px;display:inline-flex;align-items:center;
   border-radius:11px;color:#fff;background:#111314;
 }
@@ -129,7 +129,7 @@
   .shell{width:min(100% - 24px,1180px)}
   .top{position:relative;margin:0;min-height:auto;padding:18px 0;align-items:flex-start;flex-direction:column;gap:14px}
   .nav{margin-left:0;gap:10px 16px}
-  .nav a:first-child{min-height:auto;padding:0;color:#686b69;background:transparent}
+  .nav a[href="/register"],.nav a[href="/app"]{min-height:38px;padding:0 13px;color:#fff;background:#111314}
   .hero{margin-top:12px;padding:46px 24px;border-radius:23px}
   .hero h1{font-size:42px}
   .hero p{font-size:15px}
