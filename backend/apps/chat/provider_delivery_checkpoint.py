@@ -109,7 +109,7 @@ def install(streaming_module) -> None:
     global _raw_adapter_for
 
     current_adapter_for = streaming_module.adapter_for
-    if getattr(current_adapter_for, "_ai_workspace_delivery_checkpoint", False):
+    if getattr(current_adapter_for, "_ai_workspace_delivery_checkpoint", False) is True:
         return
     _raw_adapter_for = current_adapter_for
 
@@ -138,7 +138,7 @@ def install(streaming_module) -> None:
     streaming_module.adapter_for = checkpoint_adapter_for
 
     raw_run = streaming_module.run
-    if not getattr(raw_run, "_ai_workspace_delivery_checkpoint_context", False):
+    if getattr(raw_run, "_ai_workspace_delivery_checkpoint_context", False) is not True:
         def run(generation, *args, **kwargs):
             token = _CURRENT_GENERATION_ID.set(generation.id)
             try:
