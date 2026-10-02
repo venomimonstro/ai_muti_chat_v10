@@ -6,7 +6,7 @@ from django.core.checks import Error, register
 @register()
 def chat_runtime_wiring_check(app_configs, **kwargs):
     """Release/production check for the final customer chat runtime identity."""
-    from . import asgi_stream, activity_stream, cost_views, managed_stream, services, streaming
+    from . import asgi_stream, activity_stream, cost_views, managed_stream, message_actions, services, streaming
 
     errors = []
     if not (
@@ -26,6 +26,7 @@ def chat_runtime_wiring_check(app_configs, **kwargs):
         and cost_views.managed_run is managed_stream.managed_run
         and activity_stream.managed_run is managed_stream.managed_run
         and asgi_stream.managed_run is managed_stream.managed_run
+        and message_actions.managed_run is managed_stream.managed_run
     ):
         errors.append(
             Error(
