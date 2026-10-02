@@ -93,7 +93,7 @@ def _safe_error_detail(response: httpx.Response) -> str:
             detail = str(raw or "").strip()
         else:
             detail = ""
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, httpx.ResponseNotRead):
         detail = ""
     if not detail:
         try:
@@ -285,6 +285,15 @@ class GigaChatAPIAdapter:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                # httpx.stream() does not preload the response body. Error
+                # normalization reads JSON/text, so explicitly consume the small
+                # error body first; otherwise httpx raises ResponseNotRead and the
+                # customer sees a generic internal-stream failure instead of the
+                # real provider error.
+                try:
+                    exc.response.read()
+                except httpx.HTTPError:
+                    pass
                 raise _http_provider_error(exc.response) from exc
             for line in response.iter_lines():
                 if not line.startswith("data:"):
