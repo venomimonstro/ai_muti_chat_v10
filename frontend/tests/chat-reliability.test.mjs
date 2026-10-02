@@ -182,3 +182,25 @@ test("Visual workflow preserves explicit gaps and safely reorders DAG connection
  assert.throws(()=>workflow.orderedGraph({nodes,edges:[{from:"b",to:"c"},{from:"c",to:"b"}]}),/цикл/);
  assert.throws(()=>workflow.orderedGraph({nodes,edges:[{from:"b",to:"start"}]}),/Начальный/);
 });
+
+
+test("Model and complexity picker is owned by the composer, not the chat header", () => {
+  const workspaceSource = readFileSync(new URL("../app/workspace/WorkspaceV2.tsx", import.meta.url), "utf8");
+  const composerSource = readFileSync(new URL("../app/workspace/Composer.tsx", import.meta.url), "utf8");
+  const headerStart = workspaceSource.indexOf('<header className="chatHeader">');
+  const headerEnd = workspaceSource.indexOf("</header>", headerStart);
+  const header = workspaceSource.slice(headerStart, headerEnd);
+  assert.equal(header.includes("<ModelPicker"), false);
+  assert.match(workspaceSource, /modelValue=\{selectorValue\}/);
+  assert.match(workspaceSource, /models=\{models\}/);
+  assert.match(workspaceSource, /onModelChange=/);
+  assert.match(composerSource, /<ModelPicker value=\{effectiveControlValue\}/);
+});
+
+test("Transient empty model catalog never disables customer send", () => {
+  const composerSource = readFileSync(new URL("../app/workspace/Composer.tsx", import.meta.url), "utf8");
+  const submitLine = composerSource.split("\n").find(line => line.includes("const submit=async")) ?? "";
+  assert.equal(submitLine.includes("noModelsAvailable"), false);
+  const sendButtonLine = composerSource.split("\n").find(line => line.includes('className="sendButton"')) ?? "";
+  assert.equal(sendButtonLine.includes("noModelsAvailable"), false);
+});
