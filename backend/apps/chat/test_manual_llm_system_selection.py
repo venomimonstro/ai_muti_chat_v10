@@ -7,6 +7,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.billing.models import PriceVersion
+from apps.procurement.services import create_funding_account, record_purchase
 
 
 @pytest.mark.django_db
@@ -39,6 +40,20 @@ def test_customer_can_select_branded_llm_system_model_manually():
     )
     key.set_secret("system-test-key")
     key.save()
+    account = create_funding_account(
+        provider=provider,
+        api_key=key,
+        label="manual-system-funded",
+        currency="RUB",
+        is_default=True,
+    )
+    record_purchase(
+        account=account,
+        credit_native=Decimal("1000"),
+        base_cost_rub=Decimal("1000"),
+        created_by=user,
+        reference="manual system regression",
+    )
     model = AIModel.objects.create(
         provider=provider,
         slug="gigachat-manual-pro",
