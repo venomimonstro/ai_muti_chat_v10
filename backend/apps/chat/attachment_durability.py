@@ -41,7 +41,7 @@ def install(streaming_module) -> None:
     and cannot use a deleted or no-longer-authorized file.
     """
     raw_prepare = streaming_module.prepare
-    if getattr(raw_prepare, "_ai_workspace_attachment_durability", False):
+    if getattr(raw_prepare, "_ai_workspace_attachment_durability", False) is True:
         return
 
     def prepare(*args, **kwargs):
