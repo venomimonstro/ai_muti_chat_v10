@@ -7,18 +7,18 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from apps.ai_registry.adapters import ProviderError, adapter_for
-from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.adapters import ProviderError
+from apps.ai_registry.dispatch import adapter_for
+from apps.ai_registry.model_quarantine import model_runtime_available
+from apps.ai_registry.models import AIModel
 from apps.ai_registry.reliability import provider_available
 from apps.ai_registry.token_estimator import estimate_text_tokens
 from apps.billing.models import CostAnomaly
 from apps.billing.pricing import active_price, calculate_from_snapshot, quote, require_margin
 from apps.billing.services import release, reserve, settle
-from apps.procurement.services import (
-    release_provider_spend,
-    reserve_provider_spend,
-    settle_provider_spend,
-)
+from apps.procurement.account_routing import reserve_provider_spend
+from apps.procurement.models import ProviderSpendReservation
+from apps.procurement.services import release_provider_spend, settle_provider_spend
 from apps.workspace_search.embeddings import index_message
 
 from .branches import ensure_active_branch, fork_branch, visible_messages
@@ -47,12 +47,8 @@ def _trip_compare_cost_guard(*, model, expected_max, actual, source_id, operatio
             },
         },
     )
-    Provider.objects.filter(pk=model.provider_id).update(
-        emergency_disabled=True,
-        health_state=Provider.HealthState.DISABLED,
-    )
-    model.provider.emergency_disabled = True
-    model.provider.health_state = Provider.HealthState.DISABLED
+    AIModel.objects.filter(pk=model.pk).update(enabled=False)
+    model.enabled = False
 
 
 def _models(slugs):
@@ -67,7 +63,12 @@ def _models(slugs):
     ordered = []
     for slug in unique:
         model = models.get(slug)
-        if not model or not provider_available(model.provider) or "text" not in model.capabilities:
+        if (
+            not model
+            or not model_runtime_available(model)
+            or not provider_available(model.provider)
+            or "text" not in model.capabilities
+        ):
             raise ValidationError(f"Модель {slug} недоступна для Compare")
         ordered.append(model)
     return ordered
@@ -76,7 +77,12 @@ def _models(slugs):
 def _one_model(slug):
     _require_enabled()
     model = AIModel.objects.filter(slug=slug, enabled=True).select_related("provider").first()
-    if not model or not provider_available(model.provider) or "text" not in model.capabilities:
+    if (
+        not model
+        or not model_runtime_available(model)
+        or not provider_available(model.provider)
+        or "text" not in model.capabilities
+    ):
         raise ValidationError(f"Модель {slug} недоступна")
     return model
 
@@ -125,11 +131,15 @@ def compare_preview(*, prompt, model_slugs):
     }
 
 
-def _provider_call(model, messages):
+def _provider_call(model, messages, funding_account_id=None):
     started = time.monotonic()
     text = ""
     completed = None
-    for event in adapter_for(model).stream(
+    runtime_adapter = adapter_for(
+        model,
+        funding_account_id=funding_account_id,
+    )
+    for event in runtime_adapter.stream(
         model=model.upstream_model,
         messages=messages,
         max_output_tokens=min(settings.COMPARE_MAX_OUTPUT_TOKENS, model.max_output_tokens),
@@ -141,6 +151,18 @@ def _provider_call(model, messages):
     if completed is None:
         raise ProviderError("Compare stream ended without usage", code="invalid_stream")
     return text.strip(), completed, int((time.monotonic() - started) * 1000)
+
+
+def _variant_funding_account_id(variant):
+    reservation = (
+        ProviderSpendReservation.objects.filter(
+            source_key=f"compare:{variant.id}",
+            state=ProviderSpendReservation.State.ACTIVE,
+        )
+        .only("account_id")
+        .first()
+    )
+    return reservation.account_id if reservation is not None else None
 
 
 def _validate_replayed_compare(run, conversation, prompt, model_slugs):
@@ -196,14 +218,24 @@ def run_compare(*, user, conversation, prompt, model_slugs, idempotency_key, sou
                 state=CompareVariant.State.RUNNING,
                 expected_min_rub=row["minimum"].user_charge_rub,
                 expected_max_rub=row["maximum"].user_charge_rub,
-                pricing_snapshot=row["maximum"].pricing_snapshot,
+                pricing_snapshot={
+                    **row["maximum"].pricing_snapshot,
+                    "expected_provider_cost_rub": str(row["maximum"].provider_cost_rub),
+                },
             )
             variants.append((variant, row))
     messages = [{"role": "user", "content": prompt}]
     futures = {}
     with ThreadPoolExecutor(max_workers=len(variants), thread_name_prefix="compare") as pool:
         for variant, row in variants:
-            futures[pool.submit(_provider_call, row["model"], messages)] = (variant, row)
+            futures[
+                pool.submit(
+                    _provider_call,
+                    row["model"],
+                    messages,
+                    _variant_funding_account_id(variant),
+                )
+            ] = (variant, row)
         for future in as_completed(futures):
             variant, row = futures[future]
             try:
@@ -294,13 +326,18 @@ def synthesize_compare(*, user, compare_run, model_slug, confirmed=False):
             provider=model.provider,
             amount_native=expected.provider_cost_rub / expected.fx_snapshot.rate,
             source_key=f"compare-synthesis:{compare_run.id}",
+            currency=str(expected.pricing_snapshot.get("provider_currency") or ""),
         )
     compare_run.synthesis_reservation_id = reservation.id
     compare_run.synthesis_model_slug = model.slug
     compare_run.synthesis_pricing_snapshot = expected.pricing_snapshot
     compare_run.save(update_fields=["synthesis_reservation_id", "synthesis_model_slug", "synthesis_pricing_snapshot"])
     try:
-        output, usage, _latency = _provider_call(model, [{"role": "user", "content": prompt}])
+        output, usage, _latency = _provider_call(
+            model,
+            [{"role": "user", "content": prompt}],
+            provider_reservation.account_id if provider_reservation is not None else None,
+        )
         provider_cost, charge, _profit, _margin = calculate_from_snapshot(
             price, usage.input_tokens, usage.output_tokens, expected.pricing_snapshot
         )
