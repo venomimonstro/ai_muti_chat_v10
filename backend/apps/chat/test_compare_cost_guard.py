@@ -37,7 +37,7 @@ def compare_guard_context():
 
 
 @pytest.mark.django_db
-def test_compare_variant_over_reserved_maximum_disables_provider(compare_guard_context):
+def test_compare_variant_over_reserved_maximum_disables_only_model(compare_guard_context):
     provider, model, run = compare_guard_context
 
     variant = CompareVariant.objects.create(
@@ -51,16 +51,17 @@ def test_compare_variant_over_reserved_maximum_disables_provider(compare_guard_c
         provider_cost_rub=Decimal("8"),
     )
 
+    model.refresh_from_db()
     provider.refresh_from_db()
-    assert provider.emergency_disabled is True
-    assert provider.health_state == Provider.HealthState.DISABLED
+    assert model.enabled is False
+    assert provider.emergency_disabled is False
     anomaly = CostAnomaly.objects.get(dedupe_key=f"compare-critical:{variant.id}")
     assert anomaly.severity == "critical"
     assert anomaly.details["reason"] == "compare_charge_above_reserved_maximum"
 
 
 @pytest.mark.django_db
-def test_compare_variant_guaranteed_loss_disables_provider(compare_guard_context):
+def test_compare_variant_guaranteed_loss_disables_only_model(compare_guard_context):
     provider, model, run = compare_guard_context
 
     variant = CompareVariant.objects.create(
@@ -74,14 +75,16 @@ def test_compare_variant_guaranteed_loss_disables_provider(compare_guard_context
         provider_cost_rub=Decimal("6"),
     )
 
+    model.refresh_from_db()
     provider.refresh_from_db()
-    assert provider.emergency_disabled is True
+    assert model.enabled is False
+    assert provider.emergency_disabled is False
     anomaly = CostAnomaly.objects.get(dedupe_key=f"compare-critical:{variant.id}")
     assert anomaly.details["reason"] == "compare_provider_cost_above_customer_charge"
 
 
 @pytest.mark.django_db
-def test_normal_compare_variant_does_not_trip_provider(compare_guard_context):
+def test_normal_compare_variant_keeps_model_and_provider_enabled(compare_guard_context):
     provider, model, run = compare_guard_context
 
     CompareVariant.objects.create(
@@ -95,6 +98,8 @@ def test_normal_compare_variant_does_not_trip_provider(compare_guard_context):
         provider_cost_rub=Decimal("2"),
     )
 
+    model.refresh_from_db()
     provider.refresh_from_db()
+    assert model.enabled is True
     assert provider.emergency_disabled is False
     assert CostAnomaly.objects.filter(provider_slug=provider.slug).count() == 0
