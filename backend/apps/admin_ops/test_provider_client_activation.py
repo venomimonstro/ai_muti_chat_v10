@@ -147,28 +147,47 @@ class ProviderClientActivationTests(APITestCase):
         self.assertTrue(self.model.enabled)
 
     @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
-    def test_production_activation_blocks_configured_empty_procurement_balance(self):
+    def test_production_activation_ignores_zero_balance_procurement_draft(self):
         create_funding_account(
             provider=self.provider,
             api_key=self.key,
-            label="Empty funding",
+            label="Draft funding",
             currency="RUB",
             is_default=True,
         )
         response = self._activate()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["activated"]), 1)
+        self.model.refresh_from_db()
+        self.assertTrue(self.model.enabled)
+
+    @override_settings(PROCUREMENT_RUNTIME_FAIL_CLOSED=True)
+    def test_production_activation_blocks_exhausted_purchased_balance(self):
+        account = create_funding_account(
+            provider=self.provider,
+            api_key=self.key,
+            label="Purchased funding",
+            currency="RUB",
+            is_default=True,
+        )
+        type(account).objects.filter(pk=account.pk).update(
+            funded_native=Decimal("10"),
+            spent_native=Decimal("10"),
+        )
+        response = self._activate()
         self.assertEqual(response.status_code, 409, response.data)
         self.assertEqual(response.data["code"], "provider_procurement_not_ready")
-        self.assertIn("закупочный баланс", response.data["detail"].lower())
+        self.assertIn("закупленный баланс", response.data["detail"].lower())
         self.model.refresh_from_db()
         self.assertFalse(self.model.enabled)
 
-    def test_credentials_separate_transport_health_from_customer_traffic_readiness(self):
+    def test_credentials_zero_balance_procurement_draft_does_not_block_customer_traffic(self):
         self.provider.enabled = True
         self.provider.save(update_fields=["enabled"])
         create_funding_account(
             provider=self.provider,
             api_key=self.key,
-            label="Empty funding",
+            label="Draft funding",
             currency="RUB",
             is_default=True,
         )
@@ -178,13 +197,8 @@ class ProviderClientActivationTests(APITestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["health_state"], Provider.HealthState.HEALTHY)
-        self.assertFalse(response.data["customer_traffic_ready"])
-        self.assertTrue(
-            any(
-                "закупочный баланс" in item.lower()
-                for item in response.data["customer_traffic_blockers"]
-            )
-        )
+        self.assertTrue(response.data["customer_traffic_ready"])
+        self.assertEqual(response.data["customer_traffic_blockers"], [])
 
     def test_activation_reports_model_without_safe_price(self):
         PriceVersion.objects.filter(model_slug=self.model.slug).update(active=False)
