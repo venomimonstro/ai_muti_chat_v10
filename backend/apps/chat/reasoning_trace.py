@@ -23,7 +23,7 @@ def _activity(activity_stream_module, step: str, state: str, message: str):
 
 def install(activity_stream_module) -> None:
     raw = activity_stream_module.managed_request_stream
-    if getattr(raw, "_ai_workspace_reasoning_trace", False):
+    if getattr(raw, "_ai_workspace_reasoning_trace", False) is True:
         return
 
     def managed_request_stream(*args, **kwargs):
