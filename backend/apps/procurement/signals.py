@@ -61,12 +61,8 @@ def _require_procurement(provider):
         return True
     if _is_test_echo_provider(provider):
         return False
-    if _commercial_fail_closed():
-        raise ValidationError(
-            f"Коммерческий запрос заблокирован: для провайдера {provider.slug} не настроен закупочный контур"
-        )
-    logger.warning(
-        "Provider funding ledger is not configured; continuing with customer pricing/settlement only provider=%s",
+    logger.info(
+        "Provider funding ledger is not configured; customer pricing remains active and provider procurement tracking is skipped provider=%s",
         provider.slug,
     )
     return False
