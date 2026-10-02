@@ -194,6 +194,45 @@ def _recover_api_usage(pk):
     return True
 
 
+def recover_terminal_chat_reservations(*, older_than_seconds=None, limit=500):
+    """Release customer reserves left ACTIVE after a terminal chat failure.
+
+    Normal failure paths release synchronously. This sweep is the durable safety net
+    for a database/process failure during that refund. It handles only FAILED or
+    CANCELLED Generations; COMPLETED reservations require settlement, never refund.
+    """
+    age = (
+        settings.OPERATION_STALE_TIMEOUT_SECONDS
+        if older_than_seconds is None
+        else max(0, int(older_than_seconds))
+    )
+    cutoff = timezone.now() - timedelta(seconds=age)
+    rows = list(
+        BalanceReservation.objects.filter(
+            state=BalanceReservation.State.ACTIVE,
+            idempotency_key__startswith="generation:",
+            created_at__lt=cutoff,
+        )
+        .order_by("created_at")[: max(1, min(int(limit), 2000))]
+    )
+    released = 0
+    deferred = 0
+    for reservation in rows:
+        generation_id = str(reservation.idempotency_key or "").split("generation:", 1)[-1]
+        generation = Generation.objects.filter(pk=generation_id).only("state").first()
+        if generation is None:
+            deferred += 1
+            continue
+        if generation.state not in {Generation.State.FAILED, Generation.State.CANCELLED}:
+            deferred += 1
+            continue
+        try:
+            release(reservation.id)
+            released += 1
+        except Exception:
+            deferred += 1
+    return {"checked": len(rows), "released": released, "deferred": deferred}
+
 def recover_stale_api_usages(*, api_key=None):
     cutoff = timezone.now() - timedelta(seconds=settings.B2B_API_RUNNING_TIMEOUT_SECONDS)
     queryset = APIUsage.objects.filter(state=APIUsage.State.RUNNING, created_at__lt=cutoff)
@@ -291,6 +330,9 @@ def recover_stale_operations():
                 continue
         result[name] = count
     result["api_usages"] = recover_stale_api_usages()
+    result["terminal_chat_reservations"] = recover_terminal_chat_reservations(
+        older_than_seconds=settings.OPERATION_STALE_TIMEOUT_SECONDS
+    )
     result["web_search_reservations"] = recover_search_reservations(
         older_than_seconds=settings.OPERATION_STALE_TIMEOUT_SECONDS
     )
