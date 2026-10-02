@@ -12,7 +12,8 @@ from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 
-from apps.ai_registry.models import Provider
+from apps.ai_registry.models import AIModel, Provider
+from apps.ai_registry.reliability import model_client_ready, provider_available
 from apps.chat.models import Generation
 from apps.payments.models import Payment
 
@@ -320,11 +321,38 @@ def system_analysis():
     critical_open = [item for item in open_issues if item.get("severity") == "critical"]
     critical_investigating = [item for item in investigating if item.get("severity") == "critical"]
     warning_open = [item for item in open_issues if item.get("severity") == "warning"]
-    unhealthy = list(
-        Provider.objects.filter(enabled=True)
-        .exclude(health_state=Provider.HealthState.HEALTHY)
-        .values("slug", "name", "health_state", "last_latency_ms", "last_checked_at")
+    enabled_providers = list(Provider.objects.filter(enabled=True))
+    unhealthy = [
+        {
+            "slug": provider.slug,
+            "name": provider.name,
+            "health_state": provider.health_state,
+            "last_latency_ms": provider.last_latency_ms,
+            "last_checked_at": provider.last_checked_at,
+        }
+        for provider in enabled_providers
+        if provider.health_state != Provider.HealthState.HEALTHY
+    ]
+    customer_unready_providers = [
+        {
+            "slug": provider.slug,
+            "name": provider.name,
+            "health_state": provider.health_state,
+        }
+        for provider in enabled_providers
+        if not provider_available(provider)
+    ]
+    enabled_models = list(
+        AIModel.objects.filter(
+            enabled=True,
+            provider__enabled=True,
+            provider__emergency_disabled=False,
+        ).select_related("provider", "current_version")
     )
+    ready_model_slugs = [model.slug for model in enabled_models if model_client_ready(model)]
+    blocked_model_slugs = [
+        model.slug for model in enabled_models if model.slug not in set(ready_model_slugs)
+    ]
     payment_failures = Payment.objects.filter(
         created_at__gte=day,
         status=Payment.Status.CANCELED,
@@ -338,10 +366,14 @@ def system_analysis():
     risk_score = min(
         100,
         min(40, len(critical_open) * 8 + len(critical_investigating) * 4 + len(warning_open))
-        + min(25, len(unhealthy) * 5)
+        + min(20, len(unhealthy) * 4)
+        + min(20, len(customer_unready_providers) * 4)
         + min(25, round((day_failed / day_total * 100) if day_total else 0))
         + min(10, payment_failures),
     )
+    customer_ai_outage = bool(enabled_models) and not ready_model_slugs
+    if customer_ai_outage:
+        risk_score = max(risk_score, 80)
     state = "critical" if risk_score >= 60 else "warning" if risk_score >= 25 else "healthy"
     return {
         "state": state,
@@ -364,6 +396,18 @@ def system_analysis():
             "error_rate_24h_percent": round(day_failed / day_total * 100, 2) if day_total else 0,
             "top_error_codes": top_errors,
         },
-        "providers": {"unhealthy_count": len(unhealthy), "unhealthy": unhealthy},
+        "providers": {
+            "unhealthy_count": len(unhealthy),
+            "unhealthy": unhealthy,
+            "customer_unready_count": len(customer_unready_providers),
+            "customer_unready": customer_unready_providers,
+        },
+        "models": {
+            "enabled_count": len(enabled_models),
+            "customer_ready_count": len(ready_model_slugs),
+            "customer_ready": ready_model_slugs,
+            "customer_blocked": blocked_model_slugs,
+            "customer_ai_outage": customer_ai_outage,
+        },
         "payments": {"failed_or_canceled_24h": payment_failures},
     }
