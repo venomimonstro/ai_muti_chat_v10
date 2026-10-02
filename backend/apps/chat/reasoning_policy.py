@@ -52,7 +52,7 @@ def reasoning_required(query: str) -> bool:
 
 def install(context_module, streaming_module) -> None:
     raw = context_module.assemble_context
-    if getattr(raw, "_ai_workspace_adaptive_reasoning", False):
+    if getattr(raw, "_ai_workspace_adaptive_reasoning", False) is True:
         streaming_module.assemble_context = raw
         return
 
