@@ -527,6 +527,7 @@ if [[ "$UPDATE_MODE" == "full" ]]; then
   compose exec -T backend python manage.py customer_ai_readiness_check
   compose exec -T backend python manage.py chat_preflight_smoke --mode auto
   compose exec -T backend python manage.py chat_live_smoke --mode auto
+  compose exec -T backend python manage.py chat_live_smoke --mode manual
   compose exec -T sandbox python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=5)"
 
   printf '[CHECK] Celery beat + worker heartbeat...\n'
