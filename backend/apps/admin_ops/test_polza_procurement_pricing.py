@@ -129,3 +129,50 @@ class PolzaProcurementPricingTests(SimpleTestCase):
         self.assertEqual(snapshot["sources"]["input_per_million"], "manual")
         self.assertEqual(snapshot["sources"]["output_per_million"], "auto")
         self.assertEqual(snapshot["sources"]["image_per_image"], "manual")
+
+
+    def test_manual_override_wins_over_auto_price(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from .procurement_ledger_views import _pricing_snapshot_from_request
+
+        class Request:
+            data = {
+                "input_per_million": "118.50",
+                "output_per_million": "589.96",
+                "pricing_currency": "RUB",
+            }
+
+        key = SimpleNamespace(
+            id="00000000-0000-0000-0000-000000000001",
+            provider=SimpleNamespace(slug="polza"),
+        )
+        model = SimpleNamespace(
+            slug="polza-test",
+            upstream_model="openai/gpt-test",
+        )
+        auto = [{
+            "id": "openai/gpt-test",
+            "currency": "RUB",
+            "input_per_million": "117.992",
+            "output_per_million": "589.96",
+            "image_input_per_million": None,
+            "image_output_per_million": None,
+            "image_per_image": None,
+            "pricing_tiers": [],
+            "model_type": "chat",
+        }]
+        with patch(
+            "apps.admin_ops.procurement_ledger_views._polza_pricing_for_key",
+            return_value=auto,
+        ):
+            snapshot = _pricing_snapshot_from_request(
+                Request(),
+                key=key,
+                model=model,
+            )
+
+        self.assertEqual(snapshot["input_per_million"], "118.50")
+        self.assertEqual(snapshot["output_per_million"], "589.96")
+        self.assertEqual(snapshot["sources"]["input_per_million"], "manual")
+        self.assertEqual(snapshot["sources"]["output_per_million"], "auto")
