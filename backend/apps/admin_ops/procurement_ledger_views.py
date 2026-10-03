@@ -303,7 +303,7 @@ def _pricing_snapshot_from_request(request, *, key, model=None, upstream_model="
             "image_output_per_million": image_output_source,
             "image_per_image": image_per_image_source,
         },
-        "source": "polza_models_api+manual_override",
+        "source": "polza_models_catalog+manual_override",
         "captured_at": timezone.now().isoformat(),
     }
 
