@@ -30,7 +30,7 @@ PROVIDER_BLOCKING_ERROR_CODES = {
     "gigachat_quota_exhausted",
     "gigachat_permission_denied",
 }
-SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai"}
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai", "polza"}
 
 # These failures describe one model/request payload, not credential transport health.
 # They must never poison a verified API key or hide the whole provider from customer
