@@ -213,3 +213,30 @@ test("Transient empty model catalog never disables customer send", () => {
     false,
   );
 });
+
+
+test("Model picker stays inside the message form beside send controls", () => {
+  const composerSource = readFileSync(new URL("../app/workspace/Composer.tsx", import.meta.url), "utf8");
+  const rightStart = composerSource.indexOf('<div className="composerRight">');
+  assert.ok(rightStart >= 0);
+  const rightSlice = composerSource.slice(rightStart, rightStart + 1400);
+  assert.match(rightSlice, /<ModelPicker/);
+  assert.match(rightSlice, /className="sendButton"/);
+});
+
+test("Critical customer surfaces use AIlegend branding", () => {
+  const files = [
+    "../app/page.tsx",
+    "../app/layout.tsx",
+    "../app/manifest.ts",
+    "../app/workspace/Sidebar.tsx",
+    "../app/components/ClientAppChrome.tsx",
+    "../app/login/page.tsx",
+    "../app/register/page.tsx",
+  ];
+  for (const name of files) {
+    const value = readFileSync(new URL(name, import.meta.url), "utf8");
+    assert.match(value, /AIlegend/);
+    assert.equal(value.includes("AI Workspace"), false, name);
+  }
+});
