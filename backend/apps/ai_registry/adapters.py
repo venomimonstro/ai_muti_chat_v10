@@ -594,6 +594,8 @@ def adapter_for(model: AIModel):
         )
     if provider.slug == "openrouter":
         return OpenRouterChatAdapter(api_key=api_key, base_url=provider.api_base_url or os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1"))
+    if provider.slug == "polza":
+        return PolzaChatAdapter(api_key=api_key, base_url=provider.api_base_url or os.getenv("POLZA_API_BASE_URL", "https://polza.ai/api/v1"))
     if provider.adapter_type == Provider.AdapterType.OPENAI_RESPONSES:
         return OpenAIResponsesAdapter(api_key=api_key, base_url=provider.api_base_url or os.getenv("OPENAI_API_BASE_URL", "https://api.openai.com/v1"))
     if provider.adapter_type == Provider.AdapterType.ANTHROPIC_MESSAGES:
