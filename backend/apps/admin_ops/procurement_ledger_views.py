@@ -9,7 +9,7 @@ from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework.response import Response
 
 from apps.ai_registry.models import AIModel, ProviderApiKey
-from apps.billing.models import PriceVersion
+from apps.billing.models import MarkupRuleVersion, PriceVersion
 from apps.procurement.models import ProviderFundingAccount, ProviderPurchase, ProviderSpendAllocation
 from apps.procurement.services import create_funding_account, funding_summary, provider_pricing_currency, record_purchase, set_default_account
 
@@ -306,6 +306,139 @@ def _pricing_snapshot_from_request(request, *, key, model=None, upstream_model="
         "source": "polza_models_catalog+manual_override",
         "captured_at": timezone.now().isoformat(),
     }
+
+
+def _batch_polza_snapshot_from_request(request, *, key):
+    raw_models = request.data.get("polza_models")
+    if not isinstance(raw_models, list):
+        return {}
+    auto_rows = {item["id"]: item for item in _polza_pricing_for_key(key)}
+    available = {str(value) for value in (key.available_models or []) if value}
+    allowed = {str(value) for value in (key.allowed_models or []) if value}
+    snapshots = []
+    for raw in raw_models[:100]:
+        if not isinstance(raw, dict):
+            continue
+        upstream = str(raw.get("upstream_model") or raw.get("id") or "").strip()[:160]
+        if not upstream:
+            continue
+        if available and upstream not in available:
+            raise DjangoValidationError(f"Модель {upstream} недоступна этому Polza API-ключу")
+        if upstream not in allowed:
+            raise DjangoValidationError(f"Модель {upstream} не разрешена для этого Polza API-ключа в AIlegend")
+        auto = auto_rows.get(upstream, {})
+        model = AIModel.objects.filter(provider=key.provider, upstream_model=upstream).first()
+
+        def choose(field):
+            raw_value = raw.get(field)
+            auto_value = auto.get(field)
+            if raw_value not in (None, ""):
+                value = _decimal(raw_value, field, minimum=ZERO)
+                source = "manual"
+                if auto_value not in (None, ""):
+                    try:
+                        if Decimal(str(value)) == Decimal(str(auto_value)):
+                            source = "auto"
+                    except Exception:
+                        pass
+                return str(value), source
+            if auto_value not in (None, ""):
+                return str(auto_value), "auto"
+            return None, "missing"
+
+        input_price, input_source = choose("input_per_million")
+        output_price, output_source = choose("output_per_million")
+        image_input, image_input_source = choose("image_input_per_million")
+        image_output, image_output_source = choose("image_output_per_million")
+        image_per_image, image_per_image_source = choose("image_per_image")
+        snapshot = {
+            "model_slug": model.slug if model else "",
+            "upstream_model": upstream,
+            "display_name": str(raw.get("display_name") or auto.get("display_name") or upstream)[:200],
+            "currency": str(raw.get("currency") or auto.get("currency") or "RUB").upper()[:3],
+            "input_per_million": input_price,
+            "output_per_million": output_price,
+            "image_input_per_million": image_input,
+            "image_output_per_million": image_output,
+            "image_per_image": image_per_image,
+            "pricing_tiers": auto.get("pricing_tiers") or [],
+            "model_type": auto.get("model_type") or "",
+            "sources": {
+                "input_per_million": input_source,
+                "output_per_million": output_source,
+                "image_input_per_million": image_input_source,
+                "image_output_per_million": image_output_source,
+                "image_per_image": image_per_image_source,
+            },
+            "markup_percent": (
+                str(_decimal(raw.get("markup_percent"), "Наценка модели", minimum=ZERO))
+                if raw.get("markup_percent") not in (None, "")
+                else None
+            ),
+        }
+        _validate_polza_snapshot(snapshot)
+        snapshots.append(snapshot)
+    if not snapshots:
+        raise DjangoValidationError("Для Polza выберите хотя бы одну модель и её цены")
+    provider_markup = request.data.get("provider_markup_percent")
+    provider_markup_value = (
+        str(_decimal(provider_markup, "Общая наценка Polza", minimum=ZERO))
+        if provider_markup not in (None, "")
+        else None
+    )
+    return {
+        "provider": "polza",
+        "api_key_id": str(key.id),
+        "currency": "RUB",
+        "models": snapshots,
+        "provider_markup_percent": provider_markup_value,
+        "source": "polza_models_catalog+manual_override",
+        "captured_at": timezone.now().isoformat(),
+    }
+
+
+def _apply_polza_markup_rules(*, provider, batch_snapshot):
+    now = timezone.now()
+    provider_markup = batch_snapshot.get("provider_markup_percent")
+    if provider_markup not in (None, ""):
+        MarkupRuleVersion.objects.create(
+            scope_type=MarkupRuleVersion.Scope.PROVIDER,
+            scope_key=provider.slug,
+            markup_percent=Decimal(str(provider_markup)),
+            price_multiplier=Decimal("1"),
+            active=True,
+            effective_from=now,
+            reason="Polza procurement order: provider-wide markup",
+        )
+    for item in batch_snapshot.get("models") or []:
+        model_slug = str(item.get("model_slug") or "").strip()
+        markup = item.get("markup_percent")
+        if model_slug and markup not in (None, ""):
+            MarkupRuleVersion.objects.create(
+                scope_type=MarkupRuleVersion.Scope.MODEL,
+                scope_key=model_slug,
+                markup_percent=Decimal(str(markup)),
+                price_multiplier=Decimal("1"),
+                active=True,
+                effective_from=now,
+                reason="Polza procurement order: model markup override",
+            )
+
+
+def _activate_polza_batch_prices(*, provider, batch_snapshot):
+    for item in batch_snapshot.get("models") or []:
+        model = None
+        model_slug = str(item.get("model_slug") or "").strip()
+        if model_slug:
+            model = AIModel.objects.filter(provider=provider, slug=model_slug).first()
+        if model is not None:
+            _activate_polza_text_price(model=model, snapshot=item)
+        _activate_polza_image_price(
+            provider=provider,
+            upstream_model=str(item.get("upstream_model") or ""),
+            snapshot=item,
+        )
+    _apply_polza_markup_rules(provider=provider, batch_snapshot=batch_snapshot)
 
 
 def _validate_polza_snapshot(snapshot):
@@ -759,36 +892,33 @@ class ProcurementLedgerView(AdminAPIView):
             pricing_snapshot = {}
             selected_upstream = str(request.data.get("polza_model_id") or "").strip()
             selected_model_slug = str(request.data.get("model_slug") or "").strip()
-            if key.provider.slug == "polza" and selected_upstream:
-                selected_model = (
-                    AIModel.objects.filter(
-                        provider=key.provider,
-                        upstream_model=selected_upstream,
-                    )
-                    .select_related("provider")
-                    .first()
-                )
-                if selected_model_slug and selected_model is None:
+            if key.provider.slug == "polza":
+                if isinstance(request.data.get("polza_models"), list):
+                    pricing_snapshot = _batch_polza_snapshot_from_request(request, key=key)
+                elif selected_upstream:
                     selected_model = (
-                        AIModel.objects.filter(
-                            provider=key.provider,
-                            slug=selected_model_slug,
-                        )
+                        AIModel.objects.filter(provider=key.provider, upstream_model=selected_upstream)
                         .select_related("provider")
                         .first()
                     )
-                available = list(key.available_models or [])
-                if available and selected_upstream not in available:
-                    raise DjangoValidationError(
-                        "Выбранная модель недоступна для этого Polza API-ключа"
+                    if selected_model_slug and selected_model is None:
+                        selected_model = (
+                            AIModel.objects.filter(provider=key.provider, slug=selected_model_slug)
+                            .select_related("provider")
+                            .first()
+                        )
+                    allowed = list(key.allowed_models or [])
+                    if selected_upstream not in allowed:
+                        raise DjangoValidationError(
+                            "Выбранная модель не разрешена для этого Polza API-ключа"
+                        )
+                    pricing_snapshot = _pricing_snapshot_from_request(
+                        request,
+                        key=key,
+                        model=selected_model,
+                        upstream_model=selected_upstream,
                     )
-                pricing_snapshot = _pricing_snapshot_from_request(
-                    request,
-                    key=key,
-                    model=selected_model,
-                    upstream_model=selected_upstream,
-                )
-                _validate_polza_snapshot(pricing_snapshot)
+                    _validate_polza_snapshot(pricing_snapshot)
 
             purchase = record_purchase(
                 account=account,
@@ -805,16 +935,22 @@ class ProcurementLedgerView(AdminAPIView):
                 reference=request.data.get("reference") or "",
             )
             if pricing_snapshot:
-                if selected_model is not None:
-                    _activate_polza_text_price(
-                        model=selected_model,
+                if isinstance(pricing_snapshot.get("models"), list):
+                    _activate_polza_batch_prices(
+                        provider=key.provider,
+                        batch_snapshot=pricing_snapshot,
+                    )
+                else:
+                    if selected_model is not None:
+                        _activate_polza_text_price(
+                            model=selected_model,
+                            snapshot=pricing_snapshot,
+                        )
+                    _activate_polza_image_price(
+                        provider=key.provider,
+                        upstream_model=str(pricing_snapshot.get("upstream_model") or ""),
                         snapshot=pricing_snapshot,
                     )
-                _activate_polza_image_price(
-                    provider=key.provider,
-                    upstream_model=str(pricing_snapshot.get("upstream_model") or ""),
-                    snapshot=pricing_snapshot,
-                )
             audit(
                 request,
                 "procurement.purchase_recorded",
