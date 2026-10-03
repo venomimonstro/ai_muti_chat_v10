@@ -170,10 +170,16 @@ def _pricing_snapshot_from_request(request, *, key, model):
 
     def chosen(field):
         raw = request.data.get(field)
+        auto_value = auto.get(field)
         if raw not in (None, ""):
             value = _decimal(raw, field, minimum=ZERO)
+            if auto_value not in (None, ""):
+                try:
+                    if Decimal(str(value)) == Decimal(str(auto_value)):
+                        return str(value), "auto"
+                except (InvalidOperation, TypeError, ValueError):
+                    pass
             return str(value), "manual"
-        auto_value = auto.get(field)
         if auto_value not in (None, ""):
             return str(auto_value), "auto"
         return None, "missing"
