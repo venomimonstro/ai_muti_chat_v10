@@ -86,7 +86,7 @@ export default function MFAPage() {
     <main className={styles.page}>
       <div className={styles.shell}>
         <header className={styles.top}>
-          <div className={styles.brand}>AI Workspace · Security</div>
+          <div className={styles.brand}>AIlegend · Security</div>
           <Link href="/app/account">Назад в аккаунт</Link>
         </header>
 
