@@ -13,9 +13,9 @@ type Purchase={
 };
 type LedgerData={summary:{purchase_documents:number;cash_outlay_rub:string;fees_rub:string;realized_revenue_rub:string;realized_profit_rub:string;realized_margin_percent:string};keys:LedgerKey[];purchases:Purchase[]};
 type PolzaPrice={id:string;display_name:string;model_slug:string|null;configured:boolean;currency:string;input_per_million:string|null;output_per_million:string|null;image_input_per_million:string|null;image_output_per_million:string|null;image_per_image:string|null};
-type Draft={api_key_id:string;credit_native:string;credit_currency:string;payment_amount:string;payment_currency:string;payment_fx_rate_rub:string;fees_rub:string;market_fx_rate_rub:string;purchased_at:string;reference:string;model_slug:string;pricing_currency:string;input_per_million:string;output_per_million:string;image_input_per_million:string;image_output_per_million:string;image_per_image:string};
+type Draft={api_key_id:string;credit_native:string;credit_currency:string;payment_amount:string;payment_currency:string;payment_fx_rate_rub:string;fees_rub:string;market_fx_rate_rub:string;purchased_at:string;reference:string;polza_model_id:string;model_slug:string;pricing_currency:string;input_per_million:string;output_per_million:string;image_input_per_million:string;image_output_per_million:string;image_per_image:string};
 
-const emptyDraft=():Draft=>({api_key_id:"",credit_native:"",credit_currency:"USD",payment_amount:"",payment_currency:"RUB",payment_fx_rate_rub:"",fees_rub:"0",market_fx_rate_rub:"",purchased_at:new Date().toISOString().slice(0,10),reference:"",model_slug:"",pricing_currency:"RUB",input_per_million:"",output_per_million:"",image_input_per_million:"",image_output_per_million:"",image_per_image:""});
+const emptyDraft=():Draft=>({api_key_id:"",credit_native:"",credit_currency:"USD",payment_amount:"",payment_currency:"RUB",payment_fx_rate_rub:"",fees_rub:"0",market_fx_rate_rub:"",purchased_at:new Date().toISOString().slice(0,10),reference:"",polza_model_id:"",model_slug:"",pricing_currency:"RUB",input_per_million:"",output_per_million:"",image_input_per_million:"",image_output_per_million:"",image_per_image:""});
 const money=(v:string|number|null|undefined)=>`${Number(v??0).toFixed(2).replace(".",",")} ₽`;
 const num=(v:string|number|null|undefined,d=6)=>Number(v??0).toFixed(d).replace(".",",");
 const stateLabel={active:"Активен",cancelled:"Отменён",deleted:"Удалён"};
@@ -38,7 +38,7 @@ export default function ProcurementOrdersPage(){
    setPriceBusy(true);
    try{
      const result=await post<{provider:string;models:PolzaPrice[]}>({action:"polza_pricing",api_key_id:keyId});
-     setPolzaModels(result.models.filter(item=>item.configured));
+     setPolzaModels(result.models);
    }catch(e){
      setPolzaModels([]);
      setError(e instanceof Error?e.message:"Не удалось получить цены Polza");
@@ -46,12 +46,12 @@ export default function ProcurementOrdersPage(){
  };
  const selectKey=async(keyId:string)=>{
    const key=data?.keys.find(item=>item.id===keyId);
-   setDraft(v=>({...v,api_key_id:keyId,credit_currency:key?.provider==="polza"?"RUB":(key?.account_currency||v.credit_currency),model_slug:"",pricing_currency:"RUB",input_per_million:"",output_per_million:"",image_input_per_million:"",image_output_per_million:"",image_per_image:""}));
+   setDraft(v=>({...v,api_key_id:keyId,credit_currency:key?.provider==="polza"?"RUB":(key?.account_currency||v.credit_currency),polza_model_id:"",model_slug:"",pricing_currency:"RUB",input_per_million:"",output_per_million:"",image_input_per_million:"",image_output_per_million:"",image_per_image:""}));
    await loadPolzaPricing(keyId);
  };
- const selectPolzaModel=(slug:string)=>{
-   const model=polzaModels.find(item=>item.model_slug===slug);
-   setDraft(v=>({...v,model_slug:slug,pricing_currency:model?.currency||"RUB",input_per_million:model?.input_per_million||"",output_per_million:model?.output_per_million||"",image_input_per_million:model?.image_input_per_million||"",image_output_per_million:model?.image_output_per_million||"",image_per_image:model?.image_per_image||""}));
+ const selectPolzaModel=(modelId:string)=>{
+   const model=polzaModels.find(item=>item.id===modelId);
+   setDraft(v=>({...v,polza_model_id:modelId,model_slug:model?.model_slug||"",pricing_currency:model?.currency||"RUB",input_per_million:model?.input_per_million||"",output_per_million:model?.output_per_million||"",image_input_per_million:model?.image_input_per_million||"",image_output_per_million:model?.image_output_per_million||"",image_per_image:model?.image_per_image||""}));
  };
  useEffect(()=>{
    if(!data||editing||!draft.api_key_id||polzaModels.length>0)return;
@@ -66,7 +66,7 @@ export default function ProcurementOrdersPage(){
    reset();await load();
  }catch(e){setError(e instanceof Error?e.message:"Не удалось сохранить ордер")}finally{setBusy(false)}};
 
- const startEdit=(p:Purchase)=>{setEditing(p);const s=(p.pricing_snapshot||{}) as Record<string,unknown>;setDraft({api_key_id:p.api_key_id||"",credit_native:p.credit_native,credit_currency:p.credit_currency,payment_amount:p.payment_amount||"",payment_currency:p.payment_currency,payment_fx_rate_rub:p.payment_fx_rate_rub||"",fees_rub:p.fees_rub,market_fx_rate_rub:p.market_fx_rate_rub||"",purchased_at:p.purchased_at.slice(0,10),reference:p.reference||"",model_slug:String(s.model_slug||""),pricing_currency:String(s.currency||"RUB"),input_per_million:String(s.input_per_million||""),output_per_million:String(s.output_per_million||""),image_input_per_million:String(s.image_input_per_million||""),image_output_per_million:String(s.image_output_per_million||""),image_per_image:String(s.image_per_image||"")});window.scrollTo({top:0,behavior:"smooth"});};
+ const startEdit=(p:Purchase)=>{setEditing(p);const s=(p.pricing_snapshot||{}) as Record<string,unknown>;setDraft({api_key_id:p.api_key_id||"",credit_native:p.credit_native,credit_currency:p.credit_currency,payment_amount:p.payment_amount||"",payment_currency:p.payment_currency,payment_fx_rate_rub:p.payment_fx_rate_rub||"",fees_rub:p.fees_rub,market_fx_rate_rub:p.market_fx_rate_rub||"",purchased_at:p.purchased_at.slice(0,10),reference:p.reference||"",polza_model_id:String(s.upstream_model||""),model_slug:String(s.model_slug||""),pricing_currency:String(s.currency||"RUB"),input_per_million:String(s.input_per_million||""),output_per_million:String(s.output_per_million||""),image_input_per_million:String(s.image_input_per_million||""),image_output_per_million:String(s.image_output_per_million||""),image_per_image:String(s.image_per_image||"")});window.scrollTo({top:0,behavior:"smooth"});};
  const orderAction=async(p:Purchase,action:"cancel_purchase"|"delete_purchase")=>{const title=action==="cancel_purchase"?"Отменить":"Удалить";if(!window.confirm(`${title} закупочный ордер ${p.document_number}?`))return;setBusy(true);setError("");setNotice("");try{await post({action,purchase_id:p.id});setNotice(action==="cancel_purchase"?`Ордер ${p.document_number} отменён.`:`Ордер ${p.document_number} удалён из рабочего реестра.`);if(editing?.id===p.id)reset();await load()}catch(e){setError(e instanceof Error?e.message:"Операция не выполнена")}finally{setBusy(false)}};
 
  return <>
@@ -97,7 +97,7 @@ export default function ProcurementOrdersPage(){
      {data.keys.find(k=>k.id===draft.api_key_id)?.provider==="polza"&&<div style={{width:"100%",flexBasis:"100%"}}>
        <div className={styles.notice}><b>Polza.ai — цены по выбранному ключу</b><br/><small>Автозначения загружаются из каталога Polza. Любое поле ниже можно изменить вручную перед проведением ордера; ручное значение имеет приоритет и фиксируется в snapshot.</small></div>
        <div className={styles.filters}>
-         <label>Модель<select value={draft.model_slug} disabled={priceBusy||!!editing} onChange={e=>selectPolzaModel(e.target.value)}><option value="">{priceBusy?"Загружаем цены…":"Выберите модель"}</option>{polzaModels.map(m=><option key={m.id} value={m.model_slug||""}>{m.display_name} · {m.id}</option>)}</select></label>
+         <label>Модель<select value={draft.polza_model_id} disabled={priceBusy||!!editing} onChange={e=>selectPolzaModel(e.target.value)}><option value="">{priceBusy?"Загружаем цены…":"Выберите модель"}</option>{polzaModels.map(m=><option key={m.id} value={m.id}>{m.display_name} · {m.id}{m.configured?" · подключена":""}</option>)}</select></label>
          <label>Валюта прайса<select value={draft.pricing_currency} onChange={e=>setDraft(v=>({...v,pricing_currency:e.target.value}))}><option>RUB</option><option>USD</option><option>EUR</option></select></label>
          <label>Запрос / 1М<input inputMode="decimal" value={draft.input_per_million} onChange={e=>setDraft(v=>({...v,input_per_million:e.target.value}))} placeholder="авто или вручную"/></label>
          <label>Ответ / 1М<input inputMode="decimal" value={draft.output_per_million} onChange={e=>setDraft(v=>({...v,output_per_million:e.target.value}))} placeholder="авто или вручную"/></label>
