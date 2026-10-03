@@ -125,7 +125,7 @@ class SafeProviderKeyCollectionView(LegacyProviderKeyCollectionView):
         item.save()
         healthy = _check_new_key(provider, item)
 
-        if provider.slug in {"openrouter", "gigachat"} and not healthy:
+        if provider.slug in {"openrouter", "gigachat", "polza"} and not healthy:
             error_code = item.last_error_code or "key_validation_failed"
             item.delete()
             has_spare = provider.api_keys.filter(
@@ -152,6 +152,8 @@ class SafeProviderKeyCollectionView(LegacyProviderKeyCollectionView):
                     )
                 else:
                     detail = f"GigaChat не подтвердил авторизацию: {error_code}"
+            elif provider.slug == "polza":
+                detail = f"Polza.ai не подтвердила API-ключ: {error_code}"
             else:
                 detail = f"OpenRouter не подтвердил ключ авторизации: {error_code}"
             return Response({"detail": detail, "code": error_code}, status=400)
