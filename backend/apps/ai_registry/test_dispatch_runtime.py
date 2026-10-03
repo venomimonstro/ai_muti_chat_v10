@@ -149,16 +149,16 @@ def test_polza_selects_only_key_that_exposes_requested_model():
         "pza-claude",
         ProviderApiKey.HealthState.HEALTHY,
     )
-    first.available_models = ["anthropic/claude-sonnet-5.5"]
-    first.save(update_fields=["available_models"])
+    first.allowed_models = ["anthropic/claude-sonnet-5.5"]
+    first.save(update_fields=["allowed_models"])
     second = _key(
         provider,
         "openai-only",
         "pza-openai",
         ProviderApiKey.HealthState.HEALTHY,
     )
-    second.available_models = ["openai/gpt-6-luna"]
-    second.save(update_fields=["available_models"])
+    second.allowed_models = ["openai/gpt-6-luna"]
+    second.save(update_fields=["allowed_models"])
 
     secret, key_id = dispatch.select_runtime_api_key(
         provider,
