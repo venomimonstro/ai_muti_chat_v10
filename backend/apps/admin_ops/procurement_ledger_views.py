@@ -773,6 +773,45 @@ def _change_purchase_state(request, target_state):
     return purchase
 
 
+def _polza_vendor(upstream_model):
+    value = str(upstream_model or "").strip()
+    if "/" in value:
+        return value.split("/", 1)[0].lower()
+    return "other"
+
+
+def _polza_budget_status(key, account):
+    plan = list(key.budget_plan or [])
+    if not plan:
+        return []
+    model_map = {
+        item.slug: item.upstream_model
+        for item in AIModel.objects.filter(provider=key.provider)
+    }
+    spent_by_vendor = {}
+    spent_by_model = {}
+    if account is not None:
+        for spend in account.spends.all().only("model_slug", "nominal_cost_rub"):
+            upstream = model_map.get(spend.model_slug, "")
+            vendor = _polza_vendor(upstream)
+            spent_by_vendor[vendor] = spent_by_vendor.get(vendor, ZERO) + spend.nominal_cost_rub
+            if upstream:
+                spent_by_model[upstream] = spent_by_model.get(upstream, ZERO) + spend.nominal_cost_rub
+    result = []
+    for item in plan:
+        scope_type = str(item.get("scope_type") or "vendor")
+        scope_key = str(item.get("scope_key") or "")
+        allocated = _decimal_or_none(item.get("allocated_rub")) or ZERO
+        spent = spent_by_model.get(scope_key, ZERO) if scope_type == "model" else spent_by_vendor.get(scope_key, ZERO)
+        result.append({
+            **item,
+            "allocated_rub": str(allocated),
+            "spent_rub": str(spent.quantize(MONEY)),
+            "remaining_rub": str(max(ZERO, allocated - spent).quantize(MONEY)),
+        })
+    return result
+
+
 class ProcurementLedgerView(AdminAPIView):
     def get(self, request):
         accounts = list(
@@ -800,6 +839,10 @@ class ProcurementLedgerView(AdminAPIView):
                 "ledger_spent_native": str(account.spent_native) if account else None,
                 "ledger_reserved_native": str(account.reserved_native) if account else None,
                 "is_default": bool(account.is_default) if account else False,
+                "model_scope_source": key.model_scope_source,
+                "allowed_models": list(key.allowed_models or []),
+                "budget_plan": list(key.budget_plan or []),
+                "budget_status": _polza_budget_status(key, account) if key.provider.slug == "polza" else [],
             })
 
         visible_purchases = list(
@@ -935,6 +978,34 @@ class ProcurementLedgerView(AdminAPIView):
                         upstream_model=selected_upstream,
                     )
                     _validate_polza_snapshot(pricing_snapshot)
+
+            if key.provider.slug == "polza" and isinstance(request.data.get("budget_plan"), list):
+                plan = []
+                total_allocated = ZERO
+                for raw in request.data.get("budget_plan")[:100]:
+                    if not isinstance(raw, dict):
+                        continue
+                    scope_type = str(raw.get("scope_type") or "vendor").strip()
+                    if scope_type not in {"vendor", "model"}:
+                        raise DjangoValidationError("Некорректный тип бюджета Polza")
+                    scope_key = str(raw.get("scope_key") or "").strip()[:160]
+                    if not scope_key:
+                        continue
+                    allocated = _decimal(raw.get("allocated_rub"), "Бюджет Polza", minimum=ZERO) or ZERO
+                    if allocated <= ZERO:
+                        continue
+                    total_allocated += allocated
+                    plan.append({
+                        "scope_type": scope_type,
+                        "scope_key": scope_key,
+                        "label": str(raw.get("label") or scope_key)[:120],
+                        "allocated_rub": str(allocated),
+                    })
+                credit_for_check = _decimal(request.data.get("credit_native"), "Номинал API-баланса", required=True, minimum=Decimal("0.000001"))
+                if credit_for_check is not None and credit_currency == "RUB" and total_allocated > credit_for_check:
+                    raise DjangoValidationError("Сумма внутренних бюджетов Polza превышает номинал ключа")
+                key.budget_plan = plan
+                key.save(update_fields=["budget_plan"])
 
             purchase = record_purchase(
                 account=account,
