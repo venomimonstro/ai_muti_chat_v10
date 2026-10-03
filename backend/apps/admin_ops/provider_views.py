@@ -445,18 +445,30 @@ def _extract_polza_key_model_scope(payload):
 
 
 def _sync_polza_key_scope(provider: Provider, key: ProviderApiKey):
+    """Synchronize what Polza publicly exposes for a key.
+
+    Polza's documented /models endpoint is the full catalog, not a key-specific
+    model allowlist. Never treat that catalog as the models selected in the Polza
+    dashboard. If a future /key response exposes an explicit model restriction,
+    use it; otherwise keep the previous explicit scope (if any) and mark the source
+    as not exposed by the public API.
+    """
     secret = key.get_secret()
     base_url = (provider.api_base_url or "https://polza.ai/api/v1").rstrip("/")
     auth_headers = _headers(provider, secret)
 
-    key_response = httpx.get(
-        f"{base_url}/key",
-        headers=auth_headers,
-        timeout=10,
-        follow_redirects=True,
-    )
-    key_response.raise_for_status()
-    key_payload = key_response.json() if key_response.content else {}
+    key_payload = {}
+    try:
+        key_response = httpx.get(
+            f"{base_url}/key",
+            headers=auth_headers,
+            timeout=10,
+            follow_redirects=True,
+        )
+        key_response.raise_for_status()
+        key_payload = key_response.json() if key_response.content else {}
+    except Exception:
+        key_payload = {}
 
     auth_response = httpx.get(
         f"{base_url}/models",
@@ -466,49 +478,31 @@ def _sync_polza_key_scope(provider: Provider, key: ProviderApiKey):
     )
     auth_response.raise_for_status()
     auth_payload = auth_response.json()
-    auth_models = sorted({
+    catalog_models = sorted({
         str(item.get("id") or item.get("name") or "").strip()
         for item in ((auth_payload or {}).get("data") or [])
         if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
     })
 
     restricted = _extract_polza_key_model_scope(key_payload)
-    source = ""
     if restricted:
-        allowed = [model_id for model_id in restricted if not auth_models or model_id in auth_models]
-        source = "polza_key"
+        key.allowed_models = sorted(dict.fromkeys(restricted))
+        key.model_scope_source = "polza_key"
+    elif key.allowed_models and key.model_scope_source in {"legacy_preserved", "manual"}:
+        # Preserve an older explicit scope, but never widen it from /models.
+        key.allowed_models = [
+            model_id for model_id in key.allowed_models
+            if model_id in set(catalog_models)
+        ]
+        key.model_scope_source = key.model_scope_source
     else:
-        public_models = []
-        try:
-            public_response = httpx.get(
-                f"{base_url}/models",
-                headers={"accept-language": "ru"},
-                timeout=15,
-                follow_redirects=True,
-            )
-            public_response.raise_for_status()
-            public_payload = public_response.json()
-            public_models = sorted({
-                str(item.get("id") or item.get("name") or "").strip()
-                for item in ((public_payload or {}).get("data") or [])
-                if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
-            })
-        except Exception:
-            public_models = []
-        if public_models and set(auth_models) < set(public_models):
-            allowed = auth_models
-            source = "authorized_models_subset"
-        elif key.allowed_models:
-            allowed = [model_id for model_id in key.allowed_models if not auth_models or model_id in auth_models]
-            source = key.model_scope_source or "legacy_preserved"
-        else:
-            allowed = []
-            source = "polza_scope_not_exposed"
+        key.allowed_models = []
+        key.model_scope_source = "polza_scope_not_exposed"
 
-    key.available_models = auth_models
-    key.allowed_models = sorted(dict.fromkeys(allowed))
-    key.model_scope_source = source
+    # available_models is diagnostic catalog visibility only.
+    key.available_models = catalog_models
     return key_payload
+
 
 
 def _ensure_polza_registry_models(provider: Provider, model_ids):
@@ -593,7 +587,8 @@ def _check_key(provider: Provider, key: ProviderApiKey):
                 raise ValueError("OpenRouter /key returned invalid payload")
         if provider.slug == "polza":
             _sync_polza_key_scope(provider, key)
-            _ensure_polza_registry_models(provider, key.allowed_models)
+            if key.model_scope_source == "polza_key":
+                _ensure_polza_registry_models(provider, key.allowed_models)
         key.health_state = ProviderApiKey.HealthState.HEALTHY
         key.last_error_code = ""
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
