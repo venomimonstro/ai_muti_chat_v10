@@ -3,11 +3,11 @@ import Link from "next/link";
 import styles from "./landing.module.css";
 
 export const metadata: Metadata = {
-  title: "AI Workspace — единая AI-среда для работы, агентов и разработки",
-  description: "Чат, web-поиск, файлы, проекты, AI-агенты, Dev Studio, изображения и API в одном рабочем пространстве с понятным рублёвым балансом.",
+  title: "AIlegend — AI-чат, агенты, разработка и API в одном сервисе",
+  description: "AIlegend объединяет AI-чат, выбор уровня или конкретной нейросети, web-поиск, файлы, проекты, агентов, Dev Studio, изображения и API с единым рублёвым балансом.",
   openGraph: {
-    title: "AI Workspace — одна AI-среда вместо набора разрозненных сервисов",
-    description: "Работайте с AI, запускайте агентов, ведите проекты и разработку в одном пространстве.",
+    title: "AIlegend — одна AI-платформа вместо набора разрозненных сервисов",
+    description: "Работайте с нейросетями, файлами и проектами, запускайте агентов и разработку в одном сервисе.",
     type: "website",
     locale: "ru_RU",
   },
@@ -60,14 +60,14 @@ export default function LandingPage() {
     <script type="application/ld+json" dangerouslySetInnerHTML={{__html:JSON.stringify(faqSchema)}} />
 
     <div className={styles.announcement}>
-      <span>AI Workspace</span>
-      <p>Рабочая AI-система без обязательной подписки</p>
+      <span>AIlegend</span>
+      <p>AI-платформа для работы без обязательной подписки</p>
       <Link href="/pricing">Посмотреть стоимость →</Link>
     </div>
 
     <div className={styles.headerWrap}>
       <header className={styles.header}>
-        <Link className={styles.brand} href="/" aria-label="AI Workspace — главная"><span>✦</span><b>AI Workspace</b></Link>
+        <Link className={styles.brand} href="/" aria-label="AIlegend — главная"><span>✦</span><b>AIlegend</b></Link>
         <nav className={styles.nav} aria-label="Основная навигация">
           <a href="#why">Почему</a>
           <a href="#levels">Уровни</a>
@@ -83,21 +83,21 @@ export default function LandingPage() {
       <div className={styles.heroGlowOne} aria-hidden="true" />
       <div className={styles.heroGlowTwo} aria-hidden="true" />
       <div className={styles.heroCopy}>
-        <div className={styles.heroBadge}><span>●</span> AI ДЛЯ РЕАЛЬНОЙ РАБОТЫ</div>
-        <h1>Одна AI-среда.<br/><em>От первого вопроса</em><br/>до выполненной работы.</h1>
-        <p>Чат, актуальный web-поиск, файлы, проекты, <strong>AI-агенты, Dev Studio, изображения и API</strong> — в одном рабочем пространстве с понятным рублёвым балансом.</p>
+        <div className={styles.heroBadge}><span>●</span> НЕ ПРОСТО АГРЕГАТОР НЕЙРОСЕТЕЙ</div>
+        <h1>Один кабинет для AI.<br/><em>От простого вопроса</em><br/>до работающего процесса.</h1>
+        <p><strong>Выберите уровень сложности или конкретную нейросеть прямо в чате.</strong> Работайте с файлами и проектами, запускайте AI-агентов, Dev Studio, изображения и API — с единым рублёвым балансом.</p>
         <div className={styles.heroActions}>
           <Link className={styles.heroPrimary} href="/register">Начать работу бесплатно <span>↗</span></Link>
           <a className={styles.heroSecondary} href="#product">Посмотреть продукт</a>
         </div>
-        <div className={styles.heroTrust}><span>Без обязательной подписки</span><span>Расходы в рублях, а не токенах</span><span>Один аккаунт: чат, агенты, dev и API</span></div>
+        <div className={styles.heroTrust}><span>Без обязательной подписки</span><span>Уровень или конкретная модель в один клик</span><span>Расходы в рублях, а не токенах</span></div>
       </div>
 
-      <div className={styles.heroProduct} aria-label="Пример рабочего пространства AI Workspace">
+      <div className={styles.heroProduct} aria-label="Пример рабочего пространства AIlegend">
         <div className={styles.browserTop}><div><i/><i/><i/></div><span>ailegend.ru</span><b>•••</b></div>
         <div className={styles.productBody}>
           <aside className={styles.productSidebar}>
-            <div className={styles.miniBrand}><span>✦</span><b>Workspace</b></div>
+            <div className={styles.miniBrand}><span>✦</span><b>AIlegend</b></div>
             <button type="button">＋ Новый чат</button>
             <small>РАБОЧЕЕ ПРОСТРАНСТВО</small>
             <p className={styles.activeRow}>✦ AI Chat</p><p>▣ Проекты</p><p>◇ Agent Studio</p><p>⌘ Dev Studio</p>
@@ -109,14 +109,14 @@ export default function LandingPage() {
             <div className={styles.chatMessages}>
               <div className={styles.userBubble}>Разбери мой план запуска. Найди главные риски и предложи, что исправить до старта.</div>
               <div className={styles.aiAnswer}>
-                <div className={styles.aiHead}><span>✦</span><div><b>AI Workspace</b><small>System Pro · анализ завершён</small></div></div>
+                <div className={styles.aiHead}><span>✦</span><div><b>AIlegend</b><small>System Pro · анализ завершён</small></div></div>
                 <p>До запуска я бы закрыл три риска:</p>
                 <div className={styles.risk}><b>01</b><span><strong>Слишком широкий MVP</strong>Сократите первый релиз до одного главного сценария и измеримой пользы.</span></div>
                 <div className={styles.risk}><b>02</b><span><strong>Нет критерия спроса</strong>Зафиксируйте метрику, после которой продукт можно масштабировать.</span></div>
                 <div className={styles.risk}><b>03</b><span><strong>Экономика проверяется поздно</strong>Посчитайте стоимость активного пользователя до масштабирования трафика.</span></div>
               </div>
             </div>
-            <div className={styles.composerMock}><span>＋</span><p>Продолжить диалог…</p><button type="button">System Pro⌄</button><b>↑</b></div>
+            <div className={styles.composerMock}><span>＋</span><p>Напишите сообщение…</p><button type="button">Pro · выбрать⌄</button><b>↑</b></div>
           </div>
         </div>
         <div className={styles.costChip}><small>ПОСЛЕ ЗАПРОСА</small><b>Списано по факту</b><span>остаток резерва возвращён</span></div>
@@ -124,25 +124,25 @@ export default function LandingPage() {
     </section>
 
     <section className={styles.signalBar} aria-label="Ключевые свойства продукта">
-      <div><b>01</b><span><strong>Одна среда</strong>от чата до Dev Studio</span></div>
+      <div><b>01</b><span><strong>Один AI-чат</strong>с выбором уровня или модели</span></div>
       <div><b>02</b><span><strong>AI-агенты</strong>для повторяемой работы</span></div>
       <div><b>03</b><span><strong>₽ баланс</strong>без обязательной подписки</span></div>
-      <div><b>04</b><span><strong>Контроль</strong>расходов, запусков и API</span></div>
+      <div><b>04</b><span><strong>Единый кабинет</strong>чат, проекты, dev и API</span></div>
     </section>
 
     <section className={styles.whySection} id="why">
-      <div className={styles.sectionLabel}>ЗАЧЕМ ЕЩЁ ОДНА AI-ПЛАТФОРМА</div>
-      <div className={styles.whyHeader}><h2>AI должен доводить задачу до результата.<br/>Не создавать ещё один набор вкладок.</h2><p>Начните с чата. Добавьте файлы и проект. Повторяемую работу перенесите в Agent Studio, сложную разработку — в Dev Studio, а нужный сценарий встроите через API.</p></div>
+      <div className={styles.sectionLabel}>ПОЧЕМУ AILEGEND</div>
+      <div className={styles.whyHeader}><h2>Не выбирайте между десятью сервисами.<br/>Выбирайте, что нужно сделать.</h2><p>В AIlegend можно начать с обычного чата, выбрать уровень или конкретную нейросеть, добавить файлы и проект, а повторяемую работу перенести в Agent Studio или Dev Studio.</p></div>
       <div className={styles.comparison}>
         <article className={styles.oldWay}><span>ОБЫЧНО</span><h3>Работа разбросана по сервисам</h3><ul><li>отдельный чат и отдельный поиск</li><li>файлы и история живут в разных местах</li><li>для автоматизации нужен ещё один сервис</li><li>для разработки — ещё один AI-инструмент</li></ul></article>
         <div className={styles.switchArrow}>→</div>
-        <article className={styles.newWay}><span>AI WORKSPACE</span><h3>Одна среда вокруг вашей работы</h3><ul><li>чат и web-поиск в одном контексте</li><li>проекты, документы и история рядом</li><li>Agent Studio для повторяемых процессов</li><li>Dev Studio и API для следующего уровня</li></ul></article>
+        <article className={styles.newWay}><span>AILEGEND</span><h3>Одна среда вокруг вашей работы</h3><ul><li>чат и web-поиск в одном контексте</li><li>проекты, документы и история рядом</li><li>Agent Studio для повторяемых процессов</li><li>Dev Studio и API для следующего уровня</li></ul></article>
       </div>
     </section>
 
     <section className={styles.levelSection} id="levels">
       <div className={styles.sectionLabel}>SYSTEM LEVELS</div>
-      <div className={styles.sectionHeader}><h2>Три режима вместо каталога моделей</h2><p>Выбирайте по сложности задачи, а не по техническим характеристикам провайдера.</p></div>
+      <div className={styles.sectionHeader}><h2>Выберите сложность — или конкретную нейросеть</h2><p>Автоматический режим подбирает подходящий уровень сам. Если хотите полный контроль, конкретная доступная модель выбирается прямо в форме отправки сообщения.</p></div>
       <div className={styles.levelGrid}>{levels.map((level,index)=><article key={level.name} className={`${styles.levelCard} ${index===1?styles.levelPro:""}`}>
         <div className={styles.levelMeta}><span>{level.badge}</span><b>0{index+1}</b></div>
         <h3>{level.name}</h3><h4>{level.label}</h4><p>{level.text}</p>
@@ -153,7 +153,7 @@ export default function LandingPage() {
 
     <section className={styles.productSection} id="product">
       <div className={styles.sectionLabel}>ВОЗМОЖНОСТИ</div>
-      <div className={styles.sectionHeader}><h2>Не просто чат.<br/>AI-операционная система для работы.</h2><p>Один продукт закрывает путь от вопроса и файла до автоматизированного процесса, разработки и API-интеграции.</p></div>
+      <div className={styles.sectionHeader}><h2>Чат — только точка входа.<br/>Дальше работа становится системой.</h2><p>Сохраняйте контекст в проектах, подключайте поиск и файлы, автоматизируйте повторяемые процессы агентами и переходите к разработке внутри Dev Studio.</p></div>
       <div className={styles.bento}>{capabilityCards.map((item,index)=><article key={item.title} className={`${styles.bentoCard} ${styles[item.tone]} ${index===2?styles.bentoWide:""}`}>
         <span>{item.tag}</span><h3>{item.title}</h3><p>{item.text}</p><i>↗</i>
       </article>)}</div>
@@ -174,8 +174,8 @@ export default function LandingPage() {
     </section>
 
     <section className={styles.workflowSection}>
-      <div className={styles.workflowCopy}><div className={styles.sectionLabel}>КАК ЭТО РАБОТАЕТ</div><h2>Сначала задача. Технология — внутри.</h2><p>Не нужно настраивать провайдеров перед первым запросом или изучать десятки названий моделей.</p><Link href="/getting-started">Посмотреть начало работы →</Link></div>
-      <div className={styles.workflowSteps}><article><b>01</b><div><h3>Опишите задачу</h3><p>Напишите запрос, прикрепите файл или продолжите работу внутри проекта.</p></div></article><article><b>02</b><div><h3>Выберите уровень</h3><p>Lite для простого, Pro для большинства задач, Max для самого сложного.</p></div></article><article><b>03</b><div><h3>Система выполняет работу</h3><p>Маршрутизация, поиск, контекст и расчёт стоимости происходят внутри.</p></div></article><article><b>04</b><div><h3>Масштабируйте удачный сценарий</h3><p>Оставьте его в проекте, перенесите в Agent Studio, Dev Studio или подключите через API.</p></div></article></div>
+      <div className={styles.workflowCopy}><div className={styles.sectionLabel}>КАК ЭТО РАБОТАЕТ</div><h2>Понятно с первого сообщения.</h2><p>Напишите задачу, выберите Авто / Простой / Средний / Сложный или конкретную нейросеть прямо рядом с кнопкой отправки. Остальная маршрутизация и контроль выполняются внутри.</p><Link href="/getting-started">Посмотреть начало работы →</Link></div>
+      <div className={styles.workflowSteps}><article><b>01</b><div><h3>Опишите задачу</h3><p>Напишите запрос, прикрепите файл или продолжите работу внутри проекта.</p></div></article><article><b>02</b><div><h3>Выберите способ ответа</h3><p>Оставьте Авто, задайте уровень сложности или выберите конкретную нейросеть.</p></div></article><article><b>03</b><div><h3>Система выполняет работу</h3><p>Маршрутизация, поиск, контекст и расчёт стоимости происходят внутри.</p></div></article><article><b>04</b><div><h3>Масштабируйте удачный сценарий</h3><p>Оставьте его в проекте, перенесите в Agent Studio, Dev Studio или подключите через API.</p></div></article></div>
     </section>
 
     <section className={styles.useSection}>
@@ -192,8 +192,8 @@ export default function LandingPage() {
     <section className={styles.trustSection}>
       <div className={styles.sectionLabel}>ДОВЕРИЕ К ОПЕРАЦИИ</div>
       <div className={styles.trustHead}>
-        <h2>AI может ошибаться.<br/>Финансовый контур — не должен.</h2>
-        <p>Платформа отделяет техническую доступность AI от готовности к клиентскому трафику, контролирует резервы и не считает незавершённую операцию успешной.</p>
+        <h2>Главный продукт должен отвечать.<br/>Не показывать «модель доступна» на бумаге.</h2>
+        <p>AIlegend проверяет рабочий маршрут перед клиентским использованием, умеет переходить на резервный канал и отделяет состояние ответа от внутреннего финансового учёта.</p>
       </div>
       <div className={styles.trustGrid}>
         <article><span>01</span><h3>До запуска</h3><p>Проверяется доступный маршрут, лимиты и безопасный максимум стоимости.</p></article>
@@ -217,16 +217,16 @@ export default function LandingPage() {
 
     <section className={styles.finalCta}>
       <div className={styles.finalOrb} aria-hidden="true" />
-      <span>НАЧНИТЕ С ОДНОЙ РЕАЛЬНОЙ ЗАДАЧИ</span><h2>Не меняйте весь процесс.<br/>Сначала проверьте,<br/>как AI работает на вас.</h2><p>Создайте аккаунт, отправьте первый запрос и оцените единое пространство для чатов, проектов, агентов и разработки.</p>
-      <div><Link className={styles.finalPrimary} href="/register">Создать аккаунт <b>↗</b></Link><Link className={styles.finalSecondary} href="/login">Уже есть аккаунт</Link></div><small>AI Workspace · продукт BBTEC</small>
+      <span>НАЧНИТЕ С ОДНОЙ РЕАЛЬНОЙ ЗАДАЧИ</span><h2>Откройте чат.<br/>Выберите режим.<br/>Получите результат.</h2><p>А когда одного чата станет мало — проекты, агенты, Dev Studio, изображения и API уже находятся в том же аккаунте.</p>
+      <div><Link className={styles.finalPrimary} href="/register">Создать аккаунт <b>↗</b></Link><Link className={styles.finalSecondary} href="/login">Уже есть аккаунт</Link></div><small>AIlegend · продукт BBTEC</small>
     </section>
 
     <footer className={styles.footer}>
-      <div className={styles.footerBrand}><Link className={styles.brand} href="/"><span>✦</span><b>AI Workspace</b></Link><p>AI для работы, документов, поиска, кода и проектов — в одном пространстве.</p><small>Продукт BBTEC</small></div>
+      <div className={styles.footerBrand}><Link className={styles.brand} href="/"><span>✦</span><b>AIlegend</b></Link><p>AI-чат, проекты, агенты, разработка и API — в одном сервисе.</p><small>Продукт BBTEC</small></div>
       <div><b>Продукт</b><a href="#levels">System Lite / Pro / Max</a><Link href="/pricing">Стоимость</Link><Link href="/getting-started">Начало работы</Link><Link href="/status">Статус</Link></div>
       <div><b>Помощь</b><Link href="/faq">FAQ</Link><Link href="/app/help">Поддержка</Link><Link href="/forgot-password">Восстановить доступ</Link></div>
       <div><b>Документы</b><Link href="/legal/offer">Оферта</Link><Link href="/legal/privacy">Конфиденциальность</Link><Link href="/legal/refunds">Возвраты</Link><Link href="/legal/acceptable-use">Правила использования</Link></div>
-      <div className={styles.footerBottom}><span>© {new Date().getFullYear()} AI Workspace · BBTEC</span><span>Системные уровни скрывают внутреннюю техническую маршрутизацию и могут использовать разные подключённые AI-модели.</span></div>
+      <div className={styles.footerBottom}><span>© {new Date().getFullYear()} AIlegend · BBTEC</span><span>Системные уровни скрывают внутреннюю техническую маршрутизацию и могут использовать разные подключённые AI-модели.</span></div>
     </footer>
   </main>;
 }
