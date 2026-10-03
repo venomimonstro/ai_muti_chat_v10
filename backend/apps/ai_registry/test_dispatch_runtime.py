@@ -136,3 +136,46 @@ def test_unbound_chat_transport_can_use_healthy_spare_when_funding_key_is_not_re
     )
     assert probe_secret == "funding-secret"
     assert probe_key_id == funding_key.id
+
+
+@pytest.mark.django_db
+def test_polza_selects_only_key_that_exposes_requested_model():
+    provider = _provider("polza")
+    provider.api_base_url = "https://polza.ai/api/v1"
+    provider.save(update_fields=["api_base_url"])
+    first = _key(
+        provider,
+        "claude-only",
+        "pza-claude",
+        ProviderApiKey.HealthState.HEALTHY,
+    )
+    first.available_models = ["anthropic/claude-sonnet-5.5"]
+    first.save(update_fields=["available_models"])
+    second = _key(
+        provider,
+        "openai-only",
+        "pza-openai",
+        ProviderApiKey.HealthState.HEALTHY,
+    )
+    second.available_models = ["openai/gpt-6-luna"]
+    second.save(update_fields=["available_models"])
+
+    secret, key_id = dispatch.select_runtime_api_key(
+        provider,
+        allow_probe=False,
+        touch=False,
+        require_funding_balance=False,
+        model_upstream="openai/gpt-6-luna",
+    )
+    assert secret == "pza-openai"
+    assert key_id == second.id
+
+    secret, key_id = dispatch.select_runtime_api_key(
+        provider,
+        allow_probe=False,
+        touch=False,
+        require_funding_balance=False,
+        model_upstream="anthropic/claude-sonnet-5.5",
+    )
+    assert secret == "pza-claude"
+    assert key_id == first.id
