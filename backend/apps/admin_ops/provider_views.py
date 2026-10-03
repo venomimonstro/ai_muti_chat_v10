@@ -417,6 +417,157 @@ def _provider_error_code(response: httpx.Response, prefix="http") -> str:
     return f"{prefix}_{response.status_code}"[:80]
 
 
+def _extract_polza_key_model_scope(payload):
+    if not isinstance(payload, dict):
+        return []
+    candidates = []
+    direct_keys = (
+        "models", "model_ids", "allowed_models", "allowed_model_ids",
+        "enabled_models", "enabled_model_ids",
+    )
+    for name in direct_keys:
+        value = payload.get(name)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    model_id = str(item.get("id") or item.get("model") or item.get("model_id") or "").strip()
+                else:
+                    model_id = str(item or "").strip()
+                if model_id:
+                    candidates.append(model_id)
+    for container_name in ("restrictions", "permissions", "settings", "limits", "access"):
+        nested = payload.get(container_name)
+        if isinstance(nested, dict):
+            candidates.extend(_extract_polza_key_model_scope(nested))
+    return list(dict.fromkeys(candidates))
+
+
+def _sync_polza_key_scope(provider: Provider, key: ProviderApiKey):
+    secret = key.get_secret()
+    base_url = (provider.api_base_url or "https://polza.ai/api/v1").rstrip("/")
+    auth_headers = _headers(provider, secret)
+
+    key_response = httpx.get(
+        f"{base_url}/key",
+        headers=auth_headers,
+        timeout=10,
+        follow_redirects=True,
+    )
+    key_response.raise_for_status()
+    key_payload = key_response.json() if key_response.content else {}
+
+    auth_response = httpx.get(
+        f"{base_url}/models",
+        headers=auth_headers,
+        timeout=15,
+        follow_redirects=True,
+    )
+    auth_response.raise_for_status()
+    auth_payload = auth_response.json()
+    auth_models = sorted({
+        str(item.get("id") or item.get("name") or "").strip()
+        for item in ((auth_payload or {}).get("data") or [])
+        if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
+    })
+
+    restricted = _extract_polza_key_model_scope(key_payload)
+    source = ""
+    if restricted:
+        allowed = [model_id for model_id in restricted if not auth_models or model_id in auth_models]
+        source = "polza_key"
+    else:
+        public_models = []
+        try:
+            public_response = httpx.get(
+                f"{base_url}/models",
+                headers={"accept-language": "ru"},
+                timeout=15,
+                follow_redirects=True,
+            )
+            public_response.raise_for_status()
+            public_payload = public_response.json()
+            public_models = sorted({
+                str(item.get("id") or item.get("name") or "").strip()
+                for item in ((public_payload or {}).get("data") or [])
+                if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
+            })
+        except Exception:
+            public_models = []
+        if public_models and set(auth_models) < set(public_models):
+            allowed = auth_models
+            source = "authorized_models_subset"
+        elif key.allowed_models:
+            allowed = [model_id for model_id in key.allowed_models if not auth_models or model_id in auth_models]
+            source = key.model_scope_source or "legacy_preserved"
+        else:
+            allowed = []
+            source = "polza_scope_not_exposed"
+
+    key.available_models = auth_models
+    key.allowed_models = sorted(dict.fromkeys(allowed))
+    key.model_scope_source = source
+    return key_payload
+
+
+def _ensure_polza_registry_models(provider: Provider, model_ids):
+    if not model_ids:
+        return
+    catalog = {}
+    try:
+        response = httpx.get(
+            f"{provider.api_base_url.rstrip('/')}/models",
+            headers={"accept-language": "ru"},
+            timeout=15,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        catalog = {
+            str(item.get("id") or item.get("name") or "").strip(): item
+            for item in ((payload or {}).get("data") or [])
+            if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
+        }
+    except Exception:
+        catalog = {}
+
+    for upstream in model_ids:
+        item = catalog.get(upstream) or {}
+        model = AIModel.objects.filter(provider=provider, upstream_model=upstream).first()
+        if model is None:
+            base_slug = slugify(f"polza-{upstream}")[:100] or "polza-model"
+            slug = base_slug
+            suffix = 2
+            while AIModel.objects.filter(slug=slug).exists():
+                slug = f"{base_slug[:94]}-{suffix}"
+                suffix += 1
+            meta = _model_metadata(item, upstream)
+            model = AIModel.objects.create(
+                provider=provider,
+                slug=slug,
+                display_name=str(item.get("name") or item.get("display_name") or upstream)[:120],
+                upstream_model=upstream,
+                enabled=False,
+                capabilities=meta.get("capabilities") or ["text", "streaming"],
+                routing_tags=["polza", "key-synced"],
+                context_window=int(meta.get("context_window") or 8192),
+                max_output_tokens=int(meta.get("max_output_tokens") or 2048),
+            )
+        if model.current_version_id is None:
+            version = ModelVersion.objects.create(
+                model=model,
+                version="polza-key-sync",
+                exact_api_id=upstream,
+                capabilities=model.capabilities,
+                routing_tags=model.routing_tags,
+                context_window=model.context_window,
+                max_output_tokens=model.max_output_tokens,
+                stage=ModelVersion.Stage.ACTIVE,
+                activated_at=timezone.now(),
+            )
+            AIModel.objects.filter(pk=model.pk).update(current_version=version)
+            model.current_version = version
+
+
 def _check_key(provider: Provider, key: ProviderApiKey):
     started = time.monotonic()
     now = timezone.now()
@@ -439,13 +590,8 @@ def _check_key(provider: Provider, key: ProviderApiKey):
             if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
                 raise ValueError("OpenRouter /key returned invalid payload")
         if provider.slug == "polza":
-            payload = response.json()
-            raw = payload.get("data", []) if isinstance(payload, dict) else []
-            key.available_models = sorted({
-                str(item.get("id") or item.get("name") or "").strip()
-                for item in raw
-                if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
-            })
+            _sync_polza_key_scope(provider, key)
+            _ensure_polza_registry_models(provider, key.allowed_models)
         key.health_state = ProviderApiKey.HealthState.HEALTHY
         key.last_error_code = ""
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
@@ -464,7 +610,7 @@ def _check_key(provider: Provider, key: ProviderApiKey):
     key.last_checked_at = now
     update_fields = ["health_state", "last_error_code", "last_latency_ms", "last_checked_at"]
     if provider.slug == "polza":
-        update_fields.append("available_models")
+        update_fields.extend(["available_models", "allowed_models", "model_scope_source"])
     key.save(update_fields=update_fields)
     return key.health_state == ProviderApiKey.HealthState.HEALTHY
 
