@@ -4,7 +4,11 @@ import {useEffect,useMemo,useState} from "react";
 import {api} from "../../../../lib/api";
 import styles from "../../admin.module.css";
 
-type LedgerKey={id:string;provider:string;provider_name:string;label:string;masked:string;account_id:string|null;account_currency:string|null;is_default:boolean};
+type BudgetItem={scope_type:"vendor"|"model";scope_key:string;label:string;allocated_rub:string;spent_rub?:string;remaining_rub?:string};
+type LedgerKey={
+ id:string;provider:string;provider_name:string;label:string;masked:string;account_id:string|null;account_currency:string|null;is_default:boolean;
+ model_scope_source?:string;allowed_models?:string[];budget_plan?:BudgetItem[];budget_status?:BudgetItem[];
+};
 type Purchase={
  id:string;document_number:string;state:"active"|"cancelled"|"deleted";provider_name:string;account_id:string;api_key_id:string|null;api_key_label:string;api_key_masked:string;
  credit_native:string;credit_currency:string;consumed_native:string;remaining_native:string;payment_amount:string|null;payment_currency:string;payment_fx_rate_rub:string|null;market_fx_rate_rub:string|null;
@@ -18,7 +22,7 @@ type PolzaPrice={
  input_per_million:string|null;output_per_million:string|null;image_input_per_million:string|null;image_output_per_million:string|null;image_per_image:string|null;
  pricing_available?:boolean;pricing_source?:string;pricing_tiers?:PriceTier[];model_type?:string;
 };
-type PolzaRow=PolzaPrice&{selected:boolean;markup_percent:string};
+type PolzaRow=PolzaPrice&{markup_percent:string;budget_rub:string};
 type Draft={
  api_key_id:string;credit_native:string;credit_currency:string;payment_amount:string;payment_currency:string;payment_fx_rate_rub:string;
  fees_rub:string;market_fx_rate_rub:string;purchased_at:string;reference:string;provider_markup_percent:string;
@@ -32,11 +36,18 @@ const money=(v:string|number|null|undefined)=>`${Number(v??0).toFixed(2).replace
 const num=(v:string|number|null|undefined,d=6)=>Number(v??0).toFixed(d).replace(".",",");
 const stateLabel={active:"Активен",cancelled:"Отменён",deleted:"Удалён"};
 
+function vendorOf(modelId:string){return (modelId.split("/",1)[0]||"other").toLowerCase()}
+function vendorLabel(vendor:string){
+ const labels:Record<string,string>={openai:"GPT / OpenAI",anthropic:"Claude / Anthropic",google:"Gemini / Google","x-ai":"Grok / xAI",deepseek:"DeepSeek",qwen:"Qwen",mistralai:"Mistral"};
+ return labels[vendor]||vendor;
+}
+
 export default function ProcurementOrdersPage(){
  const[data,setData]=useState<LedgerData|null>(null);
  const[draft,setDraft]=useState<Draft>(emptyDraft());
  const[editing,setEditing]=useState<Purchase|null>(null);
  const[polzaRows,setPolzaRows]=useState<PolzaRow[]>([]);
+ const[vendorBudgets,setVendorBudgets]=useState<Record<string,string>>({});
  const[priceBusy,setPriceBusy]=useState(false);
  const[modelFilter,setModelFilter]=useState("");
  const[busy,setBusy]=useState(false);
@@ -45,8 +56,8 @@ export default function ProcurementOrdersPage(){
 
  const selectedKey=useMemo(()=>data?.keys.find(item=>item.id===draft.api_key_id)||null,[data,draft.api_key_id]);
  const isPolza=selectedKey?.provider==="polza";
- const selectedRows=polzaRows.filter(row=>row.selected);
  const visibleRows=polzaRows.filter(row=>!modelFilter||(`${row.display_name} ${row.id}`).toLowerCase().includes(modelFilter.toLowerCase()));
+ const vendors=useMemo(()=>Array.from(new Set(polzaRows.map(row=>vendorOf(row.id)))).sort(),[polzaRows]);
 
  const load=async()=>{
   setBusy(true);
@@ -63,22 +74,27 @@ export default function ProcurementOrdersPage(){
 
  const loadPolzaPricing=async(keyId:string)=>{
   const key=data?.keys.find(item=>item.id===keyId);
-  if(!key||key.provider!=="polza"){setPolzaRows([]);return}
+  if(!key||key.provider!=="polza"){setPolzaRows([]);setVendorBudgets({});return}
   setPriceBusy(true);
   try{
    const result=await post<{provider:string;models:PolzaPrice[]}>({action:"polza_pricing",api_key_id:keyId});
-   setPolzaRows(result.models.map(model=>({...model,selected:model.allowed===true,markup_percent:""})));
+   const plan=key.budget_plan||[];
+   const modelBudget=Object.fromEntries(plan.filter(x=>x.scope_type==="model").map(x=>[x.scope_key,x.allocated_rub]));
+   const vendorBudget=Object.fromEntries(plan.filter(x=>x.scope_type==="vendor").map(x=>[x.scope_key,x.allocated_rub]));
+   setVendorBudgets(vendorBudget);
+   setPolzaRows(result.models.map(model=>({...model,markup_percent:"",budget_rub:modelBudget[model.id]||""})));
    setError("");
   }catch(e){
    setPolzaRows([]);
-   setError(e instanceof Error?e.message:"Не удалось получить цены Polza");
+   setVendorBudgets({});
+   setError(e instanceof Error?e.message:"Не удалось получить модели/цены Polza");
   }finally{setPriceBusy(false)}
  };
 
  const selectKey=async(keyId:string)=>{
   const key=data?.keys.find(item=>item.id===keyId);
   setDraft(v=>({...v,api_key_id:keyId,credit_currency:key?.provider==="polza"?"RUB":(key?.account_currency||v.credit_currency)}));
-  setPolzaRows([]);
+  setPolzaRows([]);setVendorBudgets({});
   if(key?.provider==="polza")await loadPolzaPricing(keyId);
  };
 
@@ -89,36 +105,37 @@ export default function ProcurementOrdersPage(){
  },[data,draft.api_key_id,editing,polzaRows.length]);
 
  const updatePolzaRow=(id:string,patch:Partial<PolzaRow>)=>setPolzaRows(rows=>rows.map(row=>row.id===id?{...row,...patch}:row));
- const toggleAllVisible=(checked:boolean)=>setPolzaRows(rows=>rows.map(row=>visibleRows.some(v=>v.id===row.id)?{...row,selected:checked}:row));
 
  const reset=()=>{
-  setEditing(null);
-  setPolzaRows([]);
-  setModelFilter("");
+  setEditing(null);setPolzaRows([]);setVendorBudgets({});setModelFilter("");
   setDraft(v=>({...emptyDraft(),api_key_id:v.api_key_id,credit_currency:data?.keys.find(k=>k.id===v.api_key_id)?.provider==="polza"?"RUB":"USD"}));
  };
 
  const save=async()=>{
   if(!draft.credit_native||!draft.payment_amount||(!editing&&!draft.api_key_id)){setError("Заполните API-ключ, номинал и фактическую оплату");return}
-  if(!editing&&isPolza&&selectedRows.length===0){setError("Для Polza выберите хотя бы одну модель для фиксации цен");return}
+  if(!editing&&isPolza&&polzaRows.length===0){setError("Polza-ключ не отдал синхронизированный список моделей. Нажмите «Проверить API» у ключа.");return}
   setBusy(true);setError("");setNotice("");
   try{
    if(editing){
     const p=await post<Purchase>({action:"edit_purchase",purchase_id:editing.id,...draft,base_cost_rub:"",payment_fx_rate_rub:draft.payment_currency==="RUB"?"":draft.payment_fx_rate_rub});
-    setNotice(`Ордер ${p.document_number} изменён. Прайс-snapshot сохранён без изменения.`);
+    setNotice(`Ордер ${p.document_number} изменён.`);
    }else{
-    const polza_models=isPolza?selectedRows.map(row=>({
+    const polza_models=isPolza?polzaRows.map(row=>({
      upstream_model:row.id,display_name:row.display_name,currency:row.currency,
      input_per_million:row.input_per_million??"",output_per_million:row.output_per_million??"",
      image_input_per_million:row.image_input_per_million??"",image_output_per_million:row.image_output_per_million??"",
      image_per_image:row.image_per_image??"",markup_percent:row.markup_percent
     })):[];
+    const budget_plan:BudgetItem[]=isPolza?[
+     ...vendors.filter(v=>Number(vendorBudgets[v]||0)>0).map(v=>({scope_type:"vendor" as const,scope_key:v,label:vendorLabel(v),allocated_rub:vendorBudgets[v]})),
+     ...polzaRows.filter(row=>Number(row.budget_rub||0)>0).map(row=>({scope_type:"model" as const,scope_key:row.id,label:row.display_name,allocated_rub:row.budget_rub}))
+    ]:[];
     const p=await post<Purchase>({
      action:"purchase_key",...draft,base_cost_rub:"",
      payment_fx_rate_rub:draft.payment_currency==="RUB"?"":draft.payment_fx_rate_rub,
-     polza_models,provider_markup_percent:isPolza?draft.provider_markup_percent:""
+     polza_models,provider_markup_percent:isPolza?draft.provider_markup_percent:"",budget_plan
     });
-    setNotice(`Ордер ${p.document_number} создан. Зафиксировано цен моделей: ${isPolza?selectedRows.length:0}.`);
+    setNotice(`Ордер ${p.document_number} создан. Polza-моделей: ${isPolza?polzaRows.length:0}.`);
    }
    reset();await load();
   }catch(e){setError(e instanceof Error?e.message:"Не удалось сохранить ордер")}
@@ -126,114 +143,86 @@ export default function ProcurementOrdersPage(){
  };
 
  const startEdit=(p:Purchase)=>{
-  setEditing(p);setPolzaRows([]);
+  setEditing(p);setPolzaRows([]);setVendorBudgets({});
   const s=(p.pricing_snapshot||{}) as Record<string,unknown>;
-  setDraft({
-   api_key_id:p.api_key_id||"",credit_native:p.credit_native,credit_currency:p.credit_currency,payment_amount:p.payment_amount||"",
-   payment_currency:p.payment_currency,payment_fx_rate_rub:p.payment_fx_rate_rub||"",fees_rub:p.fees_rub,market_fx_rate_rub:p.market_fx_rate_rub||"",
-   purchased_at:p.purchased_at.slice(0,10),reference:p.reference||"",provider_markup_percent:String(s.provider_markup_percent||"")
-  });
+  setDraft({api_key_id:p.api_key_id||"",credit_native:p.credit_native,credit_currency:p.credit_currency,payment_amount:p.payment_amount||"",payment_currency:p.payment_currency,payment_fx_rate_rub:p.payment_fx_rate_rub||"",fees_rub:p.fees_rub,market_fx_rate_rub:p.market_fx_rate_rub||"",purchased_at:p.purchased_at.slice(0,10),reference:p.reference||"",provider_markup_percent:String(s.provider_markup_percent||"")});
   window.scrollTo({top:0,behavior:"smooth"});
  };
 
  const orderAction=async(p:Purchase,action:"cancel_purchase"|"delete_purchase")=>{
-  const title=action==="cancel_purchase"?"Отменить":"Удалить";
-  if(!window.confirm(`${title} закупочный ордер ${p.document_number}?`))return;
+  if(!window.confirm(`${action==="cancel_purchase"?"Отменить":"Удалить"} закупочный ордер ${p.document_number}?`))return;
   setBusy(true);setError("");setNotice("");
-  try{
-   await post({action,purchase_id:p.id});
-   setNotice(action==="cancel_purchase"?`Ордер ${p.document_number} отменён.`:`Ордер ${p.document_number} удалён из рабочего реестра.`);
-   if(editing?.id===p.id)reset();
-   await load();
-  }catch(e){setError(e instanceof Error?e.message:"Операция не выполнена")}
+  try{await post({action,purchase_id:p.id});if(editing?.id===p.id)reset();await load();}
+  catch(e){setError(e instanceof Error?e.message:"Операция не выполнена")}
   finally{setBusy(false)}
  };
 
  const snapshotSummary=(p:Purchase)=>{
   const snapshot=(p.pricing_snapshot||{}) as Record<string,unknown>;
   const models=Array.isArray(snapshot.models)?snapshot.models as Record<string,unknown>[]:[];
-  if(models.length){
-   const manual=models.filter(item=>Object.values((item.sources||{}) as Record<string,unknown>).includes("manual")).length;
-   return <><br/><small>прайс Polza: {models.length} моделей · общая наценка {String(snapshot.provider_markup_percent||"—")}%</small><br/><small>ручные цены: {manual} · model overrides: {models.filter(item=>item.markup_percent).length}</small></>;
-  }
-  if(Object.keys(snapshot).length){
-   return <><br/><small>прайс: {String(snapshot.upstream_model||snapshot.model_slug||"модель")}</small><br/><small>IN {String(snapshot.input_per_million||"—")} / OUT {String(snapshot.output_per_million||"—")} {String(snapshot.currency||"")}</small></>;
-  }
+  if(models.length)return <><br/><small>Polza: {models.length} моделей · наценка {String(snapshot.provider_markup_percent||"—")}%</small></>;
   return null;
  };
 
  return <>
-  <header className={styles.header}><div><h1>Закупочные ордера API</h1><p>Закупка баланса, себестоимость моделей, наценка, FIFO-остаток и прибыль.</p></div><button className={styles.button} disabled={busy} onClick={()=>void load()}>Обновить</button></header>
+  <header className={styles.header}><div><h1>Закупочные ордера API</h1><p>Баланс, себестоимость моделей, наценка и внутренние бюджеты по ключам.</p></div><button className={styles.button} disabled={busy} onClick={()=>void load()}>Обновить</button></header>
   {notice&&<div className={styles.notice}>{notice}</div>}{error&&<div className={`${styles.notice} ${styles.error}`}>{error}</div>}
   {data&&<>
    <section className={styles.grid}>
     <div className={styles.card}><small>Активных ордеров</small><strong>{data.summary.purchase_documents}</strong></div>
-    <div className={styles.card}><small>Фактически вложено</small><strong>{money(data.summary.cash_outlay_rub)}</strong></div>
-    <div className={styles.card}><small>Комиссии</small><strong>{money(data.summary.fees_rub)}</strong></div>
+    <div className={styles.card}><small>Вложено</small><strong>{money(data.summary.cash_outlay_rub)}</strong></div>
     <div className={styles.card}><small>Выручка</small><strong>{money(data.summary.realized_revenue_rub)}</strong></div>
-    <div className={styles.card}><small>Реализованная прибыль</small><strong>{money(data.summary.realized_profit_rub)}</strong><small>{num(data.summary.realized_margin_percent,2)}%</small></div>
+    <div className={styles.card}><small>Прибыль</small><strong>{money(data.summary.realized_profit_rub)}</strong></div>
    </section>
 
    <section className={styles.section}>
-    <div className={styles.header}><div><h2>{editing?`Изменить ${editing.document_number}`:"Новый закупочный ордер"}</h2><p>{editing?"Финансовые поля можно менять только до первого фактического списания.":"Один ордер Polza может сразу зафиксировать цены десятков моделей."}</p></div>{editing&&<button className={styles.button} onClick={reset}>Отменить редактирование</button>}</div>
+    <div className={styles.header}><div><h2>{editing?`Изменить ${editing.document_number}`:"Новый закупочный ордер"}</h2><p>{editing?"Финансовые поля доступны до первого списания.":"Для Polza модели ключа и их цены подгружаются автоматически."}</p></div>{editing&&<button className={styles.button} onClick={reset}>Отменить</button>}</div>
     <div className={styles.filters}>
      <label>API-ключ<select disabled={!!editing} value={draft.api_key_id} onChange={e=>void selectKey(e.target.value)}><option value="">Выберите ключ</option>{data.keys.map(k=><option key={k.id} value={k.id}>{k.provider_name} · {k.label} · {k.masked}</option>)}</select></label>
-     <label>Номинал на балансе<input inputMode="decimal" value={draft.credit_native} onChange={e=>setDraft(v=>({...v,credit_native:e.target.value}))} placeholder="1000"/></label>
-     <label>Валюта баланса<select disabled={!!editing} value={draft.credit_currency} onChange={e=>setDraft(v=>({...v,credit_currency:e.target.value}))}><option>USD</option><option>EUR</option><option>RUB</option></select></label>
-     <label>Фактически оплачено<input inputMode="decimal" value={draft.payment_amount} onChange={e=>setDraft(v=>({...v,payment_amount:e.target.value}))} placeholder="1000"/></label>
+     <label>Номинал ключа<input inputMode="decimal" value={draft.credit_native} onChange={e=>setDraft(v=>({...v,credit_native:e.target.value}))} placeholder="1500"/></label>
+     <label>Валюта<select disabled={!!editing} value={draft.credit_currency} onChange={e=>setDraft(v=>({...v,credit_currency:e.target.value}))}><option>RUB</option><option>USD</option><option>EUR</option></select></label>
+     <label>Фактически оплачено<input inputMode="decimal" value={draft.payment_amount} onChange={e=>setDraft(v=>({...v,payment_amount:e.target.value}))}/></label>
      <label>Валюта оплаты<select value={draft.payment_currency} onChange={e=>setDraft(v=>({...v,payment_currency:e.target.value}))}><option>RUB</option><option>USD</option><option>EUR</option></select></label>
-     {draft.payment_currency!=="RUB"&&<label>Фактический курс ₽ / 1 {draft.payment_currency}<input inputMode="decimal" value={draft.payment_fx_rate_rub} onChange={e=>setDraft(v=>({...v,payment_fx_rate_rub:e.target.value}))} placeholder="95"/></label>}
-     <label>Комиссии отдельно, ₽<input inputMode="decimal" value={draft.fees_rub} onChange={e=>setDraft(v=>({...v,fees_rub:e.target.value}))}/></label>
-     <label>Рыночный курс, ₽<input inputMode="decimal" value={draft.market_fx_rate_rub} onChange={e=>setDraft(v=>({...v,market_fx_rate_rub:e.target.value}))} placeholder="необязательно"/></label>
+     {draft.payment_currency!=="RUB"&&<label>Курс ₽<input inputMode="decimal" value={draft.payment_fx_rate_rub} onChange={e=>setDraft(v=>({...v,payment_fx_rate_rub:e.target.value}))}/></label>}
+     <label>Комиссии, ₽<input inputMode="decimal" value={draft.fees_rub} onChange={e=>setDraft(v=>({...v,fees_rub:e.target.value}))}/></label>
      <label>Дата<input type="date" value={draft.purchased_at} onChange={e=>setDraft(v=>({...v,purchased_at:e.target.value}))}/></label>
-     <label>Комментарий / чек<input value={draft.reference} onChange={e=>setDraft(v=>({...v,reference:e.target.value}))} placeholder="номер чека, обменник, комментарий"/></label>
+     <label>Комментарий<input value={draft.reference} onChange={e=>setDraft(v=>({...v,reference:e.target.value}))}/></label>
     </div>
 
     {!editing&&isPolza&&<div style={{marginTop:16}}>
-     <div className={styles.notice}><b>Polza.ai — пакетные цены и наценка</b><br/><small>Показаны только модели выбранного Polza-ключа. Галочками выберите модели, цены подтягиваются автоматически. Любую цену и наценку можно переопределить вручную перед проведением ордера.</small></div>
+     <div className={styles.notice}><b>Polza.ai · модели ключа синхронизированы автоматически</b><br/><small>Источник: {selectedKey?.model_scope_source||"проверка ключа"}. Моделей: {polzaRows.length}. Повторно выбирать модели не нужно.</small></div>
      <div className={styles.filters}>
-      <label>Общая наценка Polza, %<input inputMode="decimal" value={draft.provider_markup_percent} onChange={e=>setDraft(v=>({...v,provider_markup_percent:e.target.value}))} placeholder="200"/></label>
-      <label>Поиск модели<input value={modelFilter} onChange={e=>setModelFilter(e.target.value)} placeholder="GPT-6.1 Sol, Claude, Gemini…"/></label>
-      <button type="button" className={styles.button} onClick={()=>toggleAllVisible(true)}>Выбрать видимые</button>
-      <button type="button" className={styles.button} onClick={()=>toggleAllVisible(false)}>Снять видимые</button>
-      <button type="button" className={styles.button} disabled={priceBusy} onClick={()=>draft.api_key_id&&void loadPolzaPricing(draft.api_key_id)}>{priceBusy?"Загружаем…":"Обновить цены Polza"}</button>
+      <label>Общая наценка Polza, %<input inputMode="decimal" value={draft.provider_markup_percent} onChange={e=>setDraft(v=>({...v,provider_markup_percent:e.target.value}))}/></label>
+      <label>Поиск модели<input value={modelFilter} onChange={e=>setModelFilter(e.target.value)} placeholder="GPT, Claude, Image…"/></label>
+      <button type="button" className={styles.button} disabled={priceBusy} onClick={()=>draft.api_key_id&&void loadPolzaPricing(draft.api_key_id)}>{priceBusy?"Синхронизация…":"Обновить модели и цены"}</button>
      </div>
-     <p><b>Выбрано моделей: {selectedRows.length}</b>. Если у модели поле «Своя наценка» пустое, применяется общая наценка Polza {draft.provider_markup_percent||"—"}%.</p>
-     {priceBusy?<p>Загружаем каталог цен…</p>:<div style={{overflowX:"auto"}}>
-      <table className={styles.table}>
-       <thead><tr><th></th><th>Модель</th><th>IN / 1M</th><th>OUT / 1M</th><th>Image IN / 1M</th><th>Image OUT / 1M</th><th>За изображение</th><th>Своя наценка, %</th></tr></thead>
-       <tbody>{visibleRows.map(row=><tr key={row.id}>
-        <td><input type="checkbox" checked={row.selected} onChange={e=>updatePolzaRow(row.id,{selected:e.target.checked})}/></td>
-        <td><b>{row.display_name}</b><br/><small>{row.id}</small><br/><small>{row.configured?"подключена в AIlegend":"не подключена"} · {row.pricing_available===false?"цена вручную":"Polza auto"}</small>{row.pricing_tiers&&row.pricing_tiers.length>0&&<><br/><small>tiers: {row.pricing_tiers.length}</small></>}</td>
-        <td><input style={{width:105}} inputMode="decimal" value={row.input_per_million??""} onChange={e=>updatePolzaRow(row.id,{input_per_million:e.target.value})}/></td>
-        <td><input style={{width:105}} inputMode="decimal" value={row.output_per_million??""} onChange={e=>updatePolzaRow(row.id,{output_per_million:e.target.value})}/></td>
-        <td><input style={{width:105}} inputMode="decimal" value={row.image_input_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_input_per_million:e.target.value})}/></td>
-        <td><input style={{width:105}} inputMode="decimal" value={row.image_output_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_output_per_million:e.target.value})}/></td>
-        <td><input style={{width:105}} inputMode="decimal" value={row.image_per_image??""} onChange={e=>updatePolzaRow(row.id,{image_per_image:e.target.value})}/></td>
-        <td><input style={{width:90}} inputMode="decimal" value={row.markup_percent} onChange={e=>updatePolzaRow(row.id,{markup_percent:e.target.value})} placeholder="общая"/></td>
-       </tr>)}</tbody>
-      </table>
-     </div>}
+
+     {vendors.length>0&&<><h3>Бюджеты внутри ключа</h3><div className={styles.grid}>{vendors.map(v=><div className={styles.card} key={v}><small>{vendorLabel(v)}</small><strong>{money(vendorBudgets[v]||0)}</strong><input inputMode="decimal" value={vendorBudgets[v]||""} onChange={e=>setVendorBudgets(x=>({...x,[v]:e.target.value}))} placeholder="Бюджет, ₽"/>{selectedKey?.budget_status?.find(x=>x.scope_type==="vendor"&&x.scope_key===v)&&<small>потрачено {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.spent_rub)} · осталось {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.remaining_rub)}</small>}</div>)}</div></>}
+
+     {priceBusy?<p>Загружаем…</p>:<div style={{overflowX:"auto"}}><table className={styles.table}>
+      <thead><tr><th>Модель ключа</th><th>IN / 1M</th><th>OUT / 1M</th><th>Image IN</th><th>Image OUT</th><th>За изображение</th><th>Своя наценка %</th><th>Бюджет модели ₽</th></tr></thead>
+      <tbody>{visibleRows.map(row=><tr key={row.id}>
+       <td><b>{row.display_name}</b><br/><small>{row.id}</small><br/><small>{row.pricing_available===false?"цена вручную":"Polza auto"}</small></td>
+       <td><input style={{width:105}} inputMode="decimal" value={row.input_per_million??""} onChange={e=>updatePolzaRow(row.id,{input_per_million:e.target.value})}/></td>
+       <td><input style={{width:105}} inputMode="decimal" value={row.output_per_million??""} onChange={e=>updatePolzaRow(row.id,{output_per_million:e.target.value})}/></td>
+       <td><input style={{width:105}} inputMode="decimal" value={row.image_input_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_input_per_million:e.target.value})}/></td>
+       <td><input style={{width:105}} inputMode="decimal" value={row.image_output_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_output_per_million:e.target.value})}/></td>
+       <td><input style={{width:105}} inputMode="decimal" value={row.image_per_image??""} onChange={e=>updatePolzaRow(row.id,{image_per_image:e.target.value})}/></td>
+       <td><input style={{width:90}} inputMode="decimal" value={row.markup_percent} onChange={e=>updatePolzaRow(row.id,{markup_percent:e.target.value})} placeholder="общая"/></td>
+       <td><input style={{width:105}} inputMode="decimal" value={row.budget_rub} onChange={e=>updatePolzaRow(row.id,{budget_rub:e.target.value})} placeholder="необязательно"/></td>
+      </tr>)}</tbody>
+     </table></div>}
     </div>}
 
-    {editing&&editing.pricing_snapshot&&Object.keys(editing.pricing_snapshot).length>0&&<div className={styles.notice}><b>Прайс-snapshot этого ордера уже зафиксирован.</b><br/><small>При редактировании финансовых реквизитов он не пересчитывается автоматически. Для нового набора цен создайте новый закупочный ордер.</small></div>}
-    <div className={styles.actions} style={{marginTop:16}}><button className={`${styles.button} ${styles.primary}`} disabled={busy||data.keys.length===0} onClick={()=>void save()}>{editing?"Сохранить изменения":"Провести закупку"}</button></div>
+    <div className={styles.actions} style={{marginTop:16}}><button className={`${styles.button} ${styles.primary}`} disabled={busy||data.keys.length===0} onClick={()=>void save()}>{editing?"Сохранить":"Провести закупку"}</button></div>
    </section>
 
-   <section className={styles.section}>
-    <h2>Журнал закупочных ордеров</h2>
-    {data.purchases.length===0?<p>Закупок пока нет.</p>:<table className={styles.table}><thead><tr><th>Документ</th><th>Статус</th><th>Ключ / прайс</th><th>Куплено</th><th>Оплата / курс</th><th>Себестоимость</th><th>FIFO</th><th>Продажи / прибыль</th><th>Действия</th></tr></thead><tbody>{data.purchases.map(p=><tr key={p.id}>
-      <td><b>{p.document_number}</b><br/><small>{new Date(p.purchased_at).toLocaleDateString("ru-RU")}</small>{p.reference&&<><br/><small>{p.reference}</small></>}</td>
-      <td className={p.state==="active"?styles.good:styles.warn}><b>{stateLabel[p.state]}</b></td>
-      <td><b>{p.provider_name}</b><br/>{p.api_key_label}<br/><small>{p.api_key_masked}</small>{snapshotSummary(p)}</td>
-      <td><b>{num(p.credit_native)} {p.credit_currency}</b></td>
-      <td>{p.payment_amount!=null?<><b>{num(p.payment_amount)} {p.payment_currency}</b>{p.payment_fx_rate_rub&&<><br/><small>курс {num(p.payment_fx_rate_rub,4)} ₽</small></>}{Number(p.fees_rub)>0&&<><br/><small>комиссия {money(p.fees_rub)}</small></>}</>:"историческая запись"}</td>
-      <td><b>{money(p.total_cash_outlay_rub)}</b><br/><small>{money(p.effective_cost_rub_per_native)} / 1 {p.credit_currency}</small></td>
-      <td><b>{num(p.consumed_native)} / {num(p.credit_native)}</b><br/><small>остаток {num(p.remaining_native)} {p.credit_currency}</small></td>
-      <td><b>{money(p.realized_revenue_rub)}</b><br/><span className={Number(p.realized_profit_rub)>=0?styles.good:styles.bad}>{money(p.realized_profit_rub)}</span><br/><small>{p.operations_count} операций · {num(p.realized_margin_percent,2)}%</small></td>
-      <td><div className={styles.actions}>{p.editable&&<button className={styles.button} disabled={busy} onClick={()=>startEdit(p)}>Изменить</button>}{p.cancellable&&<button className={styles.button} disabled={busy} onClick={()=>void orderAction(p,"cancel_purchase")}>Отменить</button>}{p.deletable&&<button className={`${styles.button} ${styles.danger}`} disabled={busy} onClick={()=>void orderAction(p,"delete_purchase")}>Удалить</button>}</div>{!p.editable&&p.operations_count>0&&<small>есть списания — финансовые поля заблокированы</small>}</td>
-    </tr>)}</tbody></table>}
-   </section>
+   <section className={styles.section}><h2>Журнал закупок</h2>{data.purchases.length===0?<p>Закупок пока нет.</p>:<table className={styles.table}><thead><tr><th>Документ</th><th>Статус</th><th>Ключ</th><th>Куплено</th><th>Себестоимость</th><th>FIFO</th><th>Прибыль</th><th></th></tr></thead><tbody>{data.purchases.map(p=><tr key={p.id}>
+    <td><b>{p.document_number}</b><br/><small>{new Date(p.purchased_at).toLocaleDateString("ru-RU")}</small></td><td>{stateLabel[p.state]}</td>
+    <td><b>{p.provider_name}</b><br/>{p.api_key_label}{snapshotSummary(p)}</td><td>{num(p.credit_native)} {p.credit_currency}</td>
+    <td>{money(p.total_cash_outlay_rub)}</td><td>{num(p.consumed_native)} / {num(p.credit_native)}</td><td>{money(p.realized_profit_rub)}</td>
+    <td><div className={styles.actions}>{p.editable&&<button className={styles.button} onClick={()=>startEdit(p)}>Изменить</button>}{p.cancellable&&<button className={styles.button} onClick={()=>void orderAction(p,"cancel_purchase")}>Отменить</button>}{p.deletable&&<button className={`${styles.button} ${styles.danger}`} onClick={()=>void orderAction(p,"delete_purchase")}>Удалить</button>}</div></td>
+   </tr>)}</tbody></table>}</section>
   </>}
  </>;
 }
