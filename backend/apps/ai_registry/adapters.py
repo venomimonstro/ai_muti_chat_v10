@@ -492,17 +492,120 @@ class OpenRouterChatAdapter(XAIChatAdapter):
         return self._health_get(url=f"{self.base_url}/key", headers=self.headers)
 
 
-class PolzaChatAdapter(OpenRouterChatAdapter):
-    """Polza.ai OpenAI-compatible multi-model gateway.
+def _polza_stream_error(event: dict) -> ProviderError:
+    error = event.get("error") if isinstance(event.get("error"), dict) else {}
+    code = str(
+        error.get("code")
+        or error.get("type")
+        or event.get("code")
+        or "polza_error"
+    ).strip()
+    message = str(
+        error.get("message")
+        or event.get("message")
+        or "Polza.ai request failed"
+    )
+    normalized = code.casefold()
+    if normalized in {"401", "unauthorized", "authentication_error", "invalid_api_key"}:
+        return ProviderError(message, code="authentication_error", retryable=False)
+    if normalized in {"402", "payment_required", "insufficient_credits", "insufficient_balance"}:
+        return ProviderError(message, code="credit_balance_exhausted", retryable=False)
+    if normalized in {"403", "forbidden", "permission_denied"}:
+        return ProviderError(message, code="permission_denied", retryable=False)
+    if normalized in {"404", "not_found", "model_not_found"}:
+        return ProviderError(message, code="model_not_found", retryable=False)
+    if normalized in {"429", "rate_limit", "rate_limited", "too_many_requests"}:
+        return ProviderError(message, code="rate_limited", retryable=True)
+    if normalized.startswith("4"):
+        return ProviderError(message, code=f"polza_{normalized}"[:120], retryable=False)
+    return ProviderError(message, code=f"polza_{normalized}"[:120], retryable=True)
 
-    Polza exposes one Bearer credential and a shared /chat/completions endpoint for
-    models from multiple vendors. Unlike OpenRouter, credential health is checked via
-    /models; streaming remains OpenAI-compatible and reuses the hardened gateway
-    parser/usage contract above.
-    """
+
+class PolzaChatAdapter(OpenRouterChatAdapter):
+    """Polza.ai OpenAI-compatible multi-model gateway."""
 
     def __init__(self, *, api_key: str, base_url: str = "https://polza.ai/api/v1"):
         super().__init__(api_key=api_key, base_url=base_url)
+
+    def stream(self, *, model: str, messages: list[dict], max_output_tokens: int):
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": item["role"],
+                    "content": _openai_chat_content(item["content"]),
+                }
+                for item in messages
+            ],
+            "max_tokens": max_output_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        request_id = ""
+        usage = {}
+        finished = False
+        saw_event = False
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=payload,
+                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
+            ) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    try:
+                        exc.response.read()
+                    except httpx.HTTPError:
+                        pass
+                    raise _http_error(exc) from exc
+
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        finished = True
+                        break
+                    if not data:
+                        continue
+                    event = json.loads(data)
+                    saw_event = True
+                    if isinstance(event.get("error"), dict):
+                        raise _polza_stream_error(event)
+                    request_id = event.get("id", request_id)
+                    usage = event.get("usage") or usage
+                    choices = event.get("choices") or []
+                    finished = finished or any(
+                        choice.get("finish_reason") is not None
+                        for choice in choices
+                    )
+                    if choices:
+                        text = (choices[0].get("delta") or {}).get("content") or ""
+                        if text:
+                            yield ProviderStreamEvent(kind="delta", text_delta=text)
+
+                if not saw_event:
+                    raise ProviderError(
+                        "Polza stream ended without events",
+                        code="polza_empty_stream",
+                        retryable=True,
+                    )
+                yield _chat_completion_event(request_id, usage, finished)
+        except ProviderError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            raise _http_error(exc) from exc
+        except httpx.HTTPError as exc:
+            raise _http_error(exc) from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderError(
+                "Invalid Polza stream",
+                code="polza_invalid_stream",
+                retryable=True,
+            ) from exc
 
     def health_check(self):
         return self._health_get(
