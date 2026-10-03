@@ -107,10 +107,11 @@ def _polza_price_row(item):
 
 
 def _polza_pricing_for_key(key):
-    """Load official current Polza catalog pricing and scope it to this key.
+    """Load current Polza pricing for exactly this credential.
 
-    /models/catalog is the documented pricing source. /models remains the
-    credential-specific availability source captured in key.available_models.
+    Prefer the pricing catalog when available. If Polza changes or temporarily
+    disables that endpoint, fall back to the credential-specific /models catalog
+    so procurement can still be recorded with manual price overrides.
     """
     base_url = str(key.provider.api_base_url or "https://polza.ai/api/v1").rstrip("/")
     headers = {
@@ -118,44 +119,124 @@ def _polza_pricing_for_key(key):
         "Accept-Language": "ru",
     }
     allowed = set(str(value) for value in (key.available_models or []) if value)
-    rows = []
-    page = 1
-    total_pages = 1
-    while page <= total_pages and page <= 50:
-        response = httpx.get(
-            f"{base_url}/models/catalog",
-            headers=headers,
-            params={"page": page, "limit": 100},
-            timeout=20,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data", []) if isinstance(payload, dict) else []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            model_id = str(item.get("id") or "").strip()
-            if not model_id:
-                continue
-            if allowed and model_id not in allowed:
-                continue
-            prices = _polza_price_row(item)
-            rows.append(
-                {
-                    "id": model_id,
-                    "display_name": str(item.get("name") or model_id),
-                    **prices,
-                }
+    rows_by_id = {}
+
+    catalog_error = None
+    try:
+        page = 1
+        total_pages = 1
+        while page <= total_pages and page <= 50:
+            response = httpx.get(
+                f"{base_url}/models/catalog",
+                headers=headers,
+                params={"page": page, "limit": 100},
+                timeout=20,
+                follow_redirects=True,
             )
-        meta = payload.get("meta") if isinstance(payload, dict) else {}
-        if not isinstance(meta, dict):
-            meta = {}
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data", []) if isinstance(payload, dict) else []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                model_id = str(item.get("id") or "").strip()
+                if not model_id:
+                    continue
+                if allowed and model_id not in allowed:
+                    continue
+                rows_by_id[model_id] = {
+                    "id": model_id,
+                    "display_name": str(item.get("name") or item.get("display_name") or model_id),
+                    **_polza_price_row(item),
+                    "pricing_available": True,
+                }
+            meta = payload.get("meta") if isinstance(payload, dict) else {}
+            if not isinstance(meta, dict):
+                meta = {}
+            try:
+                total_pages = max(1, int(meta.get("totalPages") or meta.get("total_pages") or 1))
+            except (TypeError, ValueError):
+                total_pages = 1
+            page += 1
+    except Exception as exc:
+        catalog_error = type(exc).__name__
+
+    # Availability is authoritative per key. Even when the pricing catalog is
+    # unavailable, keep the workflow usable and let the admin enter exact prices.
+    missing_ids = allowed.difference(rows_by_id)
+    if missing_ids or not rows_by_id:
         try:
-            total_pages = max(1, int(meta.get("totalPages") or 1))
-        except (TypeError, ValueError):
-            total_pages = 1
-        page += 1
+            response = httpx.get(
+                f"{base_url}/models",
+                headers=headers,
+                timeout=15,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data", []) if isinstance(payload, dict) else []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                model_id = str(item.get("id") or item.get("name") or "").strip()
+                if not model_id:
+                    continue
+                if allowed and model_id not in allowed:
+                    continue
+                if model_id in rows_by_id:
+                    continue
+                row = _polza_price_row(item)
+                rows_by_id[model_id] = {
+                    "id": model_id,
+                    "display_name": str(
+                        item.get("display_name")
+                        or item.get("displayName")
+                        or item.get("name")
+                        or model_id
+                    ),
+                    **row,
+                    "pricing_available": any(
+                        row.get(field) not in (None, "")
+                        for field in (
+                            "input_per_million",
+                            "output_per_million",
+                            "image_input_per_million",
+                            "image_output_per_million",
+                            "image_per_image",
+                        )
+                    ),
+                }
+        except Exception:
+            # Last-resort manual workflow from the catalog saved during key health
+            # check. No secret or price is fabricated.
+            for model_id in sorted(allowed):
+                rows_by_id.setdefault(
+                    model_id,
+                    {
+                        "id": model_id,
+                        "display_name": model_id,
+                        "currency": "RUB",
+                        "input_per_million": None,
+                        "output_per_million": None,
+                        "image_input_per_million": None,
+                        "image_output_per_million": None,
+                        "image_per_image": None,
+                        "pricing_tiers": [],
+                        "model_type": "",
+                        "pricing_available": False,
+                    },
+                )
+
+    rows = list(rows_by_id.values())
+    rows.sort(key=lambda item: (str(item.get("display_name") or "").casefold(), item["id"]))
+    for row in rows:
+        row["pricing_source"] = (
+            "polza_catalog"
+            if row.get("pricing_available")
+            else "manual_required"
+        )
+        if catalog_error:
+            row["catalog_warning"] = catalog_error
     return rows
 
 
