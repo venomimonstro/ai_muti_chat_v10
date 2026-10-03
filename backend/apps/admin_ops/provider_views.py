@@ -112,6 +112,8 @@ def _key_payload(item: ProviderApiKey):
         "available_models_count": len(item.available_models or []),
         "allowed_models_count": len(item.allowed_models or []),
         "allowed_models": list(item.allowed_models or []),
+        "model_scope_source": item.model_scope_source,
+        "budget_plan": list(item.budget_plan or []),
     }
 
 
