@@ -226,6 +226,19 @@ def adapter_for(
             allow_probe=allow_probe,
             funding_account_id=funding_account_id,
         )
+    if provider.slug == "polza":
+        adapter = adapters.PolzaChatAdapter(
+            api_key=api_key,
+            base_url=provider.api_base_url
+            or os.getenv("POLZA_API_BASE_URL", "https://polza.ai/api/v1"),
+        )
+        return _bind_runtime_identity(
+            adapter,
+            key_id=key_id,
+            model=model,
+            allow_probe=allow_probe,
+            funding_account_id=funding_account_id,
+        )
     if provider.slug == "hubai":
         adapter = adapters.HubAIChatAdapter(
             api_key=api_key,
