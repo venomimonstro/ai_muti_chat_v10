@@ -484,6 +484,25 @@ class OpenRouterChatAdapter(XAIChatAdapter):
         return self._health_get(url=f"{self.base_url}/key", headers=self.headers)
 
 
+class PolzaChatAdapter(OpenRouterChatAdapter):
+    """Polza.ai OpenAI-compatible multi-model gateway.
+
+    Polza exposes one Bearer credential and a shared /chat/completions endpoint for
+    models from multiple vendors. Unlike OpenRouter, credential health is checked via
+    /models; streaming remains OpenAI-compatible and reuses the hardened gateway
+    parser/usage contract above.
+    """
+
+    def __init__(self, *, api_key: str, base_url: str = "https://polza.ai/api/v1"):
+        super().__init__(api_key=api_key, base_url=base_url)
+
+    def health_check(self):
+        return self._health_get(
+            url=f"{self.base_url}/models",
+            headers=self.headers,
+        )
+
+
 class GeminiGenerateContentAdapter(HTTPAdapter):
     def __init__(self, *, api_key: str, base_url: str = "https://generativelanguage.googleapis.com/v1beta"):
         if not api_key:
