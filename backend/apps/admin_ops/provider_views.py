@@ -897,11 +897,10 @@ class ProviderDiscoveredModelsView(AdminAPIView):
         except Exception:
             return Response({"detail": "Не удалось получить список моделей"}, status=424)
         if provider.slug == "polza" and requested_key_id and key is not None:
-            synced = {str(value) for value in (key.allowed_models or []) if value}
-            if key.model_scope_source != "polza_key":
-                models = []
-            else:
-                models = [item for item in models if item["id"] in synced]
+            # Polza official API does not expose the dashboard's per-key model
+            # selection. Show the global catalog for one-time AIlegend allowlist
+            # setup and mark the models already assigned to this key.
+            pass
         configured = set(AIModel.objects.filter(provider=provider).values_list("upstream_model", flat=True))
         allowed_by_key = {}
         if provider.slug == "polza":
