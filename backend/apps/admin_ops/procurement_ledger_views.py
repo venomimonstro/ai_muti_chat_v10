@@ -229,6 +229,52 @@ def _polza_pricing_for_key(key):
                     },
                 )
 
+    # Procurement must never hide a model that the admin assigned to this key.
+    # Pricing availability is optional; model visibility is not. Fill any missing
+    # allowed model from the local registry / active PriceVersion so the admin can
+    # still edit prices manually and complete the order.
+    configured = {
+        item.upstream_model: item
+        for item in AIModel.objects.filter(provider=key.provider)
+    }
+    for model_id in sorted(allowed):
+        if model_id in rows_by_id:
+            continue
+        model = configured.get(model_id)
+        price = None
+        if model is not None:
+            price = (
+                PriceVersion.objects.filter(model_slug=model.slug, active=True)
+                .order_by("-effective_from", "-created_at")
+                .first()
+            )
+        rows_by_id[model_id] = {
+            "id": model_id,
+            "display_name": (
+                str(getattr(model, "display_name", "") or model_id)
+                if model is not None
+                else model_id
+            ),
+            "currency": str(getattr(price, "provider_currency", "") or "RUB"),
+            "input_per_million": (
+                str(price.input_price_per_million)
+                if price is not None and price.input_price_per_million is not None
+                else None
+            ),
+            "output_per_million": (
+                str(price.output_price_per_million)
+                if price is not None and price.output_price_per_million is not None
+                else None
+            ),
+            "image_input_per_million": None,
+            "image_output_per_million": None,
+            "image_per_image": None,
+            "pricing_tiers": [],
+            "model_type": "",
+            "pricing_available": bool(price is not None),
+            "pricing_source": "local_price_version" if price is not None else "manual_required",
+        }
+
     rows = list(rows_by_id.values())
     rows.sort(key=lambda item: (str(item.get("display_name") or "").casefold(), item["id"]))
     for row in rows:
