@@ -766,6 +766,8 @@ class ProviderKeyDetailView(AdminAPIView):
                 if model_id not in normalized:
                     normalized.append(model_id)
             item.allowed_models = normalized
+            item.model_scope_source = "ailegend_allowlist"
+            _ensure_polza_registry_models(item.provider, normalized)
         if request.data.get("recheck"):
             item.enabled = True
             item.save(update_fields=["enabled"])
@@ -808,7 +810,7 @@ class ProviderKeyDetailView(AdminAPIView):
             if "enabled" in request.data:
                 update_fields.extend(["enabled", "health_state"])
             if "allowed_models" in request.data:
-                update_fields.append("allowed_models")
+                update_fields.extend(["allowed_models", "model_scope_source"])
             item.save(update_fields=list(dict.fromkeys(update_fields)) or None)
         return Response(_key_payload(item))
 
