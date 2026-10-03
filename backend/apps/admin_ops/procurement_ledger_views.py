@@ -415,16 +415,25 @@ def _apply_polza_markup_rules(*, provider, batch_snapshot):
     for item in batch_snapshot.get("models") or []:
         model_slug = str(item.get("model_slug") or "").strip()
         markup = item.get("markup_percent")
-        if model_slug and markup not in (None, ""):
-            MarkupRuleVersion.objects.create(
-                scope_type=MarkupRuleVersion.Scope.MODEL,
-                scope_key=model_slug,
-                markup_percent=Decimal(str(markup)),
-                price_multiplier=Decimal("1"),
-                active=True,
-                effective_from=now,
-                reason="Polza procurement order: model markup override",
-            )
+        if not model_slug:
+            continue
+        MarkupRuleVersion.objects.create(
+            scope_type=MarkupRuleVersion.Scope.MODEL,
+            scope_key=model_slug,
+            markup_percent=(
+                Decimal(str(markup))
+                if markup not in (None, "")
+                else None
+            ),
+            price_multiplier=Decimal("1"),
+            active=True,
+            effective_from=now,
+            reason=(
+                "Polza procurement order: model markup override"
+                if markup not in (None, "")
+                else "Polza procurement order: reset model markup to provider rule"
+            ),
+        )
 
 
 def _activate_polza_batch_prices(*, provider, batch_snapshot):
