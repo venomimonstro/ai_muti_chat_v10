@@ -545,24 +545,33 @@ class ProviderKeyDetailView(AdminAPIView):
                 enabled=True,
                 health_state=ProviderApiKey.HealthState.HEALTHY,
             ).exists()
-            provider.health_state = (
-                Provider.HealthState.HEALTHY
-                if healthy_key
-                else Provider.HealthState.DEGRADED
-            )
+            # /models proves only metadata/auth access. Never re-admit a DEGRADED,
+            # OPEN or UNKNOWN provider to customer traffic without the normal tiny
+            # real-inference recovery probe.
+            if not healthy_key:
+                provider.health_state = Provider.HealthState.DEGRADED
+            elif provider.health_state != Provider.HealthState.HEALTHY:
+                provider.health_state = Provider.HealthState.UNKNOWN
             provider.last_checked_at = timezone.now()
             provider.last_latency_ms = item.last_latency_ms
-            provider.consecutive_failures = 0 if healthy_key else provider.consecutive_failures
-            provider.circuit_opened_until = None if healthy_key else provider.circuit_opened_until
             provider.save(
                 update_fields=[
                     "health_state",
                     "last_checked_at",
                     "last_latency_ms",
-                    "consecutive_failures",
-                    "circuit_opened_until",
                 ]
             )
+            if (
+                healthy_key
+                and provider.enabled
+                and provider.models.filter(enabled=True).exists()
+                and provider.health_state != Provider.HealthState.HEALTHY
+            ):
+                try:
+                    from .tasks import provider_health_watch_task
+                    transaction.on_commit(provider_health_watch_task.delay)
+                except Exception:
+                    pass
         else:
             item.save()
         return Response(_key_payload(item))
