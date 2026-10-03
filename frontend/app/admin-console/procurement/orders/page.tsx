@@ -12,7 +12,7 @@ type Purchase={
  operations_count:number;reference:string;purchased_at:string;editable:boolean;cancellable:boolean;deletable:boolean;pricing_snapshot?:Record<string,unknown>;
 };
 type LedgerData={summary:{purchase_documents:number;cash_outlay_rub:string;fees_rub:string;realized_revenue_rub:string;realized_profit_rub:string;realized_margin_percent:string};keys:LedgerKey[];purchases:Purchase[]};
-type PolzaPrice={id:string;display_name:string;model_slug:string|null;configured:boolean;currency:string;input_per_million:string|null;output_per_million:string|null;image_input_per_million:string|null;image_output_per_million:string|null;image_per_image:string|null};
+type PolzaPrice={id:string;display_name:string;model_slug:string|null;configured:boolean;currency:string;input_per_million:string|null;output_per_million:string|null;image_input_per_million:string|null;image_output_per_million:string|null;image_per_image:string|null;pricing_available?:boolean;pricing_source?:string;pricing_tiers?:{conditions:string[];cost_rub:string}[];model_type?:string};
 type Draft={api_key_id:string;credit_native:string;credit_currency:string;payment_amount:string;payment_currency:string;payment_fx_rate_rub:string;fees_rub:string;market_fx_rate_rub:string;purchased_at:string;reference:string;polza_model_id:string;model_slug:string;pricing_currency:string;input_per_million:string;output_per_million:string;image_input_per_million:string;image_output_per_million:string;image_per_image:string};
 
 const emptyDraft=():Draft=>({api_key_id:"",credit_native:"",credit_currency:"USD",payment_amount:"",payment_currency:"RUB",payment_fx_rate_rub:"",fees_rub:"0",market_fx_rate_rub:"",purchased_at:new Date().toISOString().slice(0,10),reference:"",polza_model_id:"",model_slug:"",pricing_currency:"RUB",input_per_million:"",output_per_million:"",image_input_per_million:"",image_output_per_million:"",image_per_image:""});
@@ -97,7 +97,7 @@ export default function ProcurementOrdersPage(){
      {data.keys.find(k=>k.id===draft.api_key_id)?.provider==="polza"&&<div style={{width:"100%",flexBasis:"100%"}}>
        <div className={styles.notice}><b>Polza.ai — цены по выбранному ключу</b><br/><small>Автозначения загружаются из каталога Polza. Любое поле ниже можно изменить вручную перед проведением ордера; ручное значение имеет приоритет и фиксируется в snapshot.</small></div>
        <div className={styles.filters}>
-         <label>Модель<select value={draft.polza_model_id} disabled={priceBusy||!!editing} onChange={e=>selectPolzaModel(e.target.value)}><option value="">{priceBusy?"Загружаем цены…":"Выберите модель"}</option>{polzaModels.map(m=><option key={m.id} value={m.id}>{m.display_name} · {m.id}{m.configured?" · подключена":""}</option>)}</select></label>
+         <label>Модель<select value={draft.polza_model_id} disabled={priceBusy||!!editing} onChange={e=>selectPolzaModel(e.target.value)}><option value="">{priceBusy?"Загружаем цены…":"Выберите модель"}</option>{polzaModels.map(m=><option key={m.id} value={m.id}>{m.display_name} · {m.id}{m.configured?" · подключена":""}{m.pricing_available===false?" · цена вручную":""}</option>)}</select></label>
          <label>Валюта прайса<select value={draft.pricing_currency} onChange={e=>setDraft(v=>({...v,pricing_currency:e.target.value}))}><option>RUB</option><option>USD</option><option>EUR</option></select></label>
          <label>Запрос / 1М<input inputMode="decimal" value={draft.input_per_million} onChange={e=>setDraft(v=>({...v,input_per_million:e.target.value}))} placeholder="авто или вручную"/></label>
          <label>Ответ / 1М<input inputMode="decimal" value={draft.output_per_million} onChange={e=>setDraft(v=>({...v,output_per_million:e.target.value}))} placeholder="авто или вручную"/></label>
@@ -105,6 +105,11 @@ export default function ProcurementOrdersPage(){
          <label>Изображение выход / 1М<input inputMode="decimal" value={draft.image_output_per_million} onChange={e=>setDraft(v=>({...v,image_output_per_million:e.target.value}))} placeholder="если применяется"/></label>
          <label>Цена за изображение<input inputMode="decimal" value={draft.image_per_image} onChange={e=>setDraft(v=>({...v,image_per_image:e.target.value}))} placeholder="если модель считает за картинку"/></label>
        </div>
+       {draft.polza_model_id&&(()=>{const m=polzaModels.find(x=>x.id===draft.polza_model_id);if(!m)return null;return <div className={styles.notice} style={{marginTop:10}}>
+         <b>{m.pricing_available===false?"Цена Polza не получена — заполните вручную":"Цена загружена автоматически из Polza"}</b>
+         <br/><small>{m.configured?"Модель подключена в AIlegend: "+String(m.model_slug||""):"Модель пока не подключена в AI Registry — snapshot сохранится в ордере, но рабочая PriceVersion не изменится."}</small>
+         {m.pricing_tiers&&m.pricing_tiers.length>0&&<><br/><small>Тарифных уровней для изображения: {m.pricing_tiers.length}; они сохраняются в snapshot ордера.</small></>}
+       </div>})()}
      </div>}
      <button className={`${styles.button} ${styles.primary}`} disabled={busy||data.keys.length===0} onClick={()=>void save()}>{editing?"Сохранить изменения":"Провести закупку"}</button>
     </div>
