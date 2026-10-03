@@ -505,6 +505,18 @@ class ProcurementLedgerView(AdminAPIView):
                     provider__slug="polza",
                 )
                 rows = _polza_pricing_for_key(key)
+                configured = {
+                    item.upstream_model: item
+                    for item in AIModel.objects.filter(provider=key.provider)
+                }
+                rows = [
+                    {
+                        **item,
+                        "model_slug": configured[item["id"]].slug if item["id"] in configured else None,
+                        "configured": item["id"] in configured,
+                    }
+                    for item in rows
+                ]
                 requested_model = str(request.data.get("model_id") or "").strip()
                 if requested_model:
                     row = next((item for item in rows if item["id"] == requested_model), None)
