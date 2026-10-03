@@ -443,7 +443,10 @@ def _activate_polza_batch_prices(*, provider, batch_snapshot):
         if model_slug:
             model = AIModel.objects.filter(provider=provider, slug=model_slug).first()
         if model is not None:
-            _activate_polza_text_price(model=model, snapshot=item)
+            price_version = _activate_polza_text_price(model=model, snapshot=item)
+            if price_version is not None and model.current_version_id and not model.enabled:
+                AIModel.objects.filter(pk=model.pk).update(enabled=True)
+                model.enabled = True
         _activate_polza_image_price(
             provider=provider,
             upstream_model=str(item.get("upstream_model") or ""),
