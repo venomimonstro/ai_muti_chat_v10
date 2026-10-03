@@ -55,6 +55,7 @@ def reserve_agent_provider_spend(
             amount_native=native,
             source_key=source_key,
             currency=str(provider_currency or "").upper().strip(),
+            model_upstream=str(model.upstream_model or ""),
         )
     except ValidationError:
         if procurement_fail_closed():
