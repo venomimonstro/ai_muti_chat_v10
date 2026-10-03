@@ -2,42 +2,82 @@ from decimal import Decimal
 
 from django.test import SimpleTestCase
 
-from .procurement_ledger_views import _per_million_from_generic, _polza_price_row
+from .procurement_ledger_views import _polza_price_row
 
 
 class PolzaProcurementPricingTests(SimpleTestCase):
-    def test_parses_explicit_rub_per_million_prices(self):
+    def test_parses_official_catalog_token_and_image_prices(self):
         row = _polza_price_row(
             {
-                "id": "openai/gpt-6-luna",
-                "pricing_currency": "RUB",
-                "input_rub_per_million": "5.9",
-                "output_rub_per_million": "29.5",
-                "image_output_rub_per_million": "6979.56",
-            }
-        )
-        self.assertEqual(row["currency"], "RUB")
-        self.assertEqual(row["input_per_million"], "5.9")
-        self.assertEqual(row["output_per_million"], "29.5")
-        self.assertEqual(row["image_output_per_million"], "6979.56")
-
-    def test_parses_openai_compatible_per_token_pricing(self):
-        row = _polza_price_row(
-            {
-                "id": "vendor/model",
-                "pricing": {
-                    "currency": "RUB",
-                    "prompt": "0.0000059",
-                    "completion": "0.0000295",
-                    "image_input": "0.000001",
-                    "image": "2.5",
+                "id": "openai/gpt-6-sol",
+                "type": "chat",
+                "top_provider": {
+                    "pricing": {
+                        "currency": "RUB",
+                        "prompt_per_million": "117.992",
+                        "completion_per_million": "589.96",
+                        "image_input_per_million": "12.5",
+                        "image_output_per_million": "6979.56",
+                        "per_request": {},
+                        "tiers": [],
+                    }
                 },
             }
         )
-        self.assertEqual(Decimal(row["input_per_million"]), Decimal("5.9000000"))
-        self.assertEqual(Decimal(row["output_per_million"]), Decimal("29.5000000"))
-        self.assertEqual(Decimal(row["image_input_per_million"]), Decimal("1.000000"))
+        self.assertEqual(row["currency"], "RUB")
+        self.assertEqual(row["input_per_million"], "117.992")
+        self.assertEqual(row["output_per_million"], "589.96")
+        self.assertEqual(row["image_input_per_million"], "12.5")
+        self.assertEqual(row["image_output_per_million"], "6979.56")
+        self.assertEqual(row["image_per_image"], None)
+        self.assertEqual(row["model_type"], "chat")
+
+    def test_parses_per_request_image_price(self):
+        row = _polza_price_row(
+            {
+                "id": "image/model",
+                "type": "image",
+                "top_provider": {
+                    "pricing": {
+                        "currency": "RUB",
+                        "per_request": "2.5",
+                    }
+                },
+            }
+        )
         self.assertEqual(row["image_per_image"], "2.5")
 
-    def test_generic_price_above_one_is_treated_as_already_per_million(self):
-        self.assertEqual(_per_million_from_generic(Decimal("5.9")), Decimal("5.9"))
+    def test_preserves_image_price_tiers(self):
+        row = _polza_price_row(
+            {
+                "id": "image/model",
+                "type": "image",
+                "top_provider": {
+                    "pricing": {
+                        "currency": "RUB",
+                        "tiers": [
+                            {
+                                "conditions": ["image_resolution=4K"],
+                                "cost_rub": "8.25",
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+        self.assertEqual(
+            row["pricing_tiers"],
+            [{"conditions": ["image_resolution=4K"], "cost_rub": "8.25"}],
+        )
+
+    def test_missing_prices_remain_empty_for_manual_override(self):
+        row = _polza_price_row(
+            {
+                "id": "vendor/model",
+                "type": "chat",
+                "top_provider": {"pricing": {"currency": "RUB"}},
+            }
+        )
+        self.assertIsNone(row["input_per_million"])
+        self.assertIsNone(row["output_per_million"])
+        self.assertIsNone(row["image_per_image"])
