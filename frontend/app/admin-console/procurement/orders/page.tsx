@@ -83,8 +83,13 @@ export default function ProcurementOrdersPage(){
    const modelBudget=Object.fromEntries(plan.filter(x=>x.scope_type==="model").map(x=>[x.scope_key,x.allocated_rub]));
    const vendorBudget=Object.fromEntries(plan.filter(x=>x.scope_type==="vendor").map(x=>[x.scope_key,x.allocated_rub]));
    setVendorBudgets(vendorBudget);
-   setPolzaRows(result.models.map(model=>({...model,selected:true,markup_percent:"",budget_rub:modelBudget[model.id]||""})));
-   setError("");
+   const models=result.models.length?result.models:(key.allowed_models||[]).map(id=>({
+    id,display_name:id,model_slug:null,configured:false,allowed:true,currency:"RUB",
+    input_per_million:null,output_per_million:null,image_input_per_million:null,image_output_per_million:null,image_per_image:null,
+    pricing_available:false,pricing_source:"manual_required",pricing_tiers:[],model_type:""
+   }));
+   setPolzaRows(models.map(model=>({...model,selected:true,markup_percent:"",budget_rub:modelBudget[model.id]||""})));
+   setError(models.length?"":"У этого Polza-ключа не сохранены модели. Сначала выберите их в AI-провайдерах.");
   }catch(e){
    setPolzaRows([]);
    setVendorBudgets({});
@@ -193,7 +198,7 @@ export default function ProcurementOrdersPage(){
     </div>
 
     {!editing&&isPolza&&<div style={{marginTop:16}}>
-     <div className={styles.notice}><b>Polza.ai · модели ключа синхронизированы автоматически</b><br/><small>Источник: {selectedKey?.model_scope_source||"проверка ключа"}. Моделей: {polzaRows.length}. Повторно выбирать модели не нужно.</small></div>
+     <div className={styles.notice}><b>Polza.ai · модели выбранного ключа</b><br/><small>Сохранено в AIlegend: {selectedKey?.allowed_models?.length??0}. В этот ордер загружено: {polzaRows.length}. Здесь можно выбрать, какие из сохранённых моделей входят именно в эту закупку.</small></div>
      <div className={styles.filters}>
       <label>Общая наценка Polza, %<input inputMode="decimal" value={draft.provider_markup_percent} onChange={e=>setDraft(v=>({...v,provider_markup_percent:e.target.value}))}/></label>
       <label>Поиск модели<input value={modelFilter} onChange={e=>setModelFilter(e.target.value)} placeholder="GPT, Claude, Image…"/></label>
