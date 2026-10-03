@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from apps.ai_registry.models import Provider
+from apps.ai_registry.models import AIModel, Provider
 from apps.billing.models import RequestCost
 from apps.procurement.account_routing import account_credential_ready, runtime_funding_accounts
 from apps.procurement.models import ProviderFundingAccount, ProviderSpendReservation
@@ -62,6 +62,8 @@ def _provider_execution_ready(provider: Provider, *, reservation=None) -> bool:
     if provider.adapter_type == Provider.AdapterType.ECHO and provider.slug not in {
         "gigachat",
         "openrouter",
+        "hubai",
+        "polza",
     }:
         return True
     if provider.health_state not in {
@@ -124,6 +126,15 @@ def _rebind_failed_provider_reservation(generation_id, provider) -> bool:
     old_account_id = reservation.account_id
     amount = reservation.amount_native
     currency = str(reservation.account.currency or "").upper().strip()
+    model_upstream = ""
+    try:
+        model = AIModel.objects.filter(
+            slug=request_cost.price_version.model_slug,
+            provider=provider,
+        ).only("upstream_model").first()
+        model_upstream = str(getattr(model, "upstream_model", "") or "")
+    except Exception:
+        model_upstream = ""
     # lock=True locks every active funding-account row for this provider before the
     # in-Python readiness filter is applied, including the failed old account.
     candidates = runtime_funding_accounts(
@@ -133,6 +144,7 @@ def _rebind_failed_provider_reservation(generation_id, provider) -> bool:
         allow_probe=False,
         require_balance=True,
         lock=True,
+        model_upstream=model_upstream,
     )
     replacement = next(
         (account for account in candidates if account.id != old_account_id),
