@@ -706,10 +706,10 @@ def _edit_purchase(request):
                     .select_related("provider")
                     .first()
                 )
-            available = list(account.api_key.available_models or [])
-            if available and selected_upstream not in available:
+            allowed = list(account.api_key.allowed_models or [])
+            if selected_upstream not in allowed:
                 raise DjangoValidationError(
-                    "Выбранная модель недоступна для этого Polza API-ключа"
+                    "Выбранная модель не разрешена для этого Polza API-ключа"
                 )
             pricing_snapshot = _pricing_snapshot_from_request(
                 request,
