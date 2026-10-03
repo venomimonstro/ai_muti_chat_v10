@@ -41,7 +41,7 @@ export default function StatusPage() {
   const state = failed ? "major_outage" : data?.status ?? "degraded";
   return <main className={styles.page}>
     <div className={styles.shell}>
-      <div className={styles.brand}><i>✦</i>AI Workspace</div>
+      <div className={styles.brand}><i>✦</i>AIlegend</div>
       <section className={styles.hero}>
         <h1>Статус сервиса</h1>
         <p>Актуальное состояние платформы и история публичных инцидентов.</p>
