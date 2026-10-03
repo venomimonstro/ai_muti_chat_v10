@@ -53,6 +53,11 @@ export default function ProcurementOrdersPage(){
    const model=polzaModels.find(item=>item.model_slug===slug);
    setDraft(v=>({...v,model_slug:slug,pricing_currency:model?.currency||"RUB",input_per_million:model?.input_per_million||"",output_per_million:model?.output_per_million||"",image_input_per_million:model?.image_input_per_million||"",image_output_per_million:model?.image_output_per_million||"",image_per_image:model?.image_per_image||""}));
  };
+ useEffect(()=>{
+   if(!data||editing||!draft.api_key_id||polzaModels.length>0)return;
+   const key=data.keys.find(item=>item.id===draft.api_key_id);
+   if(key?.provider==="polza")void loadPolzaPricing(key.id);
+ },[data,draft.api_key_id,editing,polzaModels.length]);
 
  const reset=()=>{setEditing(null);setDraft(v=>({...emptyDraft(),api_key_id:v.api_key_id,credit_currency:data?.keys.find(k=>k.id===v.api_key_id)?.provider==="polza"?"RUB":"USD"}));};
  const save=async()=>{if(!draft.credit_native||!draft.payment_amount||(!editing&&!draft.api_key_id)){setError("Заполните API-ключ, номинал и фактическую оплату");return;}setBusy(true);setError("");setNotice("");try{
