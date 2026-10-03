@@ -46,73 +46,52 @@ def _per_million_from_generic(value):
     return (value * MILLION) if value < Decimal("1") else value
 
 
+def _decimal_or_none(value):
+    if value in (None, "", {}, []):
+        return None
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
+
+
 def _polza_price_row(item):
-    pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
-    currency = str(
-        item.get("pricing_currency")
-        or pricing.get("currency")
-        or item.get("currency")
-        or "RUB"
-    ).upper().strip()[:3] or "RUB"
-
-    input_pm = _first_decimal(
-        item,
-        "input_rub_per_million",
-        "input_price_rub_per_million",
-        "prompt_rub_per_million",
-        "input_per_million",
+    top_provider = (
+        item.get("top_provider")
+        if isinstance(item.get("top_provider"), dict)
+        else {}
     )
-    if input_pm is None:
-        input_pm = _per_million_from_generic(
-            _first_decimal(pricing, "prompt", "input", "input_text")
-        )
-
-    output_pm = _first_decimal(
-        item,
-        "output_rub_per_million",
-        "output_price_rub_per_million",
-        "completion_rub_per_million",
-        "output_per_million",
+    pricing = (
+        top_provider.get("pricing")
+        if isinstance(top_provider.get("pricing"), dict)
+        else {}
     )
-    if output_pm is None:
-        output_pm = _per_million_from_generic(
-            _first_decimal(pricing, "completion", "output", "output_text")
-        )
+    currency = str(pricing.get("currency") or "RUB").upper().strip()[:3] or "RUB"
 
-    image_input_pm = _first_decimal(
-        item,
-        "image_input_rub_per_million",
-        "input_image_rub_per_million",
-        "image_input_per_million",
-    )
-    if image_input_pm is None:
-        image_input_pm = _per_million_from_generic(
-            _first_decimal(pricing, "image_input", "input_image")
-        )
+    input_pm = _decimal_or_none(pricing.get("prompt_per_million"))
+    output_pm = _decimal_or_none(pricing.get("completion_per_million"))
+    image_input_pm = _decimal_or_none(pricing.get("image_input_per_million"))
+    image_output_pm = _decimal_or_none(pricing.get("image_output_per_million"))
 
-    image_output_pm = _first_decimal(
-        item,
-        "image_output_rub_per_million",
-        "output_image_rub_per_million",
-        "image_output_per_million",
-    )
-    if image_output_pm is None:
-        image_output_pm = _per_million_from_generic(
-            _first_decimal(pricing, "image_output", "output_image")
-        )
-
-    image_per_image = _first_decimal(
-        item,
-        "price_per_image",
-        "image_price_rub",
-        "image_rub_per_image",
-    )
-    if image_per_image is None:
-        image_per_image = _first_decimal(
-            pricing,
-            "image",
-            "per_image",
-            "image_generation",
+    per_request = _decimal_or_none(pricing.get("per_request"))
+    tiers = pricing.get("tiers") if isinstance(pricing.get("tiers"), list) else []
+    normalized_tiers = []
+    for tier in tiers:
+        if not isinstance(tier, dict):
+            continue
+        cost = _decimal_or_none(tier.get("cost_rub"))
+        if cost is None:
+            continue
+        normalized_tiers.append(
+            {
+                "conditions": [
+                    str(value)
+                    for value in (tier.get("conditions") or [])
+                    if value not in (None, "")
+                ],
+                "cost_rub": str(cost),
+            }
         )
 
     return {
@@ -121,41 +100,63 @@ def _polza_price_row(item):
         "output_per_million": str(output_pm) if output_pm is not None else None,
         "image_input_per_million": str(image_input_pm) if image_input_pm is not None else None,
         "image_output_per_million": str(image_output_pm) if image_output_pm is not None else None,
-        "image_per_image": str(image_per_image) if image_per_image is not None else None,
+        "image_per_image": str(per_request) if per_request is not None else None,
+        "pricing_tiers": normalized_tiers,
+        "model_type": str(item.get("type") or ""),
     }
 
 
 def _polza_pricing_for_key(key):
-    response = httpx.get(
-        "https://polza.ai/api/v1/models",
-        headers={"Authorization": f"Bearer {key.get_secret()}"},
-        timeout=15,
-        follow_redirects=True,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    rows = payload.get("data", []) if isinstance(payload, dict) else []
-    result = []
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        model_id = str(item.get("id") or item.get("name") or "").strip()
-        if not model_id:
-            continue
-        prices = _polza_price_row(item)
-        result.append(
-            {
-                "id": model_id,
-                "display_name": str(
-                    item.get("display_name")
-                    or item.get("displayName")
-                    or item.get("name")
-                    or model_id
-                ),
-                **prices,
-            }
+    """Load official current Polza catalog pricing and scope it to this key.
+
+    /models/catalog is the documented pricing source. /models remains the
+    credential-specific availability source captured in key.available_models.
+    """
+    base_url = str(key.provider.api_base_url or "https://polza.ai/api/v1").rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {key.get_secret()}",
+        "Accept-Language": "ru",
+    }
+    allowed = set(str(value) for value in (key.available_models or []) if value)
+    rows = []
+    page = 1
+    total_pages = 1
+    while page <= total_pages and page <= 50:
+        response = httpx.get(
+            f"{base_url}/models/catalog",
+            headers=headers,
+            params={"page": page, "limit": 100},
+            timeout=20,
+            follow_redirects=True,
         )
-    return result
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or "").strip()
+            if not model_id:
+                continue
+            if allowed and model_id not in allowed:
+                continue
+            prices = _polza_price_row(item)
+            rows.append(
+                {
+                    "id": model_id,
+                    "display_name": str(item.get("name") or model_id),
+                    **prices,
+                }
+            )
+        meta = payload.get("meta") if isinstance(payload, dict) else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        try:
+            total_pages = max(1, int(meta.get("totalPages") or 1))
+        except (TypeError, ValueError):
+            total_pages = 1
+        page += 1
+    return rows
 
 
 def _pricing_snapshot_from_request(request, *, key, model=None, upstream_model=""):
@@ -212,6 +213,8 @@ def _pricing_snapshot_from_request(request, *, key, model=None, upstream_model="
         "image_input_per_million": image_input,
         "image_output_per_million": image_output,
         "image_per_image": image_per_image,
+        "pricing_tiers": auto.get("pricing_tiers") or [],
+        "model_type": auto.get("model_type") or "",
         "sources": {
             "input_per_million": input_source,
             "output_per_million": output_source,
