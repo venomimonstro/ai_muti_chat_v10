@@ -120,6 +120,24 @@ def _polza_pricing_for_key(key):
     }
     allowed = set(str(value) for value in (key.allowed_models or []) if value)
     if not allowed:
+        # Recovery for keys created during older Polza iterations: use only models
+        # already configured under Polza in AIlegend, never the full Polza catalog.
+        allowed = {
+            str(value)
+            for value in AIModel.objects.filter(
+                provider=key.provider,
+                routing_tags__contains=["admin-selected"],
+            ).exclude(upstream_model="").values_list("upstream_model", flat=True)
+            if value
+        }
+        if allowed:
+            ProviderApiKey.objects.filter(pk=key.pk).update(
+                allowed_models=sorted(allowed),
+                model_scope_source="recovered_from_registry",
+            )
+            key.allowed_models = sorted(allowed)
+            key.model_scope_source = "recovered_from_registry"
+    if not allowed:
         return []
     rows_by_id = {}
 
