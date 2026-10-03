@@ -110,6 +110,8 @@ def _key_payload(item: ProviderApiKey):
         "balance_checked_at": item.balance_checked_at,
         "last_checked_at": item.last_checked_at,
         "available_models_count": len(item.available_models or []),
+        "allowed_models_count": len(item.allowed_models or []),
+        "allowed_models": list(item.allowed_models or []),
     }
 
 
@@ -599,6 +601,23 @@ class ProviderKeyDetailView(AdminAPIView):
         if "enabled" in request.data:
             item.enabled = bool(request.data["enabled"])
             item.health_state = ProviderApiKey.HealthState.UNKNOWN if item.enabled else ProviderApiKey.HealthState.DISABLED
+        if "allowed_models" in request.data:
+            if item.provider.slug != "polza":
+                return Response({"detail": "Allowlist моделей поддерживается только для router-провайдеров"}, status=400)
+            raw_allowed = request.data.get("allowed_models")
+            if not isinstance(raw_allowed, list):
+                return Response({"detail": "allowed_models должен быть списком"}, status=400)
+            available = {str(value) for value in (item.available_models or []) if value}
+            normalized = []
+            for value in raw_allowed[:200]:
+                model_id = str(value or "").strip()[:160]
+                if not model_id:
+                    continue
+                if available and model_id not in available:
+                    return Response({"detail": f"Модель {model_id} недоступна этому Polza-ключу"}, status=400)
+                if model_id not in normalized:
+                    normalized.append(model_id)
+            item.allowed_models = normalized
         if request.data.get("recheck"):
             item.enabled = True
             item.save(update_fields=["enabled"])
@@ -637,7 +656,12 @@ class ProviderKeyDetailView(AdminAPIView):
                 except Exception:
                     pass
         else:
-            item.save()
+            update_fields = []
+            if "enabled" in request.data:
+                update_fields.extend(["enabled", "health_state"])
+            if "allowed_models" in request.data:
+                update_fields.append("allowed_models")
+            item.save(update_fields=list(dict.fromkeys(update_fields)) or None)
         return Response(_key_payload(item))
 
     @transaction.atomic
@@ -652,12 +676,17 @@ class ProviderKeyDetailView(AdminAPIView):
 class ProviderDiscoveredModelsView(AdminAPIView):
     def get(self, request, provider_slug):
         provider = get_object_or_404(Provider, slug=provider_slug)
+        requested_key_id = str(request.query_params.get("key_id") or "").strip()
         healthy_keys = list(
             provider.api_keys.filter(
                 enabled=True,
                 health_state=ProviderApiKey.HealthState.HEALTHY,
             ).order_by("priority", "created_at")[:20]
         )
+        if requested_key_id:
+            healthy_keys = [
+                item for item in healthy_keys if str(item.id) == requested_key_id
+            ]
         key = healthy_keys[0] if healthy_keys else None
         api_key = key.get_secret() if key else provider.get_api_key()
         if not api_key:
@@ -720,19 +749,56 @@ class ProviderDiscoveredModelsView(AdminAPIView):
         except Exception:
             return Response({"detail": "Не удалось получить список моделей"}, status=424)
         configured = set(AIModel.objects.filter(provider=provider).values_list("upstream_model", flat=True))
-        enriched = [{**item, "purpose": _purpose(item["id"]), "selected": item["id"] in configured, "price": _price_for(provider, item["id"])} for item in models]
-        return Response({"provider": provider.slug, "models": enriched})
+        allowed_by_key = {}
+        if provider.slug == "polza":
+            for item_key in healthy_keys:
+                for model_id in (item_key.allowed_models or []):
+                    allowed_by_key.setdefault(str(model_id), []).append(str(item_key.id))
+        enriched = [
+            {
+                **item,
+                "purpose": _purpose(item["id"]),
+                "selected": item["id"] in configured,
+                "allowed_key_ids": allowed_by_key.get(item["id"], []),
+                "allowed_for_requested_key": (
+                    bool(requested_key_id and requested_key_id in allowed_by_key.get(item["id"], []))
+                    if provider.slug == "polza"
+                    else None
+                ),
+                "price": _price_for(provider, item["id"]),
+            }
+            for item in models
+        ]
+        return Response({"provider": provider.slug, "key_id": requested_key_id or None, "models": enriched})
 
     @transaction.atomic
     def post(self, request, provider_slug):
         provider = get_object_or_404(Provider, slug=provider_slug)
         model_ids = request.data.get("model_ids") or []
-        if not isinstance(model_ids, list) or not model_ids:
+        if not isinstance(model_ids, list):
+            return Response({"detail": "model_ids должен быть списком"}, status=400)
+        requested_key_id = str(request.data.get("key_id") or "").strip()
+        target_key = None
+        if provider.slug == "polza":
+            if not requested_key_id:
+                return Response({"detail": "Для Polza выберите конкретный API-ключ"}, status=400)
+            target_key = get_object_or_404(
+                ProviderApiKey.objects.select_for_update(),
+                pk=requested_key_id,
+                provider=provider,
+            )
+            available = {str(value) for value in (target_key.available_models or []) if value}
+            invalid = [str(value) for value in model_ids if available and str(value) not in available]
+            if invalid:
+                return Response({"detail": f"Модели недоступны этому ключу: {', '.join(invalid[:10])}"}, status=400)
+            target_key.allowed_models = list(dict.fromkeys(str(value).strip()[:160] for value in model_ids if str(value).strip()))
+            target_key.save(update_fields=["allowed_models"])
+        elif not model_ids:
             return Response({"detail": "Выберите хотя бы одну модель"}, status=400)
 
         catalog_meta = {}
         if provider.slug == "polza":
-            healthy_key = (
+            healthy_key = target_key or (
                 provider.api_keys.filter(
                     enabled=True,
                     health_state=ProviderApiKey.HealthState.HEALTHY,
