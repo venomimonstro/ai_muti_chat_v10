@@ -177,6 +177,7 @@ def record_purchase(
     payment_amount=None,
     payment_currency="RUB",
     payment_fx_rate_rub=None,
+    pricing_snapshot=None,
     reference="",
 ):
     account = ProviderFundingAccount.objects.select_for_update().get(pk=account.pk)
@@ -232,6 +233,7 @@ def record_purchase(
         total_cash_outlay_rub=total,
         market_fx_rate_rub=_d(market_fx_rate_rub) if market_fx_rate_rub not in (None, "") else None,
         effective_cost_rub_per_native=unit,
+        pricing_snapshot=dict(pricing_snapshot or {}),
         reference=str(reference or "")[:300],
         purchased_at=purchased_at,
         created_by=created_by,
