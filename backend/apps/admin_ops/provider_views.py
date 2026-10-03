@@ -240,6 +240,58 @@ def _gigachat_adapter(provider: Provider, secret: str):
     )
 
 
+def _polza_chat_model(item: dict, model_id: str) -> bool:
+    """Keep Polza discovery scoped to models usable by /chat/completions.
+
+    Prefer explicit endpoint/task metadata when Polza returns it. For older/minimal
+    /models payloads, conservatively exclude model families that are clearly for
+    image/audio/video/embedding endpoints.
+    """
+    raw_endpoints = (
+        item.get("endpoints")
+        or item.get("supported_endpoints")
+        or item.get("api_endpoints")
+        or []
+    )
+    if isinstance(raw_endpoints, str):
+        raw_endpoints = [raw_endpoints]
+    endpoints = {str(value).strip().lower() for value in raw_endpoints if value}
+    if endpoints:
+        return any("chat/completions" in value for value in endpoints)
+
+    task = str(
+        item.get("task")
+        or item.get("type")
+        or item.get("category")
+        or ""
+    ).strip().lower()
+    if task:
+        if any(token in task for token in ("chat", "text", "language", "code", "reason")):
+            return True
+        if any(token in task for token in ("image", "audio", "speech", "video", "embedding", "music")):
+            return False
+
+    value = model_id.casefold()
+    excluded = (
+        "embedding",
+        "whisper",
+        "transcrib",
+        "tts",
+        "speech",
+        "text-to-speech",
+        "image-generation",
+        "image_gen",
+        "gpt-image",
+        "dall-e",
+        "sora",
+        "veo",
+        "lyria",
+        "video",
+        "music",
+    )
+    return not any(token in value for token in excluded)
+
+
 def _extract_models(provider: Provider, payload):
     raw = payload.get("models", []) if provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT else payload.get("data", [])
     result = []
@@ -248,6 +300,8 @@ def _extract_models(provider: Provider, payload):
         if model_id.startswith("models/"):
             model_id = model_id[7:]
         if not model_id:
+            continue
+        if provider.slug == "polza" and not _polza_chat_model(item, model_id):
             continue
         result.append({"id": model_id, "display_name": item.get("displayName") or item.get("display_name") or model_id})
     return result
