@@ -7,6 +7,7 @@ from apps.ai_registry.client_readiness import provider_model_config_ready
 from apps.ai_registry.models import AIModel, Provider, ProviderApiKey
 from apps.ai_registry.reliability import model_client_ready, provider_available
 from apps.billing.pricing import active_price
+from apps.procurement.models import ProviderPurchase
 
 
 class Command(BaseCommand):
@@ -81,6 +82,60 @@ class Command(BaseCommand):
                         f"key_id={key.id} type={type(exc).__name__} detail={str(exc)[:500]}"
                     ) from exc
 
+        try:
+            from apps.admin_ops.procurement_ledger_views import _polza_pricing_for_key
+
+            for key in keys:
+                if key.health_state != ProviderApiKey.HealthState.HEALTHY:
+                    continue
+                rows = _polza_pricing_for_key(key)
+                priced = [
+                    row
+                    for row in rows
+                    if any(
+                        row.get(field) not in (None, "")
+                        for field in (
+                            "input_per_million",
+                            "output_per_million",
+                            "image_input_per_million",
+                            "image_output_per_million",
+                            "image_per_image",
+                        )
+                    )
+                ]
+                self.stdout.write(
+                    "POLZA_PRICING "
+                    f"key_id={key.id} catalog_models={len(rows)} priced_models={len(priced)}"
+                )
+        except Exception as exc:
+            self.stdout.write(
+                self.style.WARNING(
+                    "POLZA_PRICING_WARN "
+                    f"type={type(exc).__name__} detail={str(exc)[:300]}"
+                )
+            )
+
+        latest_purchase = (
+            ProviderPurchase.objects.filter(account__provider=provider)
+            .exclude(pricing_snapshot={})
+            .select_related("account__api_key")
+            .order_by("-purchased_at", "-created_at")
+            .first()
+        )
+        if latest_purchase is not None:
+            snapshot = latest_purchase.pricing_snapshot or {}
+            self.stdout.write(
+                "POLZA_PURCHASE_PRICE_SNAPSHOT "
+                f"document={latest_purchase.document_number} "
+                f"model={snapshot.get('upstream_model') or '-'} "
+                f"input={snapshot.get('input_per_million') or '-'} "
+                f"output={snapshot.get('output_per_million') or '-'} "
+                f"image_input={snapshot.get('image_input_per_million') or '-'} "
+                f"image_output={snapshot.get('image_output_per_million') or '-'} "
+                f"image_per_image={snapshot.get('image_per_image') or '-'} "
+                f"sources={snapshot.get('sources') or {}}"
+            )
+
         models = list(
             AIModel.objects.filter(provider=provider)
             .select_related("provider", "current_version")
@@ -112,12 +167,21 @@ class Command(BaseCommand):
             ]
             config_ready = provider_model_config_ready(model)
             client_ready = model_client_ready(model)
+            active = None
+            if price_ok:
+                try:
+                    active = active_price(model.slug)
+                except Exception:
+                    active = None
             self.stdout.write(
                 "POLZA_MODEL "
                 f"slug={model.slug} upstream={model.upstream_model!r} "
                 f"enabled={model.enabled} compatible_keys={len(compatible_keys)} "
                 f"config_ready={config_ready} price_ok={price_ok} "
                 f"client_ready={client_ready} "
+                f"price_currency={getattr(active, 'provider_currency', '-') if active else '-'} "
+                f"price_in={getattr(active, 'input_price_per_million', '-') if active else '-'} "
+                f"price_out={getattr(active, 'output_price_per_million', '-') if active else '-'} "
                 f"price_error={price_error or '-'}"
             )
 
