@@ -445,34 +445,28 @@ def _extract_polza_key_model_scope(payload):
 
 
 def _sync_polza_key_scope(provider: Provider, key: ProviderApiKey):
-    """Synchronize what Polza publicly exposes for a key.
+    """Refresh Polza key accounting and catalog without fabricating key model scope.
 
-    Polza's documented /models endpoint is the full catalog, not a key-specific
-    model allowlist. Never treat that catalog as the models selected in the Polza
-    dashboard. If a future /key response exposes an explicit model restriction,
-    use it; otherwise keep the previous explicit scope (if any) and mark the source
-    as not exposed by the public API.
+    Official Polza API exposes key limit/usage via /key and the global model catalog
+    via /models. It does not expose the dashboard model selection for an API key.
+    Preserve the explicit AIlegend key allowlist and only refresh catalog visibility.
     """
     secret = key.get_secret()
     base_url = (provider.api_base_url or "https://polza.ai/api/v1").rstrip("/")
     auth_headers = _headers(provider, secret)
 
     key_payload = {}
-    try:
-        key_response = httpx.get(
-            f"{base_url}/key",
-            headers=auth_headers,
-            timeout=10,
-            follow_redirects=True,
-        )
-        key_response.raise_for_status()
-        key_payload = key_response.json() if key_response.content else {}
-    except Exception:
-        key_payload = {}
+    key_response = httpx.get(
+        f"{base_url}/key",
+        headers=auth_headers,
+        timeout=10,
+        follow_redirects=True,
+    )
+    key_response.raise_for_status()
+    key_payload = key_response.json() if key_response.content else {}
 
     auth_response = httpx.get(
         f"{base_url}/models",
-        headers=auth_headers,
         timeout=15,
         follow_redirects=True,
     )
@@ -484,23 +478,18 @@ def _sync_polza_key_scope(provider: Provider, key: ProviderApiKey):
         if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
     })
 
-    restricted = _extract_polza_key_model_scope(key_payload)
-    if restricted:
-        key.allowed_models = sorted(dict.fromkeys(restricted))
-        key.model_scope_source = "polza_key"
-    elif key.allowed_models and key.model_scope_source in {"legacy_preserved", "manual"}:
-        # Preserve an older explicit scope, but never widen it from /models.
-        key.allowed_models = [
-            model_id for model_id in key.allowed_models
-            if model_id in set(catalog_models)
-        ]
-        key.model_scope_source = key.model_scope_source
-    else:
-        key.allowed_models = []
-        key.model_scope_source = "polza_scope_not_exposed"
-
-    # available_models is diagnostic catalog visibility only.
     key.available_models = catalog_models
+    key.allowed_models = [
+        model_id for model_id in (key.allowed_models or [])
+        if not catalog_models or model_id in set(catalog_models)
+    ]
+    key.model_scope_source = "ailegend_allowlist"
+
+    remaining = key_payload.get("limit_remaining")
+    if remaining is not None:
+        key.balance_amount = Decimal(str(remaining))
+        key.balance_currency = "RUB"
+        key.balance_supported = True
     return key_payload
 
 
@@ -587,8 +576,7 @@ def _check_key(provider: Provider, key: ProviderApiKey):
                 raise ValueError("OpenRouter /key returned invalid payload")
         if provider.slug == "polza":
             _sync_polza_key_scope(provider, key)
-            if key.model_scope_source == "polza_key":
-                _ensure_polza_registry_models(provider, key.allowed_models)
+            _ensure_polza_registry_models(provider, key.allowed_models)
         key.health_state = ProviderApiKey.HealthState.HEALTHY
         key.last_error_code = ""
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
