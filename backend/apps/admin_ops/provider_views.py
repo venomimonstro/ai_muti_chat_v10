@@ -643,6 +643,23 @@ def _refresh_balance(provider: Provider, key: ProviderApiKey):
             key.balance_supported = True
         except Exception:
             pass
+    elif provider.slug == "polza":
+        try:
+            response = httpx.get(
+                f"{provider.api_base_url.rstrip('/')}/key",
+                headers=_headers(provider, key.get_secret()),
+                timeout=10,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            data = response.json() or {}
+            remaining = data.get("limit_remaining")
+            if remaining is not None:
+                key.balance_amount = Decimal(str(remaining))
+                key.balance_currency = "RUB"
+                key.balance_supported = True
+        except Exception:
+            pass
     key.balance_checked_at = timezone.now()
     key.save(update_fields=["balance_supported", "balance_amount", "balance_currency", "balance_checked_at"])
 
@@ -896,6 +913,9 @@ class ProviderDiscoveredModelsView(AdminAPIView):
             return Response({"detail": f"Провайдер вернул HTTP {exc.response.status_code}"}, status=424)
         except Exception:
             return Response({"detail": "Не удалось получить список моделей"}, status=424)
+        if provider.slug == "polza" and requested_key_id and key is not None:
+            synced = {str(value) for value in (key.allowed_models or []) if value}
+            models = [item for item in models if item["id"] in synced]
         configured = set(AIModel.objects.filter(provider=provider).values_list("upstream_model", flat=True))
         allowed_by_key = {}
         if provider.slug == "polza":
