@@ -834,11 +834,13 @@ class ProcurementLedgerView(AdminAPIView):
                     item.upstream_model: item
                     for item in AIModel.objects.filter(provider=key.provider)
                 }
+                allowed = {str(value) for value in (key.allowed_models or []) if value}
                 rows = [
                     {
                         **item,
                         "model_slug": configured[item["id"]].slug if item["id"] in configured else None,
                         "configured": item["id"] in configured,
+                        "allowed": item["id"] in allowed,
                     }
                     for item in rows
                 ]
