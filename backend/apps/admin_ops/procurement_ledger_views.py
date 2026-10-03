@@ -118,7 +118,7 @@ def _polza_pricing_for_key(key):
         "Authorization": f"Bearer {key.get_secret()}",
         "Accept-Language": "ru",
     }
-    allowed = set(str(value) for value in (key.available_models or []) if value)
+    allowed = set(str(value) for value in (key.allowed_models or []) if value)
     rows_by_id = {}
 
     catalog_error = None
