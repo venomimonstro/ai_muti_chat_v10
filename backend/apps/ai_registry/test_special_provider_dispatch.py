@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from . import adapters, dispatch
 from .adapters import EchoProviderAdapter
-from .models import AIModel, Provider
+from .models import AIModel, Provider, ProviderApiKey
 
 
 class SpecialProviderDispatchTests(TestCase):
@@ -32,6 +32,39 @@ class SpecialProviderDispatchTests(TestCase):
             adapter = dispatch.adapter_for(model)
         self.assertNotIsInstance(adapter, EchoProviderAdapter)
         self.assertEqual(type(adapter).__name__, "GigaChatAPIAdapter")
+
+    def test_polza_uses_dedicated_gateway_adapter(self):
+        provider, _created = Provider.objects.update_or_create(
+            slug="polza",
+            defaults={
+                "name": "Polza.ai",
+                "adapter_type": Provider.AdapterType.XAI_CHAT,
+                "api_base_url": "https://polza.ai/api/v1",
+                "enabled": True,
+                "emergency_disabled": False,
+            },
+        )
+        key = ProviderApiKey(
+            provider=provider,
+            label="Polza test",
+            enabled=True,
+            health_state=ProviderApiKey.HealthState.HEALTHY,
+        )
+        key.set_secret("pza_test_secret")
+        key.save()
+        model = AIModel.objects.create(
+            provider=provider,
+            slug="dispatch-polza",
+            display_name="Polza GPT",
+            upstream_model="openai/gpt-6-luna",
+        )
+        adapter = dispatch.adapter_for(
+            model,
+            require_funding_balance=False,
+        )
+        self.assertEqual(type(adapter).__name__, "PolzaChatAdapter")
+        self.assertEqual(adapter.base_url, "https://polza.ai/api/v1")
+        self.assertEqual(adapter.api_key, "pza_test_secret")
 
     def test_real_echo_provider_still_uses_echo(self):
         provider = Provider.objects.create(
