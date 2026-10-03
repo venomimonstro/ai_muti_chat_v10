@@ -83,8 +83,8 @@ def account_matches(
         and account.api_key_id
         and model_upstream
     ):
-        available = list(getattr(account.api_key, "available_models", None) or [])
-        if available and model_upstream not in available:
+        allowed = list(getattr(account.api_key, "allowed_models", None) or [])
+        if model_upstream not in allowed:
             return False
     if require_balance:
         minimum = required if required > ZERO else NATIVE_STEP
