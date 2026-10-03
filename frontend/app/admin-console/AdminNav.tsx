@@ -22,7 +22,7 @@ export default function AdminNav(){
  const pathname=usePathname();
  const active=(href:string)=>href==="/admin-console"?pathname===href:pathname.startsWith(href);
  return <aside className={styles.side}>
-  <Link className={styles.brand} href="/admin-console">AI Workspace · Администратор</Link>
+  <Link className={styles.brand} href="/admin-console">AIlegend · Администратор</Link>
   <nav className={styles.nav} aria-label="Разделы панели администратора">
    {links.map(([label,href])=><Link className={active(href)?styles.active:""} aria-current={active(href)?"page":undefined} key={href} href={href}>{label}</Link>)}
   </nav>
