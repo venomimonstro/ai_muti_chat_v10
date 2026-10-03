@@ -4,7 +4,7 @@ import {redirect} from "next/navigation";
 import AdminNav from "./AdminNav";
 import styles from "./admin.module.css";
 
-export const metadata:Metadata={title:"AI Workspace — Панель администратора",robots:{index:false,follow:false}};
+export const metadata:Metadata={title:"AIlegend — Панель администратора",robots:{index:false,follow:false}};
 
 type CurrentUser={role?:string;status?:string;is_staff?:boolean;is_superuser?:boolean};
 
