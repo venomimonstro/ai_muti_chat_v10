@@ -22,8 +22,8 @@ def provider_model_config_ready(model) -> bool:
                 health_state="healthy",
             )
             for key in keys:
-                available = list(getattr(key, "available_models", None) or [])
-                if not available or upstream in available:
+                allowed = list(getattr(key, "allowed_models", None) or [])
+                if upstream in allowed:
                     return True
             return False
         except Exception:
