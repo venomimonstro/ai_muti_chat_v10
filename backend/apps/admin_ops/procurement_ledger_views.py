@@ -158,13 +158,20 @@ def _polza_pricing_for_key(key):
     return result
 
 
-def _pricing_snapshot_from_request(request, *, key, model):
-    if key.provider.slug != "polza" or model is None:
+def _pricing_snapshot_from_request(request, *, key, model=None, upstream_model=""):
+    if key.provider.slug != "polza":
+        return {}
+    target_upstream = str(
+        getattr(model, "upstream_model", "")
+        or upstream_model
+        or ""
+    ).strip()
+    if not target_upstream:
         return {}
     auto = {}
     try:
         rows = _polza_pricing_for_key(key)
-        auto = next((item for item in rows if item["id"] == model.upstream_model), {})
+        auto = next((item for item in rows if item["id"] == target_upstream), {})
     except Exception:
         auto = {}
 
@@ -197,8 +204,8 @@ def _pricing_snapshot_from_request(request, *, key, model):
     return {
         "provider": "polza",
         "api_key_id": str(key.id),
-        "model_slug": model.slug,
-        "upstream_model": model.upstream_model,
+        "model_slug": getattr(model, "slug", "") or "",
+        "upstream_model": target_upstream,
         "currency": currency,
         "input_per_million": input_price,
         "output_per_million": output_price,
@@ -415,19 +422,44 @@ def _edit_purchase(request):
     pricing_snapshot = purchase.pricing_snapshot or {}
     selected_model = None
     if account.provider.slug == "polza" and account.api_key_id:
-        selected_model_slug = str(request.data.get("model_slug") or pricing_snapshot.get("model_slug") or "").strip()
-        if selected_model_slug:
+        selected_upstream = str(
+            request.data.get("polza_model_id")
+            or pricing_snapshot.get("upstream_model")
+            or ""
+        ).strip()
+        selected_model_slug = str(
+            request.data.get("model_slug")
+            or pricing_snapshot.get("model_slug")
+            or ""
+        ).strip()
+        if selected_upstream:
             selected_model = (
-                AIModel.objects.filter(provider=account.provider, slug=selected_model_slug)
+                AIModel.objects.filter(
+                    provider=account.provider,
+                    upstream_model=selected_upstream,
+                )
                 .select_related("provider")
                 .first()
             )
-            if selected_model is None:
-                raise DjangoValidationError("Выбранная Polza-модель не найдена в AI Registry")
+            if selected_model_slug and selected_model is None:
+                selected_model = (
+                    AIModel.objects.filter(
+                        provider=account.provider,
+                        slug=selected_model_slug,
+                    )
+                    .select_related("provider")
+                    .first()
+                )
+            available = list(account.api_key.available_models or [])
+            if available and selected_upstream not in available:
+                raise DjangoValidationError(
+                    "Выбранная модель недоступна для этого Polza API-ключа"
+                )
             pricing_snapshot = _pricing_snapshot_from_request(
                 request,
                 key=account.api_key,
                 model=selected_model,
+                upstream_model=selected_upstream,
             )
             _validate_polza_snapshot(pricing_snapshot)
 
@@ -610,20 +642,28 @@ class ProcurementLedgerView(AdminAPIView):
 
             selected_model = None
             pricing_snapshot = {}
+            selected_upstream = str(request.data.get("polza_model_id") or "").strip()
             selected_model_slug = str(request.data.get("model_slug") or "").strip()
-            if key.provider.slug == "polza" and selected_model_slug:
+            if key.provider.slug == "polza" and selected_upstream:
                 selected_model = (
                     AIModel.objects.filter(
                         provider=key.provider,
-                        slug=selected_model_slug,
+                        upstream_model=selected_upstream,
                     )
                     .select_related("provider")
                     .first()
                 )
-                if selected_model is None:
-                    raise DjangoValidationError("Выбранная Polza-модель не найдена в AI Registry")
+                if selected_model_slug and selected_model is None:
+                    selected_model = (
+                        AIModel.objects.filter(
+                            provider=key.provider,
+                            slug=selected_model_slug,
+                        )
+                        .select_related("provider")
+                        .first()
+                    )
                 available = list(key.available_models or [])
-                if available and selected_model.upstream_model not in available:
+                if available and selected_upstream not in available:
                     raise DjangoValidationError(
                         "Выбранная модель недоступна для этого Polza API-ключа"
                     )
@@ -631,6 +671,7 @@ class ProcurementLedgerView(AdminAPIView):
                     request,
                     key=key,
                     model=selected_model,
+                    upstream_model=selected_upstream,
                 )
                 _validate_polza_snapshot(pricing_snapshot)
 
