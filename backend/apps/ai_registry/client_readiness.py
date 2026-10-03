@@ -12,6 +12,22 @@ import sys
 
 def provider_model_config_ready(model) -> bool:
     """Validate provider-specific execution metadata before customer exposure."""
+    if model.provider.slug == "polza":
+        upstream = str(model.upstream_model or "").strip()
+        if not upstream:
+            return False
+        try:
+            keys = model.provider.api_keys.filter(
+                enabled=True,
+                health_state="healthy",
+            )
+            for key in keys:
+                available = list(getattr(key, "available_models", None) or [])
+                if not available or upstream in available:
+                    return True
+            return False
+        except Exception:
+            return False
     if model.provider.slug != "yandexgpt":
         return True
     upstream = str(model.upstream_model or "").strip()
