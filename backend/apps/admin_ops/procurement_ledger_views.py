@@ -241,6 +241,31 @@ def _validate_polza_snapshot(snapshot):
         )
 
 
+def _activate_polza_image_price(*, provider, upstream_model, snapshot):
+    price = snapshot.get("image_per_image")
+    if price in (None, ""):
+        return None
+    try:
+        from apps.image_studio.models import ImageModel
+    except Exception:
+        return None
+    image_model = ImageModel.objects.filter(
+        provider=provider,
+        upstream_model=upstream_model,
+    ).first()
+    if image_model is None:
+        return None
+    value = Decimal(str(price))
+    if value <= 0:
+        return None
+    image_model.provider_currency = str(snapshot.get("currency") or "RUB").upper()[:3]
+    image_model.provider_price_per_image = value
+    image_model.save(
+        update_fields=["provider_currency", "provider_price_per_image"]
+    )
+    return image_model
+
+
 def _activate_polza_text_price(*, model, snapshot):
     input_price = snapshot.get("input_per_million")
     output_price = snapshot.get("output_per_million")
@@ -480,8 +505,14 @@ def _edit_purchase(request):
     }
     ProviderPurchase.objects.filter(pk=purchase.pk).update(**fields)
     purchase.refresh_from_db()
-    if selected_model is not None and pricing_snapshot:
-        _activate_polza_text_price(model=selected_model, snapshot=pricing_snapshot)
+    if pricing_snapshot:
+        if selected_model is not None:
+            _activate_polza_text_price(model=selected_model, snapshot=pricing_snapshot)
+        _activate_polza_image_price(
+            provider=account.provider,
+            upstream_model=str(pricing_snapshot.get("upstream_model") or ""),
+            snapshot=pricing_snapshot,
+        )
     audit(request, "procurement.purchase_edited", "provider_purchase", str(purchase.id), {
         "document_number": purchase.document_number,
         "credit_native": str(purchase.credit_native),
@@ -689,9 +720,15 @@ class ProcurementLedgerView(AdminAPIView):
                 pricing_snapshot=pricing_snapshot,
                 reference=request.data.get("reference") or "",
             )
-            if selected_model is not None and pricing_snapshot:
-                _activate_polza_text_price(
-                    model=selected_model,
+            if pricing_snapshot:
+                if selected_model is not None:
+                    _activate_polza_text_price(
+                        model=selected_model,
+                        snapshot=pricing_snapshot,
+                    )
+                _activate_polza_image_price(
+                    provider=key.provider,
+                    upstream_model=str(pricing_snapshot.get("upstream_model") or ""),
                     snapshot=pricing_snapshot,
                 )
             audit(
