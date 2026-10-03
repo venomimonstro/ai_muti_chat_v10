@@ -109,6 +109,7 @@ def _key_payload(item: ProviderApiKey):
         "balance_currency": item.balance_currency,
         "balance_checked_at": item.balance_checked_at,
         "last_checked_at": item.last_checked_at,
+        "available_models_count": len(item.available_models or []),
     }
 
 
@@ -371,6 +372,14 @@ def _check_key(provider: Provider, key: ProviderApiKey):
             payload = response.json()
             if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
                 raise ValueError("OpenRouter /key returned invalid payload")
+        if provider.slug == "polza":
+            payload = response.json()
+            raw = payload.get("data", []) if isinstance(payload, dict) else []
+            key.available_models = sorted({
+                str(item.get("id") or item.get("name") or "").strip()
+                for item in raw
+                if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
+            })
         key.health_state = ProviderApiKey.HealthState.HEALTHY
         key.last_error_code = ""
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
@@ -387,7 +396,10 @@ def _check_key(provider: Provider, key: ProviderApiKey):
         key.last_error_code = "invalid_response" if provider.slug == "openrouter" else "network"
         key.last_latency_ms = int((time.monotonic() - started) * 1000)
     key.last_checked_at = now
-    key.save(update_fields=["health_state", "last_error_code", "last_latency_ms", "last_checked_at"])
+    update_fields = ["health_state", "last_error_code", "last_latency_ms", "last_checked_at"]
+    if provider.slug == "polza":
+        update_fields.append("available_models")
+    key.save(update_fields=update_fields)
     return key.health_state == ProviderApiKey.HealthState.HEALTHY
 
 
