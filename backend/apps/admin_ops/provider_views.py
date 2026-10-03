@@ -293,6 +293,66 @@ def _polza_chat_model(item: dict, model_id: str) -> bool:
     return not any(token in value for token in excluded)
 
 
+def _positive_int(*values, default=0):
+    for value in values:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return default
+
+
+def _model_capabilities(item: dict, model_id: str) -> list[str]:
+    capabilities = {"text", "streaming"}
+    raw = (
+        item.get("capabilities")
+        or item.get("modalities")
+        or item.get("input_modalities")
+        or []
+    )
+    if isinstance(raw, str):
+        raw = [raw]
+    normalized = {str(value).strip().lower() for value in raw if value}
+    if normalized.intersection({"image", "images", "vision", "multimodal"}):
+        capabilities.add("vision")
+    if normalized.intersection({"tool", "tools", "function_calling", "functions"}):
+        capabilities.add("tools")
+    # Some catalogs expose modalities nested under architecture.
+    architecture = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
+    nested = architecture.get("input_modalities") or architecture.get("modalities") or []
+    if isinstance(nested, str):
+        nested = [nested]
+    nested_normalized = {str(value).strip().lower() for value in nested if value}
+    if nested_normalized.intersection({"image", "images", "vision", "multimodal"}):
+        capabilities.add("vision")
+    return sorted(capabilities)
+
+
+def _model_metadata(item: dict, model_id: str) -> dict:
+    top_provider = item.get("top_provider") if isinstance(item.get("top_provider"), dict) else {}
+    context_window = _positive_int(
+        item.get("context_length"),
+        item.get("context_window"),
+        item.get("max_context_length"),
+        top_provider.get("context_length"),
+        default=8192,
+    )
+    max_output = _positive_int(
+        item.get("max_output_tokens"),
+        item.get("max_completion_tokens"),
+        item.get("max_tokens"),
+        top_provider.get("max_completion_tokens"),
+        default=min(4096, max(512, context_window // 4)),
+    )
+    return {
+        "context_window": max(512, context_window),
+        "max_output_tokens": max(64, min(max_output, context_window)),
+        "capabilities": _model_capabilities(item, model_id),
+    }
+
+
 def _extract_models(provider: Provider, payload):
     raw = payload.get("models", []) if provider.adapter_type == Provider.AdapterType.GEMINI_GENERATE_CONTENT else payload.get("data", [])
     result = []
@@ -304,7 +364,11 @@ def _extract_models(provider: Provider, payload):
             continue
         if provider.slug == "polza" and not _polza_chat_model(item, model_id):
             continue
-        result.append({"id": model_id, "display_name": item.get("displayName") or item.get("display_name") or model_id})
+        result.append({
+            "id": model_id,
+            "display_name": item.get("displayName") or item.get("display_name") or model_id,
+            **_model_metadata(item, model_id),
+        })
     return result
 
 
@@ -665,6 +729,33 @@ class ProviderDiscoveredModelsView(AdminAPIView):
         model_ids = request.data.get("model_ids") or []
         if not isinstance(model_ids, list) or not model_ids:
             return Response({"detail": "Выберите хотя бы одну модель"}, status=400)
+
+        catalog_meta = {}
+        if provider.slug == "polza":
+            healthy_key = (
+                provider.api_keys.filter(
+                    enabled=True,
+                    health_state=ProviderApiKey.HealthState.HEALTHY,
+                )
+                .order_by("priority", "created_at")
+                .first()
+            )
+            if healthy_key is not None:
+                try:
+                    response = httpx.get(
+                        _models_url(provider),
+                        headers=_headers(provider, healthy_key.get_secret()),
+                        timeout=15,
+                        follow_redirects=True,
+                    )
+                    response.raise_for_status()
+                    catalog_meta = {
+                        item["id"]: item
+                        for item in _extract_models(provider, response.json())
+                    }
+                except Exception:
+                    catalog_meta = {}
+
         created = []
         now = timezone.now()
         for raw in model_ids[:50]:
@@ -679,7 +770,44 @@ class ProviderDiscoveredModelsView(AdminAPIView):
                 while AIModel.objects.filter(slug=slug).exists():
                     slug = f"{base[:40]}-{suffix}"
                     suffix += 1
-                model = AIModel.objects.create(provider=provider, slug=slug, display_name=upstream, upstream_model=upstream, enabled=False, capabilities=["text", "streaming"], routing_tags=["admin-selected"])
+                meta = catalog_meta.get(upstream) or {}
+                model = AIModel.objects.create(
+                    provider=provider,
+                    slug=slug,
+                    display_name=str(meta.get("display_name") or upstream)[:120],
+                    upstream_model=upstream,
+                    enabled=False,
+                    capabilities=meta.get("capabilities") or ["text", "streaming"],
+                    routing_tags=["admin-selected", provider.slug],
+                    context_window=int(meta.get("context_window") or 8192),
+                    max_output_tokens=int(meta.get("max_output_tokens") or 2048),
+                )
+            if provider.slug == "polza":
+                meta = catalog_meta.get(upstream) or {}
+                update_fields = []
+                desired_name = str(meta.get("display_name") or model.display_name or upstream)[:120]
+                desired_capabilities = meta.get("capabilities") or model.capabilities or ["text", "streaming"]
+                desired_context = int(meta.get("context_window") or model.context_window or 8192)
+                desired_output = int(meta.get("max_output_tokens") or model.max_output_tokens or 2048)
+                if model.display_name != desired_name:
+                    model.display_name = desired_name
+                    update_fields.append("display_name")
+                if model.capabilities != desired_capabilities:
+                    model.capabilities = desired_capabilities
+                    update_fields.append("capabilities")
+                if model.context_window != desired_context:
+                    model.context_window = desired_context
+                    update_fields.append("context_window")
+                if model.max_output_tokens != desired_output:
+                    model.max_output_tokens = desired_output
+                    update_fields.append("max_output_tokens")
+                tags = list(dict.fromkeys([*(model.routing_tags or []), "admin-selected", "polza"]))
+                if model.routing_tags != tags:
+                    model.routing_tags = tags
+                    update_fields.append("routing_tags")
+                if update_fields:
+                    model.save(update_fields=update_fields)
+
             if model.current_version_id is None or model.current_version.exact_api_id != upstream:
                 ModelVersion.objects.filter(model=model, stage=ModelVersion.Stage.ACTIVE).update(stage=ModelVersion.Stage.RETIRED, retired_at=now)
                 version = ModelVersion.objects.create(model=model, version=f"selected-{now.strftime('%Y%m%d%H%M%S%f')}-{len(created)}", exact_api_id=upstream, capabilities=model.capabilities, routing_tags=model.routing_tags, context_window=model.context_window, max_output_tokens=model.max_output_tokens, stage=ModelVersion.Stage.ACTIVE, activated_at=now, release_notes="Выбрано из списка моделей провайдера")
