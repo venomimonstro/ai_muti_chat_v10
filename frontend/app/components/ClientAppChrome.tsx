@@ -31,13 +31,13 @@ export default function ClientAppChrome({children}:{children:ReactNode}){
  const active=(href:string)=>href==="/app"?pathname===href:pathname===href||pathname.startsWith(`${href}/`);
  return <div className="clientChrome">
   <aside className="clientChromeNav" aria-label="Личный кабинет">
-   <Link href="/app" className="clientChromeBrand"><span/>AI Workspace</Link>
+   <Link href="/app" className="clientChromeBrand"><span/>AIlegend</Link>
    <nav className="clientChromePrimary">{primary.map(item=><Link key={item.href} href={item.href} aria-label={item.label} className={`${active(item.href)?"active":""} ${item.mobile?"":"clientChromeMobileSecondary"}`}><Icon name={item.icon} size={17}/><span>{item.label}</span></Link>)}</nav>
    <div className="clientChromeDivider"/>
    <nav className="clientChromeAccount">{account.map(item=><Link key={item.href} href={item.href} aria-label={item.label} className={active(item.href)?"active":""}><Icon name={item.icon} size={17}/><span>{item.label}</span></Link>)}</nav>
    <button type="button" className={`clientChromeMoreButton ${moreOpen?"active":""}`} onClick={()=>setMoreOpen(value=>!value)} aria-label="Ещё разделы" aria-expanded={moreOpen}><Icon name="settings" size={18}/><span>Ещё</span></button>
   </aside>
   <div className="clientChromeMain">{children}</div>
-  {moreOpen&&<div className="clientChromeMoreLayer" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)setMoreOpen(false)}}><section className="clientChromeMoreSheet" role="dialog" aria-modal="true" aria-labelledby="client-more-title"><header><div><span>AI WORKSPACE</span><h2 id="client-more-title">Ещё разделы</h2></div><button type="button" onClick={()=>setMoreOpen(false)} aria-label="Закрыть">×</button></header><nav>{moreItems.map(item=><Link key={item.href} href={item.href} className={active(item.href)?"active":""}><Icon name={item.icon} size={18}/><span>{item.label}</span><b>→</b></Link>)}</nav></section></div>}
+  {moreOpen&&<div className="clientChromeMoreLayer" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)setMoreOpen(false)}}><section className="clientChromeMoreSheet" role="dialog" aria-modal="true" aria-labelledby="client-more-title"><header><div><span>AILEGEND</span><h2 id="client-more-title">Ещё разделы</h2></div><button type="button" onClick={()=>setMoreOpen(false)} aria-label="Закрыть">×</button></header><nav>{moreItems.map(item=><Link key={item.href} href={item.href} className={active(item.href)?"active":""}><Icon name={item.icon} size={18}/><span>{item.label}</span><b>→</b></Link>)}</nav></section></div>}
  </div>;
 }
