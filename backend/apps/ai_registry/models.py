@@ -208,6 +208,10 @@ class ProviderApiKey(models.Model):
     balance_checked_at = models.DateTimeField(null=True, blank=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
+    # For multi-model gateways such as Polza, an empty list means unrestricted or
+    # not yet discovered. A populated list is the exact catalog returned for this
+    # credential and lets runtime avoid sending a model through an incompatible key.
+    available_models = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
