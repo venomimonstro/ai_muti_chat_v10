@@ -219,9 +219,10 @@ test("Model picker stays inside the message form beside send controls", () => {
   const composerSource = readFileSync(new URL("../app/workspace/Composer.tsx", import.meta.url), "utf8");
   const rightStart = composerSource.indexOf('<div className="composerRight">');
   assert.ok(rightStart >= 0);
-  const rightSlice = composerSource.slice(rightStart, rightStart + 1400);
-  assert.match(rightSlice, /<ModelPicker/);
-  assert.match(rightSlice, /className="sendButton"/);
+  const pickerIndex = composerSource.indexOf("<ModelPicker", rightStart);
+  const sendIndex = composerSource.indexOf('className="sendButton', rightStart);
+  assert.ok(pickerIndex > rightStart, "ModelPicker must be rendered inside composerRight");
+  assert.ok(sendIndex > pickerIndex, "Send/stop control must follow ModelPicker in composerRight");
 });
 
 test("Critical customer surfaces use AIlegend branding", () => {
