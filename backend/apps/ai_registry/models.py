@@ -212,6 +212,10 @@ class ProviderApiKey(models.Model):
     # not yet discovered. A populated list is the exact catalog returned for this
     # credential and lets runtime avoid sending a model through an incompatible key.
     available_models = models.JSONField(default=list, blank=True)
+    # Admin-controlled allowlist for router providers. available_models describes
+    # what the upstream key can technically access; allowed_models describes what
+    # AIlegend is actually permitted to route through this credential.
+    allowed_models = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
