@@ -44,7 +44,7 @@ class Command(BaseCommand):
             self.stdout.write(
                 "POLZA_KEY "
                 f"id={key.id} label={key.label!r} health={key.health_state} "
-                f"models={len(key.available_models or [])} "
+                f"catalog_models={len(key.available_models or [])} allowed_models={len(key.allowed_models or [])} "
                 f"last_error={key.last_error_code or '-'}"
             )
 
@@ -161,8 +161,7 @@ class Command(BaseCommand):
                 for key in keys
                 if key.health_state == ProviderApiKey.HealthState.HEALTHY
                 and (
-                    not list(key.available_models or [])
-                    or model.upstream_model in list(key.available_models or [])
+                    model.upstream_model in list(key.allowed_models or [])
                 )
             ]
             config_ready = provider_model_config_ready(model)
