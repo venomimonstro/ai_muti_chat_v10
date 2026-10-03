@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation, ROUND_UP
 
+import httpx
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Sum
@@ -7,7 +8,8 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework.response import Response
 
-from apps.ai_registry.models import ProviderApiKey
+from apps.ai_registry.models import AIModel, ProviderApiKey
+from apps.billing.models import PriceVersion
 from apps.procurement.models import ProviderFundingAccount, ProviderPurchase, ProviderSpendAllocation
 from apps.procurement.services import create_funding_account, funding_summary, provider_pricing_currency, record_purchase, set_default_account
 
@@ -18,6 +20,224 @@ ZERO = Decimal("0")
 MONEY = Decimal("0.01")
 RUB_STEP = Decimal("0.0001")
 UNIT_STEP = Decimal("0.00000001")
+MILLION = Decimal("1000000")
+
+
+def _first_decimal(mapping, *keys):
+    for key in keys:
+        value = mapping.get(key) if isinstance(mapping, dict) else None
+        if value in (None, ""):
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            return parsed
+    return None
+
+
+def _per_million_from_generic(value):
+    if value is None:
+        return None
+    value = Decimal(value)
+    # OpenAI/OpenRouter-compatible catalogs usually expose per-token prices in
+    # generic prompt/completion fields. Explicit *_per_million fields bypass this.
+    return (value * MILLION) if value < Decimal("1") else value
+
+
+def _polza_price_row(item):
+    pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+    currency = str(
+        item.get("pricing_currency")
+        or pricing.get("currency")
+        or item.get("currency")
+        or "RUB"
+    ).upper().strip()[:3] or "RUB"
+
+    input_pm = _first_decimal(
+        item,
+        "input_rub_per_million",
+        "input_price_rub_per_million",
+        "prompt_rub_per_million",
+        "input_per_million",
+    )
+    if input_pm is None:
+        input_pm = _per_million_from_generic(
+            _first_decimal(pricing, "prompt", "input", "input_text")
+        )
+
+    output_pm = _first_decimal(
+        item,
+        "output_rub_per_million",
+        "output_price_rub_per_million",
+        "completion_rub_per_million",
+        "output_per_million",
+    )
+    if output_pm is None:
+        output_pm = _per_million_from_generic(
+            _first_decimal(pricing, "completion", "output", "output_text")
+        )
+
+    image_input_pm = _first_decimal(
+        item,
+        "image_input_rub_per_million",
+        "input_image_rub_per_million",
+        "image_input_per_million",
+    )
+    if image_input_pm is None:
+        image_input_pm = _per_million_from_generic(
+            _first_decimal(pricing, "image_input", "input_image")
+        )
+
+    image_output_pm = _first_decimal(
+        item,
+        "image_output_rub_per_million",
+        "output_image_rub_per_million",
+        "image_output_per_million",
+    )
+    if image_output_pm is None:
+        image_output_pm = _per_million_from_generic(
+            _first_decimal(pricing, "image_output", "output_image")
+        )
+
+    image_per_image = _first_decimal(
+        item,
+        "price_per_image",
+        "image_price_rub",
+        "image_rub_per_image",
+    )
+    if image_per_image is None:
+        image_per_image = _first_decimal(
+            pricing,
+            "image",
+            "per_image",
+            "image_generation",
+        )
+
+    return {
+        "currency": currency,
+        "input_per_million": str(input_pm) if input_pm is not None else None,
+        "output_per_million": str(output_pm) if output_pm is not None else None,
+        "image_input_per_million": str(image_input_pm) if image_input_pm is not None else None,
+        "image_output_per_million": str(image_output_pm) if image_output_pm is not None else None,
+        "image_per_image": str(image_per_image) if image_per_image is not None else None,
+    }
+
+
+def _polza_pricing_for_key(key):
+    response = httpx.get(
+        "https://polza.ai/api/v1/models",
+        headers={"Authorization": f"Bearer {key.get_secret()}"},
+        timeout=15,
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    result = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or item.get("name") or "").strip()
+        if not model_id:
+            continue
+        prices = _polza_price_row(item)
+        result.append(
+            {
+                "id": model_id,
+                "display_name": str(
+                    item.get("display_name")
+                    or item.get("displayName")
+                    or item.get("name")
+                    or model_id
+                ),
+                **prices,
+            }
+        )
+    return result
+
+
+def _pricing_snapshot_from_request(request, *, key, model):
+    if key.provider.slug != "polza" or model is None:
+        return {}
+    auto = {}
+    try:
+        rows = _polza_pricing_for_key(key)
+        auto = next((item for item in rows if item["id"] == model.upstream_model), {})
+    except Exception:
+        auto = {}
+
+    def chosen(field):
+        raw = request.data.get(field)
+        if raw not in (None, ""):
+            value = _decimal(raw, field, minimum=ZERO)
+            return str(value), "manual"
+        auto_value = auto.get(field)
+        if auto_value not in (None, ""):
+            return str(auto_value), "auto"
+        return None, "missing"
+
+    input_price, input_source = chosen("input_per_million")
+    output_price, output_source = chosen("output_per_million")
+    image_input, image_input_source = chosen("image_input_per_million")
+    image_output, image_output_source = chosen("image_output_per_million")
+    image_per_image, image_per_image_source = chosen("image_per_image")
+    currency = str(
+        request.data.get("pricing_currency")
+        or auto.get("currency")
+        or "RUB"
+    ).upper().strip()[:3] or "RUB"
+    return {
+        "provider": "polza",
+        "api_key_id": str(key.id),
+        "model_slug": model.slug,
+        "upstream_model": model.upstream_model,
+        "currency": currency,
+        "input_per_million": input_price,
+        "output_per_million": output_price,
+        "image_input_per_million": image_input,
+        "image_output_per_million": image_output,
+        "image_per_image": image_per_image,
+        "sources": {
+            "input_per_million": input_source,
+            "output_per_million": output_source,
+            "image_input_per_million": image_input_source,
+            "image_output_per_million": image_output_source,
+            "image_per_image": image_per_image_source,
+        },
+        "source": "polza_models_api+manual_override",
+        "captured_at": timezone.now().isoformat(),
+    }
+
+
+def _activate_polza_text_price(*, model, snapshot):
+    input_price = snapshot.get("input_per_million")
+    output_price = snapshot.get("output_per_million")
+    if input_price in (None, "") or output_price in (None, ""):
+        return None
+    currency = str(snapshot.get("currency") or "RUB").upper().strip()[:3]
+    now = timezone.now()
+    previous = (
+        PriceVersion.objects.filter(model_slug=model.slug, active=True)
+        .order_by("-effective_from", "-created_at")
+        .first()
+    )
+    markup = previous.markup_percent if previous is not None else Decimal("100")
+    PriceVersion.objects.filter(model_slug=model.slug, active=True).update(active=False)
+    input_native = Decimal(str(input_price))
+    output_native = Decimal(str(output_price))
+    return PriceVersion.objects.create(
+        model_slug=model.slug,
+        input_rub_per_million=input_native if currency == "RUB" else Decimal("0.0001"),
+        output_rub_per_million=output_native if currency == "RUB" else Decimal("0.0001"),
+        provider_currency=currency,
+        input_price_per_million=input_native,
+        output_price_per_million=output_native,
+        markup_percent=markup,
+        active=True,
+        effective_from=now,
+    )
 
 
 def _decimal(value, label, *, required=False, minimum=None):
@@ -95,6 +315,7 @@ def _purchase_payload(purchase):
         "fees_rub": str(purchase.fees_rub),
         "total_cash_outlay_rub": str(purchase.total_cash_outlay_rub),
         "effective_cost_rub_per_native": str(purchase.effective_cost_rub_per_native),
+        "pricing_snapshot": purchase.pricing_snapshot or {},
         "realized_revenue_rub": str(revenue),
         "realized_cost_rub": str(economic_cost),
         "realized_profit_rub": str(profit),
@@ -278,6 +499,19 @@ class ProcurementLedgerView(AdminAPIView):
     def post(self, request):
         action = str(request.data.get("action") or "purchase_key").strip()
         try:
+            if action == "polza_pricing":
+                key = ProviderApiKey.objects.select_related("provider").get(
+                    pk=request.data.get("api_key_id"),
+                    provider__slug="polza",
+                )
+                rows = _polza_pricing_for_key(key)
+                requested_model = str(request.data.get("model_id") or "").strip()
+                if requested_model:
+                    row = next((item for item in rows if item["id"] == requested_model), None)
+                    if row is None:
+                        return Response({"detail": "Модель недоступна для этого Polza-ключа"}, status=404)
+                    return Response({"provider": "polza", "model": row})
+                return Response({"provider": "polza", "models": rows})
             if action == "set_default":
                 account = ProviderFundingAccount.objects.select_related("provider", "api_key").get(pk=request.data.get("account_id"))
                 result = set_default_account(account)
@@ -317,6 +551,31 @@ class ProcurementLedgerView(AdminAPIView):
                     f"Этот ключ уже учитывается в {account.currency}; для другой валюты создайте отдельный API-ключ/закупочный счёт"
                 )
 
+            selected_model = None
+            pricing_snapshot = {}
+            selected_model_slug = str(request.data.get("model_slug") or "").strip()
+            if key.provider.slug == "polza" and selected_model_slug:
+                selected_model = (
+                    AIModel.objects.filter(
+                        provider=key.provider,
+                        slug=selected_model_slug,
+                    )
+                    .select_related("provider")
+                    .first()
+                )
+                if selected_model is None:
+                    raise DjangoValidationError("Выбранная Polza-модель не найдена в AI Registry")
+                available = list(key.available_models or [])
+                if available and selected_model.upstream_model not in available:
+                    raise DjangoValidationError(
+                        "Выбранная модель недоступна для этого Polza API-ключа"
+                    )
+                pricing_snapshot = _pricing_snapshot_from_request(
+                    request,
+                    key=key,
+                    model=selected_model,
+                )
+
             purchase = record_purchase(
                 account=account,
                 credit_native=_decimal(request.data.get("credit_native"), "Номинал API-баланса", required=True, minimum=Decimal("0.000001")),
@@ -328,8 +587,14 @@ class ProcurementLedgerView(AdminAPIView):
                 market_fx_rate_rub=_decimal(request.data.get("market_fx_rate_rub"), "Рыночный курс", minimum=Decimal("0.000001")),
                 purchased_at=_purchase_time(request.data.get("purchased_at")),
                 created_by=request.user,
+                pricing_snapshot=pricing_snapshot,
                 reference=request.data.get("reference") or "",
             )
+            if selected_model is not None and pricing_snapshot:
+                _activate_polza_text_price(
+                    model=selected_model,
+                    snapshot=pricing_snapshot,
+                )
             audit(
                 request,
                 "procurement.purchase_recorded",
