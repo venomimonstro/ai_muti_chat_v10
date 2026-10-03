@@ -70,6 +70,7 @@ def account_matches(
     currency: str = "",
     allow_probe: bool = False,
     require_balance: bool = True,
+    model_upstream: str = "",
 ) -> bool:
     required = max(ZERO, _d(required_native)).quantize(NATIVE_STEP, rounding=ROUND_UP)
     expected_currency = str(currency or "").upper().strip()
@@ -77,6 +78,14 @@ def account_matches(
         return False
     if not account_credential_ready(account, allow_probe=allow_probe):
         return False
+    if (
+        getattr(account.provider, "slug", "") == "polza"
+        and account.api_key_id
+        and model_upstream
+    ):
+        available = list(getattr(account.api_key, "available_models", None) or [])
+        if available and model_upstream not in available:
+            return False
     if require_balance:
         minimum = required if required > ZERO else NATIVE_STEP
         if account_available_native(account) < minimum:
@@ -92,6 +101,7 @@ def runtime_funding_accounts(
     allow_probe: bool = False,
     require_balance: bool = True,
     lock: bool = False,
+    model_upstream: str = "",
 ):
     queryset = ProviderFundingAccount.objects.filter(provider=provider, active=True)
     if lock:
@@ -133,6 +143,7 @@ def runtime_funding_accounts(
             currency=currency,
             allow_probe=allow_probe,
             require_balance=require_balance,
+            model_upstream=model_upstream,
         )
     ]
 
@@ -144,6 +155,7 @@ def select_runtime_funding_account(
     currency: str = "",
     allow_probe: bool = False,
     require_balance: bool = True,
+    model_upstream: str = "",
 ):
     candidates = runtime_funding_accounts(
         provider,
@@ -151,6 +163,7 @@ def select_runtime_funding_account(
         currency=currency,
         allow_probe=allow_probe,
         require_balance=require_balance,
+        model_upstream=model_upstream,
     )
     return candidates[0] if candidates else None
 
@@ -172,6 +185,7 @@ def reserve_provider_spend(
     source_key,
     currency: str = "",
     account_id=None,
+    model_upstream: str = "",
 ):
     from apps.ai_registry.models import Provider
 
@@ -207,6 +221,7 @@ def reserve_provider_spend(
             currency=currency,
             allow_probe=False,
             require_balance=True,
+            model_upstream=model_upstream,
         ):
             raise ValidationError(
                 "Выбранный закупочный API-аккаунт недоступен или имеет недостаточный баланс"
@@ -219,6 +234,7 @@ def reserve_provider_spend(
             allow_probe=False,
             require_balance=True,
             lock=True,
+            model_upstream=model_upstream,
         )
         if not candidates:
             credential_candidates = runtime_funding_accounts(
@@ -228,6 +244,7 @@ def reserve_provider_spend(
                 allow_probe=False,
                 require_balance=False,
                 lock=True,
+                model_upstream=model_upstream,
             )
             if credential_candidates:
                 raise ValidationError(
@@ -253,7 +270,7 @@ def install(*, services_module, signals_module, reliability_module) -> None:
     # Runtime operations all flow through signals._ensure(). Bind the reservation to
     # the exact provider currency carried by the immutable pricing snapshot so mixed
     # USD/EUR funding pools can never be charged with the wrong FX basis.
-    def ensure(*, provider, expected_rub, snapshot, source_key):
+    def ensure(*, provider, expected_rub, snapshot, source_key, model_upstream=""):
         if not signals_module._require_procurement(provider):
             if str(source_key).startswith("chat:"):
                 logger.info(
@@ -291,6 +308,7 @@ def install(*, services_module, signals_module, reliability_module) -> None:
                 amount_native=native,
                 source_key=source_key,
                 currency=currency,
+                model_upstream=model_upstream,
             )
             if str(source_key).startswith("chat:"):
                 logger.info(
