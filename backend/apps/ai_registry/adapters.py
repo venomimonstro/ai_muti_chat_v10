@@ -141,6 +141,14 @@ class HTTPAdapter:
 def _http_error(exc: httpx.HTTPError) -> ProviderError:
     response = getattr(exc, "response", None)
     status = response.status_code if response is not None else None
+    if status == 401:
+        return ProviderError("Provider authentication failed", code="authentication_error", retryable=False)
+    if status == 402:
+        return ProviderError("Provider credit balance exhausted", code="credit_balance_exhausted", retryable=False)
+    if status == 403:
+        return ProviderError("Provider permission denied", code="permission_denied", retryable=False)
+    if status == 404:
+        return ProviderError("Provider model or endpoint not found", code="model_not_found", retryable=False)
     if status == 429:
         return ProviderError("Provider rate limit", code="rate_limited", retryable=True)
     if status is not None and 400 <= status < 500:
