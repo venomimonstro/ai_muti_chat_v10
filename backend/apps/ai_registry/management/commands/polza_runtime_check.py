@@ -15,6 +15,11 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--live", action="store_true")
         parser.add_argument("--all-models", action="store_true")
+        parser.add_argument(
+            "--pricing",
+            action="store_true",
+            help="Also verify current Polza procurement pricing for every enabled key.",
+        )
 
     def handle(self, *args, **options):
         provider = Provider.objects.filter(slug="polza").first()
@@ -41,6 +46,40 @@ class Command(BaseCommand):
                 f"models={len(key.available_models or [])} "
                 f"last_error={key.last_error_code or '-'}"
             )
+
+        if options.get("pricing"):
+            from apps.admin_ops.procurement_ledger_views import _polza_pricing_for_key
+
+            for key in keys:
+                if key.health_state != ProviderApiKey.HealthState.HEALTHY:
+                    continue
+                try:
+                    price_rows = _polza_pricing_for_key(key)
+                    priced = sum(
+                        1
+                        for row in price_rows
+                        if any(
+                            row.get(field) not in (None, "")
+                            for field in (
+                                "input_per_million",
+                                "output_per_million",
+                                "image_input_per_million",
+                                "image_output_per_million",
+                                "image_per_image",
+                            )
+                        )
+                    )
+                    manual = len(price_rows) - priced
+                    self.stdout.write(
+                        "POLZA_PRICING "
+                        f"key_id={key.id} models={len(price_rows)} "
+                        f"auto_priced={priced} manual_required={manual}"
+                    )
+                except Exception as exc:
+                    raise CommandError(
+                        "POLZA_PRICING_BROKEN "
+                        f"key_id={key.id} type={type(exc).__name__} detail={str(exc)[:500]}"
+                    ) from exc
 
         models = list(
             AIModel.objects.filter(provider=provider)
