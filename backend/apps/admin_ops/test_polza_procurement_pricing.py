@@ -1,8 +1,10 @@
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from .procurement_ledger_views import _polza_price_row
+from .procurement_ledger_views import _polza_price_row, _pricing_snapshot_from_request
 
 
 class PolzaProcurementPricingTests(SimpleTestCase):
@@ -81,3 +83,49 @@ class PolzaProcurementPricingTests(SimpleTestCase):
         self.assertIsNone(row["input_per_million"])
         self.assertIsNone(row["output_per_million"])
         self.assertIsNone(row["image_per_image"])
+
+
+    @patch(
+        "apps.admin_ops.procurement_ledger_views._polza_pricing_for_key",
+        return_value=[
+            {
+                "id": "openai/gpt-test",
+                "currency": "RUB",
+                "input_per_million": "10",
+                "output_per_million": "20",
+                "image_input_per_million": "30",
+                "image_output_per_million": "40",
+                "image_per_image": "5",
+                "pricing_tiers": [],
+                "model_type": "chat",
+            }
+        ],
+    )
+    def test_manual_override_wins_and_source_is_recorded(self, _mock):
+        key = SimpleNamespace(
+            id="00000000-0000-0000-0000-000000000001",
+            provider=SimpleNamespace(slug="polza"),
+        )
+        model = SimpleNamespace(
+            slug="polza-gpt-test",
+            upstream_model="openai/gpt-test",
+        )
+        request = SimpleNamespace(
+            data={
+                "input_per_million": "11.5",
+                "output_per_million": "20",
+                "image_per_image": "6",
+                "pricing_currency": "RUB",
+            }
+        )
+        snapshot = _pricing_snapshot_from_request(
+            request,
+            key=key,
+            model=model,
+        )
+        self.assertEqual(snapshot["input_per_million"], "11.5")
+        self.assertEqual(snapshot["output_per_million"], "20")
+        self.assertEqual(snapshot["image_per_image"], "6")
+        self.assertEqual(snapshot["sources"]["input_per_million"], "manual")
+        self.assertEqual(snapshot["sources"]["output_per_million"], "auto")
+        self.assertEqual(snapshot["sources"]["image_per_image"], "manual")
