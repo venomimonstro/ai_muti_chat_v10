@@ -431,7 +431,7 @@ class ProviderKeyCollectionView(AdminAPIView):
         item.set_secret(secret)
         item.save()
         healthy = _check_key(provider, item)
-        if provider.slug in {"openrouter", "gigachat", "hubai"} and not healthy:
+        if provider.slug in {"openrouter", "gigachat", "hubai", "polza"} and not healthy:
             error_code = item.last_error_code or "key_validation_failed"
             item.delete()
             provider.health_state = Provider.HealthState.HEALTHY if provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).exists() else Provider.HealthState.DEGRADED
@@ -448,6 +448,8 @@ class ProviderKeyCollectionView(AdminAPIView):
                     detail = f"GigaChat не подтвердил авторизацию: {error_code}"
             elif provider.slug == "hubai":
                 detail = f"HubAI не подтвердил API-ключ: {error_code}"
+            elif provider.slug == "polza":
+                detail = f"Polza.ai не подтвердила API-ключ: {error_code}"
             else:
                 detail = f"OpenRouter не подтвердил ключ авторизации: {error_code}"
             return Response({"detail": detail, "code": error_code}, status=400)
