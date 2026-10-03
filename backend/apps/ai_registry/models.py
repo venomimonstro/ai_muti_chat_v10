@@ -216,6 +216,8 @@ class ProviderApiKey(models.Model):
     # what the upstream key can technically access; allowed_models describes what
     # AIlegend is actually permitted to route through this credential.
     allowed_models = models.JSONField(default=list, blank=True)
+    model_scope_source = models.CharField(max_length=40, blank=True, default="")
+    budget_plan = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
