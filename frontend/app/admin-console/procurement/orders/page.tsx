@@ -184,8 +184,9 @@ export default function ProcurementOrdersPage(){
    </section>
 
    <section className={styles.section}>
-    <div className={styles.header}><div><h2>{editing?`Изменить ${editing.document_number}`:"Новый закупочный ордер"}</h2><p>{editing?"Финансовые поля доступны до первого списания.":"Для Polza модели ключа и их цены подгружаются автоматически."}</p></div>{editing&&<button className={styles.button} onClick={reset}>Отменить</button>}</div>
-    <div className={styles.filters}>
+    <div className={styles.purchaseHero}>
+     <div className={styles.purchaseHeroMain}><div className={styles.header}><div><h2>{editing?`Изменить ${editing.document_number}`:"Новый закупочный ордер"}</h2><p>{editing?"Финансовые поля доступны до первого списания.":"Выберите ключ, сумму закупки и модели. Для Polza модели ключа и цены загружаются автоматически."}</p></div>{editing&&<button className={styles.button} onClick={reset}>Отменить</button>}</div>
+    <div className={styles.purchaseFormGrid}>
      <label>API-ключ<select disabled={!!editing} value={draft.api_key_id} onChange={e=>void selectKey(e.target.value)}><option value="">Выберите ключ</option>{data.keys.map(k=><option key={k.id} value={k.id}>{k.provider_name} · {k.label} · {k.masked}</option>)}</select></label>
      <label>Номинал ключа<input inputMode="decimal" value={draft.credit_native} onChange={e=>setDraft(v=>({...v,credit_native:e.target.value}))} placeholder="1500"/></label>
      <label>Валюта<select disabled={!!editing} value={draft.credit_currency} onChange={e=>setDraft(v=>({...v,credit_currency:e.target.value}))}><option>RUB</option><option>USD</option><option>EUR</option></select></label>
@@ -195,30 +196,32 @@ export default function ProcurementOrdersPage(){
      <label>Комиссии, ₽<input inputMode="decimal" value={draft.fees_rub} onChange={e=>setDraft(v=>({...v,fees_rub:e.target.value}))}/></label>
      <label>Дата<input type="date" value={draft.purchased_at} onChange={e=>setDraft(v=>({...v,purchased_at:e.target.value}))}/></label>
      <label>Комментарий<input value={draft.reference} onChange={e=>setDraft(v=>({...v,reference:e.target.value}))}/></label>
+    </div></div>
+     <div className={styles.purchaseHeroSide}><small>Текущий API-ключ</small><strong>{selectedKey?selectedKey.label:"Не выбран"}</strong><div className={styles.statusStrip}><span className={styles.statusChip}>{selectedKey?.provider_name||"—"}</span>{isPolza&&<span className={styles.statusChip}>моделей: {selectedKey?.allowed_models?.length??0}</span>}</div>{isPolza&&<small>Источник списка: {selectedKey?.model_scope_source||"ailegend_allowlist"}</small>}</div>
     </div>
 
-    {!editing&&isPolza&&<div style={{marginTop:16}}>
+    {!editing&&isPolza&&<div className={styles.purchaseModelPanel}>
      <div className={styles.notice}><b>Polza.ai · модели выбранного ключа</b><br/><small>Сохранено в AIlegend: {selectedKey?.allowed_models?.length??0}. В этот ордер загружено: {polzaRows.length}. Здесь можно выбрать, какие из сохранённых моделей входят именно в эту закупку.</small></div>
-     <div className={styles.filters}>
-      <label>Общая наценка Polza, %<input inputMode="decimal" value={draft.provider_markup_percent} onChange={e=>setDraft(v=>({...v,provider_markup_percent:e.target.value}))}/></label>
+     <div className={styles.purchaseModelToolbar}><div><strong>Модели и цены Polza</strong><br/><small>Выбрано для закупки: {selectedRows.length} из {polzaRows.length}</small></div><div className={styles.actions}>
+      <label>Наценка Polza, %<input inputMode="decimal" value={draft.provider_markup_percent} onChange={e=>setDraft(v=>({...v,provider_markup_percent:e.target.value}))}/></label>
       <label>Поиск модели<input value={modelFilter} onChange={e=>setModelFilter(e.target.value)} placeholder="GPT, Claude, Image…"/></label>
-      <button type="button" className={styles.button} onClick={()=>toggleVisible(true)}>Выбрать видимые</button><button type="button" className={styles.button} onClick={()=>toggleVisible(false)}>Снять видимые</button><button type="button" className={styles.button} disabled={priceBusy} onClick={()=>draft.api_key_id&&void loadPolzaPricing(draft.api_key_id)}>{priceBusy?"Синхронизация…":"Обновить модели и цены"}</button>
-     </div>
+      <button type="button" className={styles.button} onClick={()=>toggleVisible(true)}>Выбрать видимые</button><button type="button" className={styles.button} onClick={()=>toggleVisible(false)}>Снять видимые</button><button type="button" className={styles.button} disabled={priceBusy} onClick={()=>draft.api_key_id&&void loadPolzaPricing(draft.api_key_id)}>{priceBusy?"Синхронизация…":"Обновить цены"}</button>
+     </div></div>
 
-     <p><b>Выбрано моделей для закупки: {selectedRows.length}</b> из {polzaRows.length}</p>{vendors.length>0&&<><h3>Бюджеты внутри ключа</h3><div className={styles.grid}>{vendors.map(v=><div className={styles.card} key={v}><small>{vendorLabel(v)}</small><strong>{money(vendorBudgets[v]||0)}</strong><input inputMode="decimal" value={vendorBudgets[v]||""} onChange={e=>setVendorBudgets(x=>({...x,[v]:e.target.value}))} placeholder="Бюджет, ₽"/>{selectedKey?.budget_status?.find(x=>x.scope_type==="vendor"&&x.scope_key===v)&&<small>потрачено {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.spent_rub)} · осталось {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.remaining_rub)}</small>}</div>)}</div></>}
+     {vendors.length>0&&<><div className={styles.purchaseModelToolbar}><strong>Внутренние бюджеты</strong><small>Ограничения для аналитики расходов по семействам моделей.</small></div><div className={styles.budgetGrid}>{vendors.map(v=><div className={styles.budgetCard} key={v}><small>{vendorLabel(v)}</small><strong>{money(vendorBudgets[v]||0)}</strong><input inputMode="decimal" value={vendorBudgets[v]||""} onChange={e=>setVendorBudgets(x=>({...x,[v]:e.target.value}))} placeholder="Бюджет, ₽"/>{selectedKey?.budget_status?.find(x=>x.scope_type==="vendor"&&x.scope_key===v)&&<small>потрачено {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.spent_rub)} · осталось {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.remaining_rub)}</small>}</div>)}</div></>}
 
-     {priceBusy?<p>Загружаем…</p>:<div style={{overflowX:"auto"}}><table className={styles.table}>
+     {priceBusy?<p style={{padding:16}}>Загружаем…</p>:<div className={styles.purchaseTableWrap}><table className={styles.table}>
       <thead><tr><th></th><th>Модель ключа</th><th>IN / 1M</th><th>OUT / 1M</th><th>Image IN</th><th>Image OUT</th><th>За изображение</th><th>Своя наценка %</th><th>Бюджет модели ₽</th></tr></thead>
       <tbody>{visibleRows.map(row=><tr key={row.id}>
        <td><input type="checkbox" checked={row.selected} onChange={e=>updatePolzaRow(row.id,{selected:e.target.checked})}/></td>
-       <td><b>{row.display_name}</b><br/><small>{row.id}</small><br/><small>{row.pricing_available===false?"цена вручную":"Polza auto"}</small></td>
-       <td><input style={{width:105}} inputMode="decimal" value={row.input_per_million??""} onChange={e=>updatePolzaRow(row.id,{input_per_million:e.target.value})}/></td>
-       <td><input style={{width:105}} inputMode="decimal" value={row.output_per_million??""} onChange={e=>updatePolzaRow(row.id,{output_per_million:e.target.value})}/></td>
-       <td><input style={{width:105}} inputMode="decimal" value={row.image_input_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_input_per_million:e.target.value})}/></td>
-       <td><input style={{width:105}} inputMode="decimal" value={row.image_output_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_output_per_million:e.target.value})}/></td>
-       <td><input style={{width:105}} inputMode="decimal" value={row.image_per_image??""} onChange={e=>updatePolzaRow(row.id,{image_per_image:e.target.value})}/></td>
-       <td><input style={{width:90}} inputMode="decimal" value={row.markup_percent} onChange={e=>updatePolzaRow(row.id,{markup_percent:e.target.value})} placeholder="общая"/></td>
-       <td><input style={{width:105}} inputMode="decimal" value={row.budget_rub} onChange={e=>updatePolzaRow(row.id,{budget_rub:e.target.value})} placeholder="необязательно"/></td>
+       <td className={styles.modelName}><b>{row.display_name}</b><small>{row.id}</small><small>{row.pricing_available===false?"цена вручную":"Polza auto"}</small></td>
+       <td><input className={styles.compactInput} inputMode="decimal" value={row.input_per_million??""} onChange={e=>updatePolzaRow(row.id,{input_per_million:e.target.value})}/></td>
+       <td><input className={styles.compactInput} inputMode="decimal" value={row.output_per_million??""} onChange={e=>updatePolzaRow(row.id,{output_per_million:e.target.value})}/></td>
+       <td><input className={styles.compactInput} inputMode="decimal" value={row.image_input_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_input_per_million:e.target.value})}/></td>
+       <td><input className={styles.compactInput} inputMode="decimal" value={row.image_output_per_million??""} onChange={e=>updatePolzaRow(row.id,{image_output_per_million:e.target.value})}/></td>
+       <td><input className={styles.compactInput} inputMode="decimal" value={row.image_per_image??""} onChange={e=>updatePolzaRow(row.id,{image_per_image:e.target.value})}/></td>
+       <td><input className={styles.compactInput} inputMode="decimal" value={row.markup_percent} onChange={e=>updatePolzaRow(row.id,{markup_percent:e.target.value})} placeholder="общая"/></td>
+       <td><input className={styles.compactInput} inputMode="decimal" value={row.budget_rub} onChange={e=>updatePolzaRow(row.id,{budget_rub:e.target.value})} placeholder="необязательно"/></td>
       </tr>)}</tbody>
      </table></div>}
     </div>}
