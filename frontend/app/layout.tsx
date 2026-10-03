@@ -8,12 +8,12 @@ import "./system-controls.css";
 const siteUrl=process.env.NEXT_PUBLIC_SITE_URL??"http://localhost:3000";
 export const metadata: Metadata = {
   metadataBase:new URL(siteUrl),
-  title:{default:"AI Workspace",template:"%s | AI Workspace"},
+  title:{default:"AIlegend",template:"%s | AIlegend"},
   description:"Чаты, проекты и AI-модели в одном рабочем пространстве с единым рублёвым балансом.",
-  applicationName:"AI Workspace",
+  applicationName:"AIlegend",
   manifest:"/manifest.webmanifest",
   alternates:{canonical:"/"},
-  openGraph:{siteName:"AI Workspace",type:"website",locale:"ru_RU",url:"/"},
+  openGraph:{siteName:"AIlegend",type:"website",locale:"ru_RU",url:"/"},
   twitter:{card:"summary_large_image"},
 };
 export const viewport: Viewport = {themeColor:"#171620",width:"device-width",initialScale:1};
