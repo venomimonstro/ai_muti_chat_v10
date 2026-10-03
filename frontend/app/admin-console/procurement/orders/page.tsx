@@ -22,7 +22,7 @@ type PolzaPrice={
  input_per_million:string|null;output_per_million:string|null;image_input_per_million:string|null;image_output_per_million:string|null;image_per_image:string|null;
  pricing_available?:boolean;pricing_source?:string;pricing_tiers?:PriceTier[];model_type?:string;
 };
-type PolzaRow=PolzaPrice&{markup_percent:string;budget_rub:string};
+type PolzaRow=PolzaPrice&{selected:boolean;markup_percent:string;budget_rub:string};
 type Draft={
  api_key_id:string;credit_native:string;credit_currency:string;payment_amount:string;payment_currency:string;payment_fx_rate_rub:string;
  fees_rub:string;market_fx_rate_rub:string;purchased_at:string;reference:string;provider_markup_percent:string;
@@ -57,7 +57,8 @@ export default function ProcurementOrdersPage(){
  const selectedKey=useMemo(()=>data?.keys.find(item=>item.id===draft.api_key_id)||null,[data,draft.api_key_id]);
  const isPolza=selectedKey?.provider==="polza";
  const visibleRows=polzaRows.filter(row=>!modelFilter||(`${row.display_name} ${row.id}`).toLowerCase().includes(modelFilter.toLowerCase()));
- const vendors=useMemo(()=>Array.from(new Set(polzaRows.map(row=>vendorOf(row.id)))).sort(),[polzaRows]);
+ const selectedRows=polzaRows.filter(row=>row.selected);
+ const vendors=useMemo(()=>Array.from(new Set(selectedRows.map(row=>vendorOf(row.id)))).sort(),[selectedRows]);
 
  const load=async()=>{
   setBusy(true);
@@ -82,7 +83,7 @@ export default function ProcurementOrdersPage(){
    const modelBudget=Object.fromEntries(plan.filter(x=>x.scope_type==="model").map(x=>[x.scope_key,x.allocated_rub]));
    const vendorBudget=Object.fromEntries(plan.filter(x=>x.scope_type==="vendor").map(x=>[x.scope_key,x.allocated_rub]));
    setVendorBudgets(vendorBudget);
-   setPolzaRows(result.models.map(model=>({...model,markup_percent:"",budget_rub:modelBudget[model.id]||""})));
+   setPolzaRows(result.models.map(model=>({...model,selected:true,markup_percent:"",budget_rub:modelBudget[model.id]||""})));
    setError("");
   }catch(e){
    setPolzaRows([]);
@@ -105,6 +106,7 @@ export default function ProcurementOrdersPage(){
  },[data,draft.api_key_id,editing,polzaRows.length]);
 
  const updatePolzaRow=(id:string,patch:Partial<PolzaRow>)=>setPolzaRows(rows=>rows.map(row=>row.id===id?{...row,...patch}:row));
+ const toggleVisible=(checked:boolean)=>setPolzaRows(rows=>rows.map(row=>visibleRows.some(v=>v.id===row.id)?{...row,selected:checked}:row));
 
  const reset=()=>{
   setEditing(null);setPolzaRows([]);setVendorBudgets({});setModelFilter("");
@@ -113,14 +115,15 @@ export default function ProcurementOrdersPage(){
 
  const save=async()=>{
   if(!draft.credit_native||!draft.payment_amount||(!editing&&!draft.api_key_id)){setError("Заполните API-ключ, номинал и фактическую оплату");return}
-  if(!editing&&isPolza&&polzaRows.length===0){setError("Polza-ключ не отдал синхронизированный список моделей. Нажмите «Проверить API» у ключа.");return}
+  if(!editing&&isPolza&&polzaRows.length===0){setError("Для этого Polza-ключа не настроены модели. Сначала сохраните модели ключа в разделе LLM API.");return}
+  if(!editing&&isPolza&&selectedRows.length===0){setError("Выберите хотя бы одну модель Polza для закупочного ордера");return}
   setBusy(true);setError("");setNotice("");
   try{
    if(editing){
     const p=await post<Purchase>({action:"edit_purchase",purchase_id:editing.id,...draft,base_cost_rub:"",payment_fx_rate_rub:draft.payment_currency==="RUB"?"":draft.payment_fx_rate_rub});
     setNotice(`Ордер ${p.document_number} изменён.`);
    }else{
-    const polza_models=isPolza?polzaRows.map(row=>({
+    const polza_models=isPolza?selectedRows.map(row=>({
      upstream_model:row.id,display_name:row.display_name,currency:row.currency,
      input_per_million:row.input_per_million??"",output_per_million:row.output_per_million??"",
      image_input_per_million:row.image_input_per_million??"",image_output_per_million:row.image_output_per_million??"",
@@ -128,14 +131,14 @@ export default function ProcurementOrdersPage(){
     })):[];
     const budget_plan:BudgetItem[]=isPolza?[
      ...vendors.filter(v=>Number(vendorBudgets[v]||0)>0).map(v=>({scope_type:"vendor" as const,scope_key:v,label:vendorLabel(v),allocated_rub:vendorBudgets[v]})),
-     ...polzaRows.filter(row=>Number(row.budget_rub||0)>0).map(row=>({scope_type:"model" as const,scope_key:row.id,label:row.display_name,allocated_rub:row.budget_rub}))
+     ...selectedRows.filter(row=>Number(row.budget_rub||0)>0).map(row=>({scope_type:"model" as const,scope_key:row.id,label:row.display_name,allocated_rub:row.budget_rub}))
     ]:[];
     const p=await post<Purchase>({
      action:"purchase_key",...draft,base_cost_rub:"",
      payment_fx_rate_rub:draft.payment_currency==="RUB"?"":draft.payment_fx_rate_rub,
      polza_models,provider_markup_percent:isPolza?draft.provider_markup_percent:"",budget_plan
     });
-    setNotice(`Ордер ${p.document_number} создан. Polza-моделей: ${isPolza?polzaRows.length:0}.`);
+    setNotice(`Ордер ${p.document_number} создан. Polza-моделей: ${isPolza?selectedRows.length:0}.`);
    }
    reset();await load();
   }catch(e){setError(e instanceof Error?e.message:"Не удалось сохранить ордер")}
@@ -194,14 +197,15 @@ export default function ProcurementOrdersPage(){
      <div className={styles.filters}>
       <label>Общая наценка Polza, %<input inputMode="decimal" value={draft.provider_markup_percent} onChange={e=>setDraft(v=>({...v,provider_markup_percent:e.target.value}))}/></label>
       <label>Поиск модели<input value={modelFilter} onChange={e=>setModelFilter(e.target.value)} placeholder="GPT, Claude, Image…"/></label>
-      <button type="button" className={styles.button} disabled={priceBusy} onClick={()=>draft.api_key_id&&void loadPolzaPricing(draft.api_key_id)}>{priceBusy?"Синхронизация…":"Обновить модели и цены"}</button>
+      <button type="button" className={styles.button} onClick={()=>toggleVisible(true)}>Выбрать видимые</button><button type="button" className={styles.button} onClick={()=>toggleVisible(false)}>Снять видимые</button><button type="button" className={styles.button} disabled={priceBusy} onClick={()=>draft.api_key_id&&void loadPolzaPricing(draft.api_key_id)}>{priceBusy?"Синхронизация…":"Обновить модели и цены"}</button>
      </div>
 
-     {vendors.length>0&&<><h3>Бюджеты внутри ключа</h3><div className={styles.grid}>{vendors.map(v=><div className={styles.card} key={v}><small>{vendorLabel(v)}</small><strong>{money(vendorBudgets[v]||0)}</strong><input inputMode="decimal" value={vendorBudgets[v]||""} onChange={e=>setVendorBudgets(x=>({...x,[v]:e.target.value}))} placeholder="Бюджет, ₽"/>{selectedKey?.budget_status?.find(x=>x.scope_type==="vendor"&&x.scope_key===v)&&<small>потрачено {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.spent_rub)} · осталось {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.remaining_rub)}</small>}</div>)}</div></>}
+     <p><b>Выбрано моделей для закупки: {selectedRows.length}</b> из {polzaRows.length}</p>{vendors.length>0&&<><h3>Бюджеты внутри ключа</h3><div className={styles.grid}>{vendors.map(v=><div className={styles.card} key={v}><small>{vendorLabel(v)}</small><strong>{money(vendorBudgets[v]||0)}</strong><input inputMode="decimal" value={vendorBudgets[v]||""} onChange={e=>setVendorBudgets(x=>({...x,[v]:e.target.value}))} placeholder="Бюджет, ₽"/>{selectedKey?.budget_status?.find(x=>x.scope_type==="vendor"&&x.scope_key===v)&&<small>потрачено {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.spent_rub)} · осталось {money(selectedKey.budget_status.find(x=>x.scope_type==="vendor"&&x.scope_key===v)?.remaining_rub)}</small>}</div>)}</div></>}
 
      {priceBusy?<p>Загружаем…</p>:<div style={{overflowX:"auto"}}><table className={styles.table}>
-      <thead><tr><th>Модель ключа</th><th>IN / 1M</th><th>OUT / 1M</th><th>Image IN</th><th>Image OUT</th><th>За изображение</th><th>Своя наценка %</th><th>Бюджет модели ₽</th></tr></thead>
+      <thead><tr><th></th><th>Модель ключа</th><th>IN / 1M</th><th>OUT / 1M</th><th>Image IN</th><th>Image OUT</th><th>За изображение</th><th>Своя наценка %</th><th>Бюджет модели ₽</th></tr></thead>
       <tbody>{visibleRows.map(row=><tr key={row.id}>
+       <td><input type="checkbox" checked={row.selected} onChange={e=>updatePolzaRow(row.id,{selected:e.target.checked})}/></td>
        <td><b>{row.display_name}</b><br/><small>{row.id}</small><br/><small>{row.pricing_available===false?"цена вручную":"Polza auto"}</small></td>
        <td><input style={{width:105}} inputMode="decimal" value={row.input_per_million??""} onChange={e=>updatePolzaRow(row.id,{input_per_million:e.target.value})}/></td>
        <td><input style={{width:105}} inputMode="decimal" value={row.output_per_million??""} onChange={e=>updatePolzaRow(row.id,{output_per_million:e.target.value})}/></td>
