@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 STEP = Decimal("0.000001")
-SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai"}
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai", "polza"}
 
 
 def _decimal(value, default="0"):
@@ -86,7 +86,7 @@ def _release_other(prefix, keep_key=None):
         release_provider_spend(reservation_id)
 
 
-def _ensure(*, provider, expected_rub, snapshot, source_key):
+def _ensure(*, provider, expected_rub, snapshot, source_key, model_upstream=""):
     if not _require_procurement(provider):
         return None
     fx = _fx(snapshot)
@@ -108,6 +108,7 @@ def _ensure(*, provider, expected_rub, snapshot, source_key):
             amount_native=native,
             source_key=source_key,
             currency=currency,
+            model_upstream=model_upstream,
         )
     except ValidationError as exc:
         if _commercial_fail_closed():
@@ -193,6 +194,7 @@ def request_cost_procurement(sender, instance, **kwargs):
             expected_rub=instance.expected_provider_cost_rub or instance.estimated_rub,
             snapshot=instance.pricing_snapshot,
             source_key=key,
+            model_upstream=model.upstream_model,
         )
         return
     if _existing_spend("chat", instance.id, instance.charged_rub or ZERO) is not None:
@@ -247,6 +249,7 @@ def api_usage_procurement(sender, instance, **kwargs):
                 ),
                 snapshot=instance.pricing_snapshot,
                 source_key=key,
+                model_upstream=model.upstream_model,
             )
         return
     if reservation is None or reservation.state != ProviderSpendReservation.State.ACTIVE:
@@ -361,6 +364,7 @@ def compare_variant_procurement(sender, instance, **kwargs):
                 ),
                 snapshot=instance.pricing_snapshot,
                 source_key=key,
+                model_upstream=instance.model.upstream_model,
             )
         return
     if reservation is None or reservation.state != ProviderSpendReservation.State.ACTIVE:
