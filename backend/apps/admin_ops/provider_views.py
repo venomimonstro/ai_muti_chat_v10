@@ -579,20 +579,69 @@ class ProviderKeyDetailView(AdminAPIView):
 class ProviderDiscoveredModelsView(AdminAPIView):
     def get(self, request, provider_slug):
         provider = get_object_or_404(Provider, slug=provider_slug)
-        key = provider.api_keys.filter(enabled=True, health_state=ProviderApiKey.HealthState.HEALTHY).order_by("priority", "created_at").first()
+        healthy_keys = list(
+            provider.api_keys.filter(
+                enabled=True,
+                health_state=ProviderApiKey.HealthState.HEALTHY,
+            ).order_by("priority", "created_at")[:20]
+        )
+        key = healthy_keys[0] if healthy_keys else None
         api_key = key.get_secret() if key else provider.get_api_key()
         if not api_key:
             return Response({"detail": "Сначала добавьте рабочий API-ключ"}, status=409)
         if provider.slug == "hubai":
             return Response({"provider": provider.slug, "models": _hubai_catalog(provider)})
         try:
-            if provider.slug == "gigachat":
-                adapter = _gigachat_adapter(provider, api_key)
-                response = httpx.get(_models_url(provider), headers=adapter._headers(), timeout=15, follow_redirects=True)
+            if provider.slug == "polza" and healthy_keys:
+                # Different Polza credentials may expose different model subsets.
+                # Discover through every healthy key and merge by exact upstream id.
+                merged = {}
+                failures = []
+                for item_key in healthy_keys:
+                    try:
+                        response = httpx.get(
+                            _models_url(provider),
+                            headers=_headers(provider, item_key.get_secret()),
+                            timeout=15,
+                            follow_redirects=True,
+                        )
+                        response.raise_for_status()
+                        rows = _extract_models(provider, response.json())
+                        for row in rows:
+                            existing = merged.get(row["id"])
+                            if existing is None:
+                                merged[row["id"]] = {
+                                    **row,
+                                    "available_via_keys": 1,
+                                }
+                            else:
+                                existing["available_via_keys"] = int(
+                                    existing.get("available_via_keys") or 1
+                                ) + 1
+                    except Exception as exc:
+                        failures.append(
+                            {
+                                "key_id": str(item_key.id),
+                                "code": getattr(exc, "code", type(exc).__name__),
+                            }
+                        )
+                models = list(merged.values())
+                if not models:
+                    return Response(
+                        {
+                            "detail": "Не удалось получить каталог моделей Polza ни по одному рабочему ключу",
+                            "key_failures": failures,
+                        },
+                        status=424,
+                    )
             else:
-                response = httpx.get(_models_url(provider), headers=_headers(provider, api_key), timeout=15, follow_redirects=True)
-            response.raise_for_status()
-            models = _extract_models(provider, response.json())
+                if provider.slug == "gigachat":
+                    adapter = _gigachat_adapter(provider, api_key)
+                    response = httpx.get(_models_url(provider), headers=adapter._headers(), timeout=15, follow_redirects=True)
+                else:
+                    response = httpx.get(_models_url(provider), headers=_headers(provider, api_key), timeout=15, follow_redirects=True)
+                response.raise_for_status()
+                models = _extract_models(provider, response.json())
         except httpx.HTTPStatusError as exc:
             return Response({"detail": f"Провайдер вернул HTTP {exc.response.status_code}"}, status=424)
         except Exception:
