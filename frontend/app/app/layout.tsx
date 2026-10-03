@@ -17,7 +17,7 @@ import "./client-chrome-mobile-menu.css";
 import "./workspace-chat-premium.css";
 
 export const metadata: Metadata = {
-  title: "AI Workspace — рабочее пространство",
+  title: "AIlegend — рабочее пространство",
   description: "Чаты, проекты, файлы, изображения и подключённые AI-модели в одном рабочем пространстве.",
   robots: {index: false, follow: false},
 };
