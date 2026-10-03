@@ -119,6 +119,8 @@ def _polza_pricing_for_key(key):
         "Accept-Language": "ru",
     }
     allowed = set(str(value) for value in (key.allowed_models or []) if value)
+    if not allowed:
+        return []
     rows_by_id = {}
 
     catalog_error = None
