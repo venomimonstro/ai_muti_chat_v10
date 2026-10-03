@@ -94,6 +94,9 @@ class ProviderPurchase(models.Model):
     total_cash_outlay_rub = models.DecimalField(max_digits=18, decimal_places=4)
     market_fx_rate_rub = models.DecimalField(max_digits=18, decimal_places=8, null=True, blank=True)
     effective_cost_rub_per_native = models.DecimalField(max_digits=18, decimal_places=8)
+    # Immutable reference to provider model tariffs observed/overridden when the
+    # funding order was recorded. This does not replace FIFO balance accounting.
+    pricing_snapshot = models.JSONField(default=dict, blank=True)
     reference = models.CharField(max_length=300, blank=True)
     purchased_at = models.DateTimeField(db_index=True)
     created_by = models.ForeignKey(
