@@ -34,6 +34,7 @@ def _funding_credential(
     touch: bool,
     funding_account_id=None,
     require_funding_balance: bool = True,
+    model_upstream: str = "",
 ):
     try:
         from apps.procurement.account_routing import (
@@ -78,6 +79,11 @@ def _funding_credential(
                 # while transport readiness may fall back to the verified key pool.
                 return ("", None) if require_funding_balance else None
 
+        if provider.slug == "polza" and account.api_key_id and model_upstream:
+            allowed = list(getattr(account.api_key, "available_models", None) or [])
+            if allowed and model_upstream not in allowed:
+                return "", account.api_key_id
+
         value, key_id = account_secret(account)
         if value and touch and key_id:
             ProviderApiKey.objects.filter(pk=key_id).update(last_used_at=timezone.now())
@@ -95,6 +101,7 @@ def select_runtime_api_key(
     touch: bool = True,
     funding_account_id=None,
     require_funding_balance: bool = True,
+    model_upstream: str = "",
 ):
     funded = _funding_credential(
         provider,
@@ -102,6 +109,7 @@ def select_runtime_api_key(
         touch=touch,
         funding_account_id=funding_account_id,
         require_funding_balance=require_funding_balance,
+        model_upstream=model_upstream,
     )
     if funded is not None:
         return funded
@@ -128,6 +136,10 @@ def select_runtime_api_key(
                     )[:10]
                 )
                 for key in keys:
+                    if provider.slug == "polza" and model_upstream:
+                        available = list(getattr(key, "available_models", None) or [])
+                        if available and model_upstream not in available:
+                            continue
                     value, key_id = _secret(key, touch=touch)
                     if value:
                         return value, key_id
@@ -188,6 +200,7 @@ def adapter_for(
         allow_probe=allow_probe,
         funding_account_id=funding_account_id,
         require_funding_balance=require_funding_balance,
+        model_upstream=str(model.upstream_model or ""),
     )
 
     if funding_account_id and provider.adapter_type != Provider.AdapterType.ECHO and not api_key:
