@@ -71,6 +71,7 @@ def _funding_credential(
                 required_native=NATIVE_STEP if require_funding_balance else 0,
                 allow_probe=allow_probe,
                 require_balance=require_funding_balance,
+                model_upstream=model_upstream,
             )
             if account is None:
                 # When no concrete reservation pins execution to a funding account,
