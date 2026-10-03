@@ -179,3 +179,29 @@ def test_polza_selects_only_key_that_exposes_requested_model():
     )
     assert secret == "pza-claude"
     assert key_id == first.id
+
+
+@pytest.mark.django_db
+def test_polza_empty_allowlist_blocks_customer_runtime_key():
+    provider = _provider("polza")
+    provider.api_base_url = "https://polza.ai/api/v1"
+    provider.save(update_fields=["api_base_url"])
+    key = _key(
+        provider,
+        "router-key",
+        "pza-router",
+        ProviderApiKey.HealthState.HEALTHY,
+    )
+    key.available_models = ["openai/gpt-6.1-sol"]
+    key.allowed_models = []
+    key.save(update_fields=["available_models", "allowed_models"])
+
+    secret, key_id = dispatch.select_runtime_api_key(
+        provider,
+        allow_probe=False,
+        touch=False,
+        require_funding_balance=False,
+        model_upstream="openai/gpt-6.1-sol",
+    )
+    assert secret == ""
+    assert key_id is None
