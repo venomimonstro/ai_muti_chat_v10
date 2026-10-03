@@ -12,7 +12,7 @@ from .services import audit
 from .views import AdminAPIView
 
 
-SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai"}
+SPECIAL_EXTERNAL_PROVIDER_SLUGS = {"gigachat", "openrouter", "hubai", "polza"}
 
 
 def _is_test_echo(provider):
