@@ -211,6 +211,23 @@ def _pricing_snapshot_from_request(request, *, key, model):
     }
 
 
+def _validate_polza_snapshot(snapshot):
+    if not snapshot:
+        return
+    input_price = snapshot.get("input_per_million")
+    output_price = snapshot.get("output_per_million")
+    image_per_image = snapshot.get("image_per_image")
+    image_output = snapshot.get("image_output_per_million")
+    if input_price in (None, "") and output_price in (None, "") and image_per_image in (None, "") and image_output in (None, ""):
+        raise DjangoValidationError(
+            "Polza не вернула цену выбранной модели. Укажите закупочную цену вручную."
+        )
+    if (input_price in (None, "")) != (output_price in (None, "")):
+        raise DjangoValidationError(
+            "Для текстовой Polza-модели укажите обе цены: запрос / 1М и ответ / 1М."
+        )
+
+
 def _activate_polza_text_price(*, model, snapshot):
     input_price = snapshot.get("input_per_million")
     output_price = snapshot.get("output_per_million")
@@ -389,6 +406,25 @@ def _edit_purchase(request):
     account.funded_native = new_funded
     account.save(update_fields=["funded_native", "updated_at"])
 
+    pricing_snapshot = purchase.pricing_snapshot or {}
+    selected_model = None
+    if account.provider.slug == "polza" and account.api_key_id:
+        selected_model_slug = str(request.data.get("model_slug") or pricing_snapshot.get("model_slug") or "").strip()
+        if selected_model_slug:
+            selected_model = (
+                AIModel.objects.filter(provider=account.provider, slug=selected_model_slug)
+                .select_related("provider")
+                .first()
+            )
+            if selected_model is None:
+                raise DjangoValidationError("Выбранная Polza-модель не найдена в AI Registry")
+            pricing_snapshot = _pricing_snapshot_from_request(
+                request,
+                key=account.api_key,
+                model=selected_model,
+            )
+            _validate_polza_snapshot(pricing_snapshot)
+
     fields = {
         "credit_native": credit,
         "payment_amount": payment_amount,
@@ -399,12 +435,15 @@ def _edit_purchase(request):
         "total_cash_outlay_rub": total,
         "market_fx_rate_rub": market_fx,
         "effective_cost_rub_per_native": (total / credit).quantize(UNIT_STEP, rounding=ROUND_UP),
+        "pricing_snapshot": pricing_snapshot,
         "reference": str(request.data.get("reference") or "")[:300],
         "purchased_at": _purchase_time(request.data.get("purchased_at")),
         "updated_at": timezone.now(),
     }
     ProviderPurchase.objects.filter(pk=purchase.pk).update(**fields)
     purchase.refresh_from_db()
+    if selected_model is not None and pricing_snapshot:
+        _activate_polza_text_price(model=selected_model, snapshot=pricing_snapshot)
     audit(request, "procurement.purchase_edited", "provider_purchase", str(purchase.id), {
         "document_number": purchase.document_number,
         "credit_native": str(purchase.credit_native),
@@ -587,6 +626,7 @@ class ProcurementLedgerView(AdminAPIView):
                     key=key,
                     model=selected_model,
                 )
+                _validate_polza_snapshot(pricing_snapshot)
 
             purchase = record_purchase(
                 account=account,
