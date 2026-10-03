@@ -81,8 +81,8 @@ def _funding_credential(
                 return ("", None) if require_funding_balance else None
 
         if provider.slug == "polza" and account.api_key_id and model_upstream:
-            allowed = list(getattr(account.api_key, "available_models", None) or [])
-            if allowed and model_upstream not in allowed:
+            allowed = list(getattr(account.api_key, "allowed_models", None) or [])
+            if model_upstream not in allowed:
                 return "", account.api_key_id
 
         value, key_id = account_secret(account)
@@ -138,8 +138,8 @@ def select_runtime_api_key(
                 )
                 for key in keys:
                     if provider.slug == "polza" and model_upstream:
-                        available = list(getattr(key, "available_models", None) or [])
-                        if available and model_upstream not in available:
+                        allowed = list(getattr(key, "allowed_models", None) or [])
+                        if model_upstream not in allowed:
                             continue
                     value, key_id = _secret(key, touch=touch)
                     if value:
